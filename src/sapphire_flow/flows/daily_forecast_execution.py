@@ -53,12 +53,14 @@ from sapphire_flow.types.enums import (
     FutureWeatherPolicy,
     ModelAssignmentStatus,
 )
+from sapphire_flow.types.group_input import GroupMemberInputReason
 
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable, Mapping
     from typing import Literal
     from uuid import UUID
+    from zoneinfo import ZoneInfo
 
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -127,6 +129,8 @@ def execution_configuration_sha256(config: DeploymentConfig) -> str:
         is OperationalPastWeatherRoute.STORED_REANALYSIS
     ):
         projection.pop("operational_weather", None)
+    elif config.operational_weather.automatic_issue_timezone is None:
+        projection["operational_weather"].pop("automatic_issue_timezone", None)
     for field in ("available_nwp_parameters", "available_past_only_nwp_parameters"):
         projection[field] = sorted(projection[field])
     if projection["daily_evaluation"] is not None:
@@ -329,6 +333,7 @@ class DailyForecastExecution:
             tuple[StationId, ModelId], AssignmentWeatherInputs
         ]
         | None = None,
+        automatic_issue_timezone: ZoneInfo | None = None,
     ) -> tuple[int, tuple[str, ...]]:
         stored_count = 0
         errors: list[str] = []
@@ -355,6 +360,7 @@ class DailyForecastExecution:
                     water_level_datums_masl=water_level_datums_masl,
                     rng=rng,
                     selected_weather_inputs=selected_weather_inputs,
+                    automatic_issue_timezone=automatic_issue_timezone,
                 )
                 stored_count += count
                 errors.extend(claim_errors)
@@ -405,6 +411,7 @@ class DailyForecastExecution:
             tuple[StationId, ModelId], AssignmentWeatherInputs
         ]
         | None = None,
+        automatic_issue_timezone: ZoneInfo | None = None,
     ) -> tuple[int, tuple[str, ...]]:
         errors: list[str] = []
         try:
@@ -579,7 +586,17 @@ class DailyForecastExecution:
                     unavailable_members=assembly.unavailable_members,
                     frozen_artifact_id=claim.frozen.artifact_id,
                     state_policy=GroupStatePolicy.STATELESS_ONLY,
+                    automatic_issue_timezone=automatic_issue_timezone,
                 )
+                for member_issue in outcome.unavailable_members:
+                    if member_issue.reason in (
+                        GroupMemberInputReason.WEATHER_EXPIRED,
+                        GroupMemberInputReason.ISSUE_DAY_MISMATCH,
+                    ):
+                        errors.append(
+                            f"Station {member_issue.station_id}: "
+                            f"{member_issue.reason.value}"
+                        )
                 if outcome.failure is not None:
                     raise outcome.failure
         except Exception as exc:

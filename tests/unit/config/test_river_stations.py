@@ -150,3 +150,51 @@ class TestForecastProviderSnapshot:
             )
         assert "DO_NOT_PRINT" not in str(raised.value)
         assert str(tmp_path) not in str(raised.value)
+
+
+class TestDailyWeatherOverlayChain:
+    def test_real_loaders_share_policy_and_reject_stale_selection(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from zoneinfo import ZoneInfo
+
+        from sapphire_flow.config import river_stations as source
+        from sapphire_flow.config.recap_gateway import load_recap_gateway_config
+
+        base = tmp_path / "base.toml"
+        base.write_text(
+            'max_retention_days=600\n[adapters.recap_gateway]\nbase_url="https://example.invalid"\ntimeout_s=30\nverify_tls=true\nstaleness_threshold_hours=72.0\nhru_metadata_source="fixture"\nmax_retries=0\n'
+        )
+        policy = (
+            Path(__file__).resolve().parents[3]
+            / "config/overlays/nepal-daily-weather.toml"
+        )
+        provider = tmp_path / "provider.toml"
+        provider.write_text(
+            '[adapters.river_stations]\ntype="dhm"\nendpoint="https://example.invalid/levels"\nmax_requests_per_batch=1\nmax_bytes_per_batch=1000\nmax_batch_seconds=30.0\n[[adapters.river_stations.bindings]]\nnetwork="dhm"\nstation_code="synthetic"\napi_station_id=1\nlevel_reference="gauge_zero"\n'
+        )
+        monkeypatch.setattr(source, "FORECAST_PROVIDER_PATH", provider)
+        worker = tmp_path / "worker.toml"
+        worker.write_text("")
+        selected = source.ForecastConfigOverlay(paths=(worker, policy, provider))
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", f"{worker},{policy}")
+        config, station_provider = source.load_forecast_provider_config(
+            base, (worker, policy), selected
+        )
+        gateway = load_recap_gateway_config(base)
+        assert config.nwp_max_fallback_age_hours == gateway.max_cycle_age_hours == 36.0
+        assert config.operational_weather.automatic_issue_timezone == ZoneInfo(
+            "Asia/Kathmandu"
+        )
+        assert isinstance(station_provider, DhmConfig)
+        # Adding policy to only one chain must not silently restore the old limits.
+        with pytest.raises(ConfigurationError, match="forecast provider"):
+            source.load_forecast_provider_config(base, (worker,), selected)
+        old_selection = source.ForecastConfigOverlay(paths=(worker, provider))
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(worker))
+        old, _ = source.load_forecast_provider_config(base, (worker,), old_selection)
+        assert old.nwp_max_fallback_age_hours == 12.0
+        assert load_recap_gateway_config(base).max_cycle_age_hours == 18.0
+        assert old.operational_weather.automatic_issue_timezone is None

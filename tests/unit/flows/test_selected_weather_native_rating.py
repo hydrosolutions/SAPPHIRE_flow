@@ -108,8 +108,15 @@ def rating_fixture(
 def test_selected_native_provisional_b2_preserves_rating_lineage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from sapphire_flow.services import forecast_combination
     from tests.unit.flows.test_selected_weather_cycle import _run_selected_cycle
 
+    def forbidden_combination(*args: object, **kwargs: object) -> None:
+        pytest.fail("provisional native output reached STANDARD combination")
+
+    monkeypatch.setattr(
+        forecast_combination, "build_combined_forecasts", forbidden_combination
+    )
     forecasts = _run_selected_cycle(
         monkeypatch,
         group_run=True,

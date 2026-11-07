@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Literal, Self
+from zoneinfo import ZoneInfo  # noqa: TC003 - Pydantic runtime schema
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,6 +19,7 @@ class OperationalWeatherConfig(BaseModel):
 
     route: OperationalPastWeatherRoute = OperationalPastWeatherRoute.STORED_REANALYSIS
     source: Literal["recap_ecmwf_operational"] = "recap_ecmwf_operational"
+    automatic_issue_timezone: ZoneInfo | None = None
     provider_min_history_days: int = Field(default=14, ge=1, le=370, strict=True)
     provider_max_history_days: int = Field(default=370, ge=1, le=370, strict=True)
     rollover_buffer_days: int = Field(default=1, ge=0, le=1, strict=True)

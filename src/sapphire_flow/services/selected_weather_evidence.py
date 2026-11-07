@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import zlib
+from datetime import timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+import structlog
 from pydantic import TypeAdapter
 
 from sapphire_flow.config.operational_weather import MAX_SELECTED_WEATHER_EVIDENCE_BYTES
@@ -20,6 +23,7 @@ from sapphire_flow.types.operational_weather import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from zoneinfo import ZoneInfo
 
     from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.forecast_evidence import (
@@ -49,6 +53,55 @@ _DERIVED.rebuild(
         "UUID": UUID,
     }
 )
+
+
+class SelectedWeatherIssuanceRefusal(Enum):
+    WEATHER_EXPIRED = "weather_expired"
+    ISSUE_DAY_MISMATCH = "issue_day_mismatch"
+
+
+def selected_weather_issuance_refusal(
+    source: StationSourceEvidence | None,
+    *,
+    issue_time: UtcDatetime,
+    at: UtcDatetime,
+    max_age_hours: float,
+    automatic_issue_timezone: ZoneInfo | None = None,
+) -> SelectedWeatherIssuanceRefusal | None:
+    if source is None or not isinstance(source.weather_use, WeatherUse):
+        raise WeatherEvidenceCaptureError("selected weather assembly facts missing")
+    use = source.weather_use
+    if use.issue_time != issue_time:
+        raise WeatherEvidenceCaptureError("selected weather issue mismatch")
+    cycle = (
+        use.future.receipt.cycle_time
+        if isinstance(use.future, FutureWeatherUse)
+        else None
+    )
+    refusal = None
+    if automatic_issue_timezone is not None and (
+        issue_time.astimezone(automatic_issue_timezone).date()
+        != at.astimezone(automatic_issue_timezone).date()
+    ):
+        refusal = SelectedWeatherIssuanceRefusal.ISSUE_DAY_MISMATCH
+    elif cycle is not None and (
+        cycle > min(at, issue_time) or at - cycle > timedelta(hours=max_age_hours)
+    ):
+        refusal = SelectedWeatherIssuanceRefusal.WEATHER_EXPIRED
+    if refusal is not None:
+        structlog.get_logger(__name__).warning(
+            "selected_weather.issuance_refused",
+            station_id=str(use.station_id),
+            issue_time=issue_time.isoformat(),
+            cycle_time=cycle.isoformat() if cycle is not None else None,
+            checked_at=at.isoformat(),
+            age_hours=(at - cycle).total_seconds() / 3600
+            if cycle is not None
+            else None,
+            max_age_hours=max_age_hours,
+            reason=refusal.value,
+        )
+    return refusal
 
 
 def _object(raw: object) -> dict[str, object]:

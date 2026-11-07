@@ -24,6 +24,7 @@ from sapphire_flow.types.daily_forecast_outcome import (
 from sapphire_flow.types.daily_output import DailyOutputEligibility
 from sapphire_flow.types.enums import ForecastDataUse
 from sapphire_flow.types.forecast_reference import ForecastOutputKey
+from sapphire_flow.types.group_input import GroupMemberInputReason
 from sapphire_flow.types.rejected_forecast import (
     RejectedAssignmentPayload,
     RejectedParameterPayload,
@@ -91,7 +92,15 @@ def validate_daily_group(
             raise ValueError("daily member has duplicate exclusions")
         if issue.station_id not in roster:
             raise ValueError("daily unavailable member is outside the frozen roster")
-        reason = DailyMemberReason(issue.reason.value)
+        reason = (
+            DailyMemberReason.INPUTS_UNAVAILABLE
+            if issue.reason
+            in (
+                GroupMemberInputReason.WEATHER_EXPIRED,
+                GroupMemberInputReason.ISSUE_DAY_MISMATCH,
+            )
+            else DailyMemberReason(issue.reason.value)
+        )
         state = (
             DailyMemberState.CONFIGURATION_EXCLUDED
             if reason is DailyMemberReason.MISSING_FORECAST_BINDING

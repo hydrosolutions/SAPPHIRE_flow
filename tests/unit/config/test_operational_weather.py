@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo
+
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +10,27 @@ from sapphire_flow.config.operational_weather import (
 
 
 class TestOperationalWeatherConfig:
+    def test_automatic_issue_calendar_is_opt_in_and_round_trips(self) -> None:
+        assert OperationalWeatherConfig().automatic_issue_timezone is None
+        configured = OperationalWeatherConfig.model_validate(
+            {"automatic_issue_timezone": "Asia/Kathmandu"}
+        )
+        assert configured.automatic_issue_timezone == ZoneInfo("Asia/Kathmandu")
+        assert (
+            OperationalWeatherConfig.model_validate_json(configured.model_dump_json())
+            == configured
+        )
+        assert (
+            configured.model_dump(mode="json")["automatic_issue_timezone"]
+            == "Asia/Kathmandu"
+        )
+
+    def test_invalid_calendar_is_rejected_at_configuration_boundary(self) -> None:
+        with pytest.raises(ValidationError, match="zoneinfo|timezone|ZoneInfo"):
+            OperationalWeatherConfig.model_validate(
+                {"automatic_issue_timezone": "not/a-timezone"}
+            )
+
     def test_default_does_not_select_combined_route(self) -> None:
         assert (
             OperationalWeatherConfig().route

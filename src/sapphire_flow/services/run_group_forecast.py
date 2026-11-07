@@ -36,6 +36,9 @@ from sapphire_flow.services.run_station_forecast import (
     check_forecast_parameter,
     worst_qc_status,
 )
+from sapphire_flow.services.selected_weather_evidence import (
+    selected_weather_issuance_refusal,
+)
 from sapphire_flow.services.training_data import expected_past_buckets
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import (
@@ -57,6 +60,7 @@ from sapphire_flow.types.group_input import (
 )
 from sapphire_flow.types.ids import ForecastId
 from sapphire_flow.types.model import GroupModelInputs
+from sapphire_flow.types.operational_weather import FutureWeatherUse, WeatherUse
 from sapphire_flow.types.rejected_forecast import (
     RejectedAssignmentPayload,
     RejectedParameterPayload,
@@ -67,6 +71,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import timedelta
     from uuid import UUID
+    from zoneinfo import ZoneInfo
 
     from sapphire_flow.config.deployment import DeploymentConfig, InputQualityConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -105,12 +110,18 @@ _STATION_ID_COLUMN = "station_id"
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class _StationResultOutcome:
-    """Plan 404 T2 — `_build_station_result`'s return: a passing station's
-    result, or (on QC_FAILED) `None` plus its rejected payload. Exactly one
-    of the two is set."""
+    """Exactly one passing result, QC rejection, or input refusal."""
 
     result: StationForecastResult | None
     rejected: RejectedAssignmentPayload | None
+    issue: GroupMemberInputIssue | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            sum(value is not None for value in (self.result, self.rejected, self.issue))
+            != 1
+        ):
+            raise ValueError("station result requires exactly one outcome")
 
 
 class GroupStatePolicy(Enum):
@@ -729,6 +740,7 @@ def _build_station_result(
     config: DeploymentConfig,
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> _StationResultOutcome:
     # Plan 404 T2 — QC runs on EVERY parameter before the verdict (mirrors
     # `run_station_forecast.py::check_forecast_parameter`'s member-path
@@ -884,6 +896,22 @@ def _build_station_result(
 
     forecasts: list[OperationalForecast] = []
     now = clock()
+    if config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED:
+        refusal = selected_weather_issuance_refusal(
+            dict(group_inputs.source_evidence).get(station_id),
+            issue_time=group_inputs.issue_time,
+            at=now,
+            max_age_hours=config.nwp_max_fallback_age_hours,
+            automatic_issue_timezone=automatic_issue_timezone,
+        )
+        if refusal is not None:
+            return _StationResultOutcome(
+                result=None,
+                rejected=None,
+                issue=GroupMemberInputIssue(
+                    station_id=station_id, reason=GroupMemberInputReason(refusal.value)
+                ),
+            )
     for param, ensemble in ensembles.items():
         flags = all_flags[param]
         qc_status = worst_qc_status(flags)
@@ -997,6 +1025,7 @@ def run_group_forecast(
     unavailable_members: tuple[GroupMemberInputIssue, ...] = (),
     frozen_artifact_id: ArtifactId | None = None,
     state_policy: GroupStatePolicy = GroupStatePolicy.PRESERVE,
+    automatic_issue_timezone: ZoneInfo | None = None,
 ) -> GroupForecastOutcome:
     if (
         any(
@@ -1187,8 +1216,8 @@ def run_group_forecast(
         validate_selected_capture,
     )
 
+    selected_sources = dict(group_inputs.source_evidence)
     if config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED:
-        selected_sources = dict(group_inputs.source_evidence)
         validate_selected_capture(
             evidence,
             sources={
@@ -1198,9 +1227,48 @@ def run_group_forecast(
             issue_time=group_inputs.issue_time,
             max_bytes=config.operational_weather.max_evidence_bytes,
         )
+        cycles = {
+            source.weather_use.future.receipt.cycle_time
+            for source in selected_sources.values()
+            if isinstance(source.weather_use, WeatherUse)
+            and isinstance(source.weather_use.future, FutureWeatherUse)
+        }
+        if len(cycles) > 1:
+            raise ConfigurationError("selected group weather cannot mix source cycles")
 
     try:
         artifact = model.deserialize_artifact(artifact_bytes)
+        if (
+            config.operational_weather.route
+            is OperationalPastWeatherRoute.RECAP_COMBINED
+        ):
+            checked_at = clock()
+            refusals = [
+                GroupMemberInputIssue(
+                    station_id=sid, reason=GroupMemberInputReason(refusal.value)
+                )
+                for sid in group_inputs.station_ids
+                if (
+                    refusal := selected_weather_issuance_refusal(
+                        selected_sources.get(sid),
+                        issue_time=group_inputs.issue_time,
+                        at=checked_at,
+                        max_age_hours=config.nwp_max_fallback_age_hours,
+                        automatic_issue_timezone=automatic_issue_timezone,
+                    )
+                )
+                is not None
+            ]
+            if refusals:
+                if len(refusals) != len(group_inputs.station_ids):
+                    raise ConfigurationError(
+                        "selected group issuance facts are inconsistent"
+                    )
+                return GroupForecastOutcome(
+                    results={},
+                    expected_station_ids=expected,
+                    unavailable_members=tuple([*unavailable, *refusals]),
+                )
         batch_result = model.predict_batch(artifact, group_inputs, rng)
     except ModelPredictionFailure as exc:
         log.warning(
@@ -1334,6 +1402,7 @@ def run_group_forecast(
                 config=config,
                 clock=clock,
                 id_gen=id_gen,
+                automatic_issue_timezone=automatic_issue_timezone,
             )
         except Exception as exc:
             raise GroupForecastError(
@@ -1341,6 +1410,8 @@ def run_group_forecast(
                 rejected=tuple(rejected_payloads),
                 original=exc,
             ) from exc
+        if outcome.issue is not None:
+            unavailable.append(outcome.issue)
         if outcome.rejected is not None:
             rejected_payloads.append(outcome.rejected)
         if outcome.result is not None:

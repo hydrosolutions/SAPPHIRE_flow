@@ -729,3 +729,69 @@ class TestForecastJobVariables:
         from sapphire_flow.cli.register_deployments import forecast_job_variables
 
         assert forecast_job_variables({}, None) == {}
+
+
+class TestForecastDeploymentRegistration:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("existing", [False, True])
+    async def test_actual_adeploy_kwargs_preserve_operator_parameters(
+        self, existing: bool
+    ) -> None:
+        from copy import deepcopy
+        from types import SimpleNamespace
+
+        from prefect.exceptions import ObjectNotFound
+
+        from sapphire_flow.cli.register_deployments import ForecastConfigOverlay
+
+        parameters = {
+            "data_use": "provisional_rating",
+            "cycle_time": None,
+            "station_ids": ["synthetic"],
+        }
+        variables = {"env": {"OTHER": "preserved"}, "working_dir": "/app"}
+        original = deepcopy((parameters, variables))
+        client = AsyncMock()
+        if existing:
+            client.read_deployment_by_name.return_value = SimpleNamespace(
+                parameters=parameters,
+                job_variables=variables,
+            )
+        else:
+            client.read_deployment_by_name.side_effect = ObjectNotFound(
+                http_exc=RuntimeError("absent")
+            )
+        sourced = MagicMock(adeploy=AsyncMock(return_value="deployment-id"))
+        flow = MagicMock(afrom_source=AsyncMock(return_value=sourced))
+        flow.name = "run-forecast-cycle"
+        module = SimpleNamespace(run_forecast_cycle_flow=flow)
+        overlay = ForecastConfigOverlay.parse(
+            "/app/config/overlays/nepal-daily-weather.toml,/app/config/overlays/nhs-provider.toml"
+        )
+        spec = DeploymentSpec(
+            flow_module="sapphire_flow.flows.run_forecast_cycle",
+            flow_attr="run_forecast_cycle_flow",
+            deployment_name="forecast-cycle",
+            cron="15 0 * * *",
+            concurrency_limit=1,
+            forecast_config_overlay=overlay,
+        )
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch("importlib.import_module", return_value=module),
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            await _register_one(spec)
+            await _register_one(spec)
+        for call in sourced.adeploy.await_args_list:
+            assert call.kwargs["parameters"] == (parameters if existing else {})
+            assert call.kwargs["cron"] == "15 0 * * *"
+            assert call.kwargs["concurrency_limit"] == 1
+            assert (
+                call.kwargs["job_variables"]["env"]["SAPPHIRE_FORECAST_CONFIG_OVERLAY"]
+                == overlay.environment_value()
+            )
+            if existing:
+                assert call.kwargs["job_variables"]["env"]["OTHER"] == "preserved"
+        assert (parameters, variables) == original

@@ -6715,6 +6715,42 @@ deserializing or predicting. The guard binds its hash, manifest, station scope
 and strictly restored WeatherUse to the immutable assembly facts. Decoding uses
 a bounded decompressor; legacy snapshots retain their existing read path.
 
+
+#### Actual issuance policy
+
+`OperationalWeatherConfig.automatic_issue_timezone: ZoneInfo | None` is an
+explicit calendar opt-in. The TOML boundary accepts an IANA name. Only the selected
+`recap_combined` route with an omitted `cycle_time` uses it: issue time is UTC
+midnight for the execution date. The issue and actual local dates must agree.
+An explicit manual issue keeps its existing meaning and bypasses only this day
+rule. Defaults and the stored-reanalysis route keep their existing behavior.
+Entry-day refusal uses the existing fatal freshness boundary: one CRITICAL
+zero-output record for STANDARD automatic work, none for provisional or explicit
+replay. The original exception is re-raised before provider work.
+
+`selected_weather_issuance_refusal` checks the immutable consumed future cycle
+against actual execution time immediately before prediction and again after QC
+and post-processing, before successful forecast construction. The lower age bound
+uses `DeploymentConfig.nwp_max_fallback_age_hours` with exact, inclusive timedeltas;
+future cycles are refused. One clock sample is checked and used for every
+parameter's `created_at`/`updated_at`. This is a creation-time guarantee, not a
+commit-time guarantee. It never changes issue/cycle/receipt/`WeatherUse.used_at`.
+
+`WEATHER_EXPIRED` and `ISSUE_DAY_MISMATCH` are anticipated assignment/member
+refusals. A uniformly refused group never predicts and returns `failure=None`.
+A creation-time refusal preserves earlier successes and QC rejections. Internal
+station outcomes contain exactly one of result, rejection or input issue. QC
+rejections remain diagnostics even if the clock crosses the boundary during QC.
+Flow errors retain the precise refusal. Daily completion maps only these two new
+reasons to existing `INPUT_EXCLUDED`/`INPUTS_UNAVAILABLE`; no-output claims finish
+`INCOMPLETE`. The frozen claim issue is forwarded, never replaced by a flow tick.
+
+The execution hash omits only the nested calendar key when it is `None`; the
+configured IANA key participates in identity. Existing default claims remain
+compatible. The native prediction guarantee includes provisional CMAL output;
+STANDARD derived combinations are outside it. Provisional dispatch skips both
+combination paths. No FI, output schema, evidence version or API contract changes.
+
 As-used facts include each required leg's terminal outcome, paired-snapshot
 retrieval time and refresh completion time. Freshness must agree with those
 immutable outcomes; readback never looks at the current mutable cache.

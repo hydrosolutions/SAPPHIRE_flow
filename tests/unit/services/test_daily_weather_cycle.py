@@ -237,3 +237,66 @@ def test_excess_lookup_results_fail_closed(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(kwargs["store"], "fetch_received_cycles", excessive)
     with pytest.raises(StoreError, match="cadence bound"):
         assemble_scheduled_daily_weather(**kwargs)
+
+
+@pytest.mark.parametrize("epsilon", [timedelta(0), timedelta(microseconds=1)])
+def test_selected_weather_actual_36_hour_boundary(epsilon: timedelta) -> None:
+    import polars as pl
+
+    from sapphire_flow.services.daily_weather_cycle import DailyWeatherAssembly
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
+    from sapphire_flow.types.datetime import ensure_utc
+    from tests.fakes.fake_stores import FakeWeatherForecastStore
+    from tests.fakes.operational_weather import ISSUE
+    from tests.unit.services.test_selected_weather_evidence import source_evidence
+
+    source = source_evidence()
+    assert source.weather_use is not None
+    use = source.weather_use
+    selected = {
+        use.station_id: AssignmentWeatherInputs(
+            past_dynamic=pl.DataFrame(),
+            future_dynamic=pl.DataFrame(),
+            use=use,
+            future_records=(),
+        )
+    }
+    calls: list[UtcDatetime] = []
+    assembly = GroupInputAssembly(
+        expected_station_ids=(use.station_id,),
+        inputs=None,
+        metadata_by_station={},
+        unavailable_members=(),
+    )
+
+    def assemble(cycle: UtcDatetime) -> GroupInputAssembly:
+        calls.append(cycle)
+        return assembly
+
+    def run() -> DailyWeatherAssembly:
+        return assemble_scheduled_daily_weather(
+            assemble=assemble,
+            store=FakeWeatherForecastStore(),
+            station_ids=frozenset({use.station_id}),
+            sources=frozenset({"ifs_ecmwf"}),
+            future_features=frozenset({"precipitation"}),
+            cycle_time=ISSUE,
+            cycle_source=NwpCycleSource.PRIMARY,
+            reference_time=ISSUE,
+            issue_time=ISSUE,
+            now=ensure_utc(ISSUE + timedelta(hours=36) + epsilon),
+            max_age_hours=36,
+            selected_weather=selected,
+        )
+
+    if epsilon:
+        with pytest.raises(StoreError, match="selected daily weather.*age bound"):
+            run()
+        assert calls == []
+    else:
+        result = run()
+        assert result.assembly is assembly
+        assert result.reference_time == ISSUE
+        assert result.source is NwpCycleSource.PRIMARY
+        assert calls == [ISSUE]
+    assert selected[use.station_id].use is use

@@ -298,8 +298,11 @@ async def _register_one(spec: DeploymentSpec) -> None:
                 )
             except ObjectNotFound:
                 variables: object = {}
+                parameters: dict[str, object] = {}
             else:
                 variables = existing.job_variables
+                parameters = dict(existing.parameters)
+        deploy_kwargs["parameters"] = parameters
         deploy_kwargs["job_variables"] = forecast_job_variables(
             variables, spec.forecast_config_overlay
         )

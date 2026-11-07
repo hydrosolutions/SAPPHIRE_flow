@@ -602,3 +602,48 @@ scheduling, or model readiness. These remain separate existing-flow gates.
 Named-scope history uses the standard `ingest-operational-era5-history` deployment,
 not a local wrapper. See [admission and submission](nepal-station-onboarding-runbook.md#native-named-scope-era5-history)
 for worker config, credentials, endpoint, batch semantics and coverage limits.
+
+## Opt-in daily operational-weather issuance
+
+`config/overlays/nepal-daily-weather.toml` sets the two existing age limits to
+36 hours and sets `operational_weather.automatic_issue_timezone` to
+`Asia/Kathmandu`. It does not enable the selected weather route, station/model
+admission or a schedule. The default execution/selection limits remain 12/18
+hours. Provider/archive data must still cover the full shifted ten-day forecast
+and all declared past inputs. A previous 00 UTC cycle can need data through
++264 hours; a 72-hour cycle cannot meet this requirement.
+
+Activation needs separate owner/operator approval. Keep this policy in the
+forecast worker's ordered `SAPPHIRE_CONFIG_OVERLAY` chain. Include the identical
+prefix in `SAPPHIRE_FORECAST_CONFIG_OVERLAY`, followed by the reviewed
+`nhs-provider.toml` target. That provider file stays river-stations-only. A stale
+selection prefix is refused, not silently loaded with old limits. Check both
+resolved limits in `selected_weather.issuance_policy` before accepting results.
+
+For an automatic selected run, omit `cycle_time`. The configured calendar chooses
+UTC midnight and refuses a local-date mismatch at entry, before prediction and
+at actual forecast creation. Nepal midnight is 18:15 UTC: a delayed tick after
+that boundary must not invent a new or backdated issue. An explicit manual issue
+bypasses only the calendar rule, never the actual-age limit. Stored weather times
+and receipt identities are never relabelled. An entry-day refusal emits one
+CRITICAL zero-output freshness record for STANDARD automatic work; provisional
+and explicit replay retain their existing no-heartbeat eligibility. A batch may
+finish with fewer
+outputs when weather expires during model/QC work; prior good forecasts and QC
+rejection diagnostics remain intact. Check explicit errors, not health alone.
+
+The registrar preserves existing forecast-cycle parameters and unrelated job
+variables. Before enabling recurrence, remove a stale explicit scheduled
+`cycle_time`, set the approved `data_use`, and verify the registered parameters
+and schedule after registration/restart. `SCHEDULE_FORECAST_CYCLE` remains the
+persistent cron authority; new deployments receive no invented parameters.
+
+Start with an approved 00:15 UTC schedule only if measured pickup plus runtime
+plus margin fits 60 minutes, before 07:00 NST (01:15 UTC). An earlier supported
+00:05 UTC schedule needs operator approval and a measured fit within 70 minutes.
+If neither fits, report infeasibility; do not shorten horizons, mix cycles or
+weaken data/QC gates. Offline tests do not establish provider availability or
+staging deadline performance. The manual usable-forecast milestone is independent
+of recurrence. Acceptance still needs at least ten usable API forecasts on each
+of two consecutive automatically scheduled Nepal days, with truthful issue,
+creation and weather times. This patch does not authorize host activation.

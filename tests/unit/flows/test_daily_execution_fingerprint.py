@@ -72,3 +72,59 @@ class TestExecutionFingerprint:
         assert execution_configuration_sha256(config) == execution_configuration_sha256(
             changed
         )
+
+    def test_selected_default_preserves_reference_execution_hash(self) -> None:
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.config.operational_weather import (
+            OperationalPastWeatherRoute,
+            OperationalWeatherConfig,
+        )
+
+        config = DeploymentConfig(
+            max_retention_days=600,
+            operational_weather=OperationalWeatherConfig(
+                route=OperationalPastWeatherRoute.RECAP_COMBINED
+            ),
+        )
+        # Reference projection predates the opt-in calendar key.
+        assert execution_configuration_sha256(config) == (
+            "5552754bc20010529e6f9c8c8ee80cdaab5b3e19c0f2fd6d9143a4382aff58fb"
+        )
+        configured = config.model_copy(
+            update={
+                "operational_weather": OperationalWeatherConfig.model_validate(
+                    {
+                        "route": "recap_combined",
+                        "automatic_issue_timezone": "Asia/Kathmandu",
+                    }
+                )
+            }
+        )
+        assert execution_configuration_sha256(
+            configured
+        ) != execution_configuration_sha256(config)
+        other_zone = configured.model_copy(
+            update={
+                "operational_weather": OperationalWeatherConfig.model_validate(
+                    {"route": "recap_combined", "automatic_issue_timezone": "UTC"}
+                )
+            }
+        )
+        assert execution_configuration_sha256(
+            other_zone
+        ) != execution_configuration_sha256(configured)
+
+    def test_inactive_route_calendar_does_not_change_execution_hash(self) -> None:
+        from sapphire_flow.config.operational_weather import OperationalWeatherConfig
+
+        config = _make_config()
+        changed = config.model_copy(
+            update={
+                "operational_weather": OperationalWeatherConfig.model_validate(
+                    {"automatic_issue_timezone": "Asia/Kathmandu"}
+                )
+            }
+        )
+        assert execution_configuration_sha256(config) == execution_configuration_sha256(
+            changed
+        )

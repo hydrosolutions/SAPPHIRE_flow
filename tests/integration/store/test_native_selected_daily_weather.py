@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     import random
 
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.flows.run_forecast_cycle import ForecastCycleResult
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.model import GroupModelInputs
     from tests.fakes.fake_stores import FakeStationGroupStore
@@ -77,15 +78,57 @@ class ScheduledWeatherModel(FakeGroupForecastModel):
 
 
 @pytest.mark.parametrize(
-    "failure_mode", ["none", "empty", "capture", "past_stale", "future_stale"]
+    "failure_mode",
+    [
+        "none",
+        "empty",
+        "capture",
+        "past_stale",
+        "future_stale",
+        "automatic_repeat",
+        "calendar_refused",
+        "creation_calendar_refused",
+        "mixed_calendar",
+    ],
 )
 def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
     isolated_committed_db_engine: sa.Engine,
     monkeypatch: pytest.MonkeyPatch,
-    failure_mode: Literal["none", "empty", "capture", "past_stale", "future_stale"],
+    failure_mode: Literal[
+        "none",
+        "empty",
+        "capture",
+        "past_stale",
+        "future_stale",
+        "automatic_repeat",
+        "calendar_refused",
+        "creation_calendar_refused",
+        "mixed_calendar",
+    ],
 ) -> None:
     engine = isolated_committed_db_engine
     model = ScheduledWeatherModel(empty_first=failure_mode == "empty")
+    actual_time = ISSUE
+    claims_before_guard = []
+    calendar_refusal = failure_mode in ("calendar_refused", "creation_calendar_refused")
+    if calendar_refusal:
+        method_name = (
+            "deserialize_artifact"
+            if failure_mode == "calendar_refused"
+            else "predict_batch"
+        )
+        original_method = getattr(model, method_name)
+
+        def advance_day(*args: object, **kwargs: object) -> object:
+            nonlocal actual_time
+            result = original_method(*args, **kwargs)
+            snapshot = ledger.read_day(keys[0])
+            assert snapshot.latest is not None
+            claims_before_guard.append(snapshot.latest.claim)
+            actual_time = ISSUE + timedelta(days=1)
+            return result
+
+        monkeypatch.setattr(model, method_name, advance_day)
     if failure_mode == "capture":
         import importlib
 
@@ -104,6 +147,27 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
 
         monkeypatch.setattr(runner, "capture_group_evidence", first_capture_fails)
     sid = StationId(uuid4())
+    mixed_calendar = failure_mode == "mixed_calendar"
+    if mixed_calendar:
+        from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
+
+        original_check = ForecastOutputQualityChecker.check
+
+        def advance_second_member(
+            self: ForecastOutputQualityChecker,
+            ensemble: ForecastEnsemble,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            nonlocal actual_time
+            flags = original_check(self, ensemble, *args, **kwargs)
+            if ensemble.station_id != sid:
+                actual_time = ISSUE + timedelta(days=1)
+            return flags
+
+        monkeypatch.setattr(
+            ForecastOutputQualityChecker, "check", advance_second_member
+        )
     ledger = PgDailyForecastStore(engine.begin)
     scheduled_calls: list[ScheduledDailyRun] = []
     keys: list[DailyClaimKey] = []
@@ -143,9 +207,12 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
             )
             artifact = stores["artifact_store"].fetch_artifact_record(artifact_id)
             assert station is not None and artifact is not None
-            PgStationStore(conn).store_station(
-                replace(station, basin_id=None, code=f"weather-{sid}")
-            )
+            for member_id in group.station_ids:
+                member_station = stores["station_store"].fetch_station(member_id)
+                assert member_station is not None
+                PgStationStore(conn).store_station(
+                    replace(member_station, basin_id=None, code=f"weather-{member_id}")
+                )
             PgStationGroupStore(conn, transaction_factory=engine.begin).store_group(
                 group
             )
@@ -212,6 +279,23 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
                     engine.begin
                 ),
             }
+            if failure_mode == "automatic_repeat" or calendar_refusal or mixed_calendar:
+                from zoneinfo import ZoneInfo
+
+                options["config"] = config.model_copy(
+                    update={
+                        "daily_evaluation": daily,
+                        "nwp_max_fallback_age_hours": 36.0,
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu"),
+                            }
+                        ),
+                    }
+                )
+                options["cycle_time"] = None
+                if calendar_refusal or mixed_calendar:
+                    options["clock"] = lambda: actual_time
             if stale_leg is not None:
                 deferred_options.update(options)
                 return {
@@ -224,15 +308,42 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
             stores["forecast_store"] = committed_store
             return deferred_options
 
+        def verify_refusal(
+            result: ForecastCycleResult, stores: dict[str, object]
+        ) -> None:
+            assert result.forecasts_stored == 0
+            assert any("issue_day_mismatch" in error for error in result.errors)
+            assert not [
+                forecast
+                for forecast in stores["forecast_store"].fetch_forecasts_for_cycle(
+                    ISSUE
+                )
+                if forecast.station_id == sid
+            ]
+
+        def verify_mixed(
+            result: ForecastCycleResult, stores: dict[str, object]
+        ) -> None:
+            assert result.forecasts_stored == 1, result.errors
+            assert any("issue_day_mismatch" in error for error in result.errors)
+
         forecasts = _run_selected_cycle(
             monkeypatch,
             group_run=True,
             capture_fault="none",
             model_id=ModelId("cmal_small"),
             first_station_id=sid,
+            station_count=2 if mixed_calendar else 1,
             model_override=model,
             configure_cycle=configure,
-            execution_runs=2 if stale_leg is None else 1,
+            execution_runs=2
+            if stale_leg is None and not calendar_refusal and not mixed_calendar
+            else 1,
+            verify_cycle=verify_refusal
+            if calendar_refusal
+            else verify_mixed
+            if mixed_calendar
+            else None,
             configure_refresh=enable_scheduled if stale_leg is not None else None,
             refresh_case=(
                 "past_unavailable"
@@ -242,6 +353,74 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
                 else "none"
             ),
         )
+        if mixed_calendar:
+            from sapphire_flow.types.daily_forecast_outcome import (
+                DailyMemberReason,
+                DailyMemberState,
+            )
+
+            assert forecasts is not None and len(forecasts) == 1
+            assert forecasts[0].station_id == sid
+            assert forecasts[0].created_at == ISSUE
+            assert forecasts[0].weather_evidence_version == 1
+            assert model.calls == 1
+            day = ledger.read_day(keys[0])
+            assert (
+                day.latest is not None
+                and day.latest.state is DailyAttemptState.COMPLETE
+            )
+            members = {member.station_id: member for member in day.latest.outcomes}
+            assert len(members) == 2
+            assert members[sid].state is DailyMemberState.PRODUCED
+            assert len(members[sid].references) == 1
+            excluded = next(
+                member for member_id, member in members.items() if member_id != sid
+            )
+            assert excluded.state is DailyMemberState.INPUT_EXCLUDED
+            assert excluded.reason is DailyMemberReason.INPUTS_UNAVAILABLE
+            assert excluded.references == ()
+            assert all(
+                member.provenance.nwp_reference_time == ISSUE
+                for member in members.values()
+            )
+            stored = (
+                conn.execute(
+                    sa.text(
+                        "SELECT station_id FROM forecasts "
+                        "WHERE station_id IN (:good, :excluded)"
+                    ),
+                    {"good": sid, "excluded": excluded.station_id},
+                )
+                .scalars()
+                .all()
+            )
+            assert stored == [sid]
+            return
+        if calendar_refusal:
+            assert forecasts == []
+            assert model.calls == (0 if failure_mode == "calendar_refused" else 1)
+            day = ledger.read_day(keys[0])
+            assert day.authoritative is not None
+            assert day.authoritative.state is DailyAttemptState.INCOMPLETE
+            assert (
+                day.latest is not None
+                and day.latest.state is DailyAttemptState.INCOMPLETE
+            )
+            assert day.latest.claim.key == keys[0]
+            assert day.latest.claim.key.context.issue_time == ISSUE
+            assert day.latest.claim == claims_before_guard[0]
+            assert day.latest.failure_reason is None
+            from sapphire_flow.types.daily_forecast_outcome import (
+                DailyMemberReason,
+                DailyMemberState,
+            )
+
+            assert all(
+                member.state is DailyMemberState.INPUT_EXCLUDED
+                and member.reason is DailyMemberReason.INPUTS_UNAVAILABLE
+                for member in day.latest.outcomes
+            )
+            return
         assert forecasts is not None and len(forecasts) == 1
         assert model.calls == (
             2 if failure_mode == "empty" or stale_leg is not None else 1
@@ -267,7 +446,7 @@ def test_selected_scheduled_daily_commits_and_retries_with_immutable_weather(
                     hours=1
                     if stale_leg is not None
                     else 6
-                    if failure_mode != "none"
+                    if failure_mode not in ("none", "automatic_repeat")
                     else 0
                 )
             ).isoformat()

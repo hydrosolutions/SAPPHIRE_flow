@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -2939,3 +2939,27 @@ class TestNativeRatingGroupPurpose:
         if not failed:
             assert outcome.results[sid].new_state is None
             assert result.rating_curve_id is None
+
+
+class TestStationResultExclusivity:
+    @pytest.mark.parametrize("case", ["empty", "conflicting"])
+    def test_invalid_member_outcome_is_rejected(
+        self, case: Literal["empty", "conflicting"]
+    ) -> None:
+        from sapphire_flow.types.group_input import (
+            GroupMemberInputIssue,
+            GroupMemberInputReason,
+        )
+        from tests.unit.flows.test_run_forecast_cycle_rejected_capture import _payload
+
+        payload = _payload() if case == "conflicting" else None
+        issue = (
+            GroupMemberInputIssue(
+                station_id=payload.station_id,
+                reason=GroupMemberInputReason.WEATHER_EXPIRED,
+            )
+            if payload is not None
+            else None
+        )
+        with pytest.raises(ValueError, match="exactly one outcome"):
+            service._StationResultOutcome(result=None, rejected=payload, issue=issue)
