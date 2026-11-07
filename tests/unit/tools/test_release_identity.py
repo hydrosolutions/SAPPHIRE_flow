@@ -414,3 +414,130 @@ class TestApprovedReceiptBinding:
             "sha256:" + "a" * 64, "1.2.3", "b" * 40, variant="aquacast"
         )
         assert result.variant == "aquacast"
+
+
+class TestSnapshotBoundary:
+    @pytest.mark.parametrize(
+        "record",
+        [
+            "bad\trefs/heads/main",
+            "a" * 40 + "\trefs/tags/v1.0.0:refs/heads/main",
+            "a" * 40 + "\trefs/tags/v1.0.0\nINJECT",
+            "a" * 40 + "\trefs/tags/v1.0.0^{}",
+            "a" * 40 + "\trefs/tags/v1.0.0/../other",
+            "a" * 40 + "\trefs/heads/other",
+            "a" * 40 + "\trefs/tags/v1.0.0.lock",
+        ],
+    )
+    def test_untrusted_ref_or_oid_refuses_before_fetch(
+        self, monkeypatch: pytest.MonkeyPatch, record: str
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def listing(args: list[str], **kwargs) -> str:
+            calls.append(args)
+            return record
+
+        monkeypatch.setattr(release_identity, "git", listing)
+        with pytest.raises(release_identity.ReleaseIdentityError):
+            release_identity.fetch_remote_state()
+        assert len(calls) == 1
+        assert calls[0][0] == "ls-remote"
+
+
+class TestSnapshotProcessCancellation:
+    def test_real_timeout_kills_transport_descendants_and_reaps_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+        import time
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fifo = tmp_path / "descendant.pipe"
+        os.mkfifo(fifo)
+        reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        script = bin_dir / "git"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "import os, signal\n"
+            "if os.fork() == 0:\n"
+            f"    fd = os.open({str(fifo)!r}, os.O_WRONLY)\n"
+            "    os.write(fd, b'ready')\n"
+            "    signal.pause()\n"
+            "else:\n"
+            "    signal.pause()\n"
+        )
+        script.chmod(0o755)
+        monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+        native_popen = subprocess.Popen
+        children: list[subprocess.Popen] = []
+
+        def observed(*args, **kwargs):
+            child = native_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        monkeypatch.setattr(release_identity.subprocess, "Popen", observed)
+        try:
+            with pytest.raises(
+                release_identity.ReleaseIdentityError,
+                match="snapshot deadline exceeded",
+            ):
+                release_identity.git(
+                    ["ls-remote", "origin"], deadline=time.monotonic() + 5.0
+                )
+            assert children[0].returncode == -release_identity.signal.SIGKILL
+            assert os.read(reader, 1024) == b"ready"
+            # Nonblocking EOF proves no descendant still holds the pipe's write end.
+            assert os.read(reader, 1024) == b""
+        finally:
+            os.close(reader)
+
+    def test_stream_close_errors_cannot_bypass_reap_or_replace_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        events: list[str] = []
+
+        class BrokenStream:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def close(self) -> None:
+                events.append(self.name)
+                raise BrokenPipeError("close failure")
+
+        class Child:
+            pid = 424242
+            stdin = BrokenStream("stdin")
+            stdout = BrokenStream("stdout")
+            stderr = BrokenStream("stderr")
+
+            def communicate(
+                self, data: str | None, *, timeout: float
+            ) -> tuple[str, str]:
+                raise subprocess.TimeoutExpired("git", timeout)
+
+            def wait(self, *, timeout: float) -> int:
+                assert timeout == 1
+                events.append("reap")
+                return -release_identity.signal.SIGKILL
+
+        def killed(pid: int, sig: int) -> None:
+            assert (pid, sig) == (424242, release_identity.signal.SIGKILL)
+            events.append("kill")
+
+        monkeypatch.setattr(
+            release_identity.subprocess, "Popen", lambda *args, **kwargs: Child()
+        )
+        monkeypatch.setattr(release_identity.os, "killpg", killed)
+        monkeypatch.setattr(release_identity.time, "monotonic", lambda: 100.0)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError,
+            match="remote snapshot deadline exceeded",
+        ) as caught:
+            release_identity.git(["ls-remote", "origin"], deadline=101.0)
+        assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
+        assert events == ["kill", "stdin", "stdout", "stderr", "reap"]

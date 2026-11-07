@@ -213,12 +213,15 @@ def _install_origin_transport(monkeypatch: pytest.MonkeyPatch, bare: Path) -> No
         cwd: Path | None = None,
         input_text: str | None = None,
         harden: bool = False,
+        deadline: float | None = None,
     ) -> str:
         if args and args[0] in {"ls-remote", "fetch", "push"}:
             mapped = [bare.as_uri() if arg == "origin" else arg for arg in args]
         else:
             mapped = args
-        return original_git(mapped, cwd=cwd, input_text=input_text, harden=harden)
+        return original_git(
+            mapped, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+        )
 
     monkeypatch.setattr(release_identity, "git", transported_git)
 
@@ -501,18 +504,25 @@ class TestReleaseIdentityNativeSafetyMatrix:
             cwd: Path | None = None,
             input_text: str | None = None,
             harden: bool = False,
+            deadline: float | None = None,
         ) -> str:
             nonlocal failed_once
             if args and args[0] == "push" and not failed_once:
                 failed_once = True
                 output = original_git(
-                    args, cwd=cwd, input_text=input_text, harden=harden
+                    args,
+                    cwd=cwd,
+                    input_text=input_text,
+                    harden=harden,
+                    deadline=deadline,
                 )
                 _git(bare, "update-ref", "refs/heads/main", ceiling)
                 raise release_identity.ReleaseIdentityError(
                     f"simulated lost response after push: {output}"
                 )
-            return original_git(args, cwd=cwd, input_text=input_text, harden=harden)
+            return original_git(
+                args, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+            )
 
         monkeypatch.setattr(release_identity, "git", failing_after_success)
 
@@ -538,17 +548,24 @@ class TestReleaseIdentityNativeSafetyMatrix:
             cwd: Path | None = None,
             input_text: str | None = None,
             harden: bool = False,
+            deadline: float | None = None,
         ) -> str:
             nonlocal failed_once
             if args and args[0] == "push" and not failed_once:
                 failed_once = True
                 output = original_git(
-                    args, cwd=cwd, input_text=input_text, harden=harden
+                    args,
+                    cwd=cwd,
+                    input_text=input_text,
+                    harden=harden,
+                    deadline=deadline,
                 )
                 raise release_identity.ReleaseIdentityError(
                     f"simulated lost response after push: {output}"
                 )
-            return original_git(args, cwd=cwd, input_text=input_text, harden=harden)
+            return original_git(
+                args, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+            )
 
         monkeypatch.setattr(release_identity, "git", lost_response_after_success)
 
@@ -577,6 +594,7 @@ class TestReleaseIdentityNativeSafetyMatrix:
             cwd: Path | None = None,
             input_text: str | None = None,
             harden: bool = False,
+            deadline: float | None = None,
         ) -> str:
             nonlocal loser_push
             if args and args[0] == "push" and loser_push is None:
@@ -591,7 +609,9 @@ class TestReleaseIdentityNativeSafetyMatrix:
                         f"{winner_token}:{release_identity.STATE_REF}",
                     ]
                 )
-            return original_git(args, cwd=cwd, input_text=input_text, harden=harden)
+            return original_git(
+                args, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+            )
 
         monkeypatch.setattr(release_identity, "git", publish_winner_then_loser)
 
@@ -627,6 +647,7 @@ class TestReleaseIdentityNativeSafetyMatrix:
             cwd: Path | None = None,
             input_text: str | None = None,
             harden: bool = False,
+            deadline: float | None = None,
         ) -> str:
             nonlocal loser_push
             if args and args[0] == "push" and loser_push is None:
@@ -641,7 +662,9 @@ class TestReleaseIdentityNativeSafetyMatrix:
                         f"{winner_token}:{release_identity.STATE_REF}",
                     ]
                 )
-            return original_git(args, cwd=cwd, input_text=input_text, harden=harden)
+            return original_git(
+                args, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+            )
 
         monkeypatch.setattr(release_identity, "git", publish_same_pair_then_loser)
 
@@ -826,6 +849,7 @@ class TestReleaseIdentityNativeSafetyMatrix:
             cwd: Path | None = None,
             input_text: str | None = None,
             harden: bool = False,
+            deadline: float | None = None,
         ) -> str:
             nonlocal loser_push
             if args and args[0] == "push" and loser_push is None:
@@ -840,7 +864,9 @@ class TestReleaseIdentityNativeSafetyMatrix:
                         f"{winner_token}:{release_identity.STATE_REF}",
                     ]
                 )
-            return original_git(args, cwd=cwd, input_text=input_text, harden=harden)
+            return original_git(
+                args, cwd=cwd, input_text=input_text, harden=harden, deadline=deadline
+            )
 
         monkeypatch.setattr(release_identity, "git", publish_winner_then_loser)
 
@@ -1181,3 +1207,260 @@ class TestReleaseTargetPublication:
         _patch_local_publication(monkeypatch)
         assert _publish("0.1.1", source, bootstrap=True) == 0
         assert "refs/tags/v0.1.1" in _git(work, "ls-remote", "origin")
+
+
+class TestFreshBatchedSnapshot:
+    def test_fetches_in_bounded_chunks_with_two_complete_listings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare, work, ceiling, source, _ = _make_repo(tmp_path)
+        for patch in range(1, 260):
+            _git(bare, "update-ref", f"refs/tags/v0.0.{patch}", ceiling)
+        monkeypatch.chdir(work)
+        original = release_identity.git
+        calls: list[list[str]] = []
+
+        def observed(args: list[str], **kwargs) -> str:
+            calls.append(args)
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", observed)
+        main, state, tags = release_identity.fetch_remote_state()
+        assert (main, state, len(tags)) == (source, None, 260)
+        fetches = [args for args in calls if args[0] == "fetch"]
+        assert len(fetches) == 3
+        assert all(len(args[3:]) <= 128 for args in fetches)
+        assert [args for args in calls if args[0] == "ls-remote"] == [
+            [
+                "ls-remote",
+                "origin",
+                "refs/heads/main",
+                release_identity.STATE_REF,
+                "refs/tags/v*",
+            ]
+        ] * 2
+
+    @pytest.mark.parametrize(
+        "change",
+        ["main", "state-add", "tag-add", "tag-delete", "tag-move", "malformed-add"],
+    )
+    def test_whole_remote_map_change_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+    ) -> None:
+        bare, work, ceiling, source, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        original = release_identity.git
+        changed = False
+
+        def racing(args: list[str], **kwargs) -> str:
+            nonlocal changed
+            result = original(args, **kwargs)
+            if args[0] == "fetch" and not changed:
+                changed = True
+                match change:
+                    case "main":
+                        _git(bare, "update-ref", "refs/heads/main", ceiling)
+                    case "state-add":
+                        _git(bare, "update-ref", release_identity.STATE_REF, source)
+                    case "tag-add":
+                        _git(bare, "update-ref", "refs/tags/v0.2.0", source)
+                    case "tag-delete":
+                        _git(bare, "update-ref", "-d", "refs/tags/v0.1.0")
+                    case "tag-move":
+                        _git(bare, "update-ref", "refs/tags/v0.1.0", source)
+                    case "malformed-add":
+                        _git(bare, "update-ref", "refs/tags/vnot-a-version", source)
+            return result
+
+        monkeypatch.setattr(release_identity, "git", racing)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="ref map changed"
+        ):
+            release_identity.fetch_remote_state()
+
+    def test_partial_failed_fetch_never_uses_stale_private_refs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        release_identity.fetch_remote_state()
+        original = release_identity.git
+
+        def partial(args: list[str], **kwargs) -> str:
+            if args[0] == "fetch":
+                original(args[:5], **kwargs)
+                raise release_identity.ReleaseIdentityError("partial fetch failed")
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", partial)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="partial fetch failed"
+        ):
+            release_identity.fetch_remote_state()
+
+    def test_deadline_is_shared_across_fetch_and_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        now = [100.0]
+        monkeypatch.setattr(release_identity.time, "monotonic", lambda: now[0])
+        original = release_identity.git
+
+        def advances(args: list[str], **kwargs) -> str:
+            result = original(args, **kwargs)
+            if args[0] == "fetch":
+                now[0] += 600.0
+            return result
+
+        monkeypatch.setattr(release_identity, "git", advances)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="snapshot deadline exceeded"
+        ):
+            release_identity.fetch_remote_state()
+
+    @pytest.mark.parametrize("change", ["delete", "move"])
+    def test_existing_state_change_is_not_hidden_by_fresh_tags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+    ) -> None:
+        bare, work, ceiling, source, _ = _make_repo(tmp_path)
+        _git(bare, "update-ref", release_identity.STATE_REF, source)
+        monkeypatch.chdir(work)
+        original = release_identity.git
+
+        def racing(args: list[str], **kwargs) -> str:
+            result = original(args, **kwargs)
+            if args[0] == "fetch":
+                if change == "delete":
+                    _git(bare, "update-ref", "-d", release_identity.STATE_REF)
+                else:
+                    _git(bare, "update-ref", release_identity.STATE_REF, ceiling)
+            return result
+
+        monkeypatch.setattr(release_identity, "git", racing)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="ref map changed"
+        ):
+            release_identity.fetch_remote_state()
+
+    def test_peeled_listing_must_match_real_local_annotated_object(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare, work, ceiling, source, _ = _make_repo(tmp_path)
+        _git(work, "tag", "-a", "v0.1.1", source, "-m", "legacy")
+        _git(work, "push", "origin", "refs/tags/v0.1.1")
+        monkeypatch.chdir(work)
+        original = release_identity.git
+
+        def wrong_peel(args: list[str], **kwargs) -> str:
+            result = original(args, **kwargs)
+            if args[0] == "ls-remote":
+                return result.replace(
+                    source + "\trefs/tags/v0.1.1^{}", ceiling + "\trefs/tags/v0.1.1^{}"
+                )
+            return result
+
+        monkeypatch.setattr(release_identity, "git", wrong_peel)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="peeled tag disagrees"
+        ):
+            release_identity.fetch_remote_state()
+
+    def test_failed_later_chunk_refuses_successful_earlier_chunk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        monkeypatch.setattr(release_identity, "FETCH_CHUNK_SIZE", 1)
+        original = release_identity.git
+        fetches = 0
+
+        def partial(args: list[str], **kwargs) -> str:
+            nonlocal fetches
+            if args[0] == "fetch":
+                fetches += 1
+                if fetches == 2:
+                    raise release_identity.ReleaseIdentityError("later chunk failed")
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", partial)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="later chunk failed"
+        ):
+            release_identity.fetch_remote_state()
+        assert fetches == 2
+
+    def test_final_listing_uses_remaining_budget_not_new_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, work, _, _, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        original = release_identity.git
+        now = [100.0]
+        listings = 0
+        monkeypatch.setattr(release_identity.time, "monotonic", lambda: now[0])
+
+        def expires(args: list[str], **kwargs) -> str:
+            nonlocal listings
+            if args[0] == "ls-remote":
+                listings += 1
+                if listings == 2:
+                    now[0] = 700.0
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", expires)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="snapshot deadline exceeded"
+        ):
+            release_identity.fetch_remote_state()
+        assert listings == 2
+
+    def test_refspec_byte_budget_chunks_below_count_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare, work, ceiling, _, _ = _make_repo(tmp_path)
+        for patch in range(5):
+            _git(bare, "update-ref", f"refs/tags/v0.0.{patch}", ceiling)
+        monkeypatch.chdir(work)
+        monkeypatch.setattr(release_identity, "FETCH_MAX_REFSPEC_BYTES", 200)
+        original = release_identity.git
+        fetches: list[list[str]] = []
+
+        def observed(args: list[str], **kwargs: object) -> str:
+            if args[0] == "fetch":
+                fetches.append(args[3:])
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", observed)
+        _, _, tags = release_identity.fetch_remote_state()
+        assert len(tags) == 6
+        assert len(fetches) > 1
+        assert sum(len(refspecs) for refspecs in fetches) == 7
+        assert all(len(refspecs) < 128 for refspecs in fetches)
+        assert all(
+            sum(len(refspec.encode("utf-8")) + 1 for refspec in refspecs) <= 200
+            for refspecs in fetches
+        )
+
+    def test_successful_fetch_cannot_qualify_stale_private_oid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare, work, _, source, _ = _make_repo(tmp_path)
+        monkeypatch.chdir(work)
+        assert release_identity.fetch_remote_state()[0] == source
+        new_source = _commit_next(work, "third\n")
+        _git(work, "push", str(bare), "main")
+        original = release_identity.git
+
+        def stale_fetch(args: list[str], **kwargs: object) -> str:
+            if args[0] == "fetch":
+                return ""
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(release_identity, "git", stale_fetch)
+        with pytest.raises(
+            release_identity.ReleaseIdentityError,
+            match="remote ref moved while fetching snapshot",
+        ):
+            release_identity.fetch_remote_state()
+        assert new_source != source

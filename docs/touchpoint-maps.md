@@ -1912,6 +1912,10 @@ Full backups must continue to preserve both forecast classes and protected linea
 Changes to root package versioning, `tools/release_identity.py`, Docker release build args, or release receipts touch packaging, CI/CD, security, Docker Compose, and operator runbooks.
 Verify dynamic SCM version generation, CI no-tag overrides, Docker labels, compose build args for both default and Aquacast images, and credential-free receipt behavior together.
 Do not reintroduce automatic tag publication in GitHub Actions.
+Fresh-ref batching must retain two complete matching remote maps, exact local OID/peel
+checks, state-chain rules and the shared 600-second snapshot deadline. Exercise actual
+transport-group cancellation, partial/stale fetch refusal and descriptor-level timing
+privacy. Ancestry validation remains outside the snapshot budget.
 
 
 ### Bounded private build-report receipt

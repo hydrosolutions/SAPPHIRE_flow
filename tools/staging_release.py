@@ -88,6 +88,7 @@ MARKER_LINES = {
 class Progress:
     phase: Phase
     fd: int | None
+    private_timing_fd: int | None = None
 
     def emit(self, checkpoint: Checkpoint, outcome: MarkerOutcome) -> None:
         line = MARKER_LINES[self.phase, checkpoint, outcome]
@@ -97,10 +98,12 @@ class Progress:
 
     def disable(self) -> None:
         self.fd = None
+        self.private_timing_fd = None
 
 
 @contextlib.contextmanager
 def checkpoint(progress: Progress | None, stage: Checkpoint) -> Iterator[None]:
+    started = time.monotonic()
     if progress is not None:
         progress.emit(stage, MarkerOutcome.ENTER)
     try:
@@ -112,6 +115,21 @@ def checkpoint(progress: Progress | None, stage: Checkpoint) -> Iterator[None]:
     else:
         if progress is not None:
             progress.emit(stage, MarkerOutcome.PASS)
+    finally:
+        if (
+            progress is not None
+            and progress.private_timing_fd is not None
+            and stage
+            in {Checkpoint.REMOTE_RELEASE_SNAPSHOT, Checkpoint.REMOTE_RELEASE_CHECK}
+        ):
+            record = {
+                "checkpoint": stage.value,
+                "elapsed_seconds": time.monotonic() - started,
+            }
+            with contextlib.suppress(OSError):
+                os.write(
+                    progress.private_timing_fd, (json.dumps(record) + "\n").encode()
+                )
 
 
 def approved_binding(env: Mapping[str, str]) -> transfer.ReleaseBinding:
@@ -488,11 +506,15 @@ def verify_release(
 ) -> None:
     binding = require_release(root, env, progress=progress)
     with checkpoint(progress, Checkpoint.PAYLOAD_PREPARATION):
-        _prepare_payload(root, work, env, binding)
+        _prepare_payload(root, work, env, binding, progress)
 
 
 def _prepare_payload(
-    root: Path, work: Path, env: Mapping[str, str], binding: transfer.ReleaseBinding
+    root: Path,
+    work: Path,
+    env: Mapping[str, str],
+    binding: transfer.ReleaseBinding,
+    progress: Progress | None = None,
 ) -> None:
     limits = {
         name: transfer.positive(
@@ -590,7 +612,14 @@ def _prepare_payload(
     if cleanup != verification.Outcome.PASSED:
         results["build-image-and-scan"] = "failed"
     disk_sample(root, work, "after-builder-cleanup")
-    require_release(root, env)
+    private_progress = (
+        Progress(
+            phase=progress.phase, fd=None, private_timing_fd=progress.private_timing_fd
+        )
+        if progress is not None
+        else None
+    )
+    require_release(root, env, progress=private_progress)
     images, expanded, expanded_hash, unpacked_size = (), 0, None, 0
     kind = transfer.PayloadKind.DIAGNOSTIC
     if set(results.values()) == {"passed"}:
@@ -779,6 +808,7 @@ def main() -> int:
             os.dup2(log.fileno(), 1)
             os.dup2(log.fileno(), 2)
             captured = True
+            progress.private_timing_fd = log.fileno()
             setup_complete = True
             progress.emit(Checkpoint.WORK_SETUP, MarkerOutcome.PASS)
             if phase == "verify":

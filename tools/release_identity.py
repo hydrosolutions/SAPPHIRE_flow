@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypeGuard, cast
@@ -218,21 +221,59 @@ def git(
     cwd: Path | None = None,
     input_text: str | None = None,
     harden: bool = False,
+    deadline: float | None = None,
 ) -> str:
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        input=input_text,
-        text=True,
-        capture_output=True,
-        env=_git_env(harden=harden),
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise ReleaseIdentityError(
-            f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+    if deadline is None:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            input=input_text,
+            text=True,
+            capture_output=True,
+            env=_git_env(harden=harden),
+            check=False,
         )
-    return proc.stdout.strip()
+        returncode, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+    else:
+        _snapshot_remaining(deadline)
+        child = subprocess.Popen(
+            ["git", *args],
+            cwd=cwd,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_git_env(harden=harden),
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = child.communicate(
+                input_text, timeout=_snapshot_remaining(deadline)
+            )
+        except BaseException as exc:
+            # Kill the entire transport group, including descendants holding pipes open.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream is not None:
+                    with contextlib.suppress(OSError):
+                        stream.close()
+            try:
+                child.wait(timeout=1)
+            except subprocess.TimeoutExpired as cleanup_error:
+                raise ReleaseIdentityError(
+                    "snapshot transport cleanup timed out"
+                ) from cleanup_error
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise ReleaseIdentityError("remote snapshot deadline exceeded") from exc
+            raise
+        returncode = child.returncode
+        _snapshot_remaining(deadline)
+    if returncode != 0:
+        raise ReleaseIdentityError(
+            f"git {' '.join(args)} failed ({returncode}): {stderr.strip()}"
+        )
+    return stdout.strip()
 
 
 def parse_release_target(raw: bytes) -> Version:
@@ -406,6 +447,54 @@ def validate_destination() -> None:
         raise ReleaseIdentityError("effective push destination is not canonical")
 
 
+SNAPSHOT_SECONDS = 600
+FETCH_CHUNK_SIZE = 128
+FETCH_MAX_REFSPEC_BYTES = 32768
+_SNAPSHOT_REFS = ["refs/heads/main", STATE_REF, "refs/tags/v*"]
+
+
+def _snapshot_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ReleaseIdentityError("remote snapshot deadline exceeded")
+    return remaining
+
+
+def _snapshot_map(deadline: float) -> dict[str, str]:
+    raw = git(["ls-remote", "origin", *_SNAPSHOT_REFS], deadline=deadline)
+    result: dict[str, str] = {}
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            raise ReleaseIdentityError("invalid remote snapshot record")
+        oid, ref = parts
+        require_full_sha(oid)
+        base_ref = ref.removesuffix("^{}")
+        if (
+            ref in result
+            or len(ref) > 4096
+            or (
+                base_ref not in _SNAPSHOT_REFS[:2]
+                and not base_ref.startswith("refs/tags/v")
+            )
+            or (ref != base_ref and not base_ref.startswith("refs/tags/v"))
+            or any(ord(c) <= 32 or ord(c) == 127 or c in "~^:?*[\\" for c in base_ref)
+            or ".." in base_ref
+            or "@{" in base_ref
+            or base_ref.endswith(".")
+            or any(
+                not p or p.startswith(".") or p.endswith(".lock")
+                for p in base_ref.split("/")
+            )
+        ):
+            raise ReleaseIdentityError("invalid remote snapshot ref")
+        result[ref] = oid
+        _snapshot_remaining(deadline)
+    if any(ref.endswith("^{}") and ref[:-3] not in result for ref in result):
+        raise ReleaseIdentityError("remote snapshot has orphan peeled ref")
+    return result
+
+
 def ls_remote(refs: list[str]) -> dict[str, str]:
     lines = git(["ls-remote", "origin", *refs]).splitlines()
     result: dict[str, str] = {}
@@ -426,24 +515,13 @@ def _parse_tag_object(raw: str) -> tuple[str | None, str | None, str | None, str
     return headers.get("object"), headers.get("type"), headers.get("tag"), message
 
 
-def _fetch_ref(remote_ref: str, local_ref: str, expected_oid: str) -> None:
-    git(["fetch", "--no-tags", "origin", f"+{remote_ref}:{local_ref}"])
-    actual = git(["rev-parse", local_ref])
-    if actual != expected_oid:
-        raise ReleaseIdentityError(f"remote ref moved while fetching {remote_ref}")
-
-
 def fetch_remote_state() -> tuple[str, str | None, list[RemoteTag]]:
-    remote = ls_remote(["refs/heads/main", STATE_REF, "refs/tags/v*"])
+    deadline = time.monotonic() + SNAPSHOT_SECONDS
+    remote = _snapshot_map(deadline)
     main = remote.get("refs/heads/main")
     if main is None:
         raise ReleaseIdentityError("remote origin/main is missing")
-    _fetch_ref("refs/heads/main", "refs/sapphire-flow-release-identity/main", main)
     state = remote.get(STATE_REF)
-    if state is not None:
-        _fetch_ref(
-            STATE_REF, "refs/sapphire-flow-release-identity/release-state", state
-        )
     tags_by_name: dict[str, dict[str, str]] = {}
     for ref, oid in remote.items():
         if not ref.startswith("refs/tags/"):
@@ -454,32 +532,63 @@ def fetch_remote_state() -> tuple[str, str | None, list[RemoteTag]]:
             entry["peeled"] = oid
         else:
             entry["object"] = oid
-    tags: list[RemoteTag] = []
-    for name, values in tags_by_name.items():
+    expected = {"refs/sapphire-flow-release-identity/main": ("refs/heads/main", main)}
+    if state is not None:
+        expected["refs/sapphire-flow-release-identity/release-state"] = (
+            STATE_REF,
+            state,
+        )
+    versions: dict[str, Version] = {}
+    for name, values in sorted(tags_by_name.items()):
         try:
-            version = Version.parse_tag(name)
+            versions[name] = Version.parse_tag(name)
         except ReleaseIdentityError:
             continue
-        object_oid = values.get("object")
+        expected[f"refs/sapphire-flow-release-identity/tags/{name}"] = (
+            f"refs/tags/{name}",
+            values["object"],
+        )
+    refspecs = [
+        f"+{remote_ref}:{local_ref}" for local_ref, (remote_ref, _) in expected.items()
+    ]
+    chunk: list[str] = []
+    chunk_bytes = 0
+    for refspec in refspecs:
+        size = len(refspec.encode("utf-8")) + 1
+        if chunk and (
+            len(chunk) >= FETCH_CHUNK_SIZE
+            or chunk_bytes + size > FETCH_MAX_REFSPEC_BYTES
+        ):
+            git(["fetch", "--no-tags", "origin", *chunk], deadline=deadline)
+            chunk, chunk_bytes = [], 0
+        chunk.append(refspec)
+        chunk_bytes += size
+    if chunk:
+        git(["fetch", "--no-tags", "origin", *chunk], deadline=deadline)
+    for local_ref, (_, oid) in expected.items():
+        if git(["rev-parse", local_ref], deadline=deadline) != oid:
+            raise ReleaseIdentityError("remote ref moved while fetching snapshot")
+    for oid in (main, state):
+        if (
+            oid is not None
+            and git(["cat-file", "-t", oid], deadline=deadline) != "commit"
+        ):
+            raise ReleaseIdentityError("remote snapshot head is not a commit")
+    tags: list[RemoteTag] = []
+    for name, version in versions.items():
+        values = tags_by_name[name]
+        object_oid = values["object"]
         peeled_oid = values.get("peeled", object_oid)
-        if object_oid is None or peeled_oid is None:
-            continue
-        local_ref = f"refs/sapphire-flow-release-identity/tags/{name}"
-        _fetch_ref(f"refs/tags/{name}", local_ref, object_oid)
-        second_remote = ls_remote([f"refs/tags/{name}", f"refs/tags/{name}^{{}}"])
-        if second_remote.get(f"refs/tags/{name}") != object_oid:
-            raise ReleaseIdentityError(f"remote tag moved while fetching {name}")
-        second_peeled = second_remote.get(f"refs/tags/{name}^{{}}", object_oid)
-        if second_peeled != peeled_oid:
-            raise ReleaseIdentityError(f"remote peeled tag moved while fetching {name}")
-        obj_type = git(["cat-file", "-t", object_oid])
+        obj_type = git(["cat-file", "-t", object_oid], deadline=deadline)
+        if git(["rev-parse", f"{object_oid}^{{}}"], deadline=deadline) != peeled_oid:
+            raise ReleaseIdentityError("remote peeled tag disagrees with local object")
         annotated = obj_type == "tag"
         metadata: ReleaseMetadata | None = None
         direct_object_oid: str | None = None
         direct_type: str | None = None
         embedded_name: str | None = None
         if annotated:
-            raw = git(["cat-file", "tag", object_oid])
+            raw = git(["cat-file", "tag", object_oid], deadline=deadline)
             direct_object_oid, direct_type, embedded_name, message = _parse_tag_object(
                 raw
             )
@@ -505,6 +614,9 @@ def fetch_remote_state() -> tuple[str, str | None, list[RemoteTag]]:
             )
         )
     tags.sort(key=lambda item: item.version)
+    if _snapshot_map(deadline) != remote:
+        raise ReleaseIdentityError("remote ref map changed during snapshot")
+    _snapshot_remaining(deadline)
     return main, state, tags
 
 

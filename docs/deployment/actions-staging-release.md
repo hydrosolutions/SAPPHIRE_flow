@@ -384,3 +384,21 @@ The public command runner currently merges stderr with stdout for comparisons;
 a benign tool warning can therefore fail smoke where production's stdout-only
 capture would not. This is a disclosed fail-closed availability/parity limit,
 not a reason to weaken the actual checks or retry with different bytes.
+
+### Fresh canonical release snapshots
+
+Each authority check lists the complete main/release-state/v* ref map twice.
+Main, state and canonical version tags are fetched into private refs in explicit
+batches (at most 128 refspecs and 32 KiB of refspec arguments per command).
+Every fetched object ID and locally peeled tag is checked. The before/after maps
+must match, including added/deleted/moved malformed-version v* names that are not
+fetched. Concurrent publication therefore refuses the snapshot; there is no
+cached authority, latest-tag shortcut or automatic retry.
+
+A single 600-second monotonic deadline covers both listings, all fetch batches and
+local snapshot validation. Expiry kills the transport process group, with at most
+one additional second for reaping. Partial fetches and stale private refs cannot
+qualify. Subsequent unchanged state/first-parent validation is outside this budget.
+Private phase logs record snapshot and remote-release-check elapsed seconds.
+Public checkpoints, receipts and release formats do not change. This is batching,
+not source-CI reuse, and it does not imply a measured end-to-end speedup.
