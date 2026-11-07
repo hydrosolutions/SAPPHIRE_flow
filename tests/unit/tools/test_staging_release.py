@@ -1216,3 +1216,36 @@ class TestSaveObserver:
         assert calls == ["sample", "sample"]
         assert (tmp_path / "images.tar").read_bytes() == b"aaa"
         assert killed == [(424242, collector.signal.SIGKILL)]
+
+
+class TestPrivateSnapshotTiming:
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_timing_is_private_and_public_marker_shape_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd, fails: bool
+    ) -> None:
+        ticks = iter([10.0, 12.5])
+        monkeypatch.setattr(collector.time, "monotonic", lambda: next(ticks))
+        path = tmp_path / "private.log"
+        with path.open("wb") as private:
+            progress = collector.Progress(
+                phase=collector.Phase.VERIFY, fd=1, private_timing_fd=private.fileno()
+            )
+            try:
+                with collector.checkpoint(
+                    progress, collector.Checkpoint.REMOTE_RELEASE_SNAPSHOT
+                ):
+                    if fails:
+                        raise ValueError("sentinel")
+            except ValueError:
+                pass
+        public = capfd.readouterr()
+        outcome = "FAIL" if fails else "PASS"
+        assert public.out == (
+            "STAGING_RELEASE_CHECKPOINT VERIFY REMOTE_RELEASE_SNAPSHOT ENTER\n"
+            f"STAGING_RELEASE_CHECKPOINT VERIFY REMOTE_RELEASE_SNAPSHOT {outcome}\n"
+        )
+        assert public.err == ""
+        assert json.loads(path.read_text()) == {
+            "checkpoint": "REMOTE_RELEASE_SNAPSHOT",
+            "elapsed_seconds": 2.5,
+        }
