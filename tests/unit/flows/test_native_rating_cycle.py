@@ -52,6 +52,8 @@ from tests.unit.services.test_rating_inputs import NOW, samples
         "missing_model",
         "fatal_store",
         "pretrack_fatal",
+        "missing_optin",
+        "duplicate_optin",
     ],
 )
 def test_native_cycle_group_dispatch_isolated_and_stateless(
@@ -222,6 +224,42 @@ def test_native_cycle_group_dispatch_isolated_and_stateless(
         rating_inputs=native_inputs,
         data_use=ForecastDataUse.PROVISIONAL_RATING,
     )
+    if mode in ("missing_optin", "duplicate_optin"):
+        healthy_mid = ModelId("healthy-native-sibling")
+        healthy_group = _store_group_run(
+            groups, artifacts, healthy_mid, frozenset({sid})
+        )
+        healthy_assignment = groups.fetch_group_model_assignments(healthy_group.id)[0]
+        groups.store_group_model_assignment(
+            replace(healthy_assignment, time_step=timedelta(days=1))
+        )
+        healthy_binding = replace(opt.to_domain(), model_ids=(healthy_mid,))
+        bad_bindings = (
+            () if mode == "missing_optin" else (opt.to_domain(), opt.to_domain())
+        )
+        kwargs["rating_inputs"] = replace(
+            native_inputs, bindings=(*bad_bindings, healthy_binding)
+        )
+        kwargs["models"] = {mid: model, healthy_mid: model}
+        kwargs["config"] = config.model_copy(
+            update={
+                "provisional_ratings": (
+                    opt.model_copy(update={"model_ids": (str(mid), str(healthy_mid))}),
+                )
+            }
+        )
+        result = cycle.run_forecast_cycle_flow(**kwargs)
+        assert result.forecasts_stored == 1
+        assert {
+            forecast.model_id
+            for forecast in store.fetch_forecasts_for_cycle(result.cycle_time)
+        } == {healthy_mid}
+        assert all(
+            forecast.weather_evidence_version is None
+            for forecast in store.fetch_forecasts_for_cycle(result.cycle_time)
+        )
+        assert health.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS) == []
+        return
     if mode == "pretrack_fatal":
         from uuid import uuid4
 

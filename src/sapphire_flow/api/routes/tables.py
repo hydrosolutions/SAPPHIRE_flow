@@ -25,6 +25,7 @@ _PROTECTED_INPUT_TABLES = frozenset(
         "provisional_discharges",
         "provisional_discharge_permissions",
         "forecast_input_stations",
+        "operational_weather_cache",
         "rating_delivery_files",
         "rating_delivery_curves",
         "rating_derived_discharge",

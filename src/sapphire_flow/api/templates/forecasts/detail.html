@@ -7,6 +7,18 @@
 <ul>{% for warning in forecast.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
 {% endif %}
 
+{% if forecast.weather_use %}
+{% for label in ["past", "future"] %}
+{% set weather = forecast.weather_use[label] %}
+{% if weather.freshness == "stale" %}
+<p><span class="badge badge-yellow">WEATHER STALE</span> {{ label | capitalize }} weather uses retained support.</p>
+<ul>{% for use in weather.uses %}
+<li>Age at use: {{ "%.0f" | format(use.age_at_use_seconds / 3600) }} hours.{% if use.failure_code %} Reason: {{ use.failure_code }} at {{ use.failure_at }}.{% endif %}</li>
+{% endfor %}</ul>
+{% endif %}
+{% endfor %}
+{% endif %}
+
 <div class="card" style="margin-bottom:2rem;">
   <table>
     <tr><td><strong>ID</strong></td><td>{{ forecast.id }}</td></tr>

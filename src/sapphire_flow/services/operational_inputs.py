@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         WeatherForecastStore,
     )
     from sapphire_flow.services.rating_inputs import NativeRatingInputs
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast_lineage import ForecastInputLineage
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
@@ -394,6 +395,25 @@ def build_future_dynamic_frame(
             issue_time=issue_time,
             forecast_horizon_steps=forecast_horizon_steps,
             features=future_dynamic_features,
+            ensemble_mode=ensemble_mode,
+        )
+    elif weather_policy is FutureWeatherPolicy.RECAP_COMPLETE_DAILY:
+        from sapphire_flow.services.recap_daily_weather import (
+            recap_complete_daily_records,
+        )
+
+        if (
+            time_step != timedelta(days=1)
+            or floor_to_time_step(issue_time, time_step) != issue_time
+        ):
+            return pl.DataFrame()
+        records = recap_complete_daily_records(
+            records,
+            issue_time=issue_time,
+            feature_horizons={
+                feature: (feature_horizons or {}).get(feature, forecast_horizon_steps)
+                for feature in future_dynamic_features
+            },
             ensemble_mode=ensemble_mode,
         )
     daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
@@ -1065,7 +1085,25 @@ def assemble_station_operational_inputs(
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     rating_inputs: NativeRatingInputs | None = None,
     provisional_ifs_tail_mode: ProvisionalIfsTailMode = ProvisionalIfsTailMode.DISABLED,
+    selected_weather: AssignmentWeatherInputs | None = None,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
+    if selected_weather is not None:
+        from sapphire_flow.types.operational_weather import FutureWeatherUse
+
+        if (
+            selected_weather.use.station_id != station_id
+            or selected_weather.use.issue_time != issue_time
+        ):
+            raise ConfigurationError(
+                "selected weather does not belong to this assignment"
+            )
+        if isinstance(selected_weather.use.future, FutureWeatherUse):
+            cycle_time = selected_weather.use.future.receipt.cycle_time
+        elif rating_inputs is not None:
+            raise ConfigurationError(
+                "provisional rating lineage requires a verified future weather cycle"
+            )
+
     if provisional_ifs_tail_mode is ProvisionalIfsTailMode.CONTROL_3H:
         if nwp_source != "ifs_ecmwf" or rating_inputs is None:
             raise ConfigurationError(
@@ -1323,7 +1361,9 @@ def assemble_station_operational_inputs(
     past_dynamic_features = list(reqs.past_dynamic_features)
     raw_forcing: list[RawHistoricalForcing] = []
     tail_records: list[WeatherForecastRecord] = []
-    if past_dynamic_features:
+    if selected_weather is not None:
+        past_dynamic = selected_weather.past_dynamic
+    elif past_dynamic_features:
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
             station_configs=reanalysis_bindings,
@@ -1377,13 +1417,17 @@ def assemble_station_operational_inputs(
         past_dynamic = pl.DataFrame()
 
     # --- future_dynamic (NWP) ---
-    nwp_records = weather_forecast_store.fetch_weather_forecasts(
-        station_id=station_id,
-        nwp_source=nwp_source,
-        cycle_time=cycle_time,
-        parameters=list(reqs.future_dynamic_features)
-        if reqs.future_dynamic_features
-        else None,
+    nwp_records = (
+        list(selected_weather.future_records)
+        if selected_weather is not None
+        else weather_forecast_store.fetch_weather_forecasts(
+            station_id=station_id,
+            nwp_source=nwp_source,
+            cycle_time=cycle_time,
+            parameters=list(reqs.future_dynamic_features)
+            if reqs.future_dynamic_features
+            else None,
+        )
     )
     if not nwp_records and reqs.future_dynamic_features:
         # Plan 145 D3.2d: log-and-continue rather than abort-the-whole-assembly.
@@ -1420,6 +1464,8 @@ def assemble_station_operational_inputs(
         ensemble_mode=reqs.ensemble_mode,
         weather_policy=weather_policy,
     )
+    if selected_weather is not None:
+        future_dynamic = selected_weather.future_dynamic
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:
         log.warning(
@@ -1520,13 +1566,16 @@ def assemble_station_operational_inputs(
         # the FI boundary must NOT truncate it to that model's own
         # `future_steps` (`models/nwp_regression.py`: over-delivery "is
         # tolerated and forecast in full").
-        forcing_route=ForcingRoute.LEGACY_SUPERSET,
+        forcing_route=ForcingRoute.LEGACY_SUPERSET
+        if selected_weather is None
+        else ForcingRoute.PER_TRACK,
         source_evidence=StationSourceEvidence(
             observations=tuple(all_observations),
             freshness_observations=tuple(freshness_observations),
             historical_forcing=tuple(raw_forcing),
             future_weather=tuple(nwp_records),
             tail_weather=tuple(tail_records),
+            weather_use=None if selected_weather is None else selected_weather.use,
         ),
     )
     metadata = OperationalInputMetadata(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Literal
+from uuid import UUID
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,7 +12,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected, visible_columns
+from sapphire_flow.api.weather_evidence import read_weather_summary
+from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import ForecastDataUse
 from sapphire_flow.types.forecast_lineage import ForecastInputLineage
+from sapphire_flow.types.ids import ForecastId, ModelId, StationId
 
 router = APIRouter(tags=["forecasts"])
 
@@ -109,7 +116,7 @@ def forecast_detail(
 
     forecast = dict(row)
     forecast["model_tier"] = model_tier_for_model_id(forecast.get("model_id")).value
-    forecast.update(_rating_summary(conn, forecast_id, data_use))
+    forecast.update(_response_summary(conn, forecast, data_use))
 
     # Get forecast values
     fv = reflected.tables.get("forecast_values")
@@ -192,7 +199,7 @@ def forecast_data_json(
             quantiles[q]["values"].append(r["value"])
         return JSONResponse(
             {
-                **_rating_summary(conn, forecast_id, data_use),
+                **_response_summary(conn, forecast, data_use),
                 "representation": "quantiles",
                 "quantiles": quantiles,
                 "units": units,
@@ -212,7 +219,7 @@ def forecast_data_json(
             members[m]["values"].append(r["value"])
         return JSONResponse(
             {
-                **_rating_summary(conn, forecast_id, data_use),
+                **_response_summary(conn, forecast, data_use),
                 "representation": "members",
                 "members": members,
                 "units": units,
@@ -220,6 +227,30 @@ def forecast_data_json(
                 "model_tier": model_tier,
             }
         )
+
+
+def _response_summary(
+    conn: sa.Connection,
+    forecast: Mapping[str, Any] | sa.RowMapping,
+    data_use: Literal["standard", "provisional_rating"],
+) -> dict[str, object]:
+    rating = _rating_summary(conn, str(forecast["id"]), data_use)
+    purpose = ForecastDataUse(data_use)
+    weather = read_weather_summary(
+        version=forecast.get("weather_evidence_version"),
+        forecast_id=ForecastId(UUID(str(forecast["id"]))),
+        station_id=StationId(UUID(str(forecast["station_id"]))),
+        model_id=ModelId(str(forecast["model_id"])),
+        issue_time=ensure_utc(forecast["issued_at"]),
+        data_use=purpose,
+        store=PgForecastStore(conn, data_use=purpose),
+    )
+    return {
+        **rating,
+        "weather_use": weather.model_dump(mode="json") if weather is not None else None,
+        "input_quality": forecast.get("input_quality"),
+        "input_quality_flags": forecast.get("input_quality_flags"),
+    }
 
 
 def _rating_summary(

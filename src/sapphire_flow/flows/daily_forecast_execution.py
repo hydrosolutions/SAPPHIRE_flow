@@ -76,6 +76,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.services.daily_forecast_preflight import DailyRuntimeStore
     from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.types.daily_evaluation import DailyEvaluationSettings
     from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
     from sapphire_flow.types.daily_forecast_one_shot import DailyExecution
@@ -104,6 +105,7 @@ _EXECUTION_CONFIG_FIELDS = frozenset(
         "nwp_cycle_min_age_minutes",
         "nwp_max_wait_hours",
         "reanalysis_source",
+        "operational_weather",
         "available_nwp_parameters",
         "available_past_only_nwp_parameters",
         "min_operational_ensemble_size",
@@ -118,6 +120,13 @@ _EXECUTION_CONFIG_FIELDS = frozenset(
 
 def execution_configuration_sha256(config: DeploymentConfig) -> str:
     projection = config.model_dump(mode="json", include=set(_EXECUTION_CONFIG_FIELDS))
+    from sapphire_flow.config.operational_weather import OperationalPastWeatherRoute
+
+    if (
+        config.operational_weather.route
+        is OperationalPastWeatherRoute.STORED_REANALYSIS
+    ):
+        projection.pop("operational_weather", None)
     for field in ("available_nwp_parameters", "available_past_only_nwp_parameters"):
         projection[field] = sorted(projection[field])
     if projection["daily_evaluation"] is not None:
@@ -316,6 +325,10 @@ class DailyForecastExecution:
         all_baselines: Mapping[StationId, list[ClimBaseline]],
         water_level_datums_masl: dict[StationId, float | None],
         rng: random.Random,
+        selected_weather_inputs: Mapping[
+            tuple[StationId, ModelId], AssignmentWeatherInputs
+        ]
+        | None = None,
     ) -> tuple[int, tuple[str, ...]]:
         stored_count = 0
         errors: list[str] = []
@@ -341,6 +354,7 @@ class DailyForecastExecution:
                     all_baselines=all_baselines,
                     water_level_datums_masl=water_level_datums_masl,
                     rng=rng,
+                    selected_weather_inputs=selected_weather_inputs,
                 )
                 stored_count += count
                 errors.extend(claim_errors)
@@ -387,6 +401,10 @@ class DailyForecastExecution:
         all_baselines: Mapping[StationId, list[ClimBaseline]],
         water_level_datums_masl: dict[StationId, float | None],
         rng: random.Random,
+        selected_weather_inputs: Mapping[
+            tuple[StationId, ModelId], AssignmentWeatherInputs
+        ]
+        | None = None,
     ) -> tuple[int, tuple[str, ...]]:
         errors: list[str] = []
         try:
@@ -474,11 +492,20 @@ class DailyForecastExecution:
                 clock=self.clock,
                 forecast_horizon_steps=self.model.data_requirements.forecast_horizon_steps,
                 time_step=assignment.time_step,
-                weather_policy=FutureWeatherPolicy.COMPLETE_DAILY,
+                weather_policy=FutureWeatherPolicy.COMPLETE_DAILY
+                if selected_weather_inputs is None
+                else FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
+                selected_weather_by_station=None
+                if selected_weather_inputs is None
+                else {
+                    sid: selected_weather_inputs[(sid, claim.key.model_id)]
+                    for sid in member_ids
+                    if (sid, claim.key.model_id) in selected_weather_inputs
+                },
             )
 
         try:
-            if isinstance(claim, DailyClaim):
+            if isinstance(claim, DailyClaim) or selected_weather_inputs is not None:
                 selected = assemble_scheduled_daily_weather(
                     assemble=assemble,
                     store=weather_forecast_store,
@@ -495,6 +522,13 @@ class DailyForecastExecution:
                     issue_time=claim.key.context.issue_time,
                     now=self.clock(),
                     max_age_hours=self.config.nwp_max_fallback_age_hours,
+                    selected_weather=None
+                    if selected_weather_inputs is None
+                    else {
+                        sid: selected_weather_inputs[(sid, claim.key.model_id)]
+                        for sid in member_ids
+                        if (sid, claim.key.model_id) in selected_weather_inputs
+                    },
                 )
             else:
                 selected = DailyWeatherAssembly(

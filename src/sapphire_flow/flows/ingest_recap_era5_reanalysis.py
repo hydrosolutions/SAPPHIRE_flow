@@ -16,9 +16,10 @@ from sapphire_flow.services.nepal_onboarding import (
     operational_weather_stations,
     require_history_bindings,
 )
+from sapphire_flow.services.write_principal import enforce_tenant_isolation
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation
+from sapphire_flow.types.enums import AuditEventType, SpatialRepresentation
 from sapphire_flow.types.nepal_onboarding import (
     GATEWAY_HISTORY_SOURCE,
     HISTORY_PARAMETERS,
@@ -30,11 +31,19 @@ if TYPE_CHECKING:
     import sqlalchemy as sa
 
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
-    from sapphire_flow.protocols.adapters import WeatherReanalysisSource
+    from sapphire_flow.protocols.adapters import (
+        OperationalWeatherSource,
+        WeatherReanalysisSource,
+    )
+    from sapphire_flow.protocols.stores import AuditLogStore, StationStore
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.nepal_onboarding import (
         OperationalWeatherScope,
     )
+    from sapphire_flow.types.operational_weather import OperationalWeatherWindow
+    from sapphire_flow.types.station import StationWeatherSource
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 
 log = structlog.get_logger(__name__)
@@ -214,3 +223,39 @@ def _run_operational_history(
             return coverage
     finally:
         engine.dispose()
+
+
+def fetch_combined_operational_windows(
+    *,
+    adapter: OperationalWeatherSource,
+    sources: list[StationWeatherSource],
+    station_store: StationStore,
+    principal: WritePrincipal,
+    audit_log_store: AuditLogStore | None,
+    issue_time: UtcDatetime,
+    start: UtcDatetime,
+    end: UtcDatetime,
+    now: UtcDatetime,
+) -> dict[StationId, OperationalWeatherWindow]:
+    if principal is None:  # pyright: ignore[reportUnnecessaryComparison]
+        raise ConfigurationError("combined weather requires an explicit run principal")
+    for source in sources:
+        station = station_store.fetch_station(source.station_id)
+        if station is None:
+            raise ConfigurationError("combined weather station does not exist")
+        enforce_tenant_isolation(
+            principal=principal,
+            target_tenant_id=station.tenant_id,
+            audit_log_store=audit_log_store,
+            event_type=AuditEventType.OPERATIONAL_WEATHER_REFRESH,
+            target_type="station",
+            target_id=str(station.id),
+            detail=None,
+            now=now,
+        )
+    return adapter.fetch_windows(
+        sources=sources,
+        issue_time=issue_time,
+        start=start,
+        end=end,
+    )

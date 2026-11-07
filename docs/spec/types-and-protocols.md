@@ -457,6 +457,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
     DELIVERY_IMPORTED = "delivery_imported"     # additive (Plan 510 T2)
+    OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"  # cache tenant rejection
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
     HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
     HUMAN_GRANT_CHANGED = "human_grant_changed"      # additive (Plan 341 T1)
@@ -1828,6 +1829,7 @@ class GroupModelInputs:
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
+    forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
 
     def for_station(self, station_id: StationId) -> StationInputData:
         """Slice stacked DataFrames for one station."""
@@ -2256,6 +2258,7 @@ class OperationalForecast:
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
     rating_curve_id: RatingCurveId | None = None   # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4)
     evidence: ForecastEvidence | None = None        # Plan 340 T1; None for earlier in-memory callers
+    weather_evidence_version: int | None = None     # immutable: NULL legacy, 1 selected
     data_use: ForecastDataUse = ForecastDataUse.STANDARD
     input_lineage: ForecastInputLineage | None = None  # required for TEST; absent for STANDARD
 
@@ -2263,6 +2266,10 @@ class OperationalForecast:
     def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
         ...
 ```
+
+`ForecastEvidence.weather_evidence_version` matches the immutable parent marker.
+Selected version 1 requires a bounded, valid as-used weather snapshot even when
+other evidence is incomplete. Legacy NULL markers do not require weather evidence.
 
 **As-used evidence (Plan 340 T1).** `ForecastEvidence` is `complete` or
 `evidence_incomplete` with a cause. The forecast cycle binds its pre-fetched
@@ -6547,3 +6554,319 @@ trace evidence. Snapshot parsing and latest-observation defaults are unchanged.
 `types/observation_history.py` defines frozen `HistoryGrid`, `HistoryRead`, `HistoryReading`, `BlockSummary` and `StationHistory`; `HistoryWindow` selects 72/168 hours and `BlockClipping` names temporal clipping. UTC microseconds determine exact interval ownership. `ObservationStore.fetch_observation_history(request: HistoryRead) -> tuple[HistoryReading, ...]` is a narrow TRUSTED-only, inclusive `[start,as_of]` capability. Existing half-open/general reader signatures are unchanged. Scope, measured discharge, QC-passed, protected-delivery exclusion, current canonical-unit/hold state and finite values are applied before the cap+1 sentinel and per-station cap. Overflow raises `HistoryRowLimitError` for the whole batch; SQLSTATE 57014 raises `HistoryReadTimeoutError`. PostgreSQL uses one observation statement plus request-local SET LOCAL. The fake uses the same eligibility and whole-batch bounds.
 
 `services/observation_history.py` deduplicates identical current timestamp keys, refuses conflicting values, and summarizes finite eligible cohorts with `statistics.mean` (exact rational mean rounded once to binary64). Min/max/native preserve input precision; no tolerance or clamp is used. Coverage remains unknown at the HTTP boundary. See [API contract 2.7](api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build) for wire fields and provisional safeguards.
+
+## Configured operational daily weather
+
+`types/operational_weather.py` defines immutable contributing samples, complete
+UTC days and contiguous paired P/T windows for the explicit combined-feed route.
+The qualified contract uses START-labelled incremental precipitation (mm, SUM)
+and temperature snapshots (degrees Celsius, equal-weight MEAN). IFS intervals
+change from three to six hours at lead144; final precipitation intervals must
+end within lead360. Long-lead four-snapshot temperature means have diurnal
+sampling bias relative to hourly ERA5 means. No interpolation or splitting is
+allowed. The daily issue must be UTC midnight; source runs cannot follow it.
+
+Product identity comes from the qualified endpoint contract, not an invented
+member number or absent provider metadata. The pinned source revision records
+contract qualification, not deployed producer attestation. These types do not
+change ERA5-only historical forcing or the default Swiss route.
+
+`DeploymentConfig.operational_weather` explicitly selects `recap_combined`; its
+default `stored_reanalysis` preserves the existing operational path. The separate
+`reanalysis_source` still controls historical/training reads. Provider request
+history defaults to a14-day minimum and370-day maximum, independent of model
+lookback. The paired rollover buffer is optional and limited to one complete UTC
+day. Selected response/cache/evidence limits default to64/2/32MiB; the evidence
+limit does not apply to unselected or legacy forecasts. Retained successful future
+receipts are bounded at32 per route. No deployment selector is activated here.
+
+The combined product has `WeatherSourceRole.OPERATIONAL` and a distinct source
+key (`recap_ecmwf_operational`). `fetch_operational_binding` requires exactly one
+role-specific binding. Existing forecast/reanalysis accessors ignore this role.
+Migration0081 permits this role; downgrade refuses while operational bindings
+exist, rather than silently delete them.
+
+The selected adapter stages both provenance-enabled SDK `operational` responses
+per HRU before reducing any station. It keeps default provider aggregation and
+conversion unset, then applies the qualified unit conversions once. The selected
+client uses a bounded Parquet transport: transfer bytes and declared uncompressed
+row-group sizes are checked before decoding; actual DataFrame memory is checked
+before admission. Redirects are refused. Stored/returned failure messages do not
+include request URLs, API keys, or raw provider error text. Default clients do not
+use this selected-route transport.
+
+The pinned producer contract gives only00Z the360-hour long tail.06/12/18Z
+cycles each stop at72hours on a three-hour grid, including12Z. A selected future
+window must fit one actual cycle; a long horizon cannot stitch short cycles or
+infer12Z long-tail support. Missing required support remains unavailable.
+
+`WeatherLegOutcome` separates success, unavailable, fatal, pending, unused and
+not-attempted states. Only bounded transport/coverage/cycle/capacity reasons may
+be classified unavailable. `FutureWeatherScope` records the explicit binding,
+issue, per-parameter times and expected members. `FutureWeatherReceipt` adds the
+real selected cycle and canonical persisted row hash/count. They are evidence
+contracts, not permission to reuse arbitrary archive rows.
+
+`operational_weather_cache` stores one bounded current/last-good state per station
+and past-binding fingerprint. Worker roles receive only SELECT/INSERT/UPDATE. API
+and PUBLIC roles have no cache privileges; neither runtime role may delete or
+truncate it. A downgrade refuses nonempty cache or operational bindings. The
+versioned boundary codec rejects unknown fields and verifies paired payload
+hashes before admitting/restoring a snapshot.
+
+A terminal cache completion must cover exactly its declared future scopes. Each
+successful scope has one receipt whose count matches its time/member grid;
+unmatched, duplicate, or incomplete receipts are refused. Restored cache entries
+recheck terminal-state consistency and successful-leg proof presence.
+
+The in-memory cache fake uses the same pure terminal transition as the PostgreSQL
+store. PostgreSQL owns row locks and pending-state CAS; the transition validates
+proof/state consistency and enforces retention and scoped capacity limits.
+
+Past-weather projection is assignment-local and immutable. UNUSED bypasses the
+cache state. Required past weather blocks for pending/superseded/unknown attempts
+and fatal or unattempted refreshes. A recoverable past failure may project STALE
+only from a hash-verified snapshot covering every consumed UTC day. An unrelated
+future failure does not change successful past use from CURRENT to STALE.
+
+Future receipt creation compares the exact scoped fetched and archive read-back
+identities and finite values. Database IDs and ingestion timestamps do not enter
+the value digest, so an equal-value natural-key retry is idempotent. Duplicate
+identities, gaps, missing grid cells, changed values, or wrong station/source/cycle
+refuse certification. Before model-specific filtering, replay verifies the entire
+original receipt scope, not only the model's requested subset.
+
+`TrackFetchResult.weather_receipts` defaults to an empty tuple for legacy callers.
+Selected `commit_track` callers supply explicit per-station proof scopes and an
+injected validation timestamp. Availability and receipts are returned only after
+fetched/read-back equality. This does not change candidate selection or FI horizons.
+
+Production cache lifecycle calls use dedicated short transactions with bounded
+connect/lock/statement timeouts. The shared forecast AUTOCOMMIT connection cannot
+provide row-lock/CAS lifecycle guarantees and is explicitly refused by the
+transaction-local cache store. Each begin commits before provider I/O; each finish
+commits before a frozen outcome view is consumed.
+
+`FutureWeatherPolicy.RECAP_COMPLETE_DAILY` is explicit and leaves ICON and legacy
+policies unchanged. It requires a midnight daily issue, one `ifs_ecmwf` cycle no
+later than issue, and complete source-grid days. Qualified00Z supports360hours
+(3hourly through144, then6hourly);06/12/18Z stop at72hours. START precipitation
+is summed without shifting; snapshot temperature uses the existing equal-weight
+mean. Each feature keeps its own horizon. No cycle stitching or missing-day fill.
+
+Future attempts declare logical day-zero feature/member requests before provider
+I/O. Receipt scopes retain the exact raw time grid of the resolved cycle. The
+receipt maps back to its declared daily request; these two types are distinct
+because walking back changes the position of the144hour cadence transition.
+A pending attempt therefore never invents a resolved source grid.
+
+The existing ERA5 ingestion module exposes `fetch_combined_operational_windows`
+as the native owner's reusable batch callable. It validates every canonical
+station tenant before the first provider call, requires an explicit principal,
+and returns paired windows only. It neither writes ERA5 history nor publishes
+cache/future completion. Existing public ERA5 flows retain their behavior.
+
+The selected owner resolves and commits all shared future tracks before calling
+the native per-assignment assembler. No assignment reads selected weather before
+terminal outcomes commit. The default path still resolves and assembles immediately. The explicit
+daily Recap policy is threaded through both candidate selection and assignment
+frame construction; legacy callers retain the legacy policy.
+
+`OperationalWeatherRefresh` owns the selected cycle's cache transitions. It
+commits pending attempts before the combined fetch, accepts only declared future
+results with matching receipts, and returns immutable completed station views
+after terminal writes. Unfinished required legs finalize as NOT_ATTEMPTED, never
+as a recoverable failure. Past samples remain paired and are never re-labelled
+as historical forcing records.
+
+Selected `StationSourceEvidence.weather_use` records the immutable assignment-local
+weather decision. Each required leg is CURRENT or STALE; unused legs are explicit.
+Future use references real archive row IDs and its verified receipt. Past use
+contains consumed paired daily samples once, without synthetic history versions.
+
+Future projection reads only receipts for the same binding and unchanged age
+policy. A recoverable current failure can use a fully supported retained receipt.
+It verifies the entire original receipt against archive readback before selecting
+consumed cells. Fatal and unattempted required legs cannot use retained receipts.
+
+Selected station and group evidence capture is a pre-prediction gate. Missing or
+mismatched as-used weather, legacy history/tail claims, unmatched future archive
+IDs, serialization failure, or an oversized decoded snapshot stops prediction.
+Runtime-image-only incompleteness remains admissible with a valid bounded snapshot.
+
+Selected group delivery carries an explicit PER_TRACK forcing discriminant. The
+FI group adapter applies each declared future feature horizon and max_nan gate
+to that branch, just as the station adapter does. Training and legacy group
+inputs retain LEGACY_SUPERSET behavior. FI protocol/result/input requirements
+and model-interface/input-requirement docs were checked; no FI or model contract
+changes are required. B2 uses consumed archive members only and keeps rating
+lineage on real archive IDs, with no synthetic history versions.
+
+The native owner now prepares all active station/group requests, freezes polygon
+bindings, fetches paired past weather once, and resolves shared native future
+tracks before terminal cache publication and any selected input assembly.
+Selected scheduled execution uses the same verified views through its existing
+daily selector and keeps its age limit; it never falls back to unreceipted IFS
+rows. Claim configuration hashes include the selected weather configuration,
+while the default stored-reanalysis hash remains unchanged.
+
+Selected station and group executors validate the captured snapshot again before
+deserializing or predicting. The guard binds its hash, manifest, station scope
+and strictly restored WeatherUse to the immutable assembly facts. Decoding uses
+a bounded decompressor; legacy snapshots retain their existing read path.
+
+As-used facts include each required leg's terminal outcome, paired-snapshot
+retrieval time and refresh completion time. Freshness must agree with those
+immutable outcomes; readback never looks at the current mutable cache.
+
+Migration 0082 adds the nullable immutable forecast-parent weather evidence
+version. NULL stays legacy/unselected; version 1 requires matching selected
+evidence before store retry lookup. API and worker column grants include this
+non-sensitive discriminator. Downgrade refuses retained selected forecasts.
+
+Combined selected outputs retain a station-scoped derived fact, including each
+actual contributor ID and persisted evidence hash. Legacy contributors remain
+unknown. The store compares selected contributor facts with their persisted
+snapshots. Identical retries rehydrate the retained forecast and evidence rather
+than passing newly captured weather into a combination.
+
+Authorized STANDARD detail and ADMIN provisional JSON/HTML detail now project
+only the requested station's immutable weather summary after existing visibility
+and purpose checks. NULL-marker rows perform no weather evidence read. Missing,
+invalid or oversized selected evidence returns a safe 503, including chart data.
+Provisional rating summaries and existing access gates are unchanged. Weather
+STALE is separate from PROVISIONAL, with safe failure code/time and age at use.
+
+The selected evidence capture budget is configurable up to the shared 32 MiB
+capture/read ceiling. Selected JSON encoding counts ASCII bytes incrementally
+and compresses in bounded chunks; decoding stops at the ceiling plus one byte.
+Legacy/unselected encoding and reads retain their previous uncapped behavior.
+The native 21-station B2 fixture (30 past/10 future days with hourly observations)
+measured 24,645,869 decoded bytes and 1,940,053 compressed bytes at the original
+16 MiB refusal. This supersedes the earlier synthetic 10.17 MB sizing estimate;
+compressed bytes do not measure peak memory.
+
+Selected PER_TRACK group coverage checks each FI feature's own horizon and
+ensemble mode. It does not compare a short-horizon feature against another
+feature's maximum. Legacy group coverage remains unchanged; FI NaN gates remain
+in force after source completeness checks.
+FI group evidence uses the same explicit route/time-step NaN projection as
+admission and prediction; short-feature padding outside its own horizon cannot
+silently exclude an otherwise serviceable group member from the snapshot.
+For Q7/P30 declarations, past discharge remains a 30-row delivered column and
+its FI NaN budget still applies to that whole column; this change does not
+introduce past-target slicing.
+Cache receipt expiry is bounded by refresh completion time, not the nominal
+issue time. A late run can expire every old receipt and still commit its terminal
+refresh result; it cannot remain PENDING solely because its age floor passed the
+original issue. This does not extend weather freshness.
+Selected candidate walk-back intersects the source policy window with the same
+clock-based age floor used by cache retention and projection. Candidates below
+that floor are not fetched or committed as newly successful receipts. Legacy
+walk-back calls do not acquire this additional bound.
+Native daily acceptance covers committed cache visibility before provider calls
+and prediction, PostgreSQL archive readback, claim/forecast persistence, unchanged
+replay evidence, and a failed-first model retry six hours later. Offline lifecycle
+cases also cover complete IFS-to-ERA5 replacement, independently stale legs, fatal
+failures, expired support, retained subsets, and corruption outside a consumed
+subset. These are fake-model pipeline checks, not deployed-provider or cmal_small
+scientific-readiness claims.
+
+Selected-route availability policy (owner disposition, 2026-11-06): each future
+feature requests its full declared maximum window, including FI AT_MOST features.
+A complete maximum-sized window is a valid AT_MOST input. A shorter-only window
+can be valid FI/provider data but does not meet this selected operational policy;
+it yields a clear full-window coverage failure, with no padding or relaxed proof.
+Shorter AT_MOST delivery is a deferred availability enhancement, not a gate for
+this slice. Legacy/unselected AT_MOST behavior remains unchanged. Eligible,
+qualified 00Z support covers the intended 10-day request within existing age bounds.
+
+
+### Selected weather review hardening
+
+Selected Parquet transport accepts only bounded flat primitive/timestamp and
+known provenance-string columns. It checks schema/metadata, row count and a
+conservative expanded representation budget before decoding. It uses bounded
+batches and validates dictionary/string lengths before pandas conversion. It
+also budgets unreferenced dictionary values, not only referenced output rows. The
+transfer and encoded-page limits remain independent checks. These are logical
+data allocation budgets, not a hard process RSS ceiling: native codec page
+buffers, metadata, input/output copies and pandas concatenation need additional
+memory. No sandbox or adversarial native-decoder peak-memory guarantee is claimed.
+
+Required past support is reduced before optional rollover admission. Invalid
+optional-only numeric/day support omits the buffer. Required corruption and
+response/source identity errors remain fatal, including when another optional
+value is already invalid. Assignment-local stale past/future facts add the
+existing FORCING/NWP DEGRADED flags without replacing other quality evidence.
+Provisional preparation/execution excludes unselected station/model pairs before
+weather requirements or provider work. Selected group failures use deduplicated
+assignment accounting: exhausted zero-output attempts fail; surviving siblings
+retain their forecasts and mixed success is degraded. Selected evidence capture
+uses the typed WeatherEvidenceCaptureError at both capture and validation.
+
+The mutable operational cache is excluded from generic admin table inventory
+and by-name reads before COUNT/SELECT. API SQL grants still deny cache access;
+UI filtering does not replace those grants. Historical migration tests select
+only fields present at their target revision; current-head downgrade refusal
+continues to verify rollback preserves the0082 schema and privileges.
+
+Selected refresh finalization retains each completion object/time/digest across
+retries and skips acknowledged terminal entries. Failure cleanup makes one
+bounded independent pass over remaining stations; an unreachable store can stay
+PENDING, never fabricated terminal. Cleanup cannot replace an original error or
+prevent independent daily-claim cleanup. Selected fatal boundaries reuse ordinary
+freshness eligibility: STANDARD current runs only, never explicit replay/backfill
+or provisional runs. Weather-specific provisional roster checks apply only when
+the selected route is enabled. Selected STANDARD hosts require compatible daily
+basin-average P/T assignments and operational mappings for every in-scope station;
+validate the complete active roster before activation, with no silent legacy
+fallback. Valid after-issue optional cycles are omitted as ineligible support;
+required cutoff and malformed response identity remain fatal.
+
+The selected HTTP transport uses the SDK query/auth convention with bounded
+response bytes and connect/read-inactivity timeouts. It does not promise a total
+wall-clock deadline against slow-drip delivery. Credential-bearing requests
+exception causes are suppressed from rendered transport tracebacks. Offline
+future-export tests reproduce the pinned producer layout through the actual SDK
+and bounded decoder; they are not deployed response or producer-identity proof.
+
+Fatal weather reasons are recorded at the attempted past batch or declared future
+track boundary using allowlisted authorization/configuration/integrity/storage
+codes. Unknown failures use parent_failure; raw exception text is never persisted
+as a weather reason. Cleanup marks only genuinely unfinished scopes NOT_ATTEMPTED
+with parent_failure. Known successful/UNUSED scopes and frozen completion objects
+are not relabeled, including cache-write/lost-ack failures. Older explicit replays
+can replace newer last-good support under the existing latest-attempt cache policy;
+avoid replaying older issues against an active operational cache. Combined-capture
+failure retains existing conservative station/alert accounting, not best-effort
+alert continuation. Activation supplies an explicit UTC-midnight issue and verifies
+it equals the scheduled daily claim's issue; there is no implicit clock flooring.
+
+Selected HTTP error classification keeps 401/403 and disabled redirects fatal
+before consuming their response bodies, so a broken body cannot enable stale fallback.
+HTTP 408/425/429/5xx responses remain transient; known source_data_missing remains
+unavailable. Bounded supported_values/hru_code validation discriminators remain
+fatal configuration errors.
+Unstructured client errors follow the existing transient contract. Non-200 bodies
+use at most a 64 KiB prefix and then close, never drain unbounded data or convert a
+large proxy error page into weather-payload integrity failure. Successful payload
+limits remain unchanged. An otherwise valid past snapshot exceeding the configured
+cache cap raises WeatherSnapshotSizeError and records CONFIGURATION; actual
+identity/hash/value corruption still records INTEGRITY. Database timestamptz row
+values are normalized to UTC at restoration, preserving instants and strict domain
+validation without changing the session timezone or provider timestamp policy.
+
+Offline sizing of the existing 21 Nepal fixture polygons measured a maximum
+420,936 canonical JSON bytes per 30-day past window with its 1-day optional buffer,
+below the 2,097,152-byte default snapshot cap. This measures the past-window payload,
+not total cache-row metadata, archive receipts, process RSS or live provider output.
+The 370-day provider request allowance does not promise arbitrary long histories
+fit that cap. Lowering a cap below a retained snapshot can require owner repair.
+Repeated evidence/artifact reads remain a deployment measurement prerequisite;
+no memoization or unsafe same-ID hydration shortcut is introduced.
+
+The combined-contributor store backstop also normalizes database issue timestamps
+with the existing UTC helper before serialized evidence identity checks. Provisional
+routes already normalize through ensure_utc; they require no additional conversion.
+Neither boundary changes instants, naive-input rejection or retry identity semantics.

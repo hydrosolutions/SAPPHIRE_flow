@@ -426,7 +426,9 @@ station_weather_sources = sa.Table(
     sa.Column(
         "role",
         sa.Text,
-        sa.CheckConstraint("role IS NULL OR role IN ('forecast', 'reanalysis')"),
+        sa.CheckConstraint(
+            "role IS NULL OR role IN ('forecast', 'reanalysis', 'operational')"
+        ),
         nullable=True,
     ),
     sa.PrimaryKeyConstraint("station_id", "nwp_source"),
@@ -1166,6 +1168,11 @@ sa.Index(
 forecasts = sa.Table(
     "forecasts",
     metadata,
+    sa.Column("weather_evidence_version", sa.SmallInteger, nullable=True),
+    sa.CheckConstraint(
+        "weather_evidence_version IS NULL OR weather_evidence_version = 1",
+        name="ck_forecasts_weather_evidence_version",
+    ),
     sa.CheckConstraint(
         "data_use = 'standard' OR status NOT IN ('reviewed', 'published')",
         name="ck_forecasts_test_publication",
@@ -3555,5 +3562,55 @@ provisional_evaluation_grants = sa.Table(
         "station_id",
         unique=True,
         postgresql_where=sa.text("revoked_at IS NULL AND human_user_id IS NOT NULL"),
+    ),
+)
+
+
+operational_weather_cache = sa.Table(
+    "operational_weather_cache",
+    metadata,
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("binding_fingerprint", sa.Text, nullable=False),
+    sa.Column("payload_version", sa.SmallInteger, nullable=False, server_default="1"),
+    sa.Column("attempt_generation", sa.BigInteger, nullable=False),
+    sa.Column("attempt_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("issue_time", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("finished_at", sa.DateTime(timezone=True)),
+    sa.Column("outcome", sa.Text, nullable=False),
+    sa.Column("past_outcome", JSONB, nullable=False),
+    sa.Column("future_attempts", JSONB, nullable=False),
+    sa.Column("past_snapshot", JSONB(none_as_null=True)),
+    sa.Column("future_receipts", JSONB, nullable=False),
+    sa.Column("completion_sha256", sa.Text),
+    sa.PrimaryKeyConstraint("station_id", "binding_fingerprint"),
+    sa.CheckConstraint(
+        "binding_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_operational_weather_key"
+    ),
+    sa.CheckConstraint(
+        "payload_version = 1 AND attempt_generation > 0",
+        name="ck_operational_weather_version",
+    ),
+    sa.CheckConstraint(
+        "outcome IN ('pending', 'complete', 'failed')",
+        name="ck_operational_weather_outcome",
+    ),
+    sa.CheckConstraint(
+        "(outcome = 'pending' "
+        "AND finished_at IS NULL AND completion_sha256 IS NULL) OR "
+        "(outcome <> 'pending' "
+        "AND finished_at IS NOT NULL AND completion_sha256 IS NOT NULL "
+        "AND finished_at >= started_at AND completion_sha256 ~ '^[0-9a-f]{64}$')",
+        name="ck_operational_weather_completion",
+    ),
+    sa.CheckConstraint(
+        "jsonb_typeof(past_outcome) = 'object' "
+        "AND jsonb_typeof(future_attempts) = 'array' "
+        "AND jsonb_typeof(future_receipts) = 'array' "
+        "AND jsonb_array_length(future_receipts) <= 32 "
+        "AND (past_snapshot IS NULL OR jsonb_typeof(past_snapshot) = 'object')",
+        name="ck_operational_weather_json",
     ),
 )

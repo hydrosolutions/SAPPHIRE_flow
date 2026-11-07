@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         NwpCycleSource,
         SpatialRepresentation,
     )
+    from sapphire_flow.types.operational_weather import FutureWeatherReceipt
     from sapphire_flow.types.weather import (
         GriddedForecast,
         WeatherForecastRecord,
@@ -184,6 +185,7 @@ StationTrackOutcome = StationTrackAvailable | StationTrackUnavailable
 class TrackFetchResult:
     resolved_cycle: UtcDatetime
     station_outcomes: Mapping[StationId, StationTrackOutcome]
+    weather_receipts: tuple[FutureWeatherReceipt, ...] = ()
 
 
 class CandidateFetchStatus(Enum):

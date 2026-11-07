@@ -545,7 +545,8 @@ WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
                        'bafu_unit_batch_admissions', 'bafu_unit_batch_receipts',
                        'bafu_unit_events', 'bafu_unit_read_holds', 'bafu_unit_hold_releases',
                        'bafu_unit_write_scopes', 'bafu_unit_event_reconciliation',
-                       'bafu_unit_receipt_reconciliation', 'observation_qc_boundaries')
+                       'bafu_unit_receipt_reconciliation', 'observation_qc_boundaries',
+                       'operational_weather_cache')
 ORDER BY c.relname
 \gexec
 
@@ -556,7 +557,7 @@ GRANT SELECT (
         "version", "warm_up_source", "warm_up_state_age_hours",
         "observation_staleness_hours", "created_at", "updated_at", "parameter",
         "units", "qc_status", "qc_flags", "input_quality", "input_quality_flags",
-        "rating_curve_id"
+        "rating_curve_id", "weather_evidence_version"
 ) ON public.forecasts TO sapphire_api, sapphire_worker;
 GRANT SELECT (
     "data_use", "id", "attempt_id", "station_id", "model_id", "model_artifact_id",
@@ -1184,3 +1185,9 @@ GRANT EXECUTE ON FUNCTION public.observation_qc_batch_compare_and_set
     (uuid, text, timestamptz, timestamptz, text, text, jsonb) TO sapphire_worker;
 GRANT EXECUTE ON FUNCTION public.observation_qc_lock(uuid, text)
     TO sapphire_worker, sapphire_bafu_maintenance;
+
+-- Mutable operational weather is worker-only; repeat bootstrap removes old grants.
+REVOKE ALL ON public.operational_weather_cache FROM PUBLIC, sapphire_api;
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.operational_weather_cache
+    FROM sapphire_worker;
+GRANT SELECT, INSERT, UPDATE ON public.operational_weather_cache TO sapphire_worker;

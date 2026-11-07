@@ -2133,3 +2133,21 @@ procedure](../deployment/nhs-forecast-configuration.md), including full Compose-
 invocation inventory, two-stage activation, effective hashes and clearing the owned
 deployment key before image rollback or mount removal. Operational provider files
 are not committed. This wiring grants no deployment or provider-polling authority.
+
+
+### Selected operational-weather migration prerequisite
+
+Before enabling the default-off `recap_combined` selector, verify migrations
+0081/0082 are applied and the normal post-migration role bootstrap has completed.
+They supply the
+operational binding role, dedicated cache, immutable parent marker and explicit
+runtime grants. Verify the intended worker/API roles, not only an owner connection.
+Downgrades refuse retained operational bindings/cache or selected forecast evidence;
+this is not permission to delete them. Existing NULL/1 forecast markers cannot be
+reinterpreted by switching the route on an identical retry.
+
+The invocation still requires explicit UTC-midnight issue/claim equality. Schema
+readiness does not prove live provider identity, real-model readiness or scientific
+acceptance. Deployment and activation need their existing authority; this note
+grants none. See [configured operational daily weather](../spec/types-and-protocols.md#configured-operational-daily-weather)
+and the [storage privilege boundary](security.md#selected-operational-weather-storage-boundary).

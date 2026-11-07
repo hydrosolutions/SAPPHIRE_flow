@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import HydroScraperBatchResult, RawObservation
+    from sapphire_flow.types.operational_weather import OperationalWeatherWindow
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
     from sapphire_flow.types.weather import (
@@ -158,3 +159,15 @@ class PipelineStatusSource(Protocol):
         since: UtcDatetime,
     ) -> list[FlowRunStatus]:
         raise NotImplementedError
+
+
+@runtime_checkable
+class OperationalWeatherSource(Protocol):
+    def fetch_windows(
+        self,
+        *,
+        sources: list[StationWeatherSource],
+        issue_time: UtcDatetime,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> dict[StationId, OperationalWeatherWindow]: ...

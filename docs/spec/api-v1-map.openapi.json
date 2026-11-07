@@ -2248,6 +2248,16 @@
               }
             ],
             "title": "Warm Up Source"
+          },
+          "weather_use": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WeatherUseResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5486,6 +5496,112 @@
         "title": "VerificationSchema",
         "type": "object"
       },
+      "WeatherLegResponse": {
+        "properties": {
+          "freshness": {
+            "enum": [
+              "current",
+              "stale",
+              "unused",
+              "unknown"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "uses": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherLegUseResponse"
+            },
+            "title": "Uses",
+            "type": "array"
+          }
+        },
+        "required": [
+          "freshness",
+          "uses"
+        ],
+        "title": "WeatherLegResponse",
+        "type": "object"
+      },
+      "WeatherLegUseResponse": {
+        "properties": {
+          "age_at_use_seconds": {
+            "minimum": 0.0,
+            "title": "Age At Use Seconds",
+            "type": "number"
+          },
+          "failure_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure At"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "freshness": {
+            "enum": [
+              "current",
+              "stale"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "snapshot_sha256": {
+            "title": "Snapshot Sha256",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherSourceRunResponse"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "freshness",
+          "failure_code",
+          "failure_at",
+          "snapshot_id",
+          "snapshot_sha256",
+          "retrieved_at",
+          "age_at_use_seconds",
+          "sources"
+        ],
+        "title": "WeatherLegUseResponse",
+        "type": "object"
+      },
       "WeatherSourceResponse": {
         "properties": {
           "extraction_type": {
@@ -5508,6 +5624,52 @@
         ],
         "title": "WeatherSourceResponse",
         "type": "object"
+      },
+      "WeatherSourceRunResponse": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_run": {
+            "format": "date-time",
+            "title": "Source Run",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "source_run"
+        ],
+        "title": "WeatherSourceRunResponse",
+        "type": "object"
+      },
+      "WeatherUseResponse": {
+        "properties": {
+          "future": {
+            "$ref": "#/components/schemas/WeatherLegResponse"
+          },
+          "issue_time": {
+            "format": "date-time",
+            "title": "Issue Time",
+            "type": "string"
+          },
+          "past": {
+            "$ref": "#/components/schemas/WeatherLegResponse"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "issue_time",
+          "past",
+          "future"
+        ],
+        "title": "WeatherUseResponse",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -5520,7 +5682,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.7"
+    "version": "2.8"
   },
   "openapi": "3.1.0",
   "paths": {

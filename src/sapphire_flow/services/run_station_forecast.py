@@ -9,6 +9,7 @@ from uuid import UUID  # noqa: TC003
 
 import structlog
 
+from sapphire_flow.config.operational_weather import OperationalPastWeatherRoute
 from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.services.ensemble_fanout import (
     ensembles_only,
@@ -21,6 +22,7 @@ from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import (
     assess_input_quality,
     past_forcing_flags,
+    selected_weather_quality_flags,
 )
 from sapphire_flow.services.nwp_coverage import assess_future_coverage, member_indices
 from sapphire_flow.services.operational_inputs import (
@@ -563,6 +565,18 @@ def _run_single_model(
         if is_ensemble
         else None,
     )
+    from sapphire_flow.services.selected_weather_evidence import (
+        validate_selected_capture,
+    )
+
+    if config.operational_weather.route is OperationalPastWeatherRoute.RECAP_COMBINED:
+        validate_selected_capture(
+            evidence,
+            sources={context.inputs.station_id: context.inputs.source_evidence},
+            model_id=assignment.model_id,
+            issue_time=context.inputs.issue_time,
+            max_bytes=config.operational_weather.max_evidence_bytes,
+        )
     try:
         artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
         if is_ensemble:
@@ -733,7 +747,11 @@ def _run_single_model(
 
     # Plan 239 T1b — the forcing flags were computed before `predict` (see the
     # note there); fold them in alongside the observation/NWP/warm-up flags.
-    input_quality_flags = (*input_quality_flags, *forcing_flags)
+    input_quality_flags = (
+        *input_quality_flags,
+        *forcing_flags,
+        *selected_weather_quality_flags(context.inputs.source_evidence),
+    )
     input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
@@ -762,6 +780,12 @@ def _run_single_model(
             qc_flags=tuple(flags),
             input_quality=input_quality,
             input_quality_flags=input_quality_flags,
+            weather_evidence_version=(
+                1
+                if config.operational_weather.route
+                is OperationalPastWeatherRoute.RECAP_COMBINED
+                else None
+            ),
             evidence=evidence,
             data_use=data_use,
             input_lineage=input_lineage,

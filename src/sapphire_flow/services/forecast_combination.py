@@ -589,6 +589,11 @@ def build_combined_forecasts(
             combination_strategy=combination_strategy_label,
             source_model_ids=source_model_ids,
             evidence=evidence,
+            weather_evidence_version=(
+                1
+                if any(fc.weather_evidence_version == 1 for fc in contributors)
+                else None
+            ),
         )
         forecasts.append(forecast)
 

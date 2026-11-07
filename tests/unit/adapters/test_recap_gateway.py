@@ -84,6 +84,9 @@ class _NoResolveMethod:
 
 
 class _GoodEcmwf:
+    def operational(self, **kwargs: object) -> object:
+        return None
+
     def ifs_forecast(
         self,
         *,

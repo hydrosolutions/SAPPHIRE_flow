@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.7"
+MAP_CONTRACT_VERSION = "2.8"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no

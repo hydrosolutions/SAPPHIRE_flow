@@ -502,3 +502,16 @@ query cost, caps/encoded-size boundaries, actual per-request allocation and
 concurrent history plus overview traffic. Fixture-process peak RSS includes setup
 and process lifetime; it is not request memory and must not be extrapolated
 linearly to fleet caps. Single SQL timings are diagnostics, not p95 evidence.
+
+
+## Selected operational weather facts (map contract 2.8)
+
+Forecast detail adds optional, nullable `weather_use` with station-scoped past and
+future freshness and source-run facts. Legacy absence stays unknown; this does not
+change publication, visibility, rating lineage, QC or prediction acceptance.
+The new `WeatherSourceRunResponse` component describes source/run pairs. Existing
+`WeatherSourceResponse` and `StationDetail.weather_sources` keep their original
+binding schema and reference. Paths and Swiss observation-history contract 2.7
+behavior remain unchanged. This additive contract version is separate from the
+package release target. Notify the map consumer before operational deployment;
+this change does not authorize deployment or activation.

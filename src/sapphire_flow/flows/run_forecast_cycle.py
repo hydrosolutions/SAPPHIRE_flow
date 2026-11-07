@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -60,6 +61,7 @@ from sapphire_flow.types.enums import (
     AlertEligibility,
     ForecastCycleHealth,
     ForecastDataUse,
+    FutureWeatherPolicy,
     ModelAssignmentStatus,
     NwpCycleSource,
     PipelineCheckType,
@@ -85,6 +87,7 @@ from sapphire_flow.types.ids import (
     FALLBACK_MODEL_IDS,
     FALLBACK_PRIORITY_THRESHOLD,
     ModelId,
+    StationId,
 )
 
 if TYPE_CHECKING:
@@ -95,13 +98,19 @@ if TYPE_CHECKING:
     from prefect.tasks import Task
 
     from sapphire_flow.adapters.recap_gateway import (
+        EcmwfApiLike,
         GatewayPolygonBindingStoreLike,
         RecapClientLike,
     )
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.config.dhm import DhmConfig
     from sapphire_flow.flows.daily_forecast_execution import DailyForecastExecution
+    from sapphire_flow.flows.operational_weather_refresh import (
+        CompletedStationWeather,
+        OperationalWeatherRefresh,
+    )
     from sapphire_flow.protocols.adapters import (
+        OperationalWeatherSource,
         WeatherForecastSource,
         WeatherReanalysisSource,
     )
@@ -109,6 +118,7 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.grid_extractor import GridExtractor
     from sapphire_flow.protocols.stores import (
         AlertStore,
+        AuditLogStore,
         BasinStore,
         ClimBaselineStore,
         CommittedForecastWriter,
@@ -119,10 +129,12 @@ if TYPE_CHECKING:
         ModelStateStore,
         NwpGridStore,
         ObservationStore,
+        OperationalWeatherCacheStore,
         RatingCurveStore,
         RejectedForecastStore,
         StationGroupStore,
         StationStore,
+        TenantStore,
         WeatherForecastStore,
     )
     from sapphire_flow.services.daily_forecast_preflight import DailyRuntimeStore
@@ -130,6 +142,7 @@ if TYPE_CHECKING:
         AssignmentFailure,
         StationForecastResult,
     )
+    from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.services.track_assembly import AssignmentRunInput
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
@@ -139,10 +152,10 @@ if TYPE_CHECKING:
         ForcingTrackKey,
         RawFetchOutcome,
         ResolvedTrackRequest,
+        TrackFetchResult,
         TrackProjection,
     )
     from sapphire_flow.types.forecast import OperationalForecast
-    from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.rejected_forecast import RejectedForecastEntry
     from sapphire_flow.types.station import (
@@ -150,6 +163,7 @@ if TYPE_CHECKING:
         StationConfig,
         StationWeatherSource,
     )
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -326,8 +340,11 @@ def _persist_forecast(
     ``contributor_evidence_not_persisted``.
     """
     stored_id = forecast_store.store_forecast(fc)
-    if stored_id == fc.id:
+    if stored_id == fc.id and fc.weather_evidence_version is None:
         return fc
+    retained = forecast_store.fetch_forecast(stored_id)
+    if retained is None:
+        raise StoreError("persisted forecast is unavailable after storage")
     persisted = forecast_store.fetch_evidence(stored_id)
     log.info(
         "forecast_cycle.forecast_resumed",
@@ -339,10 +356,11 @@ def _persist_forecast(
         evidence_reason=None if persisted is None else persisted.reason,
     )
     if persisted is None:
-        return replace(fc, id=stored_id)
+        if retained.weather_evidence_version == 1:
+            raise StoreError("persisted selected weather evidence is unavailable")
+        return replace(retained, evidence=None)
     return replace(
-        fc,
-        id=stored_id,
+        retained,
         evidence=ForecastEvidence(
             status=persisted.status,
             manifest_json=persisted.manifest_json,
@@ -351,6 +369,7 @@ def _persist_forecast(
             artifact=persisted.artifact,
             artifact_sha256=persisted.artifact_sha256,
             reason=persisted.reason,
+            weather_evidence_version=retained.weather_evidence_version,
             thresholds=fc.evidence.thresholds if fc.evidence is not None else None,
         ),
     )
@@ -804,6 +823,7 @@ def _build_recap_forecast_adapter(
     config_path: str | None,
     gateway_polygon_store: GatewayPolygonBindingStoreLike | None,
     recap_client: object | None,
+    ecmwf_api: EcmwfApiLike | None = None,
 ) -> tuple[object, ForcingResolutionPolicy]:
     """Plan 082 Task 2D Flow-1 dispatch: build the Nepal v1 Recap adapter.
 
@@ -854,6 +874,15 @@ def _build_recap_forecast_adapter(
             api_key=load_recap_api_key(), config=recap_gateway_config
         )
         recap_client = RecapClient(client_config)
+        if ecmwf_api is not None:
+            from sapphire_flow.adapters.recap_operational_http import (
+                BoundedOperationalRecapClient,
+            )
+
+            recap_client = BoundedOperationalRecapClient(
+                ecmwf=ecmwf_api,
+                snow=cast("RecapClientLike", recap_client).snow,
+            )
         adapter: object = RecapGatewayForecastAdapter(
             client=cast("RecapClientLike", recap_client),
             resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
@@ -866,6 +895,15 @@ def _build_recap_forecast_adapter(
         )
         return adapter, policy
 
+    if ecmwf_api is not None:
+        from sapphire_flow.adapters.recap_operational_http import (
+            BoundedOperationalRecapClient,
+        )
+
+        recap_client = BoundedOperationalRecapClient(
+            ecmwf=ecmwf_api,
+            snow=cast("RecapClientLike", recap_client).snow,
+        )
     adapter = RecapGatewayForecastAdapter(
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
@@ -1402,7 +1440,16 @@ def _forecast_cycle_health(
     snow_unavailable: bool = False,
     nwp_delivery_partial: bool = False,
     daily_failed: bool = False,
+    selected_group_attempts: int = 0,
+    selected_group_failures: int = 0,
+    selected_forecasts_stored: int = 0,
 ) -> ForecastCycleHealth:
+    if selected_group_attempts and (selected_group_failures or stations_failed):
+        return (
+            ForecastCycleHealth.DEGRADED
+            if selected_forecasts_stored
+            else ForecastCycleHealth.FAILED
+        )
     if stations_attempted > 0 and stations_failed >= stations_attempted:
         return ForecastCycleHealth.FAILED
     if (
@@ -2172,6 +2219,11 @@ def _resolve_per_track_run_inputs(
     weather_forecast_store: WeatherForecastStore,
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
+    resolved_weather_tracks: Mapping[ForcingTrackKey, TrackFetchResult | None]
+    | None = None,
+    selected_weather_inputs: Mapping[tuple[StationId, ModelId], AssignmentWeatherInputs]
+    | None = None,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> dict[StationId, dict[ModelId, AssignmentRunInput]]:
     """Plan 151 T8b: per-cycle orchestration of T3 (projection + dedup), T5
     (walk-back resolution) and T6 (per-assignment assembly) for every
@@ -2212,6 +2264,14 @@ def _resolve_per_track_run_inputs(
         require them to abort loudly with a forced-CRITICAL freshness record.
         """
         try:
+            if selected_weather_inputs is not None:
+                selected = selected_weather_inputs.get((sid, mid))
+                if selected is None:
+                    return UnavailableTrackContext(
+                        assignment=assignment_key,
+                        reason=StationUnavailableReason.ASSEMBLY_FAILED,
+                    )
+                kwargs["selected_weather"] = selected
             return assemble_assignment_inputs(**kwargs)  # type: ignore[arg-type]
         except (
             RecapAuthError,
@@ -2260,9 +2320,20 @@ def _resolve_per_track_run_inputs(
 
     run_inputs: dict[StationId, dict[ModelId, AssignmentRunInput]] = {}
 
+    def assemble_assignment(
+        *, sid: StationId, mid: ModelId, assignment_key: AssignmentKey, **kwargs: object
+    ) -> None:
+        run_inputs.setdefault(sid, {})[mid] = _contained_assemble(
+            sid=sid,
+            mid=mid,
+            assignment_key=assignment_key,
+            weather_policy=weather_policy,
+            **kwargs,
+        )
+
     for (sid, mid), projection in projections.items():
         if isinstance(projection, NoForcingRequired):
-            run_inputs.setdefault(sid, {})[mid] = _contained_assemble(
+            assemble_assignment(
                 sid=sid,
                 mid=mid,
                 assignment_key=AssignmentKey((sid, mid)),
@@ -2305,38 +2376,42 @@ def _resolve_per_track_run_inputs(
                 retries=policy.max_retries
             )(adapter, _track.key, _stations, candidate_cycle)
 
-        accepted = resolve_candidate(
-            track,
-            fetch_candidate=_fetch_candidate,
-            expected_member_ids=expected_member_ids,
-            nominal_cycle_source=_nominal_cycle_source,
-            nominal_now=resolved_cycle_time,
-            issue_time=resolved_cycle_time,
-            cycle_cadence_hours=policy.cycle_cadence_hours,
-            max_cycle_age_hours=policy.max_cycle_age_hours,
-            clock=clock,
-            id_gen=id_gen,
-        )
-        track_result = (
-            None
-            if accepted is None
-            else commit_track(
-                accepted,
-                in_scope_station_ids=in_scope_ids,
-                weather_forecast_store=weather_forecast_store,
-                nwp_source=track.key.nwp_source,
-                track_features=track.key.features,
+        if resolved_weather_tracks is not None:
+            track_result = resolved_weather_tracks.get(track.key)
+        else:
+            accepted = resolve_candidate(
+                track,
+                fetch_candidate=_fetch_candidate,
+                expected_member_ids=expected_member_ids,
+                nominal_cycle_source=_nominal_cycle_source,
+                nominal_now=resolved_cycle_time,
+                issue_time=resolved_cycle_time,
+                cycle_cadence_hours=policy.cycle_cadence_hours,
+                max_cycle_age_hours=policy.max_cycle_age_hours,
+                clock=clock,
+                id_gen=id_gen,
+                weather_policy=weather_policy,
             )
-        )
+            track_result = (
+                None
+                if accepted is None
+                else commit_track(
+                    accepted,
+                    in_scope_station_ids=in_scope_ids,
+                    weather_forecast_store=weather_forecast_store,
+                    nwp_source=track.key.nwp_source,
+                    track_features=track.key.features,
+                )
+            )
 
         for item in track.assignments:
             sid, mid = item.assignment
-            if track_result is None:
-                run_input: AssignmentRunInput = MissingTrackContext(
+            if track_result is None and selected_weather_inputs is None:
+                run_inputs.setdefault(sid, {})[mid] = MissingTrackContext(
                     assignment=item.assignment
                 )
             else:
-                run_input = _contained_assemble(
+                assemble_assignment(
                     sid=sid,
                     mid=mid,
                     assignment_key=item.assignment,
@@ -2344,7 +2419,9 @@ def _resolve_per_track_run_inputs(
                     model_id=mid,
                     model=models[mid],
                     projection=item,
-                    track_outcome=track_result.station_outcomes[sid],
+                    track_outcome=None
+                    if track_result is None
+                    else track_result.station_outcomes[sid],
                     issue_time=resolved_cycle_time,
                     obs_store=obs_store,
                     station_store=station_store,
@@ -2356,7 +2433,6 @@ def _resolve_per_track_run_inputs(
                     static_naming_models=_assigned_models_for(sid),
                     expected_member_ids=expected_member_ids,
                 )
-            run_inputs.setdefault(sid, {})[mid] = run_input
 
     return run_inputs
 
@@ -2408,6 +2484,97 @@ def _with_group_station_code_resolvers(
     from sapphire_flow.services.model_registry import with_group_station_code_resolvers
 
     return with_group_station_code_resolvers(models, station_store)
+
+
+def _selected_weather_owner_dependencies(
+    *,
+    config: DeploymentConfig,
+    stores: dict[str, object],
+    operational_weather_principal: object | None,
+    operational_weather_cache: object | None,
+) -> tuple[WritePrincipal, OperationalWeatherCacheStore]:
+    from sapphire_flow.types.write_principal import WritePrincipal
+
+    if operational_weather_principal is None:
+        from sapphire_flow.config.deployment_identity import (
+            load_deployment_identity_config,
+        )
+        from sapphire_flow.services.write_principal import (
+            resolve_run_principal,
+        )
+
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is None or "tenant_store" not in stores:
+            raise ConfigurationError(
+                "selected operational weather requires a configured run principal"
+            )
+        operational_weather_principal = resolve_run_principal(
+            cast("TenantStore", stores["tenant_store"]),
+            load_deployment_identity_config(config_path),
+        )
+    if not isinstance(operational_weather_principal, WritePrincipal):
+        raise ConfigurationError(
+            "selected operational weather requires a valid run principal"
+        )
+    if operational_weather_cache is None:
+        import sqlalchemy as sa
+
+        from sapphire_flow.store.operational_weather_cache import (
+            PgCommittedOperationalWeatherCache,
+            operational_weather_transaction_factory,
+        )
+
+        if not stores:
+            raise ConfigurationError(
+                "selected operational weather requires a committed cache"
+            )
+        operational_weather_cache = PgCommittedOperationalWeatherCache(
+            operational_weather_transaction_factory(
+                sa.make_url(os.environ["DATABASE_URL"])
+            ),
+            max_past_bytes=config.operational_weather.max_cache_bytes,
+            max_receipts=config.operational_weather.max_future_receipts,
+        )
+    return operational_weather_principal, cast(
+        "OperationalWeatherCacheStore", operational_weather_cache
+    )
+
+
+def _finalize_cycle_weather_and_daily(
+    *,
+    weather_refresh: OperationalWeatherRefresh | None,
+    weather_completed: Mapping[StationId, CompletedStationWeather] | None,
+    weather_earliest_cycle: UtcDatetime | None,
+    daily_execution: DailyForecastExecution | None,
+    original_error: BaseException | None,
+) -> None:
+    cleanup_errors: list[Exception] = []
+    try:
+        if (
+            weather_refresh is not None
+            and weather_completed is None
+            and weather_earliest_cycle is not None
+        ):
+            cleanup_errors.extend(
+                weather_refresh.finalize_after_failure(
+                    earliest_cycle=weather_earliest_cycle
+                )
+            )
+    except Exception as exc:
+        cleanup_errors.append(exc)
+    finally:
+        if daily_execution is not None:
+            try:
+                daily_execution.fail_unstarted(DailyFailureReason.SHARED_INPUT_FAILURE)
+            except Exception as exc:
+                cleanup_errors.append(exc)
+    for cleanup_error in cleanup_errors:
+        log.error(
+            "forecast_cycle.cleanup_failed",
+            error_type=type(cleanup_error).__name__,
+        )
+    if original_error is None and cleanup_errors:
+        raise cleanup_errors[0]
 
 
 def _load_selected_provider_config(
@@ -2511,6 +2678,9 @@ def run_forecast_cycle_flow(
     daily_forecast_writer: object | None = None,
     data_use: ForecastDataUse = ForecastDataUse.STANDARD,
     rating_inputs: object | None = None,
+    operational_weather_cache: object | None = None,
+    operational_weather_adapter: object | None = None,
+    operational_weather_principal: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
     if data_use not in (ForecastDataUse.STANDARD, ForecastDataUse.PROVISIONAL_RATING):
@@ -2523,6 +2693,11 @@ def run_forecast_cycle_flow(
         )
 
     created_http_client: Any = None
+    operational_http_session: Any = None
+    operational_api: EcmwfApiLike | None = None
+    weather_refresh: OperationalWeatherRefresh | None = None
+    weather_completed: Mapping[StationId, CompletedStationWeather] | None = None
+    weather_earliest_cycle: UtcDatetime | None = None
     rejected_buffer: list[RejectedForecastEntry] = []
     daily_execution: DailyForecastExecution | None = None
     try:
@@ -2570,6 +2745,7 @@ def run_forecast_cycle_flow(
 
         # --- Production setup ---
         _conn: object = None
+        stores: dict[str, object] = {}
         if station_store is None:
             from sapphire_flow.flows._db import setup_production_stores
 
@@ -2615,6 +2791,63 @@ def run_forecast_cycle_flow(
                 from sapphire_flow.config.deployment import DeploymentConfig
 
                 config = DeploymentConfig(max_retention_days=600)
+
+        from sapphire_flow.config.operational_weather import OperationalPastWeatherRoute
+
+        selected_weather_route = (
+            config.operational_weather.route
+            is OperationalPastWeatherRoute.RECAP_COMBINED
+        )
+        selected_cycle_time: UtcDatetime | None = None
+        if selected_weather_route:
+            selected_cycle_time = _resolve_cycle_time(cycle_time, clock)
+            try:
+                operational_weather_principal, operational_weather_cache = (
+                    _selected_weather_owner_dependencies(
+                        config=config,
+                        stores=stores,
+                        operational_weather_principal=operational_weather_principal,
+                        operational_weather_cache=operational_weather_cache,
+                    )
+                )
+                if operational_weather_adapter is None or adapter is None:
+                    import requests
+
+                    from sapphire_flow.adapters.recap_operational_http import (
+                        build_bounded_operational_api,
+                    )
+                    from sapphire_flow.config.recap_gateway import (
+                        build_recap_client_config,
+                        load_recap_api_key,
+                        load_recap_gateway_config,
+                    )
+
+                    config_path = os.environ.get("SAPPHIRE_CONFIG")
+                    if config_path is None:
+                        raise ConfigurationError(
+                            "selected operational weather requires "
+                            "provider configuration"
+                        )
+                    operational_http_session = requests.Session()
+                    operational_api = build_bounded_operational_api(
+                        config=build_recap_client_config(
+                            api_key=load_recap_api_key(),
+                            config=load_recap_gateway_config(Path(config_path)),
+                        ),
+                        max_bytes=config.operational_weather.max_response_bytes,
+                        session=operational_http_session,
+                    )
+            except Exception as exc:
+                emit_freshness_on_fatal_exit(
+                    pipeline_health_store
+                    if data_use is ForecastDataUse.STANDARD
+                    else None,
+                    cycle_time_param=cycle_time,
+                    resolved_cycle_time=selected_cycle_time,
+                    forecasts_stored=0,
+                    checked_at=clock(),
+                    exc=exc,
+                )
 
         if data_use is ForecastDataUse.PROVISIONAL_RATING:
             from sapphire_flow.config.dhm import DhmConfig
@@ -2710,6 +2943,7 @@ def run_forecast_cycle_flow(
                         config_path=config_path_for_adapter,
                         gateway_polygon_store=gateway_polygon_store,
                         recap_client=recap_client,
+                        ecmwf_api=operational_api,
                     )
                 )
                 # D7 ruling 4: an explicit caller-supplied policy (path 3's
@@ -2800,6 +3034,27 @@ def run_forecast_cycle_flow(
                     "provisional rating cycle requires installed native group models"
                 )
 
+        provisional_weather_pairs = (
+            frozenset(
+                (StationId(binding.station_id), ModelId(model_id))
+                for binding in config.provisional_ratings
+                for model_id in binding.model_ids
+            )
+            if selected_weather_route and data_use is ForecastDataUse.PROVISIONAL_RATING
+            else None
+        )
+
+        if provisional_weather_pairs is not None:
+            native_pairs = [
+                (binding.station_id, model_id)
+                for binding in cast("NativeRatingInputs", rating_inputs).bindings
+                for model_id in binding.model_ids
+            ]
+            if any(native_pairs.count(pair) != 1 for pair in provisional_weather_pairs):
+                raise ConfigurationError(
+                    "provisional weather requires unique native opt-in bindings"
+                )
+
         build_grid = nwp_enabled and config.nwp_grid_archive_base_path is not None
         if build_grid:
             if grid_store is None:
@@ -2841,7 +3096,11 @@ def run_forecast_cycle_flow(
         if forcing_store is None:
             raise ConfigurationError("forcing_store is required but was not provided")
 
-        resolved_cycle_time: UtcDatetime = _resolve_cycle_time(cycle_time, clock)
+        resolved_cycle_time: UtcDatetime = (
+            selected_cycle_time
+            if selected_cycle_time is not None
+            else _resolve_cycle_time(cycle_time, clock)
+        )
 
         daily_preflight_errors: list[str] = []
         try:
@@ -3031,6 +3290,197 @@ def run_forecast_cycle_flow(
             forcing_store=forcing_store, mode=config.reanalysis_source
         )
 
+        selected_weather_inputs: (
+            dict[tuple[StationId, ModelId], AssignmentWeatherInputs] | None
+        ) = None
+        selected_tracks: dict[ForcingTrackKey, TrackFetchResult | None] | None = None
+        selected_nwp_outcome: _NwpFetchOutcome | None = None
+        if selected_weather_route:
+            from sapphire_flow.adapters.recap_gateway import (
+                RecapGatewayForecastAdapter,
+                RecapTransientError,
+                StoreBackedGatewayPolygonResolver,
+            )
+            from sapphire_flow.adapters.recap_operational import (
+                RecapGatewayOperationalAdapter,
+            )
+            from sapphire_flow.flows.operational_weather_prepare import (
+                prepare_weather_refresh,
+            )
+            from sapphire_flow.flows.operational_weather_refresh import (
+                OperationalWeatherRefresh,
+                resolve_selected_weather_tracks,
+            )
+            from sapphire_flow.services.selected_weather_inputs import (
+                assemble_selected_weather,
+            )
+            from sapphire_flow.types.operational_weather import (
+                FutureWeatherUse,
+                WeatherFailureReason,
+                WeatherLegOutcome,
+                WeatherLegState,
+            )
+
+            try:
+                if gateway_polygon_store is None:
+                    raise ConfigurationError(
+                        "selected weather requires polygon bindings"
+                    )
+                prepared_weather = prepare_weather_refresh(
+                    active_model_assignments=active_model_assignments,
+                    models=models,
+                    forecast_bindings=forecast_bindings,
+                    station_store=station_store,
+                    group_store=cast("StationGroupStore | None", group_store),
+                    resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
+                    adapter=adapter
+                    if isinstance(adapter, CandidateAwareForecastSource)
+                    else None,
+                    issue_time=resolved_cycle_time,
+                    eligible_group_pairs=provisional_weather_pairs,
+                )
+                if isinstance(adapter, RecapGatewayForecastAdapter):
+                    adapter = adapter.with_resolver(prepared_weather.resolver)
+                if operational_weather_adapter is None:
+                    if operational_api is None:
+                        raise ConfigurationError(
+                            "selected combined weather source is not configured"
+                        )
+                    operational_weather_adapter = RecapGatewayOperationalAdapter(
+                        api=operational_api,
+                        resolver=prepared_weather.resolver,
+                        config=config.operational_weather,
+                    )
+                resolution_policy = (
+                    forcing_resolution_policy or _DEFAULT_FORCING_RESOLUTION_POLICY
+                )
+                weather_earliest_cycle = ensure_utc(
+                    clock() - timedelta(hours=config.nwp_max_fallback_age_hours)
+                )
+                weather_refresh = OperationalWeatherRefresh(
+                    specs=prepared_weather.specs,
+                    cache=cast(
+                        "OperationalWeatherCacheStore", operational_weather_cache
+                    ),
+                    principal=cast("WritePrincipal", operational_weather_principal),
+                    issue_time=resolved_cycle_time,
+                    clock=clock,
+                    id_gen=id_gen,
+                    max_past_bytes=config.operational_weather.max_cache_bytes,
+                )
+                weather_refresh.begin()
+                past_starts = [
+                    spec.past_requirement.start
+                    for spec in prepared_weather.specs
+                    if spec.past_requirement is not None
+                ]
+                if past_starts:
+                    try:
+                        weather_refresh.fetch_past(
+                            adapter=cast(
+                                "OperationalWeatherSource", operational_weather_adapter
+                            ),
+                            station_store=station_store,
+                            audit_log_store=cast(
+                                "AuditLogStore | None", stores.get("audit_log_store")
+                            ),
+                            start=min(past_starts),
+                        )
+                    except RecapDataUnavailableError:
+                        weather_refresh.fail_past(
+                            WeatherLegOutcome(
+                                state=WeatherLegState.UNAVAILABLE,
+                                reason=WeatherFailureReason.MISSING_SUPPORT,
+                            )
+                        )
+                    except RecapTransientError:
+                        weather_refresh.fail_past(
+                            WeatherLegOutcome(
+                                state=WeatherLegState.UNAVAILABLE,
+                                reason=WeatherFailureReason.TRANSPORT,
+                            )
+                        )
+
+                def selected_fetch_candidate(
+                    key: ForcingTrackKey,
+                    bindings: list[StationWeatherSource],
+                    candidate: UtcDatetime,
+                ) -> RawFetchOutcome:
+                    return fetch_forcing_candidate_task.with_options(
+                        retries=resolution_policy.max_retries
+                    )(
+                        cast("CandidateAwareForecastSource", adapter),
+                        key,
+                        bindings,
+                        candidate,
+                    )
+
+                selected_tracks = resolve_selected_weather_tracks(
+                    projections=prepared_weather.projections,
+                    forecast_bindings=forecast_bindings,
+                    adapter=cast("CandidateAwareForecastSource", adapter),
+                    policy=resolution_policy,
+                    issue_time=resolved_cycle_time,
+                    earliest_cycle=weather_earliest_cycle,
+                    clock=clock,
+                    id_gen=id_gen,
+                    store=weather_forecast_store,
+                    owner=weather_refresh,
+                    fetch_candidate=selected_fetch_candidate,
+                )
+                weather_completed = weather_refresh.finish(
+                    earliest_cycle=weather_earliest_cycle
+                )
+                selected_weather_inputs = {}
+                for (sid, mid), requirement in prepared_weather.assignments.items():
+                    completed = weather_completed.get(sid)
+                    try:
+                        selected_weather_inputs[(sid, mid)] = assemble_selected_weather(
+                            station_id=sid,
+                            issue_time=resolved_cycle_time,
+                            used_at=clock(),
+                            entry=None if completed is None else completed.entry,
+                            expected_attempt=None
+                            if completed is None
+                            else completed.attempt,
+                            past_requirement=requirement.past,
+                            future_requirement=requirement.future,
+                            store=weather_forecast_store,
+                            earliest_cycle=weather_earliest_cycle,
+                            max_past_bytes=config.operational_weather.max_cache_bytes,
+                            ensemble_mode=requirement.ensemble_mode,
+                        )
+                    except ConfigurationError as exc:
+                        errors.append(
+                            "Required operational weather unavailable for "
+                            f"{sid}/{mid}: "
+                            f"{exc}"
+                        )
+                used_cycles = [
+                    inputs.use.future.receipt.cycle_time
+                    for inputs in selected_weather_inputs.values()
+                    if isinstance(inputs.use.future, FutureWeatherUse)
+                ]
+                selected_nwp_outcome = _NwpFetchOutcome(
+                    cycle_time=min(used_cycles) if used_cycles else resolved_cycle_time,
+                    fallback_used=any(
+                        cycle < resolved_cycle_time for cycle in used_cycles
+                    ),
+                    nwp_unavailable=not used_cycles,
+                )
+                eligible_station_ids = frozenset(forecast_bindings)
+            except Exception as exc:
+                emit_freshness_on_fatal_exit(
+                    pipeline_health_store
+                    if data_use is ForecastDataUse.STANDARD
+                    else None,
+                    cycle_time_param=cycle_time,
+                    resolved_cycle_time=resolved_cycle_time,
+                    forecasts_stored=0,
+                    checked_at=clock(),
+                    exc=exc,
+                )
+
         # Instantiate forecast QC checker
         from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 
@@ -3066,6 +3516,11 @@ def run_forecast_cycle_flow(
                     weather_forecast_store=weather_forecast_store,
                     clock=clock,
                     id_gen=uuid4,
+                    selected_weather_inputs=selected_weather_inputs,
+                    resolved_weather_tracks=selected_tracks,
+                    weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY
+                    if selected_weather_route
+                    else FutureWeatherPolicy.LEGACY,
                 )
             except (
                 RecapAuthError,
@@ -3101,7 +3556,7 @@ def run_forecast_cycle_flow(
 
         # --- Phase A: fetch NWP forcing (submit as task) ---
         nwp_future: Any = None
-        nwp_outcome: _NwpFetchOutcome | None = None
+        nwp_outcome: _NwpFetchOutcome | None = selected_nwp_outcome
         # When EVERY operational station failed forecast-binding resolution
         # above, flat_weather_configs is empty. Submitting Phase A against an
         # empty station list reaches adapters (e.g. ReplayNwpAdapter) that
@@ -3112,8 +3567,12 @@ def run_forecast_cycle_flow(
         # this the same as runoff_only_mode from Phase A's point of view: no
         # NWP fetch this cycle, fall through to the normal result path so
         # every operational station is accounted for exactly once.
-        skip_nwp_fetch = runoff_only_mode or not flat_weather_configs
-        if runoff_only_mode:
+        skip_nwp_fetch = not selected_weather_route and (
+            runoff_only_mode or not flat_weather_configs
+        )
+        if selected_weather_route:
+            pass  # The selected owner already resolved and committed every track.
+        elif runoff_only_mode:
             log.info(
                 "forecast_cycle.nwp_disabled",
                 mode="runoff_only",
@@ -3148,7 +3607,8 @@ def run_forecast_cycle_flow(
 
         # Collect Phase A result
         if not skip_nwp_fetch:
-            nwp_outcome = nwp_future.result()
+            if not selected_weather_route:
+                nwp_outcome = nwp_future.result()
             # Plan 095: bound the nwp_grids disk footprint by pruning grid-cube
             # zarrs from cycles older than the retention window. Age-only; the
             # permanent archive is the extracted values in weather_forecasts. A
@@ -3896,15 +4356,24 @@ def run_forecast_cycle_flow(
                 all_baselines=all_baselines,
                 water_level_datums_masl=water_level_datums_masl,
                 rng=rng,
+                selected_weather_inputs=selected_weather_inputs,
             )
             forecasts_stored += daily_stored
             errors.extend(daily_errors)
 
+        selected_group_attempts: set[tuple[StationId, ModelId]] = set()
+        selected_group_failures: set[tuple[StationId, ModelId]] = set()
+        selected_group_successes: set[tuple[StationId, ModelId]] = set()
         # --- Phase B2: per-group forecast loop ---
         if group_store is not None:
             operational_ids = {s.id for s in operational}
             group_produced_pairs: set[tuple[StationId, ModelId]] = set()
             for group, model_id in discover_group_runs(models, group_store):  # type: ignore[arg-type]
+                if (
+                    provisional_weather_pairs is not None
+                    and model_id not in enabled_models
+                ):
+                    continue
                 try:
                     if data_use is ForecastDataUse.STANDARD and reserves_daily_group(
                         config=config,
@@ -3929,6 +4398,7 @@ def run_forecast_cycle_flow(
                 # read it safely — see the store_forecast loop further
                 # down, which is the only place that sets it True.
                 fatal_group_store_failure = False
+                selected_attempt_pairs: set[tuple[StationId, ModelId]] = set()
                 try:
                     group_assignments = group_store.fetch_group_model_assignments(  # type: ignore[union-attr]
                         group.id
@@ -3950,6 +4420,10 @@ def run_forecast_cycle_flow(
                         sid
                         for sid in sorted(group.station_ids, key=str)
                         if sid in operational_ids
+                        and (
+                            provisional_weather_pairs is None
+                            or (sid, model_id) in provisional_weather_pairs
+                        )
                     ]
                     dropped_station_ids = sorted(
                         (
@@ -3989,6 +4463,9 @@ def run_forecast_cycle_flow(
                         )
                         continue
 
+                    if selected_weather_inputs is not None:
+                        selected_attempt_pairs = {(sid, model_id) for sid in member_ids}
+                        selected_group_attempts.update(selected_attempt_pairs)
                     model = models[model_id]  # type: ignore[index]
                     nwp_source_by_station = {
                         sid: forecast_bindings[sid].nwp_source
@@ -4022,6 +4499,13 @@ def run_forecast_cycle_flow(
                             rating_inputs=cast(
                                 "NativeRatingInputs | None", rating_inputs
                             ),
+                            selected_weather_by_station=None
+                            if selected_weather_inputs is None
+                            else {
+                                sid: selected_weather_inputs[(sid, model_id)]
+                                for sid in member_ids
+                                if (sid, model_id) in selected_weather_inputs
+                            },
                             provisional_ifs_tail_mode_by_station={
                                 sid: config.provisional_ifs_tail_mode
                                 for sid in member_ids
@@ -4045,14 +4529,39 @@ def run_forecast_cycle_flow(
                         errors.append(
                             f"Group input assembly failed for {group.id}: {exc}"
                         )
+                        selected_group_failures.update(selected_attempt_pairs)
                         continue
 
                     if group_assembly.inputs is None:
                         log.info("forecast_cycle.group_skipped_no_serviceable_stations")
+                        selected_group_failures.update(selected_attempt_pairs)
+                        if selected_attempt_pairs:
+                            errors.append(
+                                f"Selected group {group.id} has no serviceable "
+                                "weather inputs"
+                            )
                         continue
 
                     group_inputs = group_assembly.inputs
                     metadata_by_station = group_assembly.metadata_by_station
+                    group_cycle_source = nwp_cycle_source
+                    group_cycle_reference = nwp_cycle_reference_time
+                    if selected_weather_inputs is not None:
+                        from sapphire_flow.services.selected_weather_inputs import (
+                            selected_group_weather_provenance,
+                        )
+
+                        actual_weather_provenance = selected_group_weather_provenance(
+                            {
+                                sid: selected_weather_inputs[(sid, model_id)]
+                                for sid in group_inputs.station_ids
+                            },
+                            issue_time=resolved_cycle_time,
+                        )
+                        group_cycle_source = actual_weather_provenance.nwp_cycle_source
+                        group_cycle_reference = (
+                            actual_weather_provenance.nwp_cycle_reference_time
+                        )
                     group_outcome = run_group_forecast(
                         unavailable_members=group_assembly.unavailable_members,
                         group=restricted_group,
@@ -4065,8 +4574,8 @@ def run_forecast_cycle_flow(
                         qc_rules=qc_rules,  # type: ignore[arg-type]
                         qc_overrides=[],
                         baselines_by_station=baselines_by_station,
-                        nwp_cycle_reference_time=nwp_cycle_reference_time,
-                        nwp_cycle_source=nwp_cycle_source,
+                        nwp_cycle_reference_time=group_cycle_reference,
+                        nwp_cycle_source=group_cycle_source,
                         config=config,  # type: ignore[arg-type]
                         clock=clock,  # type: ignore[arg-type]
                         id_gen=uuid4,
@@ -4075,6 +4584,14 @@ def run_forecast_cycle_flow(
                         state_policy=GroupStatePolicy.STATELESS_ONLY
                         if data_use is ForecastDataUse.PROVISIONAL_RATING
                         else GroupStatePolicy.PRESERVE,
+                    )
+                    selected_group_failures.update(
+                        selected_attempt_pairs
+                        - {
+                            (sid, model_id)
+                            for sid, result in group_outcome.results.items()
+                            if result.forecasts
+                        }
                     )
                     for rejected_payload in group_outcome.rejected:
                         rejected_buffer.append(
@@ -4164,6 +4681,8 @@ def run_forecast_cycle_flow(
                             assignment.priority
                         )
                         group_produced_pairs.add((sid, model_id))
+                        if selected_attempt_pairs and result.forecasts:
+                            selected_group_successes.add((sid, model_id))
 
                     log.info(
                         "forecast_cycle.group_completed",
@@ -4196,6 +4715,7 @@ def run_forecast_cycle_flow(
                     errors.append(
                         f"Group forecast failed for {group.id}: {exc.original}"
                     )
+                    selected_group_failures.update(selected_attempt_pairs)
                     continue
                 except Exception as exc:
                     # Fixer round (blocker, take 3): a fatal store_forecast
@@ -4213,6 +4733,7 @@ def run_forecast_cycle_flow(
                         error=str(exc),
                     )
                     errors.append(f"Group forecast failed for {group.id}: {exc}")
+                    selected_group_failures.update(selected_attempt_pairs)
                     continue
                 finally:
                     structlog.contextvars.unbind_contextvars("group_id", "model_id")
@@ -4285,6 +4806,11 @@ def run_forecast_cycle_flow(
             health=_forecast_cycle_health(
                 stations_attempted=len(operational),
                 stations_failed=stations_failed,
+                selected_group_attempts=len(selected_group_attempts),
+                selected_group_failures=len(
+                    selected_group_failures - selected_group_successes
+                ),
+                selected_forecasts_stored=forecasts_stored,
                 daily_failed=bool(daily_preflight_errors)
                 or bool(daily_execution is not None and daily_errors),
                 alert_suppressed=alert_suppressed,
@@ -4333,13 +4859,21 @@ def run_forecast_cycle_flow(
         try:
             try:
                 try:
-                    if daily_execution is not None:
-                        daily_execution.fail_unstarted(
-                            DailyFailureReason.SHARED_INPUT_FAILURE
-                        )
+                    _finalize_cycle_weather_and_daily(
+                        weather_refresh=weather_refresh,
+                        weather_completed=weather_completed,
+                        weather_earliest_cycle=weather_earliest_cycle,
+                        daily_execution=daily_execution,
+                        original_error=sys.exception(),
+                    )
+
                 finally:
-                    if created_http_client is not None:
-                        created_http_client.close()
+                    try:
+                        if operational_http_session is not None:
+                            operational_http_session.close()
+                    finally:
+                        if created_http_client is not None:
+                            created_http_client.close()
             finally:
                 # Capture must run even if closing the HTTP client raises —
                 # review finding, 2026-09-28: nesting it after `close()` in

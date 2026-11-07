@@ -4,6 +4,7 @@ from enum import Enum, StrEnum
 class FutureWeatherPolicy(Enum):
     LEGACY = "legacy"
     COMPLETE_DAILY = "complete_daily"
+    RECAP_COMPLETE_DAILY = "recap_complete_daily"
 
 
 class QcStatus(Enum):
@@ -323,6 +324,7 @@ class WeatherSourceStatus(Enum):
 class WeatherSourceRole(Enum):
     FORECAST = "forecast"
     REANALYSIS = "reanalysis"
+    OPERATIONAL = "operational"
 
 
 class SkillFreshness(Enum):
@@ -420,6 +422,7 @@ class AuditEventType(Enum):
     STATION_ONBOARDED = "station_onboarded"
     MODEL_ASSIGNED = "model_assigned"
     DELIVERY_IMPORTED = "delivery_imported"
+    OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"
 
 
 class ProvisionalIfsTailMode(Enum):

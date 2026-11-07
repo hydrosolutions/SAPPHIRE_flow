@@ -280,6 +280,31 @@ class TestRowPartition:
         acted_on = set(SUPERSEDING_ROWS) | set(REFUSING_ROWS)
         assert acted_on == set(ForecastRetryRow) - {ForecastRetryRow.IDENTICAL}
 
-    def test_row_3_is_the_only_refusal(self) -> None:
-        """⛔ Row 3 is the one Plan 328 does NOT take."""
-        assert set(REFUSING_ROWS) == {ForecastRetryRow.QC_VERDICT_DIFFERS}
+    def test_qc_and_weather_contract_changes_are_refused(self) -> None:
+        assert set(REFUSING_ROWS) == {
+            ForecastRetryRow.QC_VERDICT_DIFFERS,
+            ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS,
+        }
+
+
+class TestWeatherEvidenceIdentity:
+    def test_null_cannot_be_reinterpreted_as_selected(self) -> None:
+        stored = _forecast()
+        recomputed = replace(stored, weather_evidence_version=1)
+        assert classify_forecast_retry(stored=stored, recomputed=recomputed) is (
+            ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS
+        )
+
+    def test_selected_cannot_be_downgraded_to_null(self) -> None:
+        stored = _forecast(weather_evidence_version=1)
+        recomputed = replace(stored, weather_evidence_version=None)
+        assert classify_forecast_retry(stored=stored, recomputed=recomputed) is (
+            ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS
+        )
+
+    def test_selected_evidence_bytes_remain_outside_equality(self) -> None:
+        stored = _forecast(weather_evidence_version=1)
+        recomputed = replace(stored, evidence=incomplete_evidence("capture_failed"))
+        assert classify_forecast_retry(stored=stored, recomputed=recomputed) is (
+            ForecastRetryRow.IDENTICAL
+        )

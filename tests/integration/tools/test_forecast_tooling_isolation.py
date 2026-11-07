@@ -106,6 +106,7 @@ class TestBlackoutProjection:
                 .one()
             )
             expected.pop("input_lineage")
+            expected.pop("weather_evidence_version")
             conn.execute(sa.text(f"SET LOCAL ROLE {role}"))
             assert conn.scalar(sa.text("SELECT current_user")) == role
             for projection in ("input_lineage", "*"):
@@ -149,6 +150,7 @@ class TestBlackoutProjection:
             assert payload["blackout_forecasts"][0]["qc_status"] == "qc_suspect"
             assert payload["blackout_forecasts"][0]["input_quality"] == "degraded"
             assert "input_lineage" not in payload["blackout_forecasts"][0]
+            assert "weather_evidence_version" not in payload["blackout_forecasts"][0]
             # Both ordinary upper-bound control and newer TEST are now inside.
             args.blackout_end = (
                 newer_test.issued_at + timedelta(seconds=1)

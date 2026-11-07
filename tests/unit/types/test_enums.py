@@ -87,7 +87,7 @@ class TestAuditEventType:
     def test_exists_as_runtime_enum(self) -> None:
         _require_audit_event_type()
 
-    def test_has_exactly_twenty_three_values(self) -> None:
+    def test_has_exactly_twenty_four_values(self) -> None:
         """The count is a deliberate lock: a new member must be a conscious edit
         HERE, in the expected set below, and in the authoritative spec
         (`docs/spec/types-and-protocols.md`) — three places, like the Dockerfile's
@@ -96,7 +96,7 @@ class TestAuditEventType:
         adds delivery_imported.
         """
         audit_event_type = _require_audit_event_type()
-        assert len(audit_event_type) == 23
+        assert len(audit_event_type) == 24
 
     def test_values_match_spec_plus_additive_members(self) -> None:
         audit_event_type = _require_audit_event_type()
@@ -124,6 +124,7 @@ class TestAuditEventType:
             "human_grant_changed",
             "forecast_publication_decided",
             "delivery_imported",
+            "operational_weather_refresh",
         }
         assert {e.value for e in audit_event_type} == expected
 
