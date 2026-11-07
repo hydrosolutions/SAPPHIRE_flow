@@ -169,7 +169,8 @@ unreviewed fixes. No live mutation is authorized by the diagnostic examples abov
 - Maintain authorization, no-store/retention, output QC, scientific provenance and
   existing overview cost safeguards. Do not add unbounded per-station scans simply to
   supply status. Verify shared-path compatibility with other models and regions.
-- Follow repository review, test and owner merge/deployment requirements. Changes to
-  external contracts, user-visible semantics or material scientific behavior are
-  high-risk under AGENTS.md and require its additional independent review. This vision
-  does not prescribe schema migrations, new dependencies or a new status store.
+- Follow repository review, test and owner merge/deployment requirements. Apply all
+  AGENTS.md high-risk categories and its owner-commissioned relevant independent
+  review requirement, in addition to independent Claude and Codex reviews. Missing
+  reviews are not approvals. This vision does not prescribe schema migrations, new
+  dependencies or a new status store.
