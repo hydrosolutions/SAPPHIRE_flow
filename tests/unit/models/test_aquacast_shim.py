@@ -183,6 +183,28 @@ class TestCmalSmallDeclaration:
         assert set(past_known) == {"discharge", "precipitation", "temperature"}
         assert {var.lookback for var in past_known.values()} == {30}
 
+    def test_past_gap_budget_is_discharge_only(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        daily = CmalSmall().input_requirement.dynamic[timedelta(days=1)]
+        spec = next(iter(daily.data.values()))
+        assert {
+            name: variable.max_nan
+            for namespace in spec.past_known.values()
+            for name, variable in namespace.items()
+        } == {"discharge": 30, "precipitation": 0, "temperature": 0}
+
+    def test_future_weather_has_zero_gap_budget(self) -> None:
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        daily = CmalSmall().input_requirement.dynamic[timedelta(days=1)]
+        spec = next(iter(daily.data.values()))
+        assert {
+            name: variable.max_nan
+            for namespace in spec.future_known.values()
+            for name, variable in namespace.items()
+        } == {"precipitation": 0, "temperature": 0}
+
     def test_config_hash_is_the_vendored_files_digest(self) -> None:
         """The digest is taken from the same file `__init__` binds, so the hash and the
         bound config cannot drift apart.
