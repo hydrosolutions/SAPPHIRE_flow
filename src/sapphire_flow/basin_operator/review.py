@@ -134,8 +134,26 @@ def open_batch(package_dir: Path, stations: tuple[StationInput, ...]) -> ReviewB
             raise ValueError("package must not contain symbolic links")
         if path.is_file():
             hashes[str(path.relative_to(package_dir))] = file_hash(path)
+    content_fingerprint, fingerprint = compute_review_fingerprints(
+        compute_package_fingerprint(loaded), hashes, stations
+    )
+    return ReviewBatch(
+        package_dir=package_dir,
+        package=loaded,
+        stations=stations,
+        fingerprint=fingerprint,
+        content_fingerprint=content_fingerprint,
+        warnings=warnings,
+        blockers=blockers,
+    )
+
+
+def compute_review_fingerprints(
+    package_fingerprint: str, hashes: dict[str, str], stations: tuple[StationInput, ...]
+) -> tuple[str, str]:
+    """Preserve review identity bytes for geometry-free downstream admission."""
     payload: dict[str, Any] = {
-        "package": compute_package_fingerprint(loaded),
+        "package": package_fingerprint,
         "files": hashes,
     }
     content_fingerprint = (
@@ -155,15 +173,7 @@ def open_batch(package_dir: Path, stations: tuple[StationInput, ...]) -> ReviewB
             ).encode()
         ).hexdigest()
     )
-    return ReviewBatch(
-        package_dir=package_dir,
-        package=loaded,
-        stations=stations,
-        fingerprint=fingerprint,
-        content_fingerprint=content_fingerprint,
-        warnings=warnings,
-        blockers=blockers,
-    )
+    return content_fingerprint, fingerprint
 
 
 def decide(

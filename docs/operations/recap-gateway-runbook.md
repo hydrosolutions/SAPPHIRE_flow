@@ -6,11 +6,311 @@ coverage-manifest recording, live smoke execution, `NWP_DELIVERY` watchdog
 triage, API-key handling, and snow-variable status. Does **not** document the
 upstream `recap-dg-client` fixes as complete — see § Snow-variable status.
 
+## Prepare an approved basin handover
+
+The local companion CLI is `python -m sapphire_flow.cli.prepare_gateway`.
+It does not launch a server, import stations, access a database, run a model,
+start a DAG, activate forecasts or change the running basin-review tool.
+Its implemented path uses explicit product contracts. Missing contracts remain
+holds; fixtures do not establish live coverage or Vatro approval.
+
+**Before full live rehearsal:** obtain Vatro's integration/procedure review,
+including upload outcome/identity evidence, write/flag semantics, native temporal
+support and snow procedure where needed. The owner already authorized the new
+Trishuli upload and data fetches. Do not request repeat authority for those actions.
+Subscription scope still needs exact operator confirmation. Shared IFS refreshes,
+existing registrations and deployment remain outside this route.
+
+Use the approved **research** Trishuli handover, text code `00001`, not the pending
+automatic extraction. A fresh HRU name is a proposal until supported evidence ties
+it to the exact uploaded bytes/features. No geometry loading, validity check or
+round-trip comparison occurs at Gateway admission. Changes return upstream.
+
+### Numbered facilitator procedure
+
+Commands below use operator-selected absolute paths. `HANDOVER` is the immutable
+approved-only export. `EVIDENCE` is a new private directory **outside any Git
+repository and outside the handover**. Keep one workspace on one host; never copy
+it and operate both copies, or create another workspace to bypass a hold. The
+exclusive lock protects local custody, not global HRU uniqueness. Exit `2` means
+held/failed requested work; intermediate successful steps remain held until all
+Gateway coverage passes. Exit `0` means this Gateway scope passed, not model readiness.
+
+1. Select the approved handover and evidence directory. Inspect the approved
+   identities and upstream exclusions. Keep existing six-/twenty-one-station
+   registrations untouched. Do not use an existing HRU merely because its name fits.
+2. Prepare the model-derived proposal. Start with this deliberately incomplete
+   `scope.json`, then fill the explicit contracts described below. No history years
+   are inferred from the model's lookback or artifact split years.
+
+   ```json
+   {"model_id":"cmal_small","time_step_seconds":86400,
+    "history":null,"forecast":null,"contracts":[]}
+   ```
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" prepare --scope "$SCOPE"
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" prepare --scope "$SCOPE" --confirm "$PROPOSAL_REVISION" --vatro-review "$REVIEW_REFERENCE"
+   ```
+
+   Inspect the exact derived feature mapping, proposed HRU, source/derived
+   fingerprints, model/configuration identity, P/T streams, history window, source
+   publication lag and non-Gateway Q/static prerequisites. `cmal_small` requirements
+   come from installed discovery/FI adaptation, not YAML interpretation; unavailable
+   optional model dependencies produce a hold. No weights, predict or train call
+   occurs. An edit retains the old proposal but invalidates its confirmation and
+   coverage eligibility. Unsupported required inputs cannot be silently removed.
+3. Register once using the approved secret-file boundary and the existing upload
+   authority. `CONFIG` is the normal Recap configuration; `KEY_FILE` is an existing
+   approved secret file, never a key value or a new inventory export.
+   An explicit `--secret-file` must itself supply a nonempty key. A missing, empty,
+   whitespace-only or unreadable file fails before clients or remote operations;
+   it never falls back to `RECAP_API_KEY`, including if the file changes during
+   reading. If the option is omitted, the existing default-secret/environment
+   selection remains supported. Never put a key value on the command line.
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" register --hru "$NEW_HRU" --config "$CONFIG" --secret-file "$KEY_FILE"
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" status
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" reconcile --outcome confirmed --actor "$ACTOR" --evidence "$REGISTRATION_EVIDENCE_REFERENCE"
+   ```
+
+   Upload is exactly `package/basins.gpkg`, once per HRU/batch, never a ZIP or static
+   table. Requested HRU syntax is parsed before any intent is recorded; a local naming
+   error makes no transport call and can be corrected without remote reconciliation.
+   Intent is flushed before the POST. HTTP success is recorded separately
+   from confirmed identity. Reconciliation evidence must tie the requested HRU,
+   exact upload digest and all feature names to this handover. Self-declared actor
+   text is not authentication. Optional admin review may provide evidence; it is
+   not a second geometry review. Timeout, conflict, interruption or an ambiguous
+   response stays held, including after restart. Do not rename/retry. Only
+   attributed supported proof of **non-creation** permits `reconcile --outcome
+   not_created`, followed by a deliberate `register` of the same recorded name.
+   Never delete remotely to recover.
+4. Preview, inspect and confirm the exact subscription delta. Reads are HRU/source
+   scoped. Only required absent rows are created; updates include changed flags
+   only. Opposite snow flags and unrelated rows are preserved. Concurrent changes
+   or an uncertain write not resolved by read-back stop rather than overwrite.
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" subscribe --config "$CONFIG" --secret-file "$KEY_FILE"
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" subscribe --confirm "$SUBSCRIPTION_REVISION" --config "$CONFIG" --secret-file "$KEY_FILE"
+   ```
+
+5. Print the numbered manual history handoff and record actual job references.
+   ERA5 uses `era5_land_backfill__targeted`, explicit `shapefile_names`,
+   `year_start`, `year_end` and subscribed variables, never “all”. Job years expand
+   the requested interval to whole calendar years; coverage still checks the
+   original half-open interval. Snow requires Vatro's supported procedure in its
+   contract; no snow DAG is invented. A job reference never proves coverage.
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" history
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" history --stream era5_history --actor "$ACTOR" --job-reference "$JOB_REFERENCE"
+   ```
+
+   Do not start shared `ifs__subdaily` here. Missing IFS remains held unless it
+   arrives normally; shared refresh/backfill needs separate owner coordination.
+6. Resume actual retrieval over the **whole agreed scope**. Historical requests
+   use at most 31 days, reuse only complete unchanged chunks, and retry incomplete
+   chunks. Forecast evidence refreshes on each resume. Each requested member and
+   cycle is queried explicitly; no default HRU is allowed.
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" resume --config "$CONFIG" --secret-file "$KEY_FILE"
+   ```
+
+   Check every station's usable counts, compressed missing intervals, provenance,
+   timestamps and response digest in private `state.json`. Interior gaps, duplicate
+   timestamps, missing columns, wrong provenance, empty results and nonfinite values
+   hold the affected station. Finite zero values are valid. The source lag is an
+   explicit contract assumption, not permission to shorten the verification window.
+7. Retain the private state and aggregate `status` output with the source reference.
+   Every approved station appears once, eligible or held. Upstream exclusions stay
+   in the immutable handover and are never uploaded. Eligibility means **Gateway
+   source coverage only**. It does not update the supervised training-span manifest,
+   qualify physical units/time support, import/persist data, prove FI compatibility
+   or authorize training, publication or activation.
+
+### Explicit scope file
+
+`history` contains UTC `start`, exclusive `end` (both midnight), and a nonempty
+operator-selected `purpose`. `forecast` contains UTC synoptic `cycles`, ISO-8601
+`first_lead`/exclusive `end_lead` durations, explicit `members` (`[0]` for SAP3's
+control/HRES only), `level_type`, nullable `level`,
+`control_grid` (`0p1`), `product_grid_reference`, and
+`source_runs`: pairs of cycle ISO timestamp and a run contract.
+Keys must be aware UTC instants; `Z` and `+00:00` spellings normalize to the same
+canonical key and proposal revision. Naive, non-UTC, unrequested, or duplicate
+normalized keys are rejected. Existing valid schema-2 keys keep their serialized form.
+For datetime-valued runs use `{"semantics":"utc_instant","timestamp":"2026-11-06T00:00:00Z"}`;
+that aware instant must match its requested cycle and is normalized to UTC.
+Exact text run identities remain supported through `{"semantics":"exact",
+"value":"CONFIRMED_TEXT"}`. Naive or string timestamps do not satisfy a declared
+datetime contract. Every requested forecast cycle needs a resolved declaration before proposal
+confirmation, upload or subscription writes. Missing/unresolved cycles hold the
+proposal, not only later coverage. Grid values describe the
+fixed product; they are **not** unsupported client selection arguments.
+
+Uniform `cadence` remains supported. A product can instead declare
+`forecast_lead_bands`, ordered contiguous half-open lead intervals from zero,
+each with ISO-8601 `start`, `end`, and `cadence`. For example, the following
+**synthetic declaration** expresses 64 expected control points over `[0,240h)`:
+
+```json
+"forecast_lead_bands": [
+  {"start":"PT0S","end":"P6D","cadence":"PT3H"},
+  {"start":"P6D","end":"P10D","cadence":"PT6H"}
+]
+```
+
+It requires leads 0..141 every 3h and 144..234 every 6h, with one join at 144h
+and no 240h point. Lead bands must cover the requested horizon; gaps, overlaps
+and unsupported boundaries are rejected. Expected timestamps are enumerated
+from this declaration **before** looking at returned data. Missing 3h or 6h
+points, duplicate joins, unexpected points and wrong cycles hold coverage.
+Nothing silently coarsens cadence. Aware UTC indexes are required; source-run
+instants may carry other offsets and are normalized to UTC. Timestamp spacing
+does not establish interval-value support, aggregation, units or scientific
+readiness. Actual product declarations and evidence still require Vatro review.
+
+Each `contracts` entry contains `stream` (`era5_history`, `ifs_forecast`,
+`snow_history`, `snow_forecast`), `subscription_source`, positive ISO-8601 `cadence`,
+expected raw `provenance`, `reference`, `date_end` (`inclusive` or `exclusive`),
+ISO-8601 `publication_lag`, `historical_source_run`, and `subscription_parameters`.
+`historical_source_run` is an explicit object with `semantics` and nullable `value`:
+`{"semantics":"exact","value":"CONFIRMED_TEXT"}` checks that exact text on every
+historical row; `{"semantics":"null","value":null}` requires a present column
+with null values; `{"semantics":"absent","value":null}` requires the column to
+be absent. The default `unresolved` is a hold, not permission to ignore the field.
+Use null/absence only when supported by the cited product contract. Fixed aware
+historical instants use the same `utc_instant`/`timestamp` contract as forecasts.
+An explicitly confirmed per-date rule can instead use
+`{"semantics":"utc_date_midnight"}`: every row's run must equal midnight of
+that row's UTC valid date. This rule is **opt-in**, requires the product's evidence
+reference, and is not a universal ERA5 assumption or a conclusion from one day's
+metadata. Other varying rules remain unresolved until explicitly supported.
+Aggregate chunk evidence retains the validated source/run contract and the unique
+normalized observed run identities for usable rows, not raw time series. Wrong
+run provenance cannot complete a historical chunk.
+
+Distinct required variables cannot share one subscription identity. Conflicting
+ERA5 or IFS P/T mappings hold the proposal before confirmation or remote calls;
+preview repeats the check defensively. Only the same canonical snow variable can
+share its existing compatible history/forecast row and stream flags.
+
+Each subscription binding names the
+canonical variable, **exact** subscription `parameter_name`, and nullable
+`forecast_type` (`fc` for IFS control). Snow history also has
+`snow_history_procedure`. Do not infer native cadence, endpoint inclusivity or
+provenance from one sample, and do not substitute catalog accumulation flags for
+`RECAP_VARIABLES`' scientific unit/time register. Unneeded contract entries do not
+create subscriptions. The proposal's variables remain derived from the model.
+
+Read-only metadata inspection on **2026-11-06 17:07 UTC** observed sources `era5`,
+`ifs`, `jsnow`; ERA5 P/T names `total_precipitation`, `2m_temperature`; and IFS
+surface identities `tp:fc:sfc`, `2t:fc:sfc`, `tp:pf:sfc`, `2t:pf:sfc`. The current
+catalog maps fc P/T to `0p1` and pf P/T to `0p25`. These are exact observed facts,
+not a universal name grammar or a guarantee for future products. The owner limited
+this preparation route to **control forecasts only**: two ERA5 P/T rows and two
+exact IFS fc P/T rows. Perturbed subscriptions/retrieval/eligibility are deferred;
+existing shared client/model support is unchanged. Catalog reads
+are repeated during preview. Existing IFS/ERA5 flags were null, JSNOW flags true;
+this does not settle create/update/null semantics. No weather data was fetched
+in that inspection. Vatro's integration/write/temporal procedure review remains
+outstanding. No full live rehearsal has been completed by this implementation.
+
+### Credential and transient-data boundary
+
+New authenticated onboarding calls require HTTPS, verified TLS, credential-free
+configured URLs and no redirects. Query authentication is retained because it is
+the supported API contract. The exclusive CLI suppresses third-party stdlib
+transport logging before emission during HTTP calls and never prints raw transport
+errors or exception chains. Upload detail/warnings redact raw and standard `quote`/`quote_plus` key encodings,
+including percent-escape case variants, before truncation. URL and labelled-query
+redaction also remain. The complete HTTPX request/response exception boundary
+returns sanitized errors; it does not suppress process interruption.
+The existing retrieval client is **not** modified: it still follows redirects.
+The owner assigned that concern to Vatro as a lower-priority follow-up, not a
+blanket retrieval blocker. Its raw download runs in a private `0700` per-attempt
+CWD under the external workspace with `0077` umask. Normal/error paths clean
+owned downloads; restart cleans only marked owned orphan Parquet files. Aggregate
+state survives. Never run this process-scoped boundary inside a threaded server.
+Keep workspaces private and never commit them or raw data.
+
+Subscription write failures retain a closed typed category: 400/422 are
+`invalid_request`, 409 is `reconciliation_required`, 401/403 are
+`authorization_failed`; malformed replies and transport uncertainty stay distinct.
+The category is saved before fresh read-back, so a later GET failure or interruption
+cannot erase it. `subscription_diagnostics` shows the current outcome and typed
+failure history only, never raw errors/bodies/URLs or keys. A verified read-back
+can reconcile the desired row while preserving earlier failure evidence; none of
+these categories authorizes an automatic repeat write. Older schema-2 actions
+without a reason remain explicitly unknown (`null`) and load without rewriting.
+
+When a fresh subscription read observes drift, the workflow saves an uncertain
+action before returning the hold. Status and resume consult the latest relevant
+action, never an older successful read-back. Inspect a renewed subscription
+preview and confirm its exact revision before correcting drift. A stale
+confirmation cannot overwrite the changed row; prior audit evidence is retained.
+
+The CLI's per-station `coverage` list exposes whitelisted aggregate evidence:
+requested variable/window/cycle/member, requested/usable/observed row counts,
+missing counts and compressed intervals, validated source/run and unique normalized
+run identities, fetch time, digest, holds, and declared publication lag. It contains
+no measurement values or raw transport payloads. Unknown records are marked
+`unexpected`, including their recorded station identity; they cannot stand in for
+requested chunks. Non-identifier metadata is redacted. Publication lag is a declared
+limitation, not proof of freshness or scientific/model readiness. Operators do not
+need to parse `state.json` to understand complete or partial coverage.
+
+Eligibility and history-cache reuse require the same exact derived chunk keys,
+declared support counts, complete usable support and matching source/run provenance.
+An equal number of unrelated records is not coverage. Missing intervals/holds or
+mismatched evidence force a hold/refetch. Unexpected records remain auditable and
+held rather than silently discarded. Malformed persisted dates, counts, digests or
+provenance fail loading without rewriting or resetting the original workspace.
+Known internal package-contract/checksum/path rejections and unreadable GeoPackage
+attribute layers also return a safe held result (exit 2), including status/recovery
+loads. Passing outer handover hashes does not bypass these internal boundaries.
+The command does not rewrite approval or evidence to make a rejected package pass;
+return upstream for a corrected handover. Attribute admission still does not perform
+geometry acceptance. Unexpected bugs and process interrupts are not blanket-caught.
+
+
+Evidence schema version **2** requires explicit run provenance. Version-1
+workspaces from the unreleased implementation are rejected without rewriting them;
+their historical chunks must not be silently reused. Preserve the entire workspace
+and remote-action ledger. Ask the maintainer for an explicit reconciliation/migration
+before proceeding; do not delete state, start a second workspace, or repeat writes
+as a migration shortcut. There is no automatic upgrade or reset path.
+Valid schema-2 records without the later optional `observed_count` still load
+unchanged. Their observed count is reported as unknown (`null`), never invented
+from expected or usable counts. Newly fetched evidence records the actual returned
+row count, including unusable or extra rows.
+
+Newly assessed `response_sha256` values hash a versioned, deterministic typed
+projection before coverage validation: shape, ordered column labels (duplicates
+included), index class/levels/names, timezone awareness/available zone labels,
+available index values/timestamps, and available requested polygon/source/run
+cells by column position. Other value columns are excluded. Only supported scalar
+forms are encoded; unsupported objects use an opaque marker, never arbitrary reprs.
+Only the digest is retained, not this projection or measurement values. No tabular
+response (for example a failed fetch) hashes a distinct absence marker, not an
+invented empty frame. This is not a raw-wire hash or authenticity proof. Earlier
+stored hashes remain unchanged and must not be relabeled as this projection format.
+
+
+
+
 ## Manual GeoPackage upload
 
-The Gateway has no self-serve basin/HRU registration API (v1) — every basin
-and band GeoPackage is registered by manual upload, coordinated with the
-Gateway operator.
+The June 2026 baseline used supervised manual upload. The November 2026
+public API documents `POST /sdk/hru/vector-files/upload` and scoped subscription
+operations. The approved-handover CLI below integrates that documented surface;
+Vatro's integration/procedure review remains required before full rehearsal.
+The legacy steps here describe upstream package production and the historical
+manual route, not a requirement to revalidate an approved handover.
 
 1. Build the GeoPackage per
    `docs/requirements/04-basin-static-artifact-contract.md` §3a/§4a: lowercase

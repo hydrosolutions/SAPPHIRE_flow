@@ -225,7 +225,13 @@ def compute_package_fingerprint(loaded: LoadedBasinPackage) -> str:
     depends only on content, never on ordering. The SAME package always yields
     the SAME fingerprint (an identical re-import stays an idempotent no-op).
     """
-    manifest = loaded.manifest
+    return compute_manifest_fingerprint(loaded.manifest, loaded.computed_checksums)
+
+
+def compute_manifest_fingerprint(
+    manifest: PackageManifest, computed_checksums: dict[str, str]
+) -> str:
+    """Content identity without geometry loading or scientific acceptance."""
     covered = frozenset(f.name for f in fields(manifest))
     if covered != _FINGERPRINTED_MANIFEST_FIELDS:
         raise RuntimeError(
@@ -256,7 +262,7 @@ def compute_package_fingerprint(loaded: LoadedBasinPackage) -> str:
         ),
         "manifest_files": sorted(manifest.files.items()),
         "declared_checksums": sorted(manifest.checksums.items()),
-        "computed_checksums": sorted(loaded.computed_checksums.items()),
+        "computed_checksums": sorted(computed_checksums.items()),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()

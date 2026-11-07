@@ -148,9 +148,11 @@ for SAP3 package validation. The package includes `manifest.json`, `basins.gpkg`
 `validation_report.json`; include `README.md` and checksums as required by the
 contract.
 
-Before Gateway registration, verify the geometry, attributes, and package
-structure. At this point the HRU and polygon names are proposed values; confirm
-them with the Gateway operator before treating them as registered identifiers.
+Upstream extraction/review verifies geometry, attributes and package structure.
+For an already approved-only handover, do not repeat that review at the Gateway
+stage. Use the [approved-handover procedure](recap-gateway-runbook.md#prepare-an-approved-basin-handover).
+HRU names remain proposed until supported registration evidence confirms them;
+this stage ends before the database-import steps below.
 Verify all of the following:
 
 - `network` is `dhm` and the package ID is unique and immutable.
@@ -169,6 +171,12 @@ with the Gateway before finalizing the confirmed names in the SAP3 package
 metadata.
 
 ## 3. Register the accepted geometry with the Data Gateway
+
+The following is the historical manual route. New approved-only handovers use
+[Prepare an approved basin handover](recap-gateway-runbook.md#prepare-an-approved-basin-handover),
+which preserves research identities and does not inherit six-station DHM defaults.
+No additional geometry validation is required for that approved output.
+
 
 After the basin geometries pass coordinate and delineation review, follow the
 Gateway team's [new-geometry onboarding instructions](https://github.com/hydrosolutions/recap-dg-client/blob/main/docs/onboarding-a-new-geometry.md).

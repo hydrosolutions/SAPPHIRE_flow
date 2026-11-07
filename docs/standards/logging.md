@@ -701,3 +701,22 @@ package inventories or server error text. See [the staging route](../deployment/
 ### Observation-history bounded failures
 
 `observation_history.read_failed` uses closed causes `disabled`, `config_drift`, `row_cap`, `byte_cap`, `timeout`, `database_fault`. Configuration drift/database faults use ERROR; bounded unavailability uses WARNING. Diagnostics may include the bound, capped eligible row count, encoded byte count and at most one validated in-scope station ID for a station overflow. Never emit values, excluded/protected counts, raw SQL/errors, payloads or credentials. HTTP errors remain generic.
+
+### Local Gateway preparation transport boundary
+
+The exclusive `prepare_gateway` CLI uses structured JSON operator reports, not raw
+HTTP diagnostics. During a Gateway request, `quiet_gateway_transport` temporarily
+suppresses stdlib transport emission through `sys.maxsize`, including custom
+levels above CRITICAL, restoring the exact prior threshold on normal/exception
+exit. This is the practical integer threshold, not mathematical suppression of
+arbitrarily large Python integer levels. This narrowly contains HTTPX and requests/urllib3 query-key URLs before
+handlers run; it is not a global redaction framework or a client monkey-patch.
+Failures expose a closed `GatewayFailure` reason only; no raw exception chain,
+request params or response body enters state/output. Upload warnings are bounded
+and key/URL-sanitized, including query-encoded key forms, percent-escape case
+variants and case-insensitive HTTP(S) schemes before truncation. Every ordinary HTTPX transport/response-processing
+exception is contained by the external boundary; process interrupts still propagate. No new Prefect or operational events are introduced.
+Subscription failure diagnostics persist only the shared typed category before
+read-back. Operator JSON separates current outcome from prior typed failure
+history; successful reconciliation does not delete that history. No raw transport
+error/body/key becomes a diagnostic field.

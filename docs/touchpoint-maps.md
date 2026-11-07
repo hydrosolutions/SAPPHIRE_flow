@@ -22,6 +22,40 @@ structural approval blocks and immutable approved-only subset exports. Keep
 read-only feedback HTML free of approval authority. See the
 [operator runbook](operations/basin-operator-runbook.md).
 
+### Approved handover Gateway preparation
+
+`cli/prepare_gateway.py` → `services/gateway_preparation.py` →
+`adapters/recap_registration.py` and the supported `recap_client` facade.
+`types/gateway_preparation.py` owns immutable scope/evidence;
+`services/gateway_data_coverage.py` assesses complete requested cells and contains
+private transient downloads. No DB/Prefect bootstrap or running review-tool changes.
+Keep `load_package_identity`, `compute_manifest_fingerprint` and
+`compute_review_fingerprints` byte-compatible with existing review/import identity.
+Admission must not call geometry-review entrypoints. Preserve durable-before-write
+intent, attributed reconciliation, exact proposal/delta confirmations, source
+immutability and every station's visible held/eligible result. Verify both HTTP
+stacks with fake transports, key-safe errors/logs, fixed fingerprint baselines,
+partial-batch resume, interrupted writes, unrelated snow flags and the existing
+basin/Recap regressions. The training span manifest and model contracts do not change.
+State schema 2 requires explicit historical run semantics (exact text, fixed aware
+instant, explicitly declared UTC-date-midnight rule, supported null/absence, or
+unresolved hold); validated provenance and unique observed run identities accompany
+aggregate chunk evidence. Forecast contracts support uniform cadence or declared
+contiguous lead bands. Expected support never comes from returned rows. Every requested
+forecast cycle must have a resolved run contract before confirming the proposal.
+Observed subscription drift must be persisted as uncertain; status and resume
+both require the latest relevant action to be verified, not any past success.
+Coverage report and resume/cache share exact requested chunk derivation and
+count/provenance checks. Persisted chunk invariants reject malformed dates/counts/
+digests/provenance without rewriting state; optional unknown observed counts keep
+valid schema-2 records readable. CLI coverage summaries whitelist aggregates only.
+Required subscription identities must not collapse different canonical products;
+intentional same-variable snow stream sharing remains supported.
+ Never silently reinterpret version-1 chunks. Exercise
+actual CLI dispatch through both HTTP stacks with dummy config/secret files and
+fake transports, including encoded key echoes and locally invalid HRU names.
+
+
 ## Maps
 
 - **ForecastInterface / model execution** — model boundary, adapters, data
