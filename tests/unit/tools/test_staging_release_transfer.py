@@ -1354,3 +1354,269 @@ class TestTopLevelImageIds:
                 envelope, directory, approval=approved_loader(envelope), run=runner.run
             )
         assert not runner.loaded
+
+
+def reuse_binding() -> transfer.ReuseBinding:
+    return transfer.ReuseBinding(
+        **asdict(binding()),
+        ci=transfer.CIIdentity(
+            run_id="456",
+            run_attempt="2",
+            artifact_id="789",
+            artifact_archive_sha256="e" * 64,
+        ),
+    )
+
+
+def reuse_payload(tmp_path: Path) -> tuple:
+    approved = reuse_binding()
+    base, directory = payload(tmp_path, approved)
+    proof = transfer.json_bytes(
+        {
+            "schema_version": 1,
+            "repository": transfer.REPOSITORY,
+            "workflow_path": ".github/workflows/ci.yml",
+            "workflow_blob": "f" * 40,
+            "event": "push",
+            "head_branch": "main",
+            **asdict(approved.ci),
+            "source_sha": approved.source_sha,
+            "source_tree": approved.source_tree,
+            "checkout_sha": approved.source_sha,
+            "checkout_tree": approved.source_tree,
+            "checkout_parents": ["9" * 40],
+            "execution_kind": "full",
+            "qualification": "complete",
+            "producer": "ci-attest",
+        }
+    )
+    (directory / "ci-proof.json").write_bytes(proof)
+    fields = {
+        name: getattr(base, name) for name in transfer.Envelope.__dataclass_fields__
+    }
+    fields.update(
+        schema_version=2,
+        files={
+            **base.files,
+            "ci-proof.json": transfer.FileDigest.of(directory / "ci-proof.json"),
+        },
+        gates={
+            name: "reused" if name in transfer.REUSED_GATES else "passed"
+            for name in transfer.GATE_NAMES
+        },
+        coverage={
+            name: transfer.GateCoverage(
+                origin="canonical_ci", local_status="not_run_here", ci=approved.ci
+            )
+            if name in transfer.REUSED_GATES
+            else transfer.GateCoverage(origin="local", local_status="passed", ci=None)
+            for name in transfer.GATE_NAMES
+        },
+        proof_failure=None,
+    )
+    return transfer.ReuseEnvelope(**fields), directory
+
+
+def reuse_config() -> transfer.ReuseReceiverConfig:
+    base = config(reuse_binding())
+    return transfer.ReuseReceiverConfig(
+        **{
+            name: getattr(base, name)
+            for name in transfer.ReceiverConfig.__dataclass_fields__
+        }
+    )
+
+
+class TestReuseCustody:
+    def test_v1_parser_refuses_v2_envelope_and_binding(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        with pytest.raises(transfer.TransferError, match="incomplete envelope"):
+            transfer.Envelope.parse(envelope.encode())
+        with pytest.raises(transfer.TransferError, match="incomplete release binding"):
+            transfer.ReleaseBinding.parse(asdict(envelope.binding))
+        assert transfer.parse_envelope(envelope.encode()) == envelope
+
+    def test_v1_receiver_config_cannot_accept_v2(self) -> None:
+        raw = transfer.json_bytes(asdict(reuse_config()))
+        with pytest.raises(
+            (transfer.TransferError, TypeError), match="incomplete|unexpected"
+        ):
+            transfer.ReceiverConfig.parse(raw)
+        assert transfer.parse_receiver_config(raw) == reuse_config()
+
+    def test_release_requires_exact_five_file_allowlist(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        files = dict(envelope.files)
+        del files["ci-proof.json"]
+        with pytest.raises(
+            transfer.TransferError, match="incomplete reuse release payload"
+        ):
+            replace(envelope, files=files)
+
+    def test_reused_gates_cannot_be_reported_as_locally_passed(
+        self, tmp_path: Path
+    ) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        with pytest.raises(transfer.TransferError, match="invalid local gate origin"):
+            replace(
+                envelope,
+                gates={**envelope.gates, "lint": "passed"},
+                coverage={
+                    **envelope.coverage,
+                    "lint": transfer.GateCoverage(
+                        origin="local", local_status="passed", ci=None
+                    ),
+                },
+            )
+
+    def test_image_gates_cannot_be_reused(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        with pytest.raises(transfer.TransferError, match="invalid reused gate origin"):
+            replace(
+                envelope,
+                gates={**envelope.gates, "build-image-and-scan": "reused"},
+                coverage={
+                    **envelope.coverage,
+                    "build-image-and-scan": transfer.GateCoverage(
+                        origin="canonical_ci",
+                        local_status="not_run_here",
+                        ci=envelope.binding.ci,
+                    ),
+                },
+            )
+
+    def test_sealed_delivery_carries_exact_proof_and_is_idempotent(
+        self, tmp_path: Path
+    ) -> None:
+        envelope, directory = reuse_payload(tmp_path)
+        store = tmp_path / "store"
+        store.mkdir(mode=0o700)
+        first = receive_bytes(store, reuse_config(), wire(envelope, directory))
+        second = receive_bytes(store, reuse_config(), wire(envelope, directory))
+        assert first == second == envelope.owner_receipt("delivered")
+        assert first["schema_version"] == 2
+        assert first["ci_proof_sha256"] == envelope.files["ci-proof.json"].sha256
+        assert (store / "v1.2.3/ci-proof.json").read_bytes() == (
+            directory / "ci-proof.json"
+        ).read_bytes()
+
+    def test_rehashed_wrong_proof_cannot_cross_receiver_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        envelope, directory = reuse_payload(tmp_path)
+        path = directory / "ci-proof.json"
+        data = json.loads(path.read_bytes())
+        data["run_attempt"] = "3"
+        path.write_bytes(transfer.json_bytes(data))
+        envelope = replace(
+            envelope,
+            files={**envelope.files, "ci-proof.json": transfer.FileDigest.of(path)},
+        )
+        store = tmp_path / "store"
+        store.mkdir(mode=0o700)
+        with pytest.raises(
+            transfer.TransferError, match="frozen CI proof binding mismatch"
+        ):
+            receive_bytes(store, reuse_config(), wire(envelope, directory))
+        assert not (store / "v1.2.3").exists()
+
+    def test_blocked_diagnostic_requires_no_proof_or_images(
+        self, tmp_path: Path
+    ) -> None:
+        envelope, directory = reuse_payload(tmp_path)
+        diagnostic = replace(
+            envelope,
+            kind=transfer.PayloadKind.DIAGNOSTIC,
+            files={"report.bin": envelope.files["report.bin"]},
+            images=(),
+            expanded_archive_bytes=0,
+            expanded_archive_sha256=None,
+            unpacked_layer_bytes=0,
+            gates=dict.fromkeys(transfer.GATE_NAMES, "blocked"),
+            coverage={
+                name: transfer.GateCoverage(
+                    origin="local", local_status="blocked", ci=None
+                )
+                for name in transfer.GATE_NAMES
+            },
+            proof_failure="proof_blocked",
+        )
+        store = tmp_path / "store"
+        store.mkdir(mode=0o700)
+        receipt = receive_bytes(store, reuse_config(), wire(diagnostic, directory))
+        assert receipt["status"] == "diagnostic-received"
+        assert receipt["proof_failure"] == "proof_blocked"
+        assert "ci_proof_sha256" not in receipt
+        assert "images" not in receipt
+        assert "Source CI reused" not in receipt["assurance"]
+
+
+class TestReuseAcceptedLoad:
+    @pytest.mark.parametrize("approval", ["missing", "approved"])
+    def test_load_still_requires_separate_receipt_approval(
+        self, tmp_path: Path, approval: str
+    ) -> None:
+        envelope, directory = reuse_payload(tmp_path)
+        store = tmp_path / "store"
+        store.mkdir(mode=0o700)
+        receive_bytes(store, reuse_config(), wire(envelope, directory))
+        config = reuse_config()
+        calls = []
+        if approval == "approved":
+            config = replace(
+                config,
+                load_approval_binding_sha256=envelope.binding.sha256,
+                load_approval_receipt_sha256=envelope.files["receipt.json"].sha256,
+            )
+
+        def load(item: object, path: Path, *, approval: object) -> dict:
+            assert item == envelope
+            assert (path / "ci-proof.json").read_bytes() == (
+                directory / "ci-proof.json"
+            ).read_bytes()
+            calls.append("load")
+            return {"native_image_proofs": "synthetic-pass"}
+
+        if approval == "missing":
+            with pytest.raises(transfer.TransferError, match="approval"):
+                transfer.load_accepted(config, store, load=load)
+            assert calls == []
+        else:
+            result = transfer.load_accepted(config, store, load=load)
+            assert result["status"] == "accepted-images-loaded"
+            assert result["ci_proof_sha256"] == envelope.files["ci-proof.json"].sha256
+            ledger = (store / "load-v1.2.3.json").read_bytes()
+            assert transfer.load_accepted(config, store, load=load) == result
+            assert (store / "load-v1.2.3.json").read_bytes() == ledger
+
+    def test_changed_frozen_proof_cannot_reach_load(self, tmp_path: Path) -> None:
+        envelope, directory = reuse_payload(tmp_path)
+        store = tmp_path / "store"
+        store.mkdir(mode=0o700)
+        receive_bytes(store, reuse_config(), wire(envelope, directory))
+        proof = store / "v1.2.3/ci-proof.json"
+        proof.write_bytes(proof.read_bytes() + b"changed")
+        approved = replace(
+            reuse_config(),
+            load_approval_binding_sha256=envelope.binding.sha256,
+            load_approval_receipt_sha256=envelope.files["receipt.json"].sha256,
+        )
+        with pytest.raises(transfer.TransferError, match="digest"):
+            transfer.load_accepted(
+                approved,
+                store,
+                load=lambda *args, **kwargs: pytest.fail("mutated proof cannot load"),
+            )
+
+
+class TestV1ByteCompatibility:
+    def test_envelope_and_owner_receipt_keep_baseline_bytes(self) -> None:
+        fixtures = ROOT / "tests/fixtures/staging_release"
+        raw = (fixtures / "v1-envelope.json").read_bytes()
+        envelope = transfer.parse_envelope(raw)
+        assert type(envelope) is transfer.Envelope
+        assert envelope.encode() == raw
+        assert (
+            transfer.json_bytes(envelope.owner_receipt("delivered"))
+            == (fixtures / "v1-owner-receipt.json").read_bytes()
+        )

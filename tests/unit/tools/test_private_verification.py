@@ -275,7 +275,8 @@ class TestRetainedWorkflow:
         legacy = yaml.load(
             (ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader
         )
-        assert set(verifier.CI_JOB_GATES) == set(legacy["jobs"])
+        assert set(verifier.CI_JOB_GATES) == set(legacy["jobs"]) - {"ci-attest"}
+        assert set(legacy["jobs"]["ci-attest"]["needs"]) == set(verifier.CI_JOB_GATES)
         assert set(verifier.CI_JOB_GATES["unit"]) == {
             "unit-" + shard
             for shard in legacy["jobs"]["unit"]["strategy"]["matrix"]["shard"]

@@ -9,6 +9,12 @@ on:
         options: [deliver-only, load-images, exporter-smoke-only]
         default: deliver-only
         required: true
+      verification_profile:
+        description: Reuse approved FULL source CI, or run the full release-version suite
+        type: choice
+        options: [ci-reuse, full]
+        default: ci-reuse
+        required: true
 
 permissions:
   contents: read
@@ -19,6 +25,9 @@ concurrency:
 
 jobs:
   verify:
+    permissions:
+      contents: read
+      actions: read
     # The environment gates only the ADMIN SSH copy, not existing package keys.
     if: >-
       github.repository == 'hydrosolutions/SAPPHIRE_flow' &&
@@ -58,16 +67,23 @@ jobs:
         env:
           EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
         run: python3 -I tools/qualify_image_exporter.py route
+      - name: Admit the exact approved FULL source CI proof
+        id: ci_proof
+        if: ${{ steps.route.outcome == 'success' && inputs.verification_profile == 'ci-reuse' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tools/ci_provenance.py
       - name: Enable the approved hosted containerd image store
         id: engine
-        if: ${{ steps.route.outcome == 'success' }}
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         timeout-minutes: 3
         env:
           EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
         run: python3 -I tools/qualify_image_exporter.py engine
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
         id: buildx
-        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' }}
+        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         timeout-minutes: 3
         with:
           name: private-verification
@@ -79,18 +95,18 @@ jobs:
           cleanup: false
       - name: Qualify the actual two-image raw-ID exporter
         id: exporter-smoke
-        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' && steps.buildx.outcome == 'success' }}
+        if: ${{ steps.route.outcome == 'success' && steps.engine.outcome == 'success' && steps.buildx.outcome == 'success' && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         timeout-minutes: 5
         env:
           EXPORTER_ROUTE: ${{ inputs.delivery_mode }}
         run: python3 -I tools/qualify_image_exporter.py smoke
       - name: Prepare empty public tool-bootstrap directory
-        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         run: mkdir "$RUNNER_TEMP/private-trivy-bootstrap"
       - name: Install the existing pinned Trivy action's tool
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         id: trivy
-        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         timeout-minutes: 5
         with:
           # Only an empty directory is scanned here, before any private fetch.
@@ -105,7 +121,7 @@ jobs:
           cache-dir: ${{ runner.temp }}/private-trivy-bootstrap-cache
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
         id: syft
-        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') }}
+        if: ${{ steps.route.outcome == 'success' && (inputs.delivery_mode == 'deliver-only' || inputs.delivery_mode == 'load-images') && (inputs.delivery_mode == 'exporter-smoke-only' || inputs.verification_profile == 'full' || steps.ci_proof.outcome == 'success') }}
         timeout-minutes: 3
       - name: Verify canonical release and export exact tested images
         id: verification
@@ -114,6 +130,8 @@ jobs:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
           SYFT_BIN: ${{ steps.syft.outputs.cmd }}
+          STAGING_CI_PROOF_RESULT: ${{ steps.ci_proof.outcome }}
+          STAGING_CI_PROOF_SHA256: ${{ steps.ci_proof.outputs.proof_sha256 }}
           PRIVATE_PREPARATION: >-
             {"checkout":"${{ steps.checkout.outcome }}","uv":"${{ steps.uv.outcome }}",
              "buildx":"${{ steps.buildx.outcome }}","trivy":"${{ steps.trivy.outcome }}",

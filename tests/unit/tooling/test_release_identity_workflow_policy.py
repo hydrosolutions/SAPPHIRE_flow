@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -18,20 +20,30 @@ def test_no_privileged_release_workflow_dispatch_replacement() -> None:
 
 def test_pr_target_check_binds_event_merge_and_uses_existing_interpreter() -> None:
     text = (_REPO_ROOT / ".github/workflows/ci.yml").read_text()
-    step = text.split("- name: Check PR release target", 1)[1].split("      - run:", 1)[
-        0
-    ]
-    assert "if: github.event_name == 'pull_request'" in step
-    assert "PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}" in step
-    assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in step
-    assert "PR_MERGE_SHA: ${{ github.sha }}" in step
-    assert ".venv/bin/python -I tools/release_target.py check" in step
+    steps = yaml.safe_load(text)["jobs"]["lint"]["steps"]
+    matches = [step for step in steps if step.get("name") == "Check PR release target"]
+    assert len(matches) == 1
+    step = matches[0]
+    assert step["if"] == "github.event_name == 'pull_request'"
+    assert step["env"] == {
+        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "PR_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+        "PR_MERGE_SHA": "${{ github.sha }}",
+    }
+    command = step["run"]
+    assert ".venv/bin/python -I tools/release_target.py check" in command
     assert (
         ' --base-sha "$PR_BASE_SHA" --head-sha "$PR_HEAD_SHA"'
-        ' --merge-sha "$PR_MERGE_SHA"' in step
+        ' --merge-sha "$PR_MERGE_SHA"' in command
     )
-    assert "fetch-depth: 0" in text.split("- name: Check PR release target", 1)[0]
-    assert "uv run" not in step
+    checkouts = [
+        item
+        for item in steps[: steps.index(step)]
+        if str(item.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"]["fetch-depth"] == 0
+    assert "uv run" not in command
 
 
 def test_bootstrap_seed_and_safe_config_are_reviewed_constants() -> None:

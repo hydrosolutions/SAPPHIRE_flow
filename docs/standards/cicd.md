@@ -837,7 +837,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 
 Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
 
-- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 30 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
+- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 40 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
 - **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
 - **The `integration-shard` job is a two-leg SHARD MATRIX** (`heavy`, `rest`) with `fail-fast: false`. `heavy` first runs the selectable `performance` group in a fresh pytest process, then its sustained main group; `rest` is the complement of both curated groups. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
