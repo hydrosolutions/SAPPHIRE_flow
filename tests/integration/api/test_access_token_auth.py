@@ -809,8 +809,7 @@ def _comparable(resp: object) -> tuple[int, object]:
 
 @pytest.mark.usefixtures("_forecast_lab_config")
 class TestReviewerOnPrincipalRoutes:
-    """Plan 401 D2: on every existing PRINCIPAL route a reviewer gets exactly
-    what a consumer with the same scope gets."""
+    """Same scoped responses, except the authorized provisional station marker."""
 
     @pytest.fixture(autouse=True)
     def fixed_latest_clock(self) -> Generator[None, None, None]:
@@ -879,7 +878,28 @@ class TestReviewerOnPrincipalRoutes:
             url = scene.url(template, station_id)
             consumer = client.get(url, headers=_auth(keys[AccessTokenRole.CONSUMER]))
             reviewer = client.get(url, headers=_auth(keys[AccessTokenRole.REVIEWER]))
-            assert _comparable(reviewer) == _comparable(consumer), url
+            if (
+                template in {"/api/v1/stations/{sid}", "/api/v1/stations"}
+                and consumer.status_code == 200
+            ):
+                assert reviewer.status_code == 200
+                consumer_body, reviewer_body = consumer.json(), reviewer.json()
+                if template == "/api/v1/stations":
+                    consumer_rows, reviewer_rows = (
+                        consumer_body["items"],
+                        reviewer_body["items"],
+                    )
+                    assert len(consumer_rows) == len(reviewer_rows) == 1
+                else:
+                    consumer_rows, reviewer_rows = [consumer_body], [reviewer_body]
+                for consumer_row, reviewer_row in zip(
+                    consumer_rows, reviewer_rows, strict=True
+                ):
+                    assert consumer_row.pop("has_provisional_forecast") is None
+                    assert reviewer_row.pop("has_provisional_forecast") is False
+                assert reviewer_body == consumer_body, url
+            else:
+                assert _comparable(reviewer) == _comparable(consumer), url
 
     def test_collections_filter_to_the_reviewer_scope(
         self, client: TestClient, db_connection: sa.Connection

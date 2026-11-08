@@ -552,3 +552,7 @@ structured diagnostic records only operation/category/whitelisted exception clas
 and validated SQLSTATE when available; no raw exception, SQL, IDs or evidence.
 Existing positional Python route callers retain their dependency order; the new
 purpose and reader parameters are keyword-only.
+
+Real bearer-token regression tests assert consumer null and reviewer false for
+standard-only station fixtures, then compare every remaining response field.
+Other principal routes retain their existing whole-response equality checks.
