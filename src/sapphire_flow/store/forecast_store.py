@@ -688,7 +688,7 @@ class PgForecastStore:
                 .all()
             )
 
-            return [_row_to_summary(row) for row in rows], total
+            return [forecast_summary_from_row(row) for row in rows], total
 
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
@@ -1141,7 +1141,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     )
 
 
-def _row_to_summary(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
+def forecast_summary_from_row(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
     return ForecastSummaryRow(
         id=ForecastId(row["id"]),
         data_use=ForecastDataUse(row["data_use"]),

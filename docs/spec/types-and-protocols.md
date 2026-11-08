@@ -6906,3 +6906,14 @@ The combined-contributor store backstop also normalizes database issue timestamp
 with the existing UTC helper before serialized evidence identity checks. Provisional
 routes already normalize through ensure_utc; they require no additional conversion.
 Neither boundary changes instants, naive-input rejection or retry identity semantics.
+
+### Shared provisional read projection
+
+Map2.9 adds required nullable StationSummary/StationDetail.has_provisional_forecast
+and explicit provisional variants of shared forecast list/detail. These use the
+existing ForecastSummaryRow mapper, canonical ForecastInputLineage parser and
+EnsembleResponse. Frozen issue/artifact identity is checked after scope, before
+projecting persisted warnings. `rating_provenance_status=not_exposed` requires
+`rating_curves=[]` and does not waive required lineage. Publication applicability
+is not_applicable with null decision fields. No new store Protocol, DB projection,
+exact-curve read or derived observation type is introduced. See api-v1-review.md.

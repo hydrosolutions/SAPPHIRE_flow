@@ -5,6 +5,8 @@ import re
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from sapphire_flow.api.publication_cache import shared_forecast_read_path
+
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(
@@ -19,7 +21,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         content={"error": "internal_server_error", "detail": None},
         headers={"Cache-Control": "no-store"}
         if (
-            request.url.path
+            shared_forecast_read_path(request.url.path)
+            or request.url.path
             in {
                 "/api/v1/forecast-lab/snapshot",
                 "/api/v1/observations/latest",

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_stores
@@ -13,6 +13,11 @@ from sapphire_flow.api.forecast_read import (
     require_standard_store,
 )
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
+from sapphire_flow.api.provisional_forecasts import (
+    ProvisionalForecastReader,
+    get_provisional_reader,
+    require_provisional_role,
+)
 from sapphire_flow.api.publication_gate import (
     PublicationGate,
     get_publication_gate,
@@ -23,6 +28,7 @@ from sapphire_flow.api.publication_views import publication_metadata
 from sapphire_flow.api.schemas import (
     EnsembleResponse,
     ForecastDetail,
+    ProvisionalForecastDetail,
     PublicationTombstone,
     QcFlagResponse,
 )
@@ -80,9 +86,8 @@ def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
     )
 
 
-def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
-    require_standard_detail(f)
-    return ForecastDetail(
+def _forecast_detail_fields(f: OperationalForecast) -> dict[str, Any]:
+    return dict(
         id=str(f.id),
         station_id=str(f.station_id),
         model_id=str(f.model_id),
@@ -120,6 +125,11 @@ def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
     )
 
 
+def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
+    require_standard_detail(f)
+    return ForecastDetail(**_forecast_detail_fields(f))
+
+
 def _detail_with_weather(
     forecast: OperationalForecast, store: ForecastStore
 ) -> ForecastDetail:
@@ -137,13 +147,39 @@ def _detail_with_weather(
     return to_forecast_detail(forecast).model_copy(update={"weather_use": summary})
 
 
-@router.get("/forecasts/{forecast_id}", response_model=ForecastDetail)
+@router.get(
+    "/forecasts/{forecast_id}",
+    response_model=ForecastDetail | ProvisionalForecastDetail,
+)
 def get_forecast(
     forecast_id: str,
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_principal),
     gate: PublicationGate = Depends(get_publication_gate),
+    *,
+    data_use: Literal["standard", "provisional_rating"] = Query("standard"),
+    provisional: ProvisionalForecastReader = Depends(get_provisional_reader),
 ) -> ForecastDetail | JSONResponse:
+    if data_use == "provisional_rating":
+        require_provisional_role(principal)
+        forecast, metadata = provisional.detail(ForecastId(UUID(forecast_id)))
+        from sapphire_flow.api.weather_evidence import read_weather_summary
+
+        weather = read_weather_summary(
+            version=forecast.weather_evidence_version,
+            forecast_id=forecast.id,
+            station_id=forecast.station_id,
+            model_id=forecast.model_id,
+            issue_time=forecast.issued_at,
+            data_use=forecast.data_use,
+            store=provisional.store,
+        )
+        response = ProvisionalForecastDetail(
+            **_forecast_detail_fields(forecast),
+            **metadata,
+            weather_use=weather,
+        )
+        return JSONResponse(content=response.model_dump(mode="json"))
     fid = ForecastId(UUID(forecast_id))
     forecast_store = stores["forecast_store"]
     require_standard_store(forecast_store)

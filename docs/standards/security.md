@@ -2240,3 +2240,28 @@ the database trigger refuses changing either value on an existing parent. Existi
 authentication, purpose, station and publication checks still precede weather reads.
 See the configured operational daily weather section of
 [`types-and-protocols.md`](../spec/types-and-protocols.md) and migrations 0081/0082.
+
+### Explicit provisional forecast service-token reads
+
+The shared forecast list/detail's explicit `data_use=provisional_rating` branch is
+a narrow reviewer/admin exception to STANDARD publication selection, not a global
+publication bypass. Consumer tokens receive403. Existing reviewer tenant/station
+scope is enforced by a safe-column header read BEFORE native_rating_lineage or
+forecast values/weather; only materialized authorized IDs reach the existing
+SECURITY DEFINER function with rejected=false. That function itself does not
+authorize a bearer scope. Existing immutable native parent/linkage guards remain.
+
+No grants/migration are added: raw input_lineage, rating-derived/capture/reference
+reads and derivation writes remain denied. sapphire_api retains existing publication
+write privileges for the verified-human STANDARD path; these GET branches perform
+no publication writes/selection locks and service tokens gain no write authority.
+Nonstandard publication insertion/status remains DB-rejected. Provisional410 is
+unsupported; missing404/evidence503 do not imply withdrawal.
+
+Station availability is a bounded page-only existence query gated by can_review;
+consumer null requires no forecast-presence query, and out-of-scope stations stay
+absent. Both station paths and shared forecast paths are no-store including outer
+500, slash redirect and configured preflight responses. Existing CORS policy and
+unrelated classifications are preserved. A frontend Worker may attach its existing
+scoped reviewer key only after its own authorization; never expose it to browsers
+or replace it with an admin key. Exact rating/derived-Q access remains deferred.

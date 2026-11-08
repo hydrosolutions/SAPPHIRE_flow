@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_connection, get_stores
+from sapphire_flow.api.provisional_forecasts import get_provisional_reader
 from sapphire_flow.api.security import Principal, require_admin, require_principal
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AccessTokenRole, AlertStatus
@@ -35,6 +36,11 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
     from sapphire_flow.types.ids import AlertId
+
+
+class _EmptyProvisionalReader:
+    def availability(self, station_ids: list) -> dict:
+        return dict.fromkeys(station_ids, False)
 
 
 class _DummyConnection:
@@ -104,6 +110,7 @@ def fake_stores() -> dict[str, Any]:
 def client(fake_stores: dict[str, Any]) -> Generator[TestClient, None, None]:
     os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
     app.dependency_overrides[get_stores] = lambda: fake_stores
+    app.dependency_overrides[get_provisional_reader] = lambda: _EmptyProvisionalReader()
     app.dependency_overrides[get_connection] = lambda: _DummyConnection()
     app.dependency_overrides[require_principal] = lambda: ADMIN_PRINCIPAL
     app.dependency_overrides[require_admin] = lambda: ADMIN_PRINCIPAL
