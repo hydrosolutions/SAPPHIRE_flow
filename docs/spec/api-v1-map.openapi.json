@@ -3596,6 +3596,37 @@
         "title": "PaginatedResponse[ForecastSummary]",
         "type": "object"
       },
+      "PaginatedResponse_ProvisionalForecastSummary_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProvisionalForecastSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "PaginatedResponse[ProvisionalForecastSummary]",
+        "type": "object"
+      },
       "PaginatedResponse_RejectedForecastResponse_": {
         "properties": {
           "items": {
@@ -3656,6 +3687,487 @@
           "offset"
         ],
         "title": "PaginatedResponse[StationSummary]",
+        "type": "object"
+      },
+      "ProvisionalForecastDetail": {
+        "properties": {
+          "badge": {
+            "const": "PROVISIONAL",
+            "title": "Badge",
+            "type": "string"
+          },
+          "combination_strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Combination Strategy"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_use": {
+            "const": "provisional_rating",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "ensemble": {
+            "$ref": "#/components/schemas/EnsembleResponse"
+          },
+          "forecast_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Status"
+          },
+          "forecast_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Version"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality Flags"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "nwp_cycle_reference_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nwp Cycle Reference Time"
+          },
+          "nwp_cycle_source": {
+            "title": "Nwp Cycle Source",
+            "type": "string"
+          },
+          "observation_staleness_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Staleness Hours"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "preservation_at_publish": {
+            "title": "Preservation At Publish",
+            "type": "null"
+          },
+          "publication_applicability": {
+            "const": "not_applicable",
+            "title": "Publication Applicability",
+            "type": "string"
+          },
+          "publication_decision_id": {
+            "title": "Publication Decision Id",
+            "type": "null"
+          },
+          "publication_state": {
+            "title": "Publication State",
+            "type": "null"
+          },
+          "published_at": {
+            "title": "Published At",
+            "type": "null"
+          },
+          "qc_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "enum": [
+              "raw",
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "missing",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "rating_curves": {
+            "items": {},
+            "maxItems": 0,
+            "title": "Rating Curves",
+            "type": "array"
+          },
+          "rating_provenance_status": {
+            "const": "not_exposed",
+            "title": "Rating Provenance Status",
+            "type": "string"
+          },
+          "representation": {
+            "title": "Representation",
+            "type": "string"
+          },
+          "selection_version": {
+            "title": "Selection Version",
+            "type": "null"
+          },
+          "source_model_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Model Ids"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "warm_up_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warm Up Source"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "weather_use": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WeatherUseResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "station_id",
+          "model_id",
+          "model_tier",
+          "issued_at",
+          "parameter",
+          "representation",
+          "status",
+          "qc_status",
+          "nwp_cycle_source",
+          "created_at",
+          "data_use",
+          "badge",
+          "warnings",
+          "rating_curves",
+          "rating_provenance_status",
+          "publication_applicability",
+          "publication_state",
+          "publication_decision_id",
+          "selection_version",
+          "published_at",
+          "preservation_at_publish",
+          "version",
+          "updated_at",
+          "ensemble"
+        ],
+        "title": "ProvisionalForecastDetail",
+        "type": "object"
+      },
+      "ProvisionalForecastSummary": {
+        "properties": {
+          "badge": {
+            "const": "PROVISIONAL",
+            "title": "Badge",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_use": {
+            "const": "provisional_rating",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "forecast_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Status"
+          },
+          "forecast_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Version"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality Flags"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "nwp_cycle_source": {
+            "title": "Nwp Cycle Source",
+            "type": "string"
+          },
+          "parameter": {
+            "title": "Parameter",
+            "type": "string"
+          },
+          "preservation_at_publish": {
+            "title": "Preservation At Publish",
+            "type": "null"
+          },
+          "publication_applicability": {
+            "const": "not_applicable",
+            "title": "Publication Applicability",
+            "type": "string"
+          },
+          "publication_decision_id": {
+            "title": "Publication Decision Id",
+            "type": "null"
+          },
+          "publication_state": {
+            "title": "Publication State",
+            "type": "null"
+          },
+          "published_at": {
+            "title": "Published At",
+            "type": "null"
+          },
+          "qc_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/QcFlagResponse"
+            },
+            "title": "Qc Flags",
+            "type": "array"
+          },
+          "qc_status": {
+            "enum": [
+              "raw",
+              "qc_passed",
+              "qc_suspect",
+              "qc_failed",
+              "missing",
+              "qc_unchecked"
+            ],
+            "title": "Qc Status",
+            "type": "string"
+          },
+          "rating_curves": {
+            "items": {},
+            "maxItems": 0,
+            "title": "Rating Curves",
+            "type": "array"
+          },
+          "rating_provenance_status": {
+            "const": "not_exposed",
+            "title": "Rating Provenance Status",
+            "type": "string"
+          },
+          "representation": {
+            "title": "Representation",
+            "type": "string"
+          },
+          "selection_version": {
+            "title": "Selection Version",
+            "type": "null"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "station_id",
+          "model_id",
+          "model_tier",
+          "issued_at",
+          "parameter",
+          "representation",
+          "status",
+          "qc_status",
+          "nwp_cycle_source",
+          "created_at",
+          "data_use",
+          "badge",
+          "warnings",
+          "rating_curves",
+          "rating_provenance_status",
+          "publication_applicability",
+          "publication_state",
+          "publication_decision_id",
+          "selection_version",
+          "published_at",
+          "preservation_at_publish"
+        ],
+        "title": "ProvisionalForecastSummary",
         "type": "object"
       },
       "PublicationTombstone": {
@@ -4556,6 +5068,17 @@
             "title": "Gauging Status",
             "type": "string"
           },
+          "has_provisional_forecast": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has Provisional Forecast"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -4657,6 +5180,7 @@
           "network",
           "ownership",
           "measured_parameters",
+          "has_provisional_forecast",
           "timezone",
           "gauging_status",
           "created_at",
@@ -5055,6 +5579,17 @@
             "title": "Code",
             "type": "string"
           },
+          "has_provisional_forecast": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has Provisional Forecast"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -5099,7 +5634,8 @@
           "station_status",
           "network",
           "ownership",
-          "measured_parameters"
+          "measured_parameters",
+          "has_provisional_forecast"
         ],
         "title": "StationSummary",
         "type": "object"
@@ -5682,7 +6218,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.8"
+    "version": "2.9"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -5806,7 +6342,7 @@
     },
     "/api/v1/forecasts/{forecast_id}": {
       "get": {
-        "description": "Forecast detail, with typed qc_flags. For an activated CHWRR tenant only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400.",
+        "description": "Forecast detail, with typed qc_flags. For an activated CHWRR tenant only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
         "operationId": "get_forecast_api_v1_forecasts__forecast_id__get",
         "parameters": [
           {
@@ -5817,6 +6353,20 @@
               "title": "Forecast Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "data_use",
+            "required": false,
+            "schema": {
+              "default": "standard",
+              "enum": [
+                "standard",
+                "provisional_rating"
+              ],
+              "title": "Data Use",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5824,7 +6374,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForecastDetail"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForecastDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProvisionalForecastDetail"
+                    }
+                  ],
+                  "title": "Response Get Forecast Api V1 Forecasts  Forecast Id  Get"
                 }
               }
             },
@@ -5839,6 +6397,16 @@
               }
             },
             "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Provisional purpose requires reviewer or admin."
           },
           "404": {
             "content": {
@@ -5869,6 +6437,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Scoped provisional reads unavailable."
           }
         },
         "security": [
@@ -6110,7 +6698,7 @@
     },
     "/api/v1/stations": {
       "get": {
-        "description": "Lists stations. A consumer, reviewer or admin token may call this; a consumer/reviewer token's result is silently filtered to its scoped stations rather than 404ing.",
+        "description": "Lists stations. A consumer, reviewer or admin token may call this; a consumer/reviewer token's result is silently filtered to its scoped stations rather than 404ing. All responses, outer errors, slash redirects and allowed preflights are no-store. Required nullable has_provisional_forecast is scoped existence of a stored non-superseded provisional row for reviewer/admin; consumer gets null without an availability query. False does not hide readable superseded history. No freshness, lineage-health or scientific-acceptance claim.",
         "operationId": "list_stations_api_v1_stations_get",
         "parameters": [
           {
@@ -6209,6 +6797,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Scoped provisional reads unavailable."
           }
         },
         "security": [
@@ -6224,7 +6832,7 @@
     },
     "/api/v1/stations/{station_id}": {
       "get": {
-        "description": "Station detail. Any authenticated token role may call this; an out-of-scope or unknown station is 404. A malformed station_id is unguarded today and returns 500, not 400.",
+        "description": "Station detail. Any authenticated token role may call this; an out-of-scope or unknown station is 404. A malformed station_id is unguarded today and returns 500, not 400. All responses, outer errors, slash redirects and allowed preflights are no-store. Required nullable has_provisional_forecast is scoped existence of a stored non-superseded provisional row for reviewer/admin; consumer gets null without an availability query. False does not hide readable superseded history. No freshness, lineage-health or scientific-acceptance claim.",
         "operationId": "get_station_api_v1_stations__station_id__get",
         "parameters": [
           {
@@ -6277,6 +6885,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Scoped provisional reads unavailable."
           }
         },
         "security": [
@@ -6406,7 +7034,7 @@
     },
     "/api/v1/stations/{station_id}/forecasts": {
       "get": {
-        "description": "Forecast summaries for a station, with QC status and typed qc_flags. For an activated CHWRR tenant this contains only the current human-selected publication per issue time, including a selected forecast later marked superseded by an automatic retry. Consumer and reviewer scopes are identical; admin is unscoped but sees the same publication gate. An out-of-scope station is 404.",
+        "description": "Forecast summaries for a station, with QC status and typed qc_flags. For an activated CHWRR tenant this contains only the current human-selected publication per issue time, including a selected forecast later marked superseded by an automatic retry. Consumer and reviewer scopes are identical; admin is unscoped but sees the same publication gate. An out-of-scope station is 404. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
         "operationId": "list_forecasts_api_v1_stations__station_id__forecasts_get",
         "parameters": [
           {
@@ -6516,6 +7144,20 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "data_use",
+            "required": false,
+            "schema": {
+              "default": "standard",
+              "enum": [
+                "standard",
+                "provisional_rating"
+              ],
+              "title": "Data Use",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6523,7 +7165,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedResponse_ForecastSummary_"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse_ForecastSummary_"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PaginatedResponse_ProvisionalForecastSummary_"
+                    }
+                  ],
+                  "title": "Response List Forecasts Api V1 Stations  Station Id  Forecasts Get"
                 }
               }
             },
@@ -6549,6 +7199,16 @@
             },
             "description": "Missing or invalid access token."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Provisional purpose requires reviewer or admin."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -6568,6 +7228,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Scoped provisional reads unavailable."
           }
         },
         "security": [

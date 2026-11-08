@@ -515,3 +515,40 @@ binding schema and reference. Paths and Swiss observation-history contract 2.7
 behavior remain unchanged. This additive contract version is separate from the
 package release target. Notify the map consumer before operational deployment;
 this change does not authorize deployment or activation.
+
+## Provisional forecast reads (map contract 2.9)
+
+The existing station forecast list and forecast detail accept explicit
+`data_use=provisional_rating`; omission/`standard` retain standard bodies and
+publication behavior. This branch requires a REVIEWER or ADMIN service token,
+with existing station/tenant scope. Consumers receive403 before forecast reads.
+A scoped header is authorized before protected lineage/values/weather. Missing,
+out-of-scope or wrong-purpose detail gives the same404; bad required evidence503.
+Superseded records remain200 with their stored status. Provisional publication
+never applies: `publication_applicability=not_applicable`, publication decision
+fields null, no provisional410 or invented withdrawal/replacement relation.
+
+The shared ensemble/quality/QC layouts are unchanged. Provisional records add
+`badge=PROVISIONAL`, persisted rating warnings, `rating_curves=[]` and required
+`rating_provenance_status=not_exposed`. Empty curves means exact versions are not
+listed yet, NOT no curves used or missing lineage; required frozen lineage still
+validates. Exact curve projection and derived-Q observation reads are deferred.
+No conversion/reconciliation occurs in GET; measured WL/Q remain distinct.
+
+Station summary and detail now require nullable `has_provisional_forecast`.
+Reviewer/admin true/false denotes scoped existence of a non-superseded stored
+provisional row; consumer null means not authorized to inspect availability.
+Only authorized page IDs enter one batched query. It is not freshness, quality,
+publication, detail-read health or scientific acceptance. Superseded-only history
+returnsfalse but remains readable. All four paths, errors (including outer500),
+slash redirects and allowed preflights are no-store. CORS policy is unchanged.
+The frontend Worker holds the existing scoped REVIEWER key server-side; the browser
+never receives it. No ADMIN replacement, public response cache or new token is
+required. Canonical deployment and frontend acceptance remain separate gates.
+
+Provisional SQL/decode/fetch failures are translated only at their boundary.
+Unexpected TypeError/KeyError programming faults remain sanitized500. A fixed
+structured diagnostic records only operation/category/whitelisted exception class
+and validated SQLSTATE when available; no raw exception, SQL, IDs or evidence.
+Existing positional Python route callers retain their dependency order; the new
+purpose and reader parameters are keyword-only.

@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from fastapi.middleware.cors import CORSMiddleware
 
+from sapphire_flow.api.publication_cache import shared_forecast_read_path
 from sapphire_flow.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
@@ -92,10 +93,15 @@ class ScopedCorsMiddleware:
             )
         else:
             target = self._consumer
-        if path in {
-            "/api/v1/swiss/overview",
-            "/api/v1/swiss/observation-history",
-        } or re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path):
+        if (
+            shared_forecast_read_path(path)
+            or path
+            in {
+                "/api/v1/swiss/overview",
+                "/api/v1/swiss/observation-history",
+            }
+            or re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path)
+        ):
             from sapphire_flow.api.publication_cache import PublicationCacheMiddleware
 
             await PublicationCacheMiddleware(target)(scope, receive, send)

@@ -9,9 +9,18 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
+def shared_forecast_read_path(path: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"/api/v1/(?:stations(?:/[^/]+(?:/forecasts)?)?|forecasts/[^/]+)/?", path
+        )
+    )
+
+
 def _forecast_bearing_path(path: str) -> bool:
     return (
-        bool(re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path))
+        shared_forecast_read_path(path)
+        or bool(re.fullmatch(r"/api/v1/stations/[^/]+/evaluation-forecasts", path))
         or path.startswith("/api/v1/review/forecasts")
         or path.startswith("/api/v1/forecasts/")
         or path == "/api/v1/forecast-publications"

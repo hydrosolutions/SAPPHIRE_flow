@@ -83,6 +83,7 @@ class StationSummary(BaseModel):
     network: str
     ownership: str
     measured_parameters: list[str]
+    has_provisional_forecast: bool | None
 
 
 class StationDetail(StationSummary):
@@ -130,7 +131,7 @@ class LatestObservationsResponse(PaginatedResponse[LatestStationObservationRespo
     generated_at: datetime
 
 
-class ForecastSummary(BaseModel):
+class _ForecastSummaryFields(BaseModel):
     id: str
     station_id: str
     model_id: str
@@ -150,6 +151,9 @@ class ForecastSummary(BaseModel):
     input_quality_flags: list[dict[str, object]] | None = None
     # Plan 402 T3: [] when none — visible to every authenticated role (D13).
     qc_flags: list[QcFlagResponse] = []
+
+
+class ForecastSummary(_ForecastSummaryFields):
     # Null on deployments where human publication has not been activated.
     publication_state: (
         Literal["unpublished", "selected", "replaced", "withdrawn"] | None
@@ -173,7 +177,7 @@ class EnsembleResponse(BaseModel):
     series: dict[str, list[float]]
 
 
-class ForecastDetail(ForecastSummary):
+class _ForecastDetailFields(BaseModel):
     weather_use: WeatherUseResponse | None = None
     model_artifact_id: str | None = None
     nwp_cycle_reference_time: datetime | None = None
@@ -184,6 +188,33 @@ class ForecastDetail(ForecastSummary):
     source_model_ids: list[str] | None = None
     updated_at: datetime
     ensemble: EnsembleResponse
+
+
+class ForecastDetail(_ForecastDetailFields, ForecastSummary):
+    pass
+
+
+class ProvisionalMetadata(BaseModel):
+    data_use: Literal["provisional_rating"]
+    badge: Literal["PROVISIONAL"]
+    warnings: list[str]
+    rating_curves: list[object] = Field(max_length=0)
+    rating_provenance_status: Literal["not_exposed"]
+    publication_applicability: Literal["not_applicable"]
+    publication_state: None
+    publication_decision_id: None
+    selection_version: None
+    published_at: None
+    preservation_at_publish: None
+
+
+class ProvisionalForecastSummary(ProvisionalMetadata, _ForecastSummaryFields):
+    forecast_status: str | None = None
+    forecast_version: int | None = None
+
+
+class ProvisionalForecastDetail(_ForecastDetailFields, ProvisionalForecastSummary):
+    pass
 
 
 class PublicationDecisionResponse(BaseModel):

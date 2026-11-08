@@ -2513,3 +2513,20 @@ CAS/archive-proof tests, combined UTC/Kathmandu restoration, committed scheduled
 runs, actual worker/API-role checks, native/legacy API isolation and the committed
 map-contract/version guard. Focused checks do not replace the final offline suite.
 See [configured operational daily weather](spec/types-and-protocols.md#configured-operational-daily-weather).
+
+### Shared provisional forecast reads
+
+`api/provisional_forecasts.py`, shared station/forecast routes and schemas own
+explicit provisional reads and nullable station availability. Preserve header
+authorization before SECURITY DEFINER lineage, exact authorized IDs, immutable
+identity checks, shared ForecastSummaryRow QC/input-quality mapping, and canonical
+lineage parse. Do not compare mutable status/version across the two reads. Test
+STANDARD route byte equivalence, actual provisional DTO serialization, actual API
+role grants/denials and constant per-page query counts. No derived-table grant.
+
+The exact shared-read cache predicate is OR-ed with existing classifications in
+publication_cache.py, errors.py and cors.py cache-wrapper selection. Exercise
+outer500, configured preflight/slash307, existing forecast/deeper classifications
+and unrelated station-path negatives without broadening CORS. Regenerate map2.9
+and communicate nullable availability/not_exposed empty curves to frontend users;
+backend qualification does not establish frontend adoption or live acceptance.

@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.8"
+MAP_CONTRACT_VERSION = "2.9"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -341,6 +341,54 @@ def build_map_openapi() -> dict[str, Any]:
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
                 )
+            if path in {
+                "/api/v1/stations",
+                "/api/v1/stations/{station_id}",
+                "/api/v1/stations/{station_id}/forecasts",
+                "/api/v1/forecasts/{forecast_id}",
+            }:
+                operation["description"] += (
+                    " All responses, outer errors, slash redirects and allowed "
+                    "preflights "
+                    "are no-store."
+                )
+                responses["500"] = _error_response("Sanitized internal error.")
+                responses["503"] = _error_response(
+                    "Scoped provisional reads unavailable."
+                )
+                if (
+                    path.endswith("/forecasts")
+                    or path == "/api/v1/forecasts/{forecast_id}"
+                ):
+                    operation["description"] += (
+                        " The preceding publication rules apply to standard requests. "
+                        "Explicit data_use=provisional_rating requires reviewer/admin"
+                        " and "
+                        "station/tenant scope. Superseded history remains readable; no "
+                        "provisional410. Validated frozen warnings accompany "
+                        "PROVISIONAL; "
+                        "rating_curves=[] with rating_provenance_status=not_exposed "
+                        "means "
+                        "exact versions are not listed, not missing lineage. "
+                        "Publication "
+                        "does not apply; its decision fields are null. No purpose "
+                        "fallback."
+                    )
+                    responses["403"] = _error_response(
+                        "Provisional purpose requires reviewer or admin."
+                    )
+                else:
+                    operation["description"] += (
+                        " Required nullable has_provisional_forecast is scoped "
+                        "existence "
+                        "of a stored non-superseded provisional row for "
+                        "reviewer/admin; "
+                        "consumer gets null without an availability query. False does"
+                        " not "
+                        "hide readable superseded history. No freshness, "
+                        "lineage-health "
+                        "or scientific-acceptance claim."
+                    )
             if path == "/api/v1/swiss/observation-history":
                 responses["405"] = {
                     "description": "Method not allowed (framework detail envelope)."

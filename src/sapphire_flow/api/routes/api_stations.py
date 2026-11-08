@@ -7,6 +7,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_connection, get_observation_clock, get_stores
 from sapphire_flow.api.forecast_read import (
@@ -16,6 +17,11 @@ from sapphire_flow.api.forecast_read import (
 from sapphire_flow.api.model_visibility import (
     model_tier_for_model_id,
     station_has_active_floor,
+)
+from sapphire_flow.api.provisional_forecasts import (
+    ProvisionalForecastReader,
+    get_provisional_reader,
+    require_provisional_role,
 )
 from sapphire_flow.api.publication_gate import (
     PublicationGate,
@@ -33,6 +39,7 @@ from sapphire_flow.api.schemas import (
     ModelAssignmentResponse,
     ObservationResponse,
     PaginatedResponse,
+    ProvisionalForecastSummary,
     QcFlagResponse,
     StationDetail,
     StationSummary,
@@ -57,7 +64,7 @@ from sapphire_flow.types.ids import ModelId, StationId
 router = APIRouter(prefix="/api/v1", tags=["api-stations"])
 
 
-def _to_station_summary(s: Any) -> StationSummary:
+def _to_station_summary(s: Any, availability: bool | None) -> StationSummary:
     return StationSummary(
         id=str(s.id),
         code=s.code,
@@ -72,6 +79,7 @@ def _to_station_summary(s: Any) -> StationSummary:
         network=s.network,
         ownership=s.ownership.value,
         measured_parameters=sorted(s.measured_parameters),
+        has_provisional_forecast=availability,
     )
 
 
@@ -125,9 +133,8 @@ def _to_observation_response(o: Any) -> ObservationResponse:
     )
 
 
-def _to_forecast_summary(row: Any) -> ForecastSummary:
-    require_standard_results((row,))
-    return ForecastSummary(
+def _forecast_summary_fields(row: Any) -> dict[str, Any]:
+    return dict(
         id=str(row.id),
         station_id=str(row.station_id),
         model_id=str(row.model_id),
@@ -152,6 +159,11 @@ def _to_forecast_summary(row: Any) -> ForecastSummary:
         else None,
         qc_flags=[_to_qc_flag_response(f) for f in row.qc_flags],
     )
+
+
+def _to_forecast_summary(row: Any) -> ForecastSummary:
+    require_standard_results((row,))
+    return ForecastSummary(**_forecast_summary_fields(row))
 
 
 def parse_api_datetime(value: str, field_name: str) -> UtcDatetime:
@@ -185,6 +197,8 @@ def list_stations(
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_principal),
+    *,
+    provisional: ProvisionalForecastReader = Depends(get_provisional_reader),
 ) -> PaginatedResponse[StationSummary]:
     station_kind: StationKind | None = None
     if kind is not None:
@@ -201,9 +215,10 @@ def list_stations(
 
     total = len(all_stations)
     page = all_stations[offset : offset + limit]
+    availability = provisional.availability([s.id for s in page])
 
     return PaginatedResponse[StationSummary](
-        items=[_to_station_summary(s) for s in page],
+        items=[_to_station_summary(s, availability[s.id]) for s in page],
         total=total,
         limit=limit,
         offset=offset,
@@ -271,6 +286,8 @@ def get_station(
     stores: dict[str, Any] = Depends(get_stores),
     conn: sa.Connection = Depends(get_connection),
     principal: Principal = Depends(require_principal),
+    *,
+    provisional: ProvisionalForecastReader = Depends(get_provisional_reader),
 ) -> StationDetail:
     sid = StationId(UUID(station_id))
     ensure_station_in_scope(principal, sid)
@@ -296,6 +313,7 @@ def get_station(
         network=station.network,
         ownership=station.ownership.value,
         measured_parameters=sorted(station.measured_parameters),
+        has_provisional_forecast=provisional.availability([sid])[sid],
         basin_id=str(station.basin_id) if station.basin_id is not None else None,
         timezone=station.timezone,
         regulation_type=(
@@ -346,7 +364,11 @@ def list_observations(
     return [_to_observation_response(o) for o in observations]
 
 
-@router.get("/stations/{station_id}/forecasts")
+@router.get(
+    "/stations/{station_id}/forecasts",
+    response_model=PaginatedResponse[ForecastSummary]
+    | PaginatedResponse[ProvisionalForecastSummary],
+)
 def list_forecasts(
     station_id: str,
     model_id: str | None = Query(None),
@@ -366,9 +388,24 @@ def list_forecasts(
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_principal),
     gate: PublicationGate = Depends(get_publication_gate),
-) -> PaginatedResponse[ForecastSummary]:
+    *,
+    data_use: Literal["standard", "provisional_rating"] = Query("standard"),
+    provisional: ProvisionalForecastReader = Depends(get_provisional_reader),
+) -> (
+    PaginatedResponse[ForecastSummary]
+    | PaginatedResponse[ProvisionalForecastSummary]
+    | JSONResponse
+):
+    if data_use == "provisional_rating":
+        require_provisional_role(principal)
     sid = StationId(UUID(station_id))
     ensure_station_in_scope(principal, sid)
+    if data_use == "provisional_rating":
+        station = stores["station_store"].fetch_station(sid)
+        if station is None or (
+            not principal.is_admin and station.tenant_id != principal.tenant_id
+        ):
+            raise HTTPException(404, "Station not found")
     now = UtcDatetime(datetime.now(UTC))
 
     start_dt = (
@@ -379,6 +416,28 @@ def list_forecasts(
     end_dt = parse_api_datetime(end, "end") if end is not None else now
 
     mid: ModelId | None = ModelId(model_id) if model_id is not None else None
+
+    if data_use == "provisional_rating":
+        rows, total = provisional.summaries(
+            sid,
+            start_dt,
+            end_dt,
+            model_id=mid,
+            parameter=parameter,
+            degraded_only=degraded_only,
+            limit=limit,
+            offset=offset,
+        )
+        response = PaginatedResponse[ProvisionalForecastSummary](
+            items=[
+                ProvisionalForecastSummary(**_forecast_summary_fields(row), **metadata)
+                for row, metadata in rows
+            ],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+        return JSONResponse(content=response.model_dump(mode="json"))
 
     if gate.active_tenant_ids:
         tenant_id = station_tenant_id(stores, sid)
