@@ -43,7 +43,16 @@ def binding() -> transfer.ReleaseBinding:
 def environment(tmp_path: Path) -> dict[str, str]:
     approved = binding()
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"inputs": {"delivery_mode": "deliver-only"}}))
+    event.write_text(
+        json.dumps(
+            {
+                "inputs": {
+                    "delivery_mode": "deliver-only",
+                    "verification_profile": "full",
+                }
+            }
+        )
+    )
     return {
         "STAGING_RELEASE_ADMISSION": json.dumps(asdict(approved)),
         "GITHUB_REPOSITORY": transfer.REPOSITORY,
@@ -1060,7 +1069,9 @@ class TestSmokeOnlyIsNotDeliveryAdmission:
         canonical_remote(monkeypatch)
         env = environment(tmp_path)
         Path(env["GITHUB_EVENT_PATH"]).write_text(
-            json.dumps({"inputs": {"delivery_mode": selected}})
+            json.dumps(
+                {"inputs": {"delivery_mode": selected, "verification_profile": "full"}}
+            )
         )
         with pytest.raises(transfer.TransferError, match="event does not match"):
             collector.require_local_release(tmp_path, env)
@@ -1249,3 +1260,319 @@ class TestPrivateSnapshotTiming:
             "checkpoint": "REMOTE_RELEASE_SNAPSHOT",
             "elapsed_seconds": 2.5,
         }
+
+
+class TestReuseController:
+    def test_blocked_proof_produces_diagnostic_without_tests_build_or_export(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        approved = transfer.ReuseBinding(
+            **asdict(binding()),
+            ci=transfer.CIIdentity(
+                run_id="456",
+                run_attempt="2",
+                artifact_id="789",
+                artifact_archive_sha256="e" * 64,
+            ),
+        )
+        env = environment(tmp_path)
+        env["STAGING_RELEASE_ADMISSION"] = json.dumps(asdict(approved))
+        env["STAGING_CI_PROOF_RESULT"] = "failure"
+        preparation = json.loads(env["PRIVATE_PREPARATION"])
+        preparation.update(
+            buildx="skipped",
+            trivy="skipped",
+            syft="skipped",
+            engine="skipped",
+            **{"exporter-smoke": "skipped"},
+        )
+        env["PRIVATE_PREPARATION"] = json.dumps(preparation)
+        monkeypatch.setattr(
+            collector, "require_local_release", lambda *args, **kwargs: approved
+        )
+        monkeypatch.setattr(
+            collector, "require_release", lambda *args, **kwargs: approved
+        )
+        monkeypatch.setattr(collector, "disk_sample", lambda *args: None)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail(
+                "blocked proof cannot run tests, build, cleanup an absent builder, "
+                "or export"
+            )
+
+        monkeypatch.setattr(collector.verification, "run_private", forbidden)
+        monkeypatch.setattr(collector.release, "build_receipt", forbidden)
+        monkeypatch.setattr(collector, "export_release", forbidden)
+        work = tmp_path / "work"
+        work.mkdir()
+        with pytest.raises(transfer.TransferError, match="diagnostic ready"):
+            collector.verify_release(ROOT, work, env)
+        envelope = transfer.parse_envelope((work / "envelope.json").read_bytes())
+        assert isinstance(envelope, transfer.ReuseEnvelope)
+        assert envelope.proof_failure == "proof_blocked"
+        assert set(envelope.files) == {"report.bin"}
+        assert set(envelope.gates.values()) == {"blocked"}
+
+    def test_private_child_environment_drops_all_api_bearers(
+        self, tmp_path: Path
+    ) -> None:
+        env = {name: "synthetic-bearer" for name in collector.API_BEARER_NAMES}
+        child = collector.private_env(env, binding(), tmp_path)
+        assert not set(collector.API_BEARER_NAMES) & set(child)
+
+    def test_old_v1_record_does_not_authorize_missing_new_event_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        canonical_remote(monkeypatch)
+        env = environment(tmp_path)
+        Path(env["GITHUB_EVENT_PATH"]).write_text(
+            json.dumps({"inputs": {"delivery_mode": "deliver-only"}})
+        )
+        with pytest.raises(
+            transfer.TransferError, match="event does not match approval"
+        ):
+            collector.require_local_release(ROOT, env)
+
+
+@pytest.fixture
+def reuse_delivery_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import hashlib
+
+    approved = transfer.ReuseBinding(
+        **asdict(binding()),
+        ci=transfer.CIIdentity(
+            run_id="456",
+            run_attempt="2",
+            artifact_id="789",
+            artifact_archive_sha256="e" * 64,
+        ),
+    )
+    env = environment(tmp_path)
+    env["RUNNER_TEMP"] = str(tmp_path)
+    env["STAGING_CI_PROOF_RESULT"] = "success"
+    proof_work = transfer.proof_directory(tmp_path, approved)
+    proof_work.mkdir(mode=0o700)
+    raw = transfer.json_bytes(
+        {
+            "schema_version": 1,
+            "repository": transfer.REPOSITORY,
+            "workflow_path": ".github/workflows/ci.yml",
+            "workflow_blob": "f" * 40,
+            "event": "push",
+            "head_branch": "main",
+            **asdict(approved.ci),
+            "source_sha": approved.source_sha,
+            "source_tree": approved.source_tree,
+            "checkout_sha": approved.source_sha,
+            "checkout_tree": approved.source_tree,
+            "checkout_parents": ["9" * 40],
+            "execution_kind": "full",
+            "qualification": "complete",
+            "producer": "ci-attest",
+        }
+    )
+    (proof_work / "ci-proof.json").write_bytes(raw)
+    (proof_work / "age-decision.json").write_text('{"fixture": "age already admitted"}')
+    env["STAGING_CI_PROOF_SHA256"] = hashlib.sha256(raw).hexdigest()
+    work = tmp_path / "work"
+    work.mkdir()
+    ids = {"default": "sha256:" + "1" * 64, "aquacast": "sha256:" + "2" * 64}
+    calls = []
+    monkeypatch.setattr(
+        collector, "require_local_release", lambda *args, **kwargs: approved
+    )
+    monkeypatch.setattr(collector, "require_release", lambda *args, **kwargs: approved)
+    monkeypatch.setattr(collector, "disk_sample", lambda *args: None)
+
+    def gate(command: list[str], **kwargs: object) -> object:
+        calls.append(command[-1])
+        if command[0] == "bash":
+            variant = next(
+                v for v, name in collector.IMAGE_GATES.items() if name == command[-1]
+            )
+            (work / "evidence" / (variant + "-image-id")).write_text(ids[variant])
+        return collector.verification.Outcome.PASSED
+
+    def inspect(raw_id: str, version: str, source: str, *, variant: str) -> object:
+        return collector.release.ReceiptImage(
+            variant=variant,
+            mutable_tag=raw_id,
+            image_id=raw_id,
+            labels={},
+            runtime_import_version=version,
+        )
+
+    def receipt(args: object, *, docker_builder: object, **kwargs: object) -> None:
+        docker_builder.build(ROOT, approved.version, approved.source_sha)
+        Path(args.receipt).write_text("synthetic receipt")
+
+    def export(*args: object) -> tuple:
+        for name in ("images.tar.gz", "runtime.tar"):
+            (work / "payload" / name).write_bytes(b"synthetic boundary output")
+        images = tuple(
+            transfer.ImageBinding(
+                variant=variant,
+                raw_id=raw_id,
+                config_digest=raw_id,
+                id_kind="config",
+                platform="linux/amd64",
+                store_mode="classic",
+            )
+            for variant, raw_id in ids.items()
+        )
+        return images, 1, "3" * 64, 1
+
+    monkeypatch.setattr(collector.verification, "run_private", gate)
+    monkeypatch.setattr(
+        collector.release,
+        "run_docker",
+        lambda args, **kwargs: ids["aquacast" if "aquacast" in args[-1] else "default"],
+    )
+    monkeypatch.setattr(collector.release, "inspect_image", inspect)
+    monkeypatch.setattr(collector.release, "build_receipt", receipt)
+    monkeypatch.setattr(collector, "export_release", export)
+    return work, env, calls, raw
+
+
+@pytest.fixture
+def completed_reuse_delivery(reuse_delivery_setup):
+    work, env, calls, raw = reuse_delivery_setup
+    collector.verify_release(ROOT, work, env)
+    return work, env, calls, raw
+
+
+class TestSuccessfulReuseDelivery:
+    def test_skips_source_gates_but_runs_both_fresh_image_gates(
+        self, completed_reuse_delivery
+    ) -> None:
+        work, env, calls, raw = completed_reuse_delivery
+        envelope = transfer.parse_envelope((work / "envelope.json").read_bytes())
+        assert envelope.kind == transfer.PayloadKind.RELEASE
+        assert calls == [*collector.IMAGE_GATES.values(), "private-verification"]
+        assert all(envelope.gates[name] == "reused" for name in transfer.REUSED_GATES)
+        assert all(
+            envelope.gates[name] == "passed" for name in collector.IMAGE_GATES.values()
+        )
+        assert (work / "payload/ci-proof.json").read_bytes() == raw
+
+    @pytest.mark.parametrize("phase", ["preflight", "transfer"])
+    def test_changed_proof_cannot_reach_transfer(
+        self, completed_reuse_delivery, monkeypatch: pytest.MonkeyPatch, phase: str
+    ) -> None:
+        work, env, calls, raw = completed_reuse_delivery
+        (work / "payload/ci-proof.json").write_bytes(raw + b"changed")
+        monkeypatch.setattr(
+            transfer,
+            "send",
+            lambda *args, **kwargs: pytest.fail("changed proof cannot reach SSH"),
+        )
+        operation = (
+            collector.preflight if phase == "preflight" else collector.transfer_release
+        )
+        with pytest.raises(transfer.TransferError, match="handoff payload changed"):
+            operation(ROOT, work, env)
+
+
+class TestFrozenProofAcrossFreshGates:
+    @pytest.mark.parametrize("field", ["workflow_blob", "checkout_parents"])
+    def test_same_binding_mutation_during_gate_cannot_be_resealed(
+        self, reuse_delivery_setup, monkeypatch: pytest.MonkeyPatch, field: str
+    ) -> None:
+        work, env, calls, raw = reuse_delivery_setup
+        original_gate = collector.verification.run_private
+
+        def gate(command: list[str], **kwargs: object) -> object:
+            result = original_gate(command, **kwargs)
+            if command[-1] == collector.IMAGE_GATES["default"]:
+                path = work / "payload/ci-proof.json"
+                document = json.loads(path.read_bytes())
+                document[field] = "8" * 40 if field == "workflow_blob" else ["8" * 40]
+                changed = transfer.json_bytes(document)
+                assert changed != raw
+                path.write_bytes(changed)
+            return result
+
+        monkeypatch.setattr(collector.verification, "run_private", gate)
+        monkeypatch.setattr(
+            transfer,
+            "send",
+            lambda *args, **kwargs: pytest.fail("mutated proof cannot reach SSH"),
+        )
+        with pytest.raises(
+            transfer.TransferError, match="admitted CI proof changed before sealing"
+        ):
+            collector.verify_release(ROOT, work, env)
+        assert calls[:2] == list(collector.IMAGE_GATES.values())
+        assert not (work / "envelope.json").exists()
+        with pytest.raises(FileNotFoundError, match="envelope.json"):
+            collector.transfer_release(ROOT, work, env)
+
+
+class TestPrivateDescriptorBearerBoundary:
+    @pytest.mark.parametrize("outcome", ["success", "blocked"])
+    def test_actual_main_scrubs_before_capture_and_hides_private_output(
+        self, tmp_path: Path, outcome: str
+    ) -> None:
+        import os
+
+        root, runner = tmp_path / "workspace", tmp_path / "runner"
+        root.mkdir()
+        runner.mkdir()
+        work = runner / "staging-release-123-1"
+        operation = (
+            "def operation(root,work,env,**kwargs):\n"
+            " assert not set(m.API_BEARER_NAMES) & set(env)\n"
+            " assert not set(m.API_BEARER_NAMES) & set(os.environ)\n"
+            " child=m.private_env(env,m.approved_binding(env),work)\n"
+            " assert not set(m.API_BEARER_NAMES) & set(child)\n"
+            " print('PRIVATE_PROOF_AND_AGE_CANARY')\n"
+            " print('PRIVATE_PROOF_AND_AGE_CANARY',file=sys.stderr)\n"
+            + (
+                " raise m.transfer.TransferError("
+                "'proof_blocked PRIVATE_PROOF_AND_AGE_CANARY')\n"
+                if outcome == "blocked"
+                else " return None\n"
+            )
+        )
+        code = (
+            "import importlib.util,sys,os; "
+            "s=importlib.util.spec_from_file_location('private_cli_repair',"
+            f"{str(ROOT / 'tools/staging_release.py')!r}); "
+            "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;"
+            "s.loader.exec_module(m); "
+            f"exec({operation!r});m.verify_release=operation; "
+            "sys.argv=['staging_release.py','verify'];sys.exit(m.main())"
+        )
+        env = {
+            **os.environ,
+            "GITHUB_WORKSPACE": str(root),
+            "RUNNER_TEMP": str(runner),
+            "STAGING_RELEASE_ADMISSION": json.dumps(
+                asdict(
+                    transfer.ReuseBinding(
+                        **asdict(binding()),
+                        ci=transfer.CIIdentity(
+                            run_id="456",
+                            run_attempt="2",
+                            artifact_id="789",
+                            artifact_archive_sha256="e" * 64,
+                        ),
+                    )
+                )
+            ),
+            **dict.fromkeys(collector.API_BEARER_NAMES, "SYNTHETIC_API_BEARER_CANARY"),
+        }
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", code],
+            env=env,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode == (0 if outcome == "success" else 1)
+        assert result.stderr == b""
+        assert b"PRIVATE_PROOF_AND_AGE_CANARY" not in result.stdout
+        assert b"SYNTHETIC_API_BEARER_CANARY" not in result.stdout
+        assert b"proof_blocked" not in result.stdout
+        assert "PRIVATE_PROOF_AND_AGE_CANARY" in (work / "verify.log").read_text()

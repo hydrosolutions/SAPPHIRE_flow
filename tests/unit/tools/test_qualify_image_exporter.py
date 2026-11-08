@@ -94,7 +94,10 @@ class TestRoute:
     )
     def test_exact_routes(self, selected: str) -> None:
         assert (
-            helper.parse_route({"inputs": {"delivery_mode": selected}}, selected).value
+            helper.parse_route(
+                {"inputs": {"delivery_mode": selected, "verification_profile": "full"}},
+                selected,
+            ).value
             == selected
         )
 
@@ -113,15 +116,22 @@ class TestRoute:
     )
     def test_case_whitespace_and_confusables_fail(self, selected: str) -> None:
         with pytest.raises(helper.BootstrapError, match="exact execution route"):
-            helper.parse_route({"inputs": {"delivery_mode": selected}}, selected)
+            helper.parse_route(
+                {"inputs": {"delivery_mode": selected, "verification_profile": "full"}},
+                selected,
+            )
 
     @pytest.mark.parametrize(
         "inputs",
         [
             {},
-            {"delivery_mode": "load-images"},
-            {"delivery_mode": "deliver-only", "new": False},
-            {"delivery_mode": True},
+            {"delivery_mode": "load-images", "verification_profile": "full"},
+            {
+                "delivery_mode": "deliver-only",
+                "new": False,
+                "verification_profile": "full",
+            },
+            {"delivery_mode": True, "verification_profile": "full"},
         ],
     )
     def test_event_input_schema_must_match(self, inputs: dict) -> None:
@@ -367,12 +377,17 @@ class TestPublicArchive:
 
 
 class TestWorkflowContract:
-    def test_single_input_and_private_positive_route_guard(self) -> None:
+    def test_explicit_profile_and_private_positive_route_guard(self) -> None:
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/private-verification.yml").read_text()
         )
         event = workflow.get("on", workflow.get(True))["workflow_dispatch"]
-        assert set(event["inputs"]) == {"delivery_mode"}
+        assert set(event["inputs"]) == {"delivery_mode", "verification_profile"}
+        assert event["inputs"]["verification_profile"]["options"] == [
+            "ci-reuse",
+            "full",
+        ]
+        assert event["inputs"]["verification_profile"]["default"] == "ci-reuse"
         assert event["inputs"]["delivery_mode"]["options"] == [
             "deliver-only",
             "load-images",
@@ -599,7 +614,14 @@ class TestPublicSource:
 
         event = tmp_path / "event.json"
         event.write_text(
-            json.dumps({"inputs": {"delivery_mode": "exporter-smoke-only"}})
+            json.dumps(
+                {
+                    "inputs": {
+                        "delivery_mode": "exporter-smoke-only",
+                        "verification_profile": "full",
+                    }
+                }
+            )
         )
         source = "a" * 40
         env = {
@@ -904,6 +926,8 @@ def workflow_state(
         )
     }
     values["inputs.delivery_mode"] = selected
+    values["inputs.verification_profile"] = event_inputs.get("verification_profile", "")
+    values["steps.ci_proof.outcome"] = "success"
     try:
         helper.parse_route({"inputs": event_inputs}, selected)
     except helper.BootstrapError:
@@ -932,17 +956,48 @@ class TestActualWorkflowReachability:
     @pytest.mark.parametrize(
         "selected,event_inputs",
         [
-            ("exporter-smoke-only", {"delivery_mode": "exporter-smoke-only"}),
-            ("unknown", {"delivery_mode": "unknown"}),
-            ("DELIVER-ONLY", {"delivery_mode": "DELIVER-ONLY"}),
-            ("LOAD-IMAGES", {"delivery_mode": "LOAD-IMAGES"}),
-            (" deliver-only", {"delivery_mode": " deliver-only"}),
-            ("load-images ", {"delivery_mode": "load-images "}),
-            ("dеliver-only", {"delivery_mode": "dеliver-only"}),
+            (
+                "exporter-smoke-only",
+                {
+                    "delivery_mode": "exporter-smoke-only",
+                    "verification_profile": "full",
+                },
+            ),
+            ("unknown", {"delivery_mode": "unknown", "verification_profile": "full"}),
+            (
+                "DELIVER-ONLY",
+                {"delivery_mode": "DELIVER-ONLY", "verification_profile": "full"},
+            ),
+            (
+                "LOAD-IMAGES",
+                {"delivery_mode": "LOAD-IMAGES", "verification_profile": "full"},
+            ),
+            (
+                " deliver-only",
+                {"delivery_mode": " deliver-only", "verification_profile": "full"},
+            ),
+            (
+                "load-images ",
+                {"delivery_mode": "load-images ", "verification_profile": "full"},
+            ),
+            (
+                "dеliver-only",
+                {"delivery_mode": "dеliver-only", "verification_profile": "full"},
+            ),
             ("deliver-only", {}),
-            ("deliver-only", {"delivery_mode": "deliver-only", "extra": "x"}),
-            ("deliver-only", {"delivery_mode": "load-images"}),
-            ("deliver-only", {"delivery_mode": True}),
+            (
+                "deliver-only",
+                {
+                    "delivery_mode": "deliver-only",
+                    "extra": "x",
+                    "verification_profile": "full",
+                },
+            ),
+            (
+                "deliver-only",
+                {"delivery_mode": "load-images", "verification_profile": "full"},
+            ),
+            ("deliver-only", {"delivery_mode": True, "verification_profile": "full"}),
         ],
     )
     @pytest.mark.parametrize(
@@ -1012,7 +1067,11 @@ class TestActualWorkflowReachability:
         if step == "checkout" and outcome != "success":
             # A failed checkout cannot have produced successful transfer admission.
             changes["transfer_admission"] = "skipped"
-        values = workflow_state(selected, {"delivery_mode": selected}, changes)
+        values = workflow_state(
+            selected,
+            {"delivery_mode": selected, "verification_profile": "full"},
+            changes,
+        )
         steps = private_steps()
         assert (
             tuple(
@@ -1037,7 +1096,7 @@ class TestActualWorkflowReachability:
         steps = private_steps()
         values = workflow_state(
             selected,
-            {"delivery_mode": selected},
+            {"delivery_mode": selected, "verification_profile": "full"},
             {preparation_step: outcome, "verification": "failure"},
         )
         assert not ready_from_actual_yaml(steps, values)
@@ -1078,7 +1137,7 @@ class TestActualWorkflowReachability:
         assert "if" not in indexed["route"]  # Actions' implicit success() condition.
         values = workflow_state(
             selected,
-            {"delivery_mode": selected},
+            {"delivery_mode": selected, "verification_profile": "full"},
             {
                 early_step: outcome,
                 "route": "skipped",
@@ -1092,13 +1151,21 @@ class TestActualWorkflowReachability:
         )
 
     def test_yaml_complete_success_record_still_admits_gates(self) -> None:
-        values = workflow_state("deliver-only", {"delivery_mode": "deliver-only"}, {})
+        values = workflow_state(
+            "deliver-only",
+            {"delivery_mode": "deliver-only", "verification_profile": "full"},
+            {},
+        )
         assert ready_from_actual_yaml(private_steps(), values)
 
     def test_case_insensitive_actions_match_requires_actual_strict_route_guard(
         self,
     ) -> None:
-        values = workflow_state("DELIVER-ONLY", {"delivery_mode": "DELIVER-ONLY"}, {})
+        values = workflow_state(
+            "DELIVER-ONLY",
+            {"delivery_mode": "DELIVER-ONLY", "verification_profile": "full"},
+            {},
+        )
         expression = private_steps()["verify"]["if"]
         assert not evaluate_private_if(expression, values, cancelled=False)
         values["steps.route.outcome"] = "success"
@@ -1106,7 +1173,9 @@ class TestActualWorkflowReachability:
 
     def test_extra_always_disjunct_is_detectably_unsafe(self) -> None:
         values = workflow_state(
-            "exporter-smoke-only", {"delivery_mode": "exporter-smoke-only"}, {}
+            "exporter-smoke-only",
+            {"delivery_mode": "exporter-smoke-only", "verification_profile": "full"},
+            {},
         )
         expression = private_steps()["verify"]["if"]
         assert not evaluate_private_if(expression, values, cancelled=False)
@@ -1160,3 +1229,69 @@ class TestWholeSecretContextLock:
             AssertionError, match="secret context outside private steps"
         ):
             assert_secret_scope(job, private_steps())
+
+
+class TestExplicitVerificationProfile:
+    def test_missing_profile_on_new_event_is_rejected(self) -> None:
+        with pytest.raises(helper.BootstrapError, match="inputs differ"):
+            helper.parse_route(
+                {"inputs": {"delivery_mode": "deliver-only"}}, "deliver-only"
+            )
+
+    @pytest.mark.parametrize(
+        "profile", ["FULL", "CI-REUSE", "", "unknown", None, [], {}, True, 1]
+    )
+    def test_profile_is_an_exact_choice(self, profile: object) -> None:
+        with pytest.raises(helper.BootstrapError, match="inputs differ"):
+            helper.parse_route(
+                {
+                    "inputs": {
+                        "delivery_mode": "deliver-only",
+                        "verification_profile": profile,
+                    }
+                },
+                "deliver-only",
+            )
+
+    def test_proof_failure_blocks_preparation_but_not_diagnostic_handoff(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/private-verification.yml").read_text()
+        )
+        indexed = {
+            s.get("id"): s for s in workflow["jobs"]["verify"]["steps"] if "id" in s
+        }
+        values = workflow_state(
+            "deliver-only",
+            {"delivery_mode": "deliver-only", "verification_profile": "ci-reuse"},
+            {"ci_proof": "failure"},
+        )
+        for step in ("engine", "buildx", "exporter-smoke", "trivy", "syft"):
+            assert not evaluate_private_if(indexed[step]["if"], values, cancelled=False)
+        assert evaluate_private_if(
+            indexed["verification"]["if"], values, cancelled=False
+        )
+        assert evaluate_private_if(
+            indexed["transfer_admission"]["if"], values, cancelled=False
+        )
+        assert indexed["ci_proof"]["env"] == {"GH_TOKEN": "${{ github.token }}"}
+        assert workflow["jobs"]["verify"]["permissions"] == {
+            "contents": "read",
+            "actions": "read",
+        }
+
+    def test_full_profile_skips_proof_api_step(self) -> None:
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/private-verification.yml").read_text()
+        )
+        indexed = {
+            s.get("id"): s for s in workflow["jobs"]["verify"]["steps"] if "id" in s
+        }
+        values = workflow_state(
+            "deliver-only",
+            {"delivery_mode": "deliver-only", "verification_profile": "full"},
+            {"ci_proof": "skipped"},
+        )
+        assert not evaluate_private_if(
+            indexed["ci_proof"]["if"], values, cancelled=False
+        )
+        assert evaluate_private_if(indexed["engine"]["if"], values, cancelled=False)

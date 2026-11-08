@@ -111,7 +111,9 @@ prove_image() {
   python3 tools/image_identity_probe.py --variant "$variant" --image-tag "$image" \
     --expected-version "$EXPECTED_VERSION" --expected-revision "$EXPECTED_REVISION"
   local imports='import sys, sapphire_flow, prefect'
-  if [ "$variant" = aquacast ]; then imports+=', aquacast, torch'; fi
+  if [ "$variant" = aquacast ]; then
+    imports+=', aquacast, torch; from sapphire_flow.services.model_registry import discover_models; assert {"cmal_pool_pt", "cmal_small"} <= discover_models().keys()'
+  fi
   docker run --rm --network none -e DB_PASSWORD=ci-smoke-only "$image" python -I -c \
     "$imports; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"
 }
@@ -201,6 +203,7 @@ case "${1:?required gate}" in
     uv run --no-sync pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q --color=no | tee "$RUNNER_TEMP/aquacast-shim.txt"
     grep -Fq '1 passed' "$RUNNER_TEMP/aquacast-shim.txt"
     if [ "$shard" = scripts ]; then
+      uv run --no-sync pytest tests/fakes/test_fakes.py -q
 set -o pipefail
 uv run --no-sync pytest -v \
   tests/unit/cli/test_export_forecast_lab.py \

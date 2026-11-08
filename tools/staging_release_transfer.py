@@ -19,7 +19,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -106,9 +106,9 @@ def json_bytes(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def parse_json(raw: bytes) -> dict:
-    def pairs(items: list[tuple[str, object]]) -> dict:
-        result = {}
+def parse_json(raw: bytes) -> dict[str, Any]:
+    def pairs(items: list[tuple[str, object]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         for key, value in items:
             if key in result:
                 raise TransferError("duplicate JSON field")
@@ -120,7 +120,7 @@ def parse_json(raw: bytes) -> dict:
     value = json.loads(raw, object_pairs_hook=pairs)
     if not isinstance(value, dict):
         raise TransferError("expected JSON object")
-    return value
+    return cast("dict[str, Any]", value)
 
 
 def metadata_bytes(path: Path) -> bytes:
@@ -215,7 +215,7 @@ class ReleaseBinding:
             raise TransferError("invalid actor")
 
     @classmethod
-    def parse(cls, value: dict) -> ReleaseBinding:
+    def parse(cls, value: dict[str, Any]) -> ReleaseBinding:
         if set(value) != set(cls.__dataclass_fields__):
             raise TransferError("incomplete release binding")
         data = dict(value)
@@ -225,6 +225,108 @@ class ReleaseBinding:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(json_bytes(asdict(self))).hexdigest()
+
+
+def boundary_object(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TransferError("expected metadata object")
+    return cast("dict[str, Any]", value)
+
+
+class VerificationProfile(StrEnum):
+    FULL = "full"
+    CI_REUSE = "ci-reuse"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CIIdentity:
+    run_id: str
+    run_attempt: str
+    artifact_id: str
+    artifact_archive_sha256: str
+
+    def __post_init__(self) -> None:
+        for value in (self.run_id, self.run_attempt, self.artifact_id):
+            if (
+                not isinstance(cast("object", value), str)
+                or re.fullmatch(r"[1-9][0-9]{0,19}", value) is None
+            ):
+                raise TransferError("invalid CI identity")
+        digest(self.artifact_archive_sha256)
+
+    @classmethod
+    def parse(cls, value: object) -> CIIdentity:
+        value = boundary_object(value)
+        if set(value) != set(cls.__dataclass_fields__):
+            raise TransferError("incomplete CI identity")
+        return cls(**value)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReuseBinding(ReleaseBinding):
+    ci: CIIdentity
+    verification_profile: Literal["ci-reuse"] = "ci-reuse"
+
+    def __post_init__(self) -> None:
+        ReleaseBinding.__post_init__(self)
+        if self.verification_profile != "ci-reuse" or not isinstance(
+            cast("object", self.ci), CIIdentity
+        ):
+            raise TransferError("invalid reuse approval")
+
+    @classmethod
+    def parse(cls, value: object) -> ReuseBinding:
+        value = boundary_object(value)
+        if set(value) != set(cls.__dataclass_fields__):
+            raise TransferError("incomplete reuse binding")
+        data = dict(value)
+        data["delivery_mode"] = DeliveryMode(data["delivery_mode"])
+        data["ci"] = CIIdentity.parse(data["ci"])
+        return cls(**data)
+
+
+def proof_directory(temporary: Path, binding: ReleaseBinding) -> Path:
+    if not temporary.is_absolute():
+        raise TransferError("proof temporary path must be absolute")
+    return (
+        temporary.resolve() / f"staging-ci-proof-{binding.run_id}-{binding.run_attempt}"
+    )
+
+
+def parse_binding(value: object) -> ReleaseBinding:
+    value = boundary_object(value)
+    if value.get("verification_profile") == "ci-reuse":
+        return ReuseBinding.parse(value)
+    return ReleaseBinding.parse(value)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GateCoverage:
+    origin: Literal["canonical_ci", "local"]
+    local_status: Literal["not_run_here", "passed", "failed", "blocked"]
+    ci: CIIdentity | None
+
+    def __post_init__(self) -> None:
+        if self.origin == "canonical_ci":
+            if self.local_status != "not_run_here" or not isinstance(
+                self.ci, CIIdentity
+            ):
+                raise TransferError("invalid reused gate coverage")
+        elif (
+            self.origin != "local"
+            or self.local_status not in ("passed", "failed", "blocked")
+            or self.ci is not None
+        ):
+            raise TransferError("invalid local gate coverage")
+
+    @classmethod
+    def parse(cls, value: object) -> GateCoverage:
+        value = boundary_object(value)
+        if set(value) != set(cls.__dataclass_fields__):
+            raise TransferError("incomplete gate coverage")
+        data = dict(value)
+        data["ci"] = CIIdentity.parse(data["ci"]) if data["ci"] is not None else None
+        return cls(**data)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -344,7 +446,7 @@ class Envelope:
     def encode(self) -> bytes:
         return json_bytes(asdict(self))
 
-    def owner_receipt(self, status: str) -> dict:
+    def owner_receipt(self, status: str) -> dict[str, Any]:
         allowed = (
             {"diagnostic-received"}
             if self.kind == PayloadKind.DIAGNOSTIC
@@ -355,7 +457,7 @@ class Envelope:
             and self.binding.delivery_mode != DeliveryMode.LOAD_IMAGES
         ):
             raise TransferError("invalid receipt status")
-        result = {
+        result: dict[str, Any] = {
             "schema_version": 1,
             "status": status,
             "source": self.binding.source_sha,
@@ -375,6 +477,179 @@ class Envelope:
                 images={i.variant: i.raw_id for i in self.images},
             )
         return result
+
+
+FRESH_CI_REUSE_GATES = frozenset(
+    {"build-image-and-scan", "aquacast-release-image-proof"}
+)
+REUSED_GATES: frozenset[str] = frozenset(
+    name for name in GATE_NAMES if name not in FRESH_CI_REUSE_GATES
+)
+MAX_CI_PROOF = 64 * 1024
+REUSE_ASSURANCE = (
+    "Source CI reused; delivery gates only; release-version suite not rerun"
+)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReuseEnvelope(Envelope):
+    coverage: dict[str, GateCoverage]
+    proof_failure: (
+        Literal["proof_blocked", "preparation_blocked", "fresh_gate_failed"] | None
+    )
+    schema_version: int = 2
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != 2
+            or not isinstance(self.binding, ReuseBinding)
+            or not isinstance(cast("object", self.kind), PayloadKind)
+        ):
+            raise TransferError("unsupported reuse envelope")
+        if set(self.gates) != set(GATE_NAMES) or set(self.coverage) != set(GATE_NAMES):
+            raise TransferError("incomplete reuse gate inventory")
+        for name, status in self.gates.items():
+            coverage = self.coverage[name]
+            if status == "reused":
+                if (
+                    name not in REUSED_GATES
+                    or coverage.origin != "canonical_ci"
+                    or coverage.local_status != "not_run_here"
+                    or coverage.ci != self.binding.ci
+                ):
+                    raise TransferError("invalid reused gate origin")
+            elif (
+                (name in REUSED_GATES and status != "blocked")
+                or status not in ("passed", "failed", "blocked")
+                or coverage.origin != "local"
+                or coverage.local_status != status
+                or coverage.ci is not None
+            ):
+                raise TransferError("invalid local gate origin")
+        if self.kind == PayloadKind.DIAGNOSTIC:
+            if (
+                set(self.files) != {"report.bin"}
+                or self.images
+                or self.expanded_archive_bytes != 0
+                or self.expanded_archive_sha256 is not None
+                or self.unpacked_layer_bytes != 0
+                or self.proof_failure
+                not in ("proof_blocked", "preparation_blocked", "fresh_gate_failed")
+            ):
+                raise TransferError("invalid reuse diagnostic")
+        else:
+            if (
+                set(self.files)
+                != {
+                    "report.bin",
+                    "receipt.json",
+                    "images.tar.gz",
+                    "runtime.tar",
+                    "ci-proof.json",
+                }
+                or self.proof_failure is not None
+            ):
+                raise TransferError("incomplete reuse release payload")
+            if any(
+                self.gates[name]
+                != ("passed" if name in FRESH_CI_REUSE_GATES else "reused")
+                for name in GATE_NAMES
+            ):
+                raise TransferError("reuse release gates incomplete")
+            if (
+                len(self.images) != 2
+                or {image.variant for image in self.images} != {"default", "aquacast"}
+                or len({image.raw_id for image in self.images}) != 2
+            ):
+                raise TransferError("both distinct images required")
+            positive(self.expanded_archive_bytes, 2**40)
+            digest(self.expanded_archive_sha256)
+            positive(self.unpacked_layer_bytes, 2**40)
+            positive(self.files["ci-proof.json"].length, MAX_CI_PROOF)
+        if self.files["report.bin"].length > MAX_REPORT:
+            raise TransferError("report exceeds existing bound")
+
+    @classmethod
+    def parse(cls, raw: bytes) -> ReuseEnvelope:
+        data = parse_json(raw)
+        if set(data) != set(cls.__dataclass_fields__):
+            raise TransferError("incomplete reuse envelope")
+        data["binding"] = ReuseBinding.parse(data["binding"])
+        data["kind"] = PayloadKind(data["kind"])
+        data["files"] = {
+            name: FileDigest(**value) for name, value in data["files"].items()
+        }
+        data["images"] = tuple(ImageBinding(**value) for value in data["images"])
+        data["coverage"] = {
+            name: GateCoverage.parse(value) for name, value in data["coverage"].items()
+        }
+        return cls(**data)
+
+    def owner_receipt(self, status: str) -> dict[str, Any]:
+        result = Envelope.owner_receipt(self, status)
+        if not isinstance(self.binding, ReuseBinding):
+            raise TransferError("invalid reuse binding")
+        result.update(
+            schema_version=2,
+            verification_profile="ci-reuse",
+            ci=asdict(self.binding.ci),
+            assurance=(
+                REUSE_ASSURANCE
+                if self.kind == PayloadKind.RELEASE
+                else "Diagnostic only; release qualification incomplete"
+            ),
+            proof_failure=self.proof_failure,
+        )
+        if self.kind == PayloadKind.RELEASE:
+            result["ci_proof_sha256"] = self.files["ci-proof.json"].sha256
+        return result
+
+
+def parse_envelope(raw: bytes) -> Envelope:
+    data = parse_json(raw)
+    return (
+        ReuseEnvelope.parse(raw)
+        if data.get("schema_version") == 2
+        else Envelope.parse(raw)
+    )
+
+
+def require_frozen_proof(raw: bytes, binding: ReuseBinding) -> None:
+    if not 0 < len(raw) <= MAX_CI_PROOF:
+        raise TransferError("CI proof size invalid")
+    data = parse_json(raw)
+    expected = {
+        "schema_version": 1,
+        "repository": REPOSITORY,
+        "workflow_path": ".github/workflows/ci.yml",
+        "event": "push",
+        "head_branch": "main",
+        **asdict(binding.ci),
+        "source_sha": binding.source_sha,
+        "source_tree": binding.source_tree,
+        "checkout_sha": binding.source_sha,
+        "checkout_tree": binding.source_tree,
+        "execution_kind": "full",
+        "qualification": "complete",
+        "producer": "ci-attest",
+    }
+    if (
+        set(data) != {*expected, "workflow_blob", "checkout_parents"}
+        or type(data.get("schema_version")) is not int
+        or any(data.get(key) != value for key, value in expected.items())
+        or json_bytes(data) != raw
+    ):
+        raise TransferError("frozen CI proof binding mismatch")
+    digest(data["workflow_blob"], 40)
+    parents = data["checkout_parents"]
+    if (
+        not isinstance(parents, list)
+        or not 1 <= len(cast("list[object]", parents)) <= 32
+    ):
+        raise TransferError("invalid CI checkout parents")
+    for parent in cast("list[object]", parents):
+        digest(parent, 40)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -437,6 +712,37 @@ class ReceiverConfig:
                 raise TransferError("metadata exceeds admitted capacity")
             if self.binding.delivery_mode == DeliveryMode.LOAD_IMAGES:
                 self.require_load(envelope)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReuseReceiverConfig(ReceiverConfig):
+    schema_version: int = 2
+
+    def __post_init__(self) -> None:
+        ReceiverConfig.__post_init__(self)
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != 2
+            or not isinstance(self.binding, ReuseBinding)
+        ):
+            raise TransferError("invalid reuse receiver config")
+
+    @classmethod
+    def parse(cls, raw: bytes) -> ReuseReceiverConfig:
+        data = parse_json(raw)
+        if set(data) != set(cls.__dataclass_fields__):
+            raise TransferError("incomplete reuse receiver config")
+        data["binding"] = ReuseBinding.parse(data["binding"])
+        return cls(**data)
+
+
+def parse_receiver_config(raw: bytes) -> ReceiverConfig:
+    data = parse_json(raw)
+    return (
+        ReuseReceiverConfig.parse(raw)
+        if data.get("schema_version") == 2
+        else ReceiverConfig.parse(raw)
+    )
 
 
 def validate_runtime_bundle(path: Path) -> None:
@@ -513,6 +819,12 @@ def verify_payload_files(envelope: Envelope, directory: Path) -> None:
         if FileDigest.of(directory / name) != expected:
             raise TransferError("payload digest mismatch")
     if envelope.kind == PayloadKind.RELEASE:
+        if isinstance(envelope, ReuseEnvelope):
+            if not isinstance(envelope.binding, ReuseBinding):
+                raise TransferError("invalid reuse binding")
+            require_frozen_proof(
+                metadata_bytes(directory / "ci-proof.json"), envelope.binding
+            )
         verify_receipt(envelope, directory / "receipt.json")
         validate_runtime_bundle(directory / "runtime.tar")
 
@@ -615,7 +927,7 @@ def receive_stream(
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.set_blocking(input_fd, False)
         size = positive(int.from_bytes(stream.exact(8), "big"), MAX_METADATA)
-        envelope = Envelope.parse(stream.exact(size))
+        envelope = parse_envelope(stream.exact(size))
         config.admit(envelope)
         encoded = envelope.encode()
         accepted = root / (
@@ -1035,7 +1347,7 @@ def load_accepted(
             or stat.S_IMODE(info.st_mode) != 0o700
         ):
             raise TransferError("unsafe accepted release directory")
-        envelope = Envelope.parse(metadata_bytes(accepted / "envelope.json"))
+        envelope = parse_envelope(metadata_bytes(accepted / "envelope.json"))
         config.admit(envelope)
         config.require_load(envelope)
         if config.load_approval_receipt_sha256 != envelope.files["receipt.json"].sha256:
@@ -1203,7 +1515,7 @@ def main() -> int:
                     or stat.S_IMODE(info.st_mode) != 0o600
                 ):
                     raise TransferError("untrusted receiver config")
-                config = ReceiverConfig.parse(stream.read(MAX_METADATA + 1))
+                config = parse_receiver_config(stream.read(MAX_METADATA + 1))
         finally:
             os.close(parent)
         parent, name = receiver.open_parent(str(STORE_ROOT), trusted_owner_uid=0)

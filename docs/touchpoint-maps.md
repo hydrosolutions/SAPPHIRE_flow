@@ -2251,8 +2251,8 @@ runtime/production acceptance from implementation.
 Manual staging exporter preparation also touches
 `tools/qualify_image_exporter.py` and its unit tests: strict public dispatch/source
 validation, stock hosted daemon configuration and a bounded two-image smoke.
-Keep the existing exact release-event/binding schema, raw-ID capture/save and
-archive equality rejection. `require_untagged_pair` is shared without predicate
+Keep strict release-event/profile parsing, v1 binding compatibility, raw-ID
+capture/save and archive equality rejection. `require_untagged_pair` is shared without predicate
 changes; the save helper's optional smoke timeout preserves production defaults.
 The workflow's eight-key preparation gate and private-step route predicates must
 be tested together. Legacy CI, dependencies, receiver/load boundaries and private
@@ -2262,6 +2262,23 @@ The raw save helper also accepts an optional smoke observer (default `None`).
 Only the opt-in path samples during bounded readiness waits and sustained output;
 observer failure uses the existing owned-save-process cleanup and stderr capture.
 The original production wait/deadline/byte-cap path is unchanged.
+
+FULL source-CI reuse also touches `tools/ci_attest.py`, `tools/ci_provenance.py`,
+`.github/workflows/ci.yml`, the private gate shell and their tool tests. Review the
+whole-workflow hash and all 12 legs/61 enforcing predicates together. Preserve
+exact merged-main push identity, same/latest attempt, inclusive precise 30-day
+age, bounded credential-separated transport, final API check before atomic proof
+freeze, and no subsequent CI refresh. Retain the admitted proof digest through
+fresh image gates; recheck before sealing without rebinding changed bytes. The
+terminal producer is push/main-only; PR test gates stay unchanged. Consumer job
+names come from the single producer inventory. New events require both route and profile;
+`full` retains v1/no API work. V2 custody adds only frozen `ci-proof.json`, binds
+its hash and CI identity through owner receipts and local receiver/load checks,
+and distinguishes source gates reused from fresh local image gates. Diagnostics
+stay report-only. Test hostile TLS/DNS/HTTP/ZIP inputs, every mandatory predicate,
+proof mutation, old-v1 compatibility, idempotence and separately approved load.
+No source patch authorizes receiver rollout, publication, deployment or measured
+acceleration claims.
 
 ### Evaluation API addendum
 

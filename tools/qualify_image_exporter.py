@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -109,9 +109,19 @@ def strict_json(raw: str | bytes) -> object:
 
 
 def parse_route(event: object, selected: str) -> Route:
-    if not isinstance(event, dict) or event.get("inputs") != {
-        "delivery_mode": selected
-    }:
+    if not isinstance(event, dict):
+        raise BootstrapError("dispatch inputs differ")
+    raw_inputs = cast("dict[str, object]", event).get("inputs")
+    if not isinstance(raw_inputs, dict):
+        raise BootstrapError("dispatch inputs differ")
+    inputs = cast("dict[str, object]", raw_inputs)
+    profile = inputs.get("verification_profile")
+    if (
+        set(inputs) != {"delivery_mode", "verification_profile"}
+        or inputs.get("delivery_mode") != selected
+        or not isinstance(profile, str)
+        or profile not in {"full", "ci-reuse"}
+    ):
         raise BootstrapError("dispatch inputs differ")
     try:
         return Route(selected)

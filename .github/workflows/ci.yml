@@ -31,11 +31,13 @@ jobs:
     # them. The job runs in ~55s; this bounds the worst case, not the normal one.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
         # fetch-depth: 0 (full history) — Plan 402 T4's "Check map contract
         # version" step below needs `git merge-base` against the PR base sha.
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         timeout-minutes: 3  # downloads the uv binary (~6s observed)
@@ -67,7 +69,8 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      - run: uv sync --frozen
+      - name: Install frozen dependencies
+        run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
       - name: Check PR release target
         if: github.event_name == 'pull_request'
@@ -76,15 +79,20 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_MERGE_SHA: ${{ github.sha }}
         run: .venv/bin/python -I tools/release_target.py check --base-sha "$PR_BASE_SHA" --head-sha "$PR_HEAD_SHA" --merge-sha "$PR_MERGE_SHA"
-      - run: uv run ruff check src/ tests/
-      - run: uv run ruff format --check src/ tests/
+      - name: Enforce Ruff lint
+        run: uv run ruff check src/ tests/
+      - name: Enforce Ruff formatting
+        run: uv run ruff format --check src/ tests/
       # -x: follow `source` (Plan 199 T2 — docker-endpoint.sh is sourced by
       # four wrappers below; plain shellcheck flags the `source` line as
       # SC1091). Plan 199 also adds prune-docker.sh, run-nepal-forcing.sh
       # and docker-endpoint.sh itself, previously omitted from this list.
-      - run: shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/run-nepal-forcing.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh
-      - run: uv run pyright --outputjson src/ > /tmp/pyright.json || true
-      - run: uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
+      - name: Enforce shellcheck
+        run: shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/run-nepal-forcing.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh
+      - name: Collect pyright diagnostics
+        run: uv run pyright --outputjson src/ > /tmp/pyright.json || true
+      - name: Enforce pyright ratchet
+        run: uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
       # Plan 402 T4 (D14): a PR that changes the committed flow-map OpenAPI
       # contract must bump its info.version. PR-only — direct pushes to
       # `main` never carry this file's changes except through a merged PR
@@ -156,7 +164,10 @@ jobs:
       # which a job-level `env:` can populate from a secret.
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - name: Set SCM version override for editable root installs
         run: |
@@ -472,6 +483,10 @@ jobs:
       # stitches the four back into the one number. It stays INFORMATIONAL:
       # there is no --cov-fail-under here or in pyproject.toml, and adding one
       # is a different decision.
+      - name: Run fake-store contracts
+        if: matrix.shard == 'scripts'
+        timeout-minutes: 5
+        run: uv run pytest tests/fakes/test_fakes.py -q
       - name: Run unit shard
         env:
           COVERAGE_CORE: sysmon
@@ -553,7 +568,10 @@ jobs:
     permissions: { contents: read }
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - name: Set SCM version override for editable root installs
         run: |
@@ -585,7 +603,8 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      - run: uv sync --frozen
+      - name: Install frozen dependencies
+        run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
       - name: Download every shard's coverage data
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -635,7 +654,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - name: Set SCM version override for editable root installs
         run: |
@@ -674,7 +696,8 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      - timeout-minutes: 5  # PyPI + two private git repos
+      - name: Enforce frozen wheel-only guard
+        timeout-minutes: 5  # PyPI + two private git repos
         run: |
           set -euo pipefail
           # step 1 IS the guard — must keep --no-build and must precede step 2; step 2 has no --no-build and may build ONLY the excepted packages.
@@ -704,7 +727,10 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - name: Set SCM version override for editable root installs
         run: |
@@ -807,7 +833,8 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      - run: uv sync --frozen
+      - name: Install frozen dependencies
+        run: uv sync --frozen
         timeout-minutes: 5  # PyPI + two private git repos
       - name: Prove integration shard partition
         if: matrix.shard == 'heavy'
@@ -909,7 +936,10 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3  # git fetch from github.com (~3s observed)
       - name: Set SCM version override for editable root installs
         run: |
@@ -1343,7 +1373,10 @@ jobs:
     env:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
         timeout-minutes: 3
       - name: Assert checkout matches GitHub SHA
         run: |
@@ -1646,3 +1679,36 @@ jobs:
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).
   # Gated on build-image-and-scan per Plan 064 B0 step 5 and B3 step 3.
+
+  ci-attest:
+    needs: [lint, unit, unit-coverage, wheel-only-guard, integration-shard, integration, build-image-and-scan, aquacast-release-image-proof]
+    if: ${{ always() && !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Attest complete same-attempt FULL qualification
+        id: attest
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 -I tools/ci_attest.py --output "$RUNNER_TEMP/full-ci-proof/full-ci-proof.json"
+      - name: Upload FULL qualification proof
+        if: steps.attest.outputs.qualified == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        timeout-minutes: 2
+        with:
+          name: full-ci-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/full-ci-proof/full-ci-proof.json
+          if-no-files-found: error
+          retention-days: 30

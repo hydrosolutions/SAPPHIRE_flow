@@ -18,10 +18,11 @@ import traceback
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
+    from typing import Any
 
 _spec = importlib.util.spec_from_file_location(
     "staging_transfer", Path(__file__).with_name("staging_release_transfer.py")
@@ -33,6 +34,13 @@ _spec.loader.exec_module(transfer)
 release = transfer.tool("release_identity")
 verification = transfer.tool("private_verification")
 SECRET_NAMES = ("RECAP_DG_CLIENT_TOKEN", "AQUACAST_TOKEN", "STAGING_ADMIN_SSH_KEY")
+API_BEARER_NAMES = (
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_CACHE_URL",
+    "ACTIONS_RESULTS_URL",
+)
 IMAGE_GATES = {
     "default": "build-image-and-scan",
     "aquacast": "aquacast-release-image-proof",
@@ -40,6 +48,9 @@ IMAGE_GATES = {
 
 SOURCE_FILES = (
     ".github/workflows/private-verification.yml",
+    ".github/workflows/ci.yml",
+    "tools/ci_attest.py",
+    "tools/ci_provenance.py",
     "tools/staging_release.py",
     "tools/staging_release_transfer.py",
     "tools/qualify_image_exporter.py",
@@ -133,7 +144,7 @@ def checkpoint(progress: Progress | None, stage: Checkpoint) -> Iterator[None]:
 
 
 def approved_binding(env: Mapping[str, str]) -> transfer.ReleaseBinding:
-    return transfer.ReleaseBinding.parse(
+    return transfer.parse_binding(
         transfer.parse_json(env["STAGING_RELEASE_ADMISSION"].encode())
     )
 
@@ -160,7 +171,10 @@ def require_local_release(
             "GITHUB_JOB": "verify",
         }
         if any(env.get(k) != v for k, v in expected.items()) or event.get("inputs") != {
-            "delivery_mode": binding.delivery_mode.value
+            "delivery_mode": binding.delivery_mode.value,
+            "verification_profile": "ci-reuse"
+            if isinstance(binding, transfer.ReuseBinding)
+            else "full",
         }:
             raise transfer.TransferError("event does not match approval")
     with checkpoint(progress, Checkpoint.LOCAL_SOURCE_CHECK):
@@ -204,6 +218,7 @@ def private_env(
         "STAGING_ADMIN_SSH_KEY",
         "STAGING_KNOWN_HOSTS",
         "STAGING_RELEASE_ADMISSION",
+        *API_BEARER_NAMES,
     ):
         result.pop(name, None)
     result.update(
@@ -547,6 +562,45 @@ def _prepare_payload(
     results = dict.fromkeys(transfer.GATE_NAMES, "blocked")
     child_env = private_env(env, binding, work)
     ready = gate_environment_ready(env)
+    reuse = isinstance(binding, transfer.ReuseBinding)
+    proof_valid = False
+    admitted_proof = None
+    proof_failure = "proof_blocked"
+    if reuse:
+        try:
+            if env.get("STAGING_CI_PROOF_RESULT") != "success":
+                raise transfer.TransferError("CI proof step did not succeed")
+            proof_work = transfer.proof_directory(Path(env["RUNNER_TEMP"]), binding)
+            if (
+                proof_work.is_symlink()
+                or proof_work.stat().st_uid != os.getuid()
+                or proof_work.stat().st_mode & 0o777 != 0o700
+            ):
+                raise transfer.TransferError("unsafe CI proof directory")
+            raw_proof = transfer.metadata_bytes(proof_work / "ci-proof.json")
+            if hashlib.sha256(raw_proof).hexdigest() != transfer.digest(
+                env.get("STAGING_CI_PROOF_SHA256")
+            ):
+                raise transfer.TransferError("admitted CI proof changed")
+            transfer.require_frozen_proof(raw_proof, binding)
+            admitted_proof = transfer.FileDigest(
+                sha256=hashlib.sha256(raw_proof).hexdigest(), length=len(raw_proof)
+            )
+            transfer.write_once(payload / "ci-proof.json", raw_proof)
+            transfer.write_once(
+                evidence / "ci-age-decision.json",
+                transfer.metadata_bytes(proof_work / "age-decision.json"),
+            )
+            proof_valid = True
+            proof_failure = "fresh_gate_failed" if ready else "preparation_blocked"
+        except Exception:
+            transfer.write_once(
+                evidence / "ci-proof-failure.json",
+                transfer.json_bytes(
+                    {"outcome": "blocked", "reason": "proof_unavailable"}
+                ),
+            )
+            ready = False
     transfer.write_once(
         evidence / "admission.json", transfer.json_bytes(asdict(binding))
     )
@@ -566,6 +620,9 @@ def _prepare_payload(
         if gate.name in IMAGE_GATES.values():
             continue
         require_local_release(root, env)
+        if reuse:
+            results[gate.name] = "reused" if proof_valid else "blocked"
+            continue
         if ready and all(results[n] == "passed" for n in gate.needs):
             if gate.name == "integration":
                 results[gate.name] = "passed"
@@ -602,15 +659,21 @@ def _prepare_payload(
             )
             if all(results[g] == "passed" for g in IMAGE_GATES.values()):
                 results["build-image-and-scan"] = "failed"
-    cleanup = verification.run_private(
-        ["docker", "buildx", "rm", "private-verification"],
-        cwd=root,
-        evidence=evidence / "builder-cleanup",
-        env=child_env,
-        timeout_seconds=60,
+    cleanup_required = (
+        not reuse
+        or transfer.parse_json(env["PRIVATE_PREPARATION"].encode()).get("buildx")
+        == "success"
     )
-    if cleanup != verification.Outcome.PASSED:
-        results["build-image-and-scan"] = "failed"
+    if cleanup_required:
+        cleanup = verification.run_private(
+            ["docker", "buildx", "rm", "private-verification"],
+            cwd=root,
+            evidence=evidence / "builder-cleanup",
+            env=child_env,
+            timeout_seconds=60,
+        )
+        if cleanup != verification.Outcome.PASSED:
+            results["build-image-and-scan"] = "failed"
     disk_sample(root, work, "after-builder-cleanup")
     private_progress = (
         Progress(
@@ -622,7 +685,11 @@ def _prepare_payload(
     require_release(root, env, progress=private_progress)
     images, expanded, expanded_hash, unpacked_size = (), 0, None, 0
     kind = transfer.PayloadKind.DIAGNOSTIC
-    if set(results.values()) == {"passed"}:
+    if all(
+        results[name]
+        == ("reused" if reuse and name in transfer.REUSED_GATES else "passed")
+        for name in transfer.GATE_NAMES
+    ):
         try:
             images, expanded, expanded_hash, unpacked_size = export_release(
                 root, work, binding, env
@@ -637,6 +704,20 @@ def _prepare_payload(
                 evidence / "export-failure.json",
                 transfer.json_bytes({"outcome": "failed"}),
             )
+    coverage = (
+        {
+            name: transfer.GateCoverage(
+                origin="canonical_ci",
+                local_status="not_run_here",
+                ci=cast("Any", binding).ci,
+            )
+            if status == "reused"
+            else transfer.GateCoverage(origin="local", local_status=status, ci=None)
+            for name, status in results.items()
+        }
+        if reuse
+        else {}
+    )
     transfer.write_once(
         evidence / "manifest.json",
         transfer.json_bytes(
@@ -645,6 +726,18 @@ def _prepare_payload(
                 "gates": results,
                 "receipt_is_not_independent_custody": True,
                 "runtime_activation": "held",
+                **(
+                    {
+                        "coverage": {
+                            name: asdict(value) for name, value in coverage.items()
+                        },
+                        "assurance": transfer.REUSE_ASSURANCE
+                        if kind == transfer.PayloadKind.RELEASE
+                        else "Diagnostic only; release qualification incomplete",
+                    }
+                    if reuse
+                    else {}
+                ),
             }
         ),
     )
@@ -657,10 +750,35 @@ def _prepare_payload(
         if kind == transfer.PayloadKind.RELEASE
         else ("report.bin",)
     )
-    envelope = transfer.Envelope(
+    if reuse and kind == transfer.PayloadKind.RELEASE:
+        names = (*names, "ci-proof.json")
+    files = {
+        name: transfer.FileDigest.of(payload / name)
+        for name in names
+        if name != "ci-proof.json"
+    }
+    if reuse and kind == transfer.PayloadKind.RELEASE:
+        if (
+            admitted_proof is None
+            or transfer.FileDigest.of(payload / "ci-proof.json") != admitted_proof
+        ):
+            raise transfer.TransferError("admitted CI proof changed before sealing")
+        files["ci-proof.json"] = admitted_proof
+    envelope_type = transfer.ReuseEnvelope if reuse else transfer.Envelope
+    envelope = envelope_type(
+        **(
+            {
+                "coverage": coverage,
+                "proof_failure": None
+                if kind == transfer.PayloadKind.RELEASE
+                else proof_failure,
+            }
+            if reuse
+            else {}
+        ),
         binding=binding,
         kind=kind,
-        files={n: transfer.FileDigest.of(payload / n) for n in names},
+        files=files,
         gates=results,
         images=images if kind == transfer.PayloadKind.RELEASE else (),
         expanded_archive_bytes=expanded if kind == transfer.PayloadKind.RELEASE else 0,
@@ -697,7 +815,7 @@ def preflight(
                 (root / name).read_bytes()
             ).hexdigest() != transfer.digest(expected_hash):
                 raise transfer.TransferError("executed source changed")
-        envelope = transfer.Envelope.parse(
+        envelope = transfer.parse_envelope(
             transfer.metadata_bytes(work / "envelope.json")
         )
         if envelope.binding != binding:
@@ -706,6 +824,11 @@ def preflight(
             if transfer.FileDigest.of(work / "payload" / name) != expected:
                 raise transfer.TransferError("handoff payload changed")
         if envelope.kind == transfer.PayloadKind.RELEASE:
+            if isinstance(envelope, transfer.ReuseEnvelope):
+                transfer.require_frozen_proof(
+                    transfer.metadata_bytes(work / "payload" / "ci-proof.json"),
+                    envelope.binding,
+                )
             transfer.verify_receipt(envelope, work / "payload" / "receipt.json")
         return envelope
 
@@ -751,15 +874,10 @@ def transfer_release(
 
 
 def main() -> int:
+    for name in API_BEARER_NAMES:
+        os.environ.pop(name, None)
     env = dict(os.environ)
-    for name in (
-        *SECRET_NAMES,
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "ACTIONS_RUNTIME_TOKEN",
-        "ACTIONS_CACHE_URL",
-        "ACTIONS_RESULTS_URL",
-    ):
+    for name in SECRET_NAMES:
         os.environ.pop(name, None)
     saved_stdout, saved_stderr = os.dup(1), os.dup(2)
     status = 1

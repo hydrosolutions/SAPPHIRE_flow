@@ -345,8 +345,9 @@ an execution route, not a delivery mode in an approval or envelope. Its green
 workflow/environment deployment record is **not delivery, load or activation**.
 The strict public route check and positive private-route predicates prevent it
 from reaching package secrets, private verification, SSH or admin-key steps,
-including failure paths. Normal release event inputs remain the exact existing
-single-field object; no new default field is added.
+including failure paths. New events require both `delivery_mode` and
+`verification_profile`; the profile defaults to `ci-reuse`. Smoke-only is still
+public diagnostics, regardless of profile, and never admits a source CI proof.
 
 Before private input, the fresh hosted Linux/x64 job requires stock Docker
 28.0.4 at the default local socket and zero containers. It accepts the normal
@@ -368,8 +369,10 @@ runner. All work is outside checkout.
 First qualify this exact hosted path with the public-only route after reviewed
 publication. Local Docker 29.8.2 evidence does not qualify hosted 28.0.4.
 Any hosted engine-version drift blocks all release delivery routes until reviewed
-requalification. A later private attempt reruns its own setup/smoke and every existing test, scan, SBOM and
-image proof. The 180-minute job and bounded 40-minute transfer limits apply;
+requalification. A later private attempt reruns setup/smoke and fresh image
+scans, SBOMs and runtime proofs. The `full` profile also reruns the release-version
+test suite; `ci-reuse` requires the source qualification below instead.
+The 180-minute job and bounded 40-minute transfer limits apply;
 worst-case work does not guarantee diagnostic delivery before cancellation.
 
 Before strict route success, failures (including checkout or setup-uv failure)
@@ -402,3 +405,89 @@ qualify. Subsequent unchanged state/first-parent validation is outside this budg
 Private phase logs record snapshot and remote-release-check elapsed seconds.
 Public checkpoints, receipts and release formats do not change. This is batching,
 not source-CI reuse, and it does not imply a measured end-to-end speedup.
+
+### FULL source CI reuse (source implementation; rollout held)
+
+New dispatches require explicit `delivery_mode` and `verification_profile`.
+`full` uses the unchanged v1 approval/envelope and performs no CI-proof API work.
+`ci-reuse` is the UI default but requires a strict v2 approval with the source CI
+run, attempt, artifact ID and archive SHA-256. A default is not approval. Existing
+v1 records do not authorize omitted profile fields on new dispatches. Operators
+with a v1 approval must explicitly choose `full`; the default does not upgrade it.
+
+Only successful FULL **push/main** CI on the exact canonical merged source can
+qualify. PR runs, dev images and old runs without the terminal artifact cannot be
+relabeled. The terminal `ci-attest` job runs only for push/main; it is deliberately skipped
+on PR runs without changing their substantive test gates. The producer also
+refuses qualification for other or missing event/ref contexts before Git or API
+work. It requires all 12 mandatory legs and 61 enforcing predicates from the same
+attempt. Admission checks the exact job-name set from that same producer inventory,
+without maintaining a second step inventory. Its inventory is bound to the
+whole reviewed `ci.yml` hash, including commands and pinned actions. Workflow
+changes require an inventory/hash review. Failed or skipped mandatory checks
+emit no FULL artifact; optional failed scan-report retries do not replace the
+successful final enforcing scans. Carried-over jobs from an older attempt cannot
+qualify a partial rerun. A successful terminal command without an artifact is not
+FULL qualification. Substantive CI checkouts use `github.sha`.
+The existing filesystem vulnerability scan remains mandatory, without a duplicate
+scanner. Scripts gates also include `tests/fakes/test_fakes.py`.
+
+Admission uses the attempt-specific `run_started_at`, not run creation/update or
+a job-derived timestamp. One aware UTC sample must be nonfuture and at most 30
+days after that start, inclusively and with subsecond precision. The approved
+attempt must be latest at entry and at the final canonical run check. A newer
+attempt in any state refuses. That final check is the last API operation before
+atomic publication of the read-only proof. Later checks use frozen bytes only;
+there is no CI refresh, retry or sliding freshness window.
+
+The reader has a shared 120-second deadline and 64-call cap. Metadata is bounded
+to 2 MiB per response and 16 MiB total; collections allow four 100-entry pages.
+The ZIP is at most 1 MiB, with one exact JSON member of at most 64 KiB and an
+expansion ratio at most 100. Only the canonical authenticated API endpoint can
+delegate one HTTPS storage request. Every DNS answer must be ordinary public
+IPv4/IPv6. Connections pin a numeric address and verify the original TLS host and
+peer. Storage receives no bearer, cookie or proxy credentials; a second redirect
+or failed response refuses without retry. DNS children and transport work share
+the deadline. Streaming bodies, including connection-close framing, remain
+bounded. Private evidence retains the exact age decision and latest-attempt
+samples; public output remains coarse.
+
+Only the proof run step is explicitly passed `GH_TOKEN`. The job's read-only
+permissions still apply to its pinned actions; this is not step-level permission
+isolation. The proof step runs before engine/buildx preparation and rejects
+package/Aquacast/SSH credentials. Runtime bearer variables
+are removed before generic environment capture and private child execution.
+Failed proof admission prevents tests/builds/exports but leaves independently
+approved report-only diagnostics reachable after strict route admission. Actions
+step outcomes and skipped preparation remain visible; controller checkpoints do
+not publish private proof, age or report content.
+
+The controller checks the frozen proof against the proof step's SHA-256 and v2
+approval. It retains that original file digest, rechecks the payload after fresh
+gates immediately before sealing, and uses only the retained digest in the
+envelope. It never rebinds changed proof bytes to a new digest.
+Source gates are recorded as **reused**, never locally passed. Fresh
+image builds, scans, SBOMs, archive checks and immutable-image runtime probes
+remain required. Aquacast discovery must expose both `cmal_pool_pt` and
+`cmal_small` with networking disabled; this downloads no model data and does not
+claim scientific qualification. Canonical release checks and existing delivery,
+capacity, load and owner-approval boundaries remain in force.
+
+V2 release custody has exactly five files, adding only `ci-proof.json` to the
+existing four-file release set. Diagnostics contain only `report.bin`.
+Private diagnostic gate records can retain an attempted source reuse when proof
+admission succeeded but later preparation or fresh image work failed. Those
+records are not release qualification or proof custody at the receiver. The
+public diagnostic owner receipt carries no proof hash or qualified source-reuse
+assurance; it remains explicitly diagnostic-only. Coverage distinguishes
+`canonical_ci`/`not_run_here` from local image gates. The owner receipt binds CI identity and proof hash. Receiver
+admission and load use local proof checks, not API requests. V1 serialized fields
+and encoding remain unchanged; old parsers reject v2.
+
+The release assurance is: **Source CI reused; delivery gates only; release-version
+suite not rerun**. Fresh image scans do not refresh the source scan's age.
+No end-to-end speedup or sub-five-minute target is established by this work.
+Operational use requires independent patch review and qualification. These source
+changes do not authorize receiver installation, workflow publication, release
+target reservation or deployment. An exact merged-main FULL run and separately
+approved receiver rollout are required before operational reuse.
