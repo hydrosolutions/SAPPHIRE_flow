@@ -422,7 +422,11 @@ on PR runs without changing their substantive test gates. The producer also
 refuses qualification for other or missing event/ref contexts before Git or API
 work. It requires all 12 mandatory legs and 61 enforcing predicates from the same
 attempt. Admission checks the exact job-name set from that same producer inventory,
-without maintaining a second step inventory. Its inventory is bound to the
+without maintaining a second step inventory. The unit job allows 40 minutes for
+35 minutes of conservatively summed bounded steps, including the scripts fake
+contracts; the terminal job allows 10 minutes for 7 minutes of bounded steps.
+These margins do not guarantee completion of unbounded work. Individual step
+bounds and timeout/mutual-exclusion policy checks remain enforced. Its inventory is bound to the
 whole reviewed `ci.yml` hash, including commands and pinned actions. Workflow
 changes require an inventory/hash review. Failed or skipped mandatory checks
 emit no FULL artifact; optional failed scan-report retries do not replace the
