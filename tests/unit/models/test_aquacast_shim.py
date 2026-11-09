@@ -307,3 +307,95 @@ class TestTrainingDataLoadersRunInProcess:
         template = CmalPoolPT()._inner._model_template  # pyright: ignore[reportPrivateUsage]
 
         assert template.config.data.num_workers == 0
+
+
+class TestMergedDischargeGapDeclaration:
+    @pytest.mark.parametrize("model_id", ["cmal_small", "cmal_pool_pt"])
+    def test_both_templates_remain_discoverable(self, model_id: str) -> None:
+        from sapphire_flow.services.model_registry import discover_models
+
+        assert model_id in discover_models()
+
+    @pytest.mark.parametrize(
+        "model_name,lookback", [("CmalSmall", 30), ("CmalPoolPT", 210)]
+    )
+    def test_default_gap_budget_preserves_both_daily_templates(
+        self, model_name: str, lookback: int
+    ) -> None:
+        from sapphire_flow.models import aquacast as shims
+
+        model = getattr(shims, model_name)()
+        requirement = model.input_requirement
+        assert set(requirement.dynamic) == {timedelta(days=1)}
+        daily = next(iter(requirement.dynamic[timedelta(days=1)].data.values()))
+        past = {
+            name: variable
+            for namespace in daily.past_known.values()
+            for name, variable in namespace.items()
+        }
+        assert past["discharge"].lookback == lookback
+        assert {name: variable.max_nan for name, variable in past.items()} == {
+            "discharge": lookback,
+            "precipitation": 0,
+            "temperature": 0,
+        }
+
+    def test_in_memory_fraction_reaches_the_shim_without_changing_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        from aquacast.operational.config import ModelTemplate
+        from aquacast.operational.model import AquacastModel
+
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        model = CmalSmall()
+        original_hash = model.config_hash
+        template = ModelTemplate.from_yaml(model.config_path)
+        inference = replace(template.config.inference, min_past_discharge_fraction=0.2)
+        configured = replace(
+            template, config=replace(template.config, inference=inference)
+        )
+        monkeypatch.setattr(model, "_inner", AquacastModel(configured))
+
+        daily = next(
+            iter(model.input_requirement.dynamic[timedelta(days=1)].data.values())
+        )
+        assert {
+            name: variable.max_nan
+            for namespace in daily.past_known.values()
+            for name, variable in namespace.items()
+        } == {"discharge": 24, "precipitation": 0, "temperature": 0}
+        assert model.config_hash == original_hash
+
+
+class TestKnownUpstreamRejectionReporting:
+    @pytest.mark.xfail(
+        strict=True,
+        raises=TypeError,
+        reason="AquaCast 0.1.378 total-rejection report compares naive and aware times",
+    )
+    def test_total_rejection_report_accepts_fi_utc_issue_time(self) -> None:
+        from datetime import UTC, datetime
+
+        import polars as pl
+        from aquacast.domain import Resolution
+        from aquacast.operational.config import ModelTemplate
+        from aquacast.operational.model import (
+            _issue_report,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        from sapphire_flow.models.aquacast import CmalSmall
+
+        config = ModelTemplate.from_yaml(CmalSmall().config_path).config
+        issue = datetime(2026, 10, 20, tzinfo=UTC)
+        predicted = {
+            Resolution.DAILY: pl.DataFrame(
+                {"forecast_issue_dt": [issue.replace(tzinfo=None)]}
+            )
+        }
+
+        report = _issue_report(predicted, config, [issue], [issue])
+
+        assert "available" in report
