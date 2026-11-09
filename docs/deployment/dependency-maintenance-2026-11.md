@@ -39,22 +39,59 @@ to fit the five-minute scan while preserving the prior three-minute overhead.
 The no-token degraded case reports that no
 image proof or scan ran and remains unavailable when `uv.lock` changes.
 
-## Staging-only immutable discharge-gap adoption
+## Merged upstream discharge-gap support
 
-The owner authorized development/staging adoption of Aquacast PR144 at immutable
-revision `b57a1872188e87e443fed2aa960b0885d4d537e2` (0.1.377). The upstream PR
-is not merged; this exception does not claim upstream model-owner approval or
-production readiness. ForecastInterface remains 0.1.20. Existing Torch/Rich
-overrides and their reported compatibility limitations remain unchanged.
+AquaCast PR144 merged on 2026-11-09. The dependency now pins main's immutable
+merge `cea602191534c37615c069c1c5416e2c99149668` (package 0.1.378), replacing
+staging-only PR revision `b57a1872188e87e443fed2aa960b0885d4d537e2` (0.1.377).
+There is no corresponding GitHub release tag; this is a commit pin, not a mutable
+`main` dependency. ForecastInterface remains 0.1.20. Torch/Rich compatibility
+exceptions above are unchanged and are not resolved by PR144.
 
-For the qualified daily cmal_small configuration, the public FI declaration
-permits missing values across its 30-day discharge lookback, while past and future
-precipitation/temperature remain strict (`max_nan=0`). Missing discharge is not
-filled by SAP. Admitted degraded output carries `DATA_AVAILABILITY`. Checkpoint,
-training configuration, ingestion and weather-routing/evidence rules do not change.
+The merged model configures the minimum finite discharge fraction with
+`inference.min_past_discharge_fraction` (default 0). Its declared budget is
+`lookback - ceil(fraction * lookback)`. Zero requires effective history
+whole-channel discharge masking in the training configuration. The unchanged
+vendored daily templates have history `p_channel=0.4`, zero target-day/std
+filters, and `drop_input_nan_target_forecast` validation. Their discharge budgets
+remain 30 (`cmal_small`) and 210 (`cmal_pool_pt`); precipitation and temperature
+remain strict (`max_nan=0`). Neither registered template is multi-resolution.
+Do not copy this tolerance to a differently trained checkpoint by editing its
+saved config or declaring augmentation it never used.
 
-Acceptance requires the unchanged trusted checkpoint to pass through normal SAP
-FI assessment and prediction in the rebuilt Linux Aquacast image, including
-availability flags and strict weather rejection. Historical upstream 1497-test
-success is not this image proof. Neither numerical execution nor these flags
-establish hydrological skill or authorize deployment/activation.
+SAP's FI gate passes admitted missing values unchanged. The model owns calendar,
+shape and finite-history checks and uses its existing mask/indicator processing.
+Missing discharge product is not made optional. Successful degraded output carries
+`DATA_AVAILABILITY` through the existing FI boundary warning; it is not a new
+persisted ensemble flag. The shim's vocabulary, physical unit conversion and
+aggregation translation remain required; no SAP missing-discharge patch is removed.
+
+Qualification must compare baseline and candidate in isolated normal Linux images,
+using the same trusted checkpoint, saved/serving config, historical inputs and seed.
+Complete and accepted-gap numerical outputs must match exactly. Short/absent rows
+and non-finite values need measured outcomes, not assumed equivalence. Test-only
+fraction changes stay in memory; the real checkpoint and vendored YAML stay intact.
+Restricted CPU loading must never fall back to unsafe deserialization. Missing
+image credentials or proof block acceptance; they are not a passing degraded case.
+Historical execution and gap flags do not establish hydrological skill or authorize
+live activation. This source change does not change checkpoints, training, ingest,
+weather routing, assignments, API services, or deployed images.
+
+### Known upstream failure-reporting exception
+
+The owner accepted source-only adoption with the following upstream defect open
+and will communicate it to the modeller. This is not full FI conformance approval.
+`_issue_report` is identical in 0.1.377 and 0.1.378: it compares naive prediction
+stamps with UTC-aware FI issue times and can raise `TypeError` instead of returning
+`ModelFailure(INPUT_DATA)`. PR144's new positive-fraction total-rejection path
+exposes it. At a test-only fraction0.2, 25 missing values in a30-day history trigger
+the error in direct predict and all-rejected hindcast. SAP's normal NaN gate
+correctly refuses that case before predict; that does not repair the model contract.
+
+The serving templates retain default fraction0. No saved configuration, checkpoint,
+input timestamps, gate or SAP exception handling is changed. Default-zero success
+and measured failure paths matched the baseline in native historical checks;
+other latent upstream failure paths are not proved safe. A strict expected-failure
+test records the reporting defect and must be revisited when the upstream pin
+changes. A new failure on the actual default Nepal SAP path or a numerical/config
+regression still blocks adoption. No upstream issue was published by this change.
