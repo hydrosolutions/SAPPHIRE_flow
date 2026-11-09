@@ -556,3 +556,21 @@ purpose and reader parameters are keyword-only.
 Real bearer-token regression tests assert consumer null and reviewer false for
 standard-only station fixtures, then compare every remaining response field.
 Other principal routes retain their existing whole-response equality checks.
+
+## Forecast-specific rating-derived input context (contract2.10)
+
+`GET /api/v1/forecasts/{forecast_id}/rating-input-history` admits only existing
+reviewer/admin principals within their ordinary tenant/station scope. It requires a
+provisional forecast ID; there is no range or purpose query switch. Seven completed
+UTC days are anchored to that forecast's persisted issue date. The response shows
+rating-derived daily discharge used in SAP input assembly, not a final model tensor
+or a reconstruction of measured-discharge days. A missing derived day is labelled
+`no_retained_derived_day`, never “the model had no input”.
+
+Available slots include Q in m3/s, daily support and frozen curve identities/validity.
+Sparse support, unassessed QC, reference assumptions, expiry and actual provisional
+endpoint extrapolation remain visible. The new route does not alter the existing
+provisional summary/detail `rating_provenance_status=not_exposed` fields. Evidence
+failures/limits return503 rather than a current-curve recomputation. All responses,
+outer errors, slash redirects and supported preflight are no-store. This backend
+contract still needs reviewed deployment before any frontend reader can use it.

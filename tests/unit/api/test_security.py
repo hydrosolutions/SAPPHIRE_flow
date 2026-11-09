@@ -417,6 +417,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/stations/{station_id}/forecast-publications"): "PRINCIPAL",
         ("GET", "/api/v1/forecast-publications"): "PRINCIPAL",
         ("GET", "/api/v1/forecasts/{forecast_id}"): "PRINCIPAL",
+        ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"): "REVIEW",
         ("GET", "/api/v1/alerts"): "PRINCIPAL",
         ("POST", "/api/v1/alerts/{alert_id}/acknowledge"): "PRINCIPAL",
         ("GET", "/api/v1/forecast-lab/snapshot"): "PRINCIPAL",

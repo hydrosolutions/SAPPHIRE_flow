@@ -2265,3 +2265,39 @@ absent. Both station paths and shared forecast paths are no-store including oute
 unrelated classifications are preserved. A frontend Worker may attach its existing
 scoped reviewer key only after its own authorization; never expose it to browsers
 or replace it with an admin key. Exact rating/derived-Q access remains deferred.
+
+### Forecast-specific frozen rating-input history
+
+`GET /api/v1/forecasts/{forecast_id}/rating-input-history` is reviewer/admin only.
+The request's safe parent header is tenant/station/purpose scoped before invoking
+`forecast_rating_input_history(uuid)`; returned parent identity must agree. The
+shared API database role cannot enforce bearer scope by itself. Direct EXECUTE by
+that role can select another provisional forecast ID: this is not bearer-level RLS.
+
+Migration0083 grants only API EXECUTE on the bounded definer, owned by the trusted
+migration principal with fixed `pg_catalog,pg_temp` search path. Its private JSON
+shape helper is not executable by runtime roles. No raw table/column grants change.
+Bootstrap resets both entrypoint ACLs before preflight and restores only projection
+EXECUTE; downgrade removes only these new functions. The existing lineage function
+and provisional list/detail `not_exposed` contract remain unchanged.
+
+The projection checks original UTF-8 bytes against retained fingerprints, rejects
+duplicate JSON keys, and validates frozen identity/QC/capture facts. This is byte
+integrity plus semantic validation, not a new SQL canonical serializer. Frozen curve
+identity hashes the preserving `json` lexical subtree, proven by golden PostgreSQL
+tests; `jsonb` serialization is never hashed. Only typed Q/support and minimal curve
+identity/validity leave the boundary. Unknown warnings/rejections fail closed; raw
+exception text, feed/reference bodies and source levels are not returned or logged.
+
+Reads are bounded and have a5s transaction-local timeout. Oversized or inconsistent
+evidence returns503, never truncation or current-curve fallback. Every response,
+including outer500, redirect and supported preflight, is no-store. This source
+contract does not authorize any live migration or deployment.
+
+History refusal ceilings:2MiB parent,256KiB per derived/capture body,16MiB cumulative
+parent+derived+capture bodies,500000 JSON nodes,depth32,10000 linked samples,64 frozen
+curve identities,2MiB projection and5s statement timeout. Repository2016-sample v1/v2
+fixtures required increasing provisional8MiB/100000-node ceilings; this is not a
+qualification of all real21-station curve/reference shapes. Larger shapes fail
+unavailable until separately qualified. Native sample bodies include nested reference
+copies; ancillary capture bytes are charged before hash/parse as well.

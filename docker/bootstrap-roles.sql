@@ -346,6 +346,24 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Optional bounded history entrypoints: reset restored ACLs before preflight.
+DO $$
+DECLARE f text; r text;
+BEGIN
+    FOREACH f IN ARRAY ARRAY['forecast_rating_input_history(uuid)',
+        'rating_history_json_nodes(text,integer)'] LOOP
+        IF to_regprocedure('public.' || f) IS NOT NULL THEN
+            FOREACH r IN ARRAY ARRAY['PUBLIC','sapphire_api','sapphire_worker',
+                'sapphire_operator','sapphire_publication_health'] LOOP
+                IF r = 'PUBLIC' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r) THEN
+                    EXECUTE format('REVOKE ALL ON FUNCTION public.%s FROM %s',f,
+                        CASE WHEN r='PUBLIC' THEN r ELSE quote_ident(r) END);
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+END $$;
+
 -- Protected input/provenance tables never join the runtime grant set. Strip stale
 -- table AND column ACLs before any grants or later backup preflight can fail.
 -- Keep the operator safe-state block first; do not move work ahead of it.
@@ -491,6 +509,8 @@ BEGIN
               'public.lock_publication_grants(uuid,uuid,uuid)'::regprocedure,
               'public.lock_publication_candidate(uuid)'::regprocedure,
               'public.native_rating_lineage(uuid,boolean)'::regprocedure)
+          AND f.oid IS DISTINCT FROM
+              to_regprocedure('public.forecast_rating_input_history(uuid)')
           AND NOT EXISTS (SELECT 1 FROM pg_depend extension_dependency
               WHERE extension_dependency.classid = 'pg_proc'::regclass
                 AND extension_dependency.objid = f.oid
@@ -660,6 +680,11 @@ GRANT SELECT, INSERT ON native_measurement_captures, native_capture_batches,
 GRANT SELECT ON provisional_evaluation_active_grants TO sapphire_api;
 GRANT EXECUTE ON FUNCTION public.native_rating_lineage(uuid,boolean)
     TO sapphire_api, sapphire_worker;
+DO $$ BEGIN
+    IF to_regprocedure('public.forecast_rating_input_history(uuid)') IS NOT NULL THEN
+        GRANT EXECUTE ON FUNCTION public.forecast_rating_input_history(uuid) TO sapphire_api;
+    END IF;
+END $$;
 GRANT INSERT ON historical_forcing TO sapphire_worker;
 GRANT INSERT, UPDATE, DELETE ON clim_baselines TO sapphire_worker;
 GRANT INSERT ON flow_regime_configs TO sapphire_worker;

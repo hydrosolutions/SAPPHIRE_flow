@@ -6917,3 +6917,27 @@ projecting persisted warnings. `rating_provenance_status=not_exposed` requires
 `rating_curves=[]` and does not waive required lineage. Publication applicability
 is not_applicable with null decision fields. No new store Protocol, DB projection,
 exact-curve read or derived observation type is introduced. See api-v1-review.md.
+
+## Forecast rating-input history
+
+Reviewer/admin `GET /api/v1/forecasts/{forecast_id}/rating-input-history` returns
+seven completed UTC day slots before the persisted issue date. `resolution=P1D`,
+`unit=m3/s`, `provenance=sap_assembly_derived_daily`, and `final_model_tensor=not_retained`.
+The label is “rating-derived daily discharge used in SAP input assembly”. This is
+not the full FI input or a final model/preprocessor tensor. Measured-Q days are not
+reconstructed. `no_retained_derived_day` means only absent derived-day evidence,
+not a missing model input. Sparse source support never implies full daily coverage.
+
+Available days contain `daily_discharge`, frozen support counts/first/last/warnings,
+and curve ID/content SHA256/validity/flags. Multiple curve snapshots stay distinct.
+Reconstruction uses stored accepted Q in timestamp order with the existing
+`math.fsum(q/n)` policy. Rejected rows remain support evidence; measured rejection
+counts come only from frozen lineage. Expiry at measurement and at forecast issue
+remain distinct, including rejected support. Existing provisional linear endpoint
+extrapolation is reported honestly; ordinary clamp and threshold policies do not change.
+
+No arbitrary range, fingerprint input, current-curve lookup or observation `data_use`
+switch exists. Consumer403; absent/out-of-scope404; malformed/unavailable/bounded-out
+frozen evidence503. Missing linked evidence never becomes empty200. Existing
+provisional summary/detail provenance fields remain `not_exposed`; this is a separate
+explicit projection contract. See security.md for the shared-role scope boundary.
