@@ -22,6 +22,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         headers={"Cache-Control": "no-store"}
         if (
             shared_forecast_read_path(request.url.path)
+            or re.fullmatch(
+                r"/api/v1/forecasts/[^/]+/rating-input-history/?", request.url.path
+            )
             or request.url.path
             in {
                 "/api/v1/forecast-lab/snapshot",

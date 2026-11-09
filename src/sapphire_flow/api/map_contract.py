@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.9"
+MAP_CONTRACT_VERSION = "2.10"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -42,6 +42,7 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/stations/{station_id}/observations"),
         ("GET", "/api/v1/stations/{station_id}/forecasts"),
         ("GET", "/api/v1/forecasts/{forecast_id}"),
+        ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"),
         ("GET", "/api/v1/qc/rules"),
         ("GET", "/api/v1/stations/{station_id}/skill"),
         # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
@@ -57,6 +58,7 @@ _REVIEW_PATHS: frozenset[str] = frozenset(
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/swiss/overview",
         "/api/v1/swiss/observation-history",
+        "/api/v1/forecasts/{forecast_id}/rating-input-history",
     }
 )
 
@@ -170,6 +172,15 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "selected forecast later marked superseded by an automatic retry. "
         "Consumer and reviewer scopes are identical; admin is unscoped but "
         "sees the same publication gate. An out-of-scope station is 404."
+    ),
+    ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"): (
+        "Reviewer/admin forecast-specific provisional rating history. Seven completed "
+        "UTC days anchored to actual issued_at; daily SAP assembly-derived Q, not "
+        "the final model tensor or measured-Q history. no_retained_derived_day is "
+        "not a missing-input claim. Uses frozen linked evidence and exact frozen "
+        "curve identity/validity, preserving quality and actual extrapolation flags. "
+        "No arbitrary range or fingerprints. Scope precedes protected reads. "
+        "All responses, outer errors, redirects and supported preflight are no-store."
     ),
     ("GET", "/api/v1/forecasts/{forecast_id}"): (
         "Forecast detail, with typed qc_flags. For an activated CHWRR tenant "
@@ -389,6 +400,12 @@ def build_map_openapi() -> dict[str, Any]:
                         "lineage-health "
                         "or scientific-acceptance claim."
                     )
+            if path == "/api/v1/forecasts/{forecast_id}/rating-input-history":
+                responses["404"] = _error_response("Unknown or out-of-scope forecast.")
+                responses["500"] = _error_response("Sanitized internal error.")
+                responses["503"] = _error_response(
+                    "Frozen rating evidence unavailable."
+                )
             if path == "/api/v1/swiss/observation-history":
                 responses["405"] = {
                     "description": "Method not allowed (framework detail envelope)."

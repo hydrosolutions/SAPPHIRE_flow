@@ -136,6 +136,11 @@ from sapphire_flow.api.routes import api_swiss_overview as _swiss_overview  # no
 app.include_router(_swiss_history.router, dependencies=[Depends(require_reviewer)])
 app.include_router(_swiss_overview.router, dependencies=[Depends(require_reviewer)])
 app.include_router(_api_evaluation.router)
+from sapphire_flow.api.routes import (  # noqa: E402
+    api_forecast_rating_history as _rating_history,
+)
+
+app.include_router(_rating_history.router, dependencies=[Depends(require_reviewer)])
 # Review routes depend on a named OIDC human. Consumer publication routes
 # retain the existing service-token authorization and station scope.
 app.include_router(_publication.router)

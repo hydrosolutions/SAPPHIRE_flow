@@ -2530,3 +2530,21 @@ outer500, configured preflight/slash307, existing forecast/deeper classification
 and unrelated station-path negatives without broadening CORS. Regenerate map2.9
 and communicate nullable availability/not_exposed empty curves to frontend users;
 backend qualification does not establish frontend adoption or live acceptance.
+
+## Forecast-specific frozen rating history
+
+Route `api/routes/api_forecast_rating_history.py` → safe scoped reader
+`api/forecast_rating_history.py` → migration0083 `forecast_rating_input_history(uuid)`
+→ boundary-parsed `types/forecast_rating_history.py` →
+`services/forecast_rating_history.py`. Protect scope-before-projection, exact frozen
+byte and curve digest identity, v1/v2 capture/QC binding, timestamp-order daily math,
+seven completed issue-anchored UTC slots, no false missing-input claim, and closed
+outward codes. The old lineage function, ordinary observations, provisional1120
+fields and scientific conversion policy must not change.
+
+Touchpoints: bootstrap optional-signature ACL reset/definer allowlist/API-only grant;
+route registration/auth matrix; CORS outer path cache wrapper and error500 handler;
+API map contract and generated spec. Tests: unit/api and unit/services
+`test_*forecast_rating_history.py`; integration/store `test_forecast_rating_history.py`
+and integration/db `test_forecast_rating_history_roles.py`. Qualify all caps and
+real-role upgrade/downgrade/restore paths locally before operational acceptance.

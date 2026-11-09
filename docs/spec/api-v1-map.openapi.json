@@ -2424,6 +2424,94 @@
         "title": "ForecastQcRuleSetResponse",
         "type": "object"
       },
+      "ForecastRatingHistory": {
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "data_use": {
+            "const": "provisional_rating",
+            "default": "provisional_rating",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/RatingHistoryDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "final_model_tensor": {
+            "const": "not_retained",
+            "default": "not_retained",
+            "title": "Final Model Tensor",
+            "type": "string"
+          },
+          "forecast_id": {
+            "format": "uuid",
+            "title": "Forecast Id",
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "label": {
+            "const": "rating-derived daily discharge used in SAP input assembly",
+            "default": "rating-derived daily discharge used in SAP input assembly",
+            "title": "Label",
+            "type": "string"
+          },
+          "provenance": {
+            "const": "sap_assembly_derived_daily",
+            "default": "sap_assembly_derived_daily",
+            "title": "Provenance",
+            "type": "string"
+          },
+          "resolution": {
+            "const": "P1D",
+            "default": "P1D",
+            "title": "Resolution",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "station_id": {
+            "format": "uuid",
+            "title": "Station Id",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "forecast_id",
+          "station_id",
+          "issued_at",
+          "artifact_id",
+          "start",
+          "end",
+          "days"
+        ],
+        "title": "ForecastRatingHistory",
+        "type": "object"
+      },
       "ForecastSummary": {
         "properties": {
           "created_at": {
@@ -4365,6 +4453,194 @@
         "title": "QuantileEnvelopeSchema",
         "type": "object"
       },
+      "RatingHistoryCurve": {
+        "properties": {
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "curve_id": {
+            "format": "uuid",
+            "title": "Curve Id",
+            "type": "string"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "title": "Valid From",
+            "type": "string"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "warnings": {
+            "items": {
+              "enum": [
+                "owner_assumed_same_zero_unverified",
+                "rating_expired_at_measurement",
+                "qc_unassessed",
+                "extrapolated_below",
+                "extrapolated_above",
+                "partial_daily_support",
+                "accepted_measured_discharge_absent",
+                "rating_expired_at_issue",
+                "rating_unreconciled_sources_omitted",
+                "measured_discharge_rejected"
+              ],
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "curve_id",
+          "content_sha256",
+          "valid_from",
+          "valid_to",
+          "warnings"
+        ],
+        "title": "RatingHistoryCurve",
+        "type": "object"
+      },
+      "RatingHistoryDay": {
+        "properties": {
+          "curves": {
+            "items": {
+              "$ref": "#/components/schemas/RatingHistoryCurve"
+            },
+            "title": "Curves",
+            "type": "array"
+          },
+          "daily_discharge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Discharge"
+          },
+          "day": {
+            "format": "date-time",
+            "title": "Day",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "no_retained_derived_day"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "support": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RatingHistorySupport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "day",
+          "status",
+          "daily_discharge",
+          "support",
+          "curves"
+        ],
+        "title": "RatingHistoryDay",
+        "type": "object"
+      },
+      "RatingHistorySupport": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "assessed": {
+            "title": "Assessed",
+            "type": "integer"
+          },
+          "day": {
+            "format": "date-time",
+            "title": "Day",
+            "type": "string"
+          },
+          "extrapolated": {
+            "title": "Extrapolated",
+            "type": "integer"
+          },
+          "first": {
+            "format": "date-time",
+            "title": "First",
+            "type": "string"
+          },
+          "last": {
+            "format": "date-time",
+            "title": "Last",
+            "type": "string"
+          },
+          "measured_rejected": {
+            "title": "Measured Rejected",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "unassessed": {
+            "title": "Unassessed",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "enum": [
+                "owner_assumed_same_zero_unverified",
+                "rating_expired_at_measurement",
+                "qc_unassessed",
+                "extrapolated_below",
+                "extrapolated_above",
+                "partial_daily_support",
+                "accepted_measured_discharge_absent",
+                "rating_expired_at_issue",
+                "rating_unreconciled_sources_omitted",
+                "measured_discharge_rejected"
+              ],
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "day",
+          "accepted",
+          "rejected",
+          "extrapolated",
+          "assessed",
+          "unassessed",
+          "measured_rejected",
+          "first",
+          "last",
+          "warnings"
+        ],
+        "title": "RatingHistorySupport",
+        "type": "object"
+      },
       "RejectedForecastResponse": {
         "properties": {
           "attempt_id": {
@@ -6218,7 +6494,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.9"
+    "version": "2.10"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6467,6 +6743,105 @@
         "summary": "Get Forecast",
         "tags": [
           "api-forecasts"
+        ]
+      }
+    },
+    "/api/v1/forecasts/{forecast_id}/rating-input-history": {
+      "get": {
+        "description": "Reviewer/admin forecast-specific provisional rating history. Seven completed UTC days anchored to actual issued_at; daily SAP assembly-derived Q, not the final model tensor or measured-Q history. no_retained_derived_day is not a missing-input claim. Uses frozen linked evidence and exact frozen curve identity/validity, preserving quality and actual extrapolation flags. No arbitrary range or fingerprints. Scope precedes protected reads. All responses, outer errors, redirects and supported preflight are no-store.",
+        "operationId": "rating_input_history_api_v1_forecasts__forecast_id__rating_input_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "forecast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Forecast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastRatingHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope forecast."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Frozen rating evidence unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Rating Input History",
+        "tags": [
+          "forecasts"
         ]
       }
     },

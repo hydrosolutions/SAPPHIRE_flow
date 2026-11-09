@@ -95,6 +95,7 @@ class ScopedCorsMiddleware:
             target = self._consumer
         if (
             shared_forecast_read_path(path)
+            or re.fullmatch(r"/api/v1/forecasts/[^/]+/rating-input-history/?", path)
             or path
             in {
                 "/api/v1/swiss/overview",
