@@ -44,11 +44,15 @@ REVOKE ALL ON FUNCTION public.rating_history_json_nodes(text,integer) FROM PUBLI
 
 CREATE FUNCTION public.forecast_rating_input_history(identity uuid)
 RETURNS jsonb LANGUAGE plpgsql STABLE SECURITY DEFINER
-SET search_path=pg_catalog,pg_temp SET TimeZone='UTC' AS $$
+SET search_path=pg_catalog,pg_temp SET TimeZone='UTC'
+SET extra_float_digits=3 AS $$
 DECLARE
  parent record; r record; cap record; raw text; source_raw text; evidence_raw text;
  lineage jsonb; rating jsonb; day jsonb; d jsonb; s jsonb; c jsonb; ref jsonb;
  capture_source jsonb; capture_evidence jsonb; curve_raw text; curve_hash text;
+ reference_curve_raw text; endpoint_parts text[]; authority_parts text[];
+ authority text; host text; suffix text; path_part text; port_number integer;
+ reference_endpoint text;
  fp text; warning text; flag jsonb; point jsonb; point_level float8;
  start_time timestamptz; stop_time timestamptz; day_time timestamptz;
  stamp timestamptz; valid_from timestamptz; valid_to timestamptz;
@@ -95,6 +99,7 @@ BEGIN
  OR rating->>'policy' IS DISTINCT FROM
   'utc-day-sample-first-mean-measured-precedence-v1'
  OR jsonb_typeof(rating->'days') IS DISTINCT FROM 'array'
+ OR rating->'days'='[]'::jsonb
  THEN RAISE EXCEPTION 'rating history parent'; END IF;
  stop_time := date_trunc('day',parent.issued_at); start_time := stop_time-interval
   '7 days';
@@ -202,6 +207,7 @@ BEGIN
      FROM 'measured'
     OR d->>'level_unit' IS DISTINCT FROM 'm' OR d->>'discharge_unit' IS DISTINCT
      FROM 'm3/s'
+    OR NOT (jsonb_typeof(d->'discharge') IN ('number','null')) IS TRUE
     OR (d->>'discharge')::float8 IS DISTINCT FROM r.discharge
     OR d->>'rejection' IS DISTINCT FROM r.rejection
     OR NOT d ?& ARRAY['discharge','rejection','endpoints']
@@ -218,6 +224,7 @@ BEGIN
     OR (c->>'valid_to' IS NOT NULL AND NOT (c->>'valid_to' ~ '(Z|[+]00:00)$'))
     OR jsonb_typeof(d->'warnings') IS DISTINCT FROM 'array'
     OR jsonb_typeof(s->'qc_flags') IS DISTINCT FROM 'array'
+    OR NOT (jsonb_typeof(s->'qc_rule_version') IN ('string','null')) IS TRUE
     OR NOT (s->>'qc_status' IN ('raw','qc_passed','qc_failed','qc_suspect',
      'missing','qc_unchecked')) IS TRUE THEN
     RAISE EXCEPTION 'rating history sample'; END IF;
@@ -225,6 +232,19 @@ BEGIN
     (c->>'valid_to')::timestamptz;
    IF valid_from>r.timestamp OR (valid_to IS NOT NULL AND valid_to<=valid_from) THEN
     RAISE EXCEPTION 'rating history curve'; END IF;
+   -- The embedded reference copy was already charged inside derived-content bytes.
+   -- Charge its additional parse work, preserving noncanonical assumed snapshots.
+   IF jsonb_typeof(ref->'curve'->'content') IS DISTINCT FROM 'string' THEN
+    RAISE EXCEPTION 'rating history reference'; END IF;
+   reference_curve_raw:=ref->'curve'->>'content';
+   IF octet_length(reference_curve_raw)>262144 THEN
+    RAISE EXCEPTION 'rating history bounds'; END IF;
+   nodes:=nodes+public.rating_history_json_nodes(reference_curve_raw,500000-nodes);
+   IF reference_curve_raw::jsonb IS DISTINCT FROM c
+    OR jsonb_typeof(ref->'endpoint') IS DISTINCT FROM 'string'
+    OR jsonb_typeof(ref->'api_station_id') IS DISTINCT FROM 'number'
+    OR NOT (ref->>'api_station_id' ~ '^[1-9][0-9]*$') IS TRUE THEN
+    RAISE EXCEPTION 'rating history reference'; END IF;
    curve_raw := (raw::json->'curve')::text;
    curve_hash := encode(sha256(convert_to(curve_raw,'UTF8')),'hex');
    IF NOT (r.rating_curve_id::text||curve_hash)=ANY(curve_keys) THEN
@@ -235,9 +255,36 @@ BEGIN
     IF r.capture_id IS NOT NULL OR d->>'policy' IS DISTINCT FROM
      'native-rating-linear-endpoints-v1'
      OR (d->'feed'->>'tenant_id')::uuid IS DISTINCT FROM r.tenant_id
-     OR (d->'feed'->>'station_id')::uuid IS DISTINCT FROM r.station_id THEN
+     OR (d->'feed'->>'station_id')::uuid IS DISTINCT FROM r.station_id
+     OR ref->>'endpoint' IS DISTINCT FROM d->'feed'->>'endpoint'
+     OR ref->'api_station_id' IS DISTINCT FROM d->'feed'->'api_station_id' THEN
      RAISE EXCEPTION 'rating history version'; END IF;
    ELSIF r.evidence_version=2 AND r.capture_id IS NOT NULL THEN
+    -- Match canonical_provider_endpoint: HTTPS, ASCII/lowercase host, default443,
+    -- unchanged path except its trailing slash. Provider text stays private.
+    endpoint_parts:=regexp_match(ref->>'endpoint',
+     '^[Hh][Tt][Tt][Pp][Ss]://([^/?#@[:space:]]+)(/[^?#[:space:]]*)?([?])?(#)?$');
+    IF endpoint_parts IS NULL THEN RAISE EXCEPTION 'rating history reference'; END IF;
+    authority:=endpoint_parts[1]; path_part:=coalesce(endpoint_parts[2],'');
+    IF octet_length(authority)<>length(authority) THEN
+     RAISE EXCEPTION 'rating history reference'; END IF;
+    IF left(authority,1)='[' THEN
+     authority_parts:=regexp_match(authority,'^\[([^\[\]]+)\](:([0-9]*))?$');
+     IF authority_parts IS NULL OR strpos(authority_parts[1],':')=0 THEN
+      RAISE EXCEPTION 'rating history reference'; END IF;
+     host:='['||lower(authority_parts[1])||']';
+    ELSE
+     authority_parts:=regexp_match(authority,'^([^:\[\]]+)(:([0-9]*))?$');
+     IF authority_parts IS NULL THEN RAISE EXCEPTION 'rating history reference'; END IF;
+     host:=lower(authority_parts[1]);
+    END IF;
+    suffix:='';
+    IF nullif(authority_parts[3],'') IS NOT NULL THEN
+     port_number:=authority_parts[3]::integer;
+     IF port_number>65535 THEN RAISE EXCEPTION 'rating history reference'; END IF;
+     IF port_number<>443 THEN suffix:=':'||port_number::text; END IF;
+    END IF;
+    reference_endpoint:='https://'||host||suffix||rtrim(path_part,'/')||'/';
     SELECT x.id,x.tenant_id,x.station_id,x.observation_id,x.source_version_sha256,
      x.evidence_sha256,octet_length(x.source_content) AS source_bytes,
      octet_length(x.evidence_content) AS evidence_bytes INTO cap
@@ -268,6 +315,9 @@ BEGIN
      OR capture_evidence->>'schema_version' IS DISTINCT FROM '1'
      OR (capture_evidence->>'id')::uuid IS DISTINCT FROM r.capture_id
      OR capture_evidence->'source_version' IS DISTINCT FROM capture_source
+     OR reference_endpoint IS DISTINCT FROM capture_source->'provider'->>'endpoint'
+     OR ref->'api_station_id' IS DISTINCT FROM
+      capture_source->'provider'->'api_station_id'
      OR d->'feed' IS DISTINCT FROM jsonb_build_object('kind','native_capture',
       'capture_id',r.capture_id,'capture_sha256',cap.evidence_sha256,
       'source_version_sha256',cap.source_version_sha256,'provider',capture_source->'provider',
@@ -397,6 +447,10 @@ BEGIN
  IF octet_length(out_json::text)>2097152 THEN RAISE EXCEPTION
   'rating history bounds'; END IF;
  RETURN out_json;
+EXCEPTION WHEN data_exception THEN
+ -- Native JSON/UUID/time/number cast errors can echo protected source text.
+ -- Preserve cancellation, explicit bounds, and fixed integrity refusals unchanged.
+ RAISE EXCEPTION 'rating history malformed evidence' USING ERRCODE='22000';
 END $$;
 REVOKE ALL ON FUNCTION public.forecast_rating_input_history(uuid) FROM PUBLIC;
 DO $$ DECLARE role_name text;

@@ -2301,3 +2301,17 @@ fixtures required increasing provisional8MiB/100000-node ceilings; this is not a
 qualification of all real21-station curve/reference shapes. Larger shapes fail
 unavailable until separately qualified. Native sample bodies include nested reference
 copies; ancillary capture bytes are charged before hash/parse as well.
+
+The frozen projection pins `extra_float_digits=3` as well as UTC so caller session
+settings cannot round stored float8 discharge while constructing JSON. Regression
+tests exercise the actual JSON projection under caller0/-15 settings. An empty
+parent consumed-day list is corrupt evidence503; valid retained support exclusively
+outside the seven-day display window still yields honest null slots.
+
+Frozen reference checks bind the embedded curve copy semantically after bounded
+strict parsing, while retaining the primary curve's exact lexical digest. Legacy
+feed endpoints match literally; capture-backed references use producer-equivalent
+HTTPS host/default-port/trailing-slash normalization. Provider text stays private.
+Discharge is JSON number/null; QC rule version is required string/null. Native
+JSON/UUID/time/number data exceptions become a fixed database error before leaving
+the projection; cancellation, bounds and integrity failures remain failures.

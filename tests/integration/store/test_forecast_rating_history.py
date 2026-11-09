@@ -201,7 +201,11 @@ class TestCaptureProjection:
 
 
 def _dense_parent(
-    conn: sa.Connection, version: int, count: int = 2016, cadence_minutes: int = 5
+    conn: sa.Connection,
+    version: int,
+    count: int = 2016,
+    cadence_minutes: int = 5,
+    discharge: float | None = None,
 ) -> tuple[OperationalForecast, list[RatingDerivedDischarge]]:
     from dataclasses import replace
     from datetime import timedelta
@@ -275,6 +279,8 @@ def _dense_parent(
                     capture_sha256=cap["evidence_sha256"],
                     source_version_sha256=cap["source_version_sha256"],
                 )
+            if discharge is not None:
+                row["discharge"] = data["discharge"] = discharge
             row["content"] = canonical_content(data)
             row["fingerprint"] = content_digest(row["content"])
             conn.execute(sa.insert(rating_derived_discharge).values(**row))
@@ -347,6 +353,8 @@ class TestHistoryCapacity:
                    sum(coalesce(octet_length(c.source_content),0)+
                        coalesce(octet_length(c.evidence_content),0)) AS capture_bytes,
                    sum(public.rating_history_json_nodes(r.content,100000)+
+                       public.rating_history_json_nodes(
+                           r.content::jsonb->'reference'->'curve'->>'content',100000)+
                        CASE WHEN c.id IS NULL THEN 0 ELSE
                        public.rating_history_json_nodes(c.source_content,100000)+
                        public.rating_history_json_nodes(c.evidence_content,100000)
@@ -406,11 +414,26 @@ def _stored_parent(conn: sa.Connection) -> OperationalForecast:
 
 
 def _replace_sample_content(
-    conn: sa.Connection, parent: OperationalForecast, transform: Callable[[str], str]
+    conn: sa.Connection,
+    parent: OperationalForecast,
+    transform: Callable[[str], str],
+    selected_fingerprint: str | None = None,
 ) -> None:
     from sapphire_flow.db.metadata import forecasts, rating_derived_discharge
 
-    row = conn.execute(sa.select(rating_derived_discharge)).mappings().one()
+    row = (
+        conn.execute(
+            sa.select(rating_derived_discharge).where(
+                rating_derived_discharge.c.fingerprint
+                == (
+                    selected_fingerprint
+                    or parent.input_lineage.rating_input.days[0].fingerprints[0]
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
     raw = transform(row["content"])
     fingerprint = content_digest(raw)
     conn.execute(sa.text("SET LOCAL session_replication_role = replica"))
@@ -692,7 +715,8 @@ class TestProjectionBounds:
         )
         for index, row in enumerate(rows):
             data = json.loads(row["content"])
-            data["curve"]["version"] = f"frozen-{index}"
+            data["curve"]["version"] = index + 1
+            data["reference"]["curve"]["content"] = canonical_content(data["curve"])
             content = canonical_content(data)
             digest = content_digest(content)
             replacements[row["fingerprint"]] = digest
@@ -740,7 +764,25 @@ class TestProjectionBounds:
             savepoint_factory,
         )
 
-        parent, _ = _dense_parent(db_connection, 1, count=5200, cadence_minutes=1)
+        parent, _ = _dense_parent(
+            db_connection,
+            1,
+            count=4900,
+            cadence_minutes=1,
+            discharge=1.2345678901234567,
+        )
+        nodes = db_connection.scalar(
+            sa.text("""
+            SELECT sum(public.rating_history_json_nodes(content,500000)+
+                public.rating_history_json_nodes(content::jsonb->'reference'->'curve'->>'content',500000))
+            FROM rating_derived_discharge
+        """)
+        )
+        parent_nodes = db_connection.scalar(
+            sa.text("SELECT public.rating_history_json_nodes(:content,500000)"),
+            {"content": parent.input_lineage.content},
+        )
+        assert nodes + parent_nodes < 500000
         PgForecastStore(
             db_connection,
             data_use=parent.data_use,
@@ -755,11 +797,13 @@ class TestProjectionBounds:
 
 
 class TestFrozenScientificFlags:
+    @pytest.mark.parametrize("assessment", ["assessed", "unassessed", "empty_version"])
     @pytest.mark.parametrize("level_case", ["above", "below", "in_range"])
     def test_endpoint_flags_follow_actual_provisional_conversion(
         self,
         db_connection: sa.Connection,
         level_case: str,
+        assessment: str,
     ) -> None:
         from dataclasses import asdict, replace
         from datetime import datetime
@@ -805,6 +849,22 @@ class TestFrozenScientificFlags:
             else levels[0] - 0.01
             if level_case == "below"
             else obs.value
+        )
+        from sapphire_flow.types.domain import QcFlag
+        from sapphire_flow.types.enums import QcStatus
+
+        obs = replace(
+            obs,
+            qc_flags=[
+                QcFlag(rule_id="fixture", rule_version="1", status=QcStatus.QC_PASSED)
+            ]
+            if assessment != "unassessed"
+            else [],
+            qc_rule_version="1"
+            if assessment == "assessed"
+            else ""
+            if assessment == "empty_version"
+            else None,
         )
         sample = derive_rating_sample(
             replace(obs, value=value),
@@ -874,3 +934,423 @@ class TestFrozenScientificFlags:
         assert set(raw["samples"][0]["warnings"]) == set(sample.warnings)
         if level_case != "in_range":
             assert "extrapolated_" + level_case in raw["samples"][0]["warnings"]
+
+
+class TestProjectionFloatSerialization:
+    @pytest.mark.parametrize("digits", [0, -15])
+    def test_json_projection_preserves_stored_float8(
+        self,
+        db_connection: sa.Connection,
+        digits: int,
+    ) -> None:
+        import struct
+
+        from sapphire_flow.db.metadata import rating_derived_discharge
+
+        parent = _stored_parent(db_connection)
+        value = 1.2345678901234567
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            data["discharge"] = value
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+        db_connection.execute(
+            sa.update(rating_derived_discharge).values(discharge=value)
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+        db_connection.execute(
+            sa.text("SELECT set_config('extra_float_digits',:digits,true)"),
+            {"digits": str(digits)},
+        )
+        result = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        actual = result["samples"][0]["discharge"]
+        assert struct.pack("!d", actual) == struct.pack("!d", value)
+
+
+class TestParentLineageIntegrity:
+    def test_empty_parent_days_are_unavailable_not_missing_input(
+        self,
+        db_connection: sa.Connection,
+    ) -> None:
+        from uuid import uuid4
+
+        from fastapi import HTTPException
+
+        from sapphire_flow.api.forecast_rating_history import (
+            ForecastRatingHistoryReader,
+        )
+        from sapphire_flow.api.security import Principal
+        from sapphire_flow.db.metadata import forecasts
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+
+        parent = _stored_parent(db_connection)
+        data = json.loads(parent.input_lineage.content)
+        data["rating_input"]["days"] = []
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == parent.id)
+            .values(input_lineage=canonical_content(data))
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+        principal = Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        with pytest.raises(HTTPException) as error:
+            ForecastRatingHistoryReader(db_connection, principal).read(parent.id)
+        assert error.value.status_code == 503
+        assert error.value.detail == "Provisional rating evidence is unavailable"
+
+    def test_valid_parent_with_only_older_support_returns_honest_null_slots(
+        self,
+        db_connection: sa.Connection,
+    ) -> None:
+        from dataclasses import replace
+        from datetime import timedelta
+
+        from pydantic import TypeAdapter
+
+        from sapphire_flow.services.forecast_rating_history import (
+            build_forecast_rating_history,
+        )
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from sapphire_flow.types.forecast_rating_history import RatingHistoryEvidence
+        from tests.integration.store.test_native_rating_forecasts import native_pair
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        _, parent = native_pair(db_connection)
+        lineage = parent.input_lineage
+        issue = parent.issued_at + timedelta(days=10)
+        parent = replace(
+            parent,
+            issued_at=issue,
+            input_lineage=replace(
+                lineage, rating_input=replace(lineage.rating_input, issue_time=issue)
+            ),
+        )
+        PgForecastStore(
+            db_connection,
+            data_use=parent.data_use,
+            transaction_factory=savepoint_factory(db_connection),
+        ).store_forecast(parent)
+        raw = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        history = build_forecast_rating_history(
+            TypeAdapter(RatingHistoryEvidence).validate_python(raw)
+        )
+        assert len(history.days) == 7
+        assert all(
+            d.status == "no_retained_derived_day" and d.daily_discharge is None
+            for d in history.days
+        )
+
+
+class TestFrozenReferenceIntegrity:
+    @pytest.mark.parametrize("version", [1, 2])
+    @pytest.mark.parametrize("mismatch", ["endpoint", "api_station_id", "curve"])
+    def test_rehashed_reference_mismatch_is_unavailable(
+        self,
+        db_connection: sa.Connection,
+        version: int,
+        mismatch: str,
+    ) -> None:
+        from uuid import uuid4
+
+        from fastapi import HTTPException
+
+        from sapphire_flow.api.forecast_rating_history import (
+            ForecastRatingHistoryReader,
+        )
+        from sapphire_flow.api.security import Principal
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        if version == 2:
+            parent, _ = _v2_parent(db_connection)
+            PgForecastStore(
+                db_connection,
+                data_use=parent.data_use,
+                transaction_factory=savepoint_factory(db_connection),
+            ).store_forecast(parent)
+        else:
+            parent = _stored_parent(db_connection)
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            if mismatch == "curve":
+                curve = json.loads(data["reference"]["curve"]["content"])
+                curve["points"][0]["discharge"] += 1
+                data["reference"]["curve"]["content"] = canonical_content(curve)
+            elif mismatch == "endpoint":
+                data["reference"]["endpoint"] = "https://other.invalid/levels/"
+            else:
+                data["reference"]["api_station_id"] = 999
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        principal = Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        with pytest.raises(HTTPException) as error:
+            ForecastRatingHistoryReader(db_connection, principal).read(parent.id)
+        assert error.value.status_code == 503
+
+
+class TestFrozenJsonTypes:
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("discharge", "same"),
+            ("qc_rule_version", 1),
+            ("qc_rule_version", True),
+            ("qc_rule_version", {}),
+            ("qc_rule_version", "missing"),
+        ],
+    )
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_producer_fields_cannot_be_coerced(
+        self,
+        db_connection: sa.Connection,
+        field: str,
+        value: object,
+        version: int,
+    ) -> None:
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        if version == 2:
+            parent, _ = _v2_parent(db_connection)
+            PgForecastStore(
+                db_connection,
+                data_use=parent.data_use,
+                transaction_factory=savepoint_factory(db_connection),
+            ).store_forecast(parent)
+        else:
+            parent = _stored_parent(db_connection)
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            if field == "discharge":
+                data[field] = str(data[field])
+            elif value == "missing":
+                data["source"].pop(field)
+            else:
+                data["source"][field] = value
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        with pytest.raises(sa.exc.DBAPIError, match="rating history sample"):
+            db_connection.scalar(
+                sa.select(sa.func.forecast_rating_input_history(parent.id))
+            )
+
+
+class TestReferenceProducerCompatibility:
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "HTTPS://EXAMPLE.INVALID:00443/levels",
+            "https://example.invalid:/levels/?#",
+            "https://example.invalid/levels///",
+        ],
+    )
+    def test_v2_equivalent_endpoint_and_noncanonical_assumed_curve_are_valid(
+        self,
+        db_connection: sa.Connection,
+        endpoint: str,
+    ) -> None:
+        from dataclasses import asdict
+        from uuid import UUID
+
+        from sapphire_flow.db.metadata import forecasts
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from sapphire_flow.types.native_capture import canonical_provider_endpoint
+        from sapphire_flow.types.rating_reference import (
+            AssumedCurveSnapshot,
+            OwnerAssumedZeroReference,
+        )
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        parent, row = _v2_parent(db_connection)
+        data = json.loads(row["content"])
+        assert (
+            canonical_provider_endpoint(endpoint)
+            == data["feed"]["provider"]["endpoint"]
+        )
+        reference = OwnerAssumedZeroReference(
+            id=UUID(data["reference"]["id"]),
+            tenant_id=row["tenant_id"],
+            station_id=row["station_id"],
+            rating_curve_id=row["rating_curve_id"],
+            curve=AssumedCurveSnapshot(content=json.dumps(data["curve"], indent=2)),
+            endpoint=endpoint,
+            api_station_id=1,
+            level_unit="m",
+            curve_unit="m",
+            level_unit_evidence_reference="fixture",
+            level_unit_evidence_sha256="a" * 64,
+            curve_unit_evidence_reference="fixture",
+            curve_unit_evidence_sha256="b" * 64,
+            assumed_by="fixture",
+            assumed_at=row["timestamp"],
+            authority_reference="fixture",
+            authority_sha256="c" * 64,
+            binding_by="fixture",
+            binding_at=row["timestamp"],
+            binding_reference="fixture",
+            binding_sha256="d" * 64,
+        )
+        PgForecastStore(
+            db_connection,
+            data_use=parent.data_use,
+            transaction_factory=savepoint_factory(db_connection),
+        ).store_forecast(parent)
+
+        def mutate(raw: str) -> str:
+            obj = json.loads(raw)
+            obj["reference"] = asdict(reference)
+            obj["warnings"].append("owner_assumed_same_zero_unverified")
+            return canonical_content(obj)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        content = db_connection.scalar(
+            sa.select(forecasts.c.input_lineage).where(forecasts.c.id == parent.id)
+        )
+        lineage = json.loads(content)
+        lineage["rating_input"]["days"][0]["warnings"].append(
+            "owner_assumed_same_zero_unverified"
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == parent.id)
+            .values(input_lineage=canonical_content(lineage))
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+        result = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        assert result["samples"][0]["discharge"] == row["discharge"]
+        assert result["samples"][0]["curve_digest"] == content_digest(
+            canonical_content(data["curve"])
+        )
+
+
+class TestDatabaseErrorSanitization:
+    @pytest.mark.parametrize("field", ["uuid", "timestamp", "json"])
+    def test_native_cast_error_does_not_echo_protected_content(
+        self,
+        db_connection: sa.Connection,
+        field: str,
+    ) -> None:
+        parent = _stored_parent(db_connection)
+        marker = "private-marker-invalid-value"
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            if field == "uuid":
+                data["source"]["id"] = marker
+            elif field == "timestamp":
+                data["source"]["timestamp"] = marker + "+00:00"
+            else:
+                data["reference"]["curve"]["content"] = marker
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        with pytest.raises(
+            sa.exc.DBAPIError, match="rating history malformed evidence"
+        ) as error:
+            db_connection.scalar(
+                sa.select(sa.func.forecast_rating_input_history(parent.id))
+            )
+        assert marker not in str(error.value.orig)
+
+
+class TestFrozenNullDischarge:
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_valid_rejected_null_and_accepted_numeric_coexist(
+        self,
+        db_connection: sa.Connection,
+        version: int,
+    ) -> None:
+        from sapphire_flow.db.metadata import forecasts, rating_derived_discharge
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        parent, samples = _dense_parent(db_connection, version, count=2)
+        PgForecastStore(
+            db_connection,
+            data_use=parent.data_use,
+            transaction_factory=savepoint_factory(db_connection),
+        ).store_forecast(parent)
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            data["source"]["qc_status"] = "qc_failed"
+            data["discharge"] = None
+            data["endpoints"] = None
+            data["warnings"] = [
+                w for w in data["warnings"] if not w.startswith("extrapolated_")
+            ]
+            data["rejection"] = "source_qc_rejected"
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate, samples[0].fingerprint)
+        content = db_connection.scalar(
+            sa.select(forecasts.c.input_lineage).where(forecasts.c.id == parent.id)
+        )
+        lineage = json.loads(content)
+        day = lineage["rating_input"]["days"][0]
+        day.update(
+            accepted=1,
+            extrapolated=1,
+            rejected=1,
+            unassessed=1,
+            first=samples[1].timestamp.isoformat(),
+            last=samples[1].timestamp.isoformat(),
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == parent.id)
+            .values(input_lineage=canonical_content(lineage))
+        )
+        db_connection.execute(
+            sa.update(rating_derived_discharge)
+            .where(
+                rating_derived_discharge.c.observation_id == samples[0].observation_id
+            )
+            .values(discharge=None, rejection="source_qc_rejected")
+        )
+        db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+        raw = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        assert raw["samples"][0]["discharge"] is None
+        assert raw["samples"][0]["rejection"] == "source_qc_rejected"
+        assert raw["samples"][1]["discharge"] == samples[1].discharge
