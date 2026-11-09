@@ -52,7 +52,7 @@ DECLARE
  capture_source jsonb; capture_evidence jsonb; curve_raw text; curve_hash text;
  reference_curve_raw text; endpoint_parts text[]; authority_parts text[];
  authority text; host text; suffix text; path_part text; port_number integer;
- reference_endpoint text;
+ reference_endpoint text; custody_start timestamptz; custody_end timestamptz;
  fp text; warning text; flag jsonb; point jsonb; point_level float8;
  start_time timestamptz; stop_time timestamptz; day_time timestamptz;
  stamp timestamptz; valid_from timestamptz; valid_to timestamptz;
@@ -259,6 +259,20 @@ BEGIN
      OR ref->>'endpoint' IS DISTINCT FROM d->'feed'->>'endpoint'
      OR ref->'api_station_id' IS DISTINCT FROM d->'feed'->'api_station_id' THEN
      RAISE EXCEPTION 'rating history version'; END IF;
+    IF jsonb_typeof(d->'feed'->'start') IS DISTINCT FROM 'string'
+     OR jsonb_typeof(d->'feed'->'end') IS DISTINCT FROM 'string'
+     OR NOT (d->'feed'->>'start' ~ ('^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      ||'[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$')) IS TRUE
+     OR NOT (d->'feed'->>'end' ~ ('^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      ||'[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$')) IS TRUE
+     OR jsonb_typeof(d->'feed'->'evidence_reference') IS DISTINCT FROM 'string'
+     OR NOT (d->'feed'->>'evidence_reference' ~ '[^[:space:]]') IS TRUE THEN
+     RAISE EXCEPTION 'rating history custody'; END IF;
+    custody_start:=(d->'feed'->>'start')::timestamptz;
+    custody_end:=(d->'feed'->>'end')::timestamptz;
+    IF custody_start>=custody_end OR r.timestamp<custody_start
+     OR r.timestamp>=custody_end THEN
+     RAISE EXCEPTION 'rating history custody'; END IF;
    ELSIF r.evidence_version=2 AND r.capture_id IS NOT NULL THEN
     -- Match canonical_provider_endpoint: HTTPS, ASCII/lowercase host, default443,
     -- unchanged path except its trailing slash. Provider text stays private.

@@ -574,3 +574,11 @@ provisional summary/detail `rating_provenance_status=not_exposed` fields. Eviden
 failures/limits return503 rather than a current-curve recomputation. All responses,
 outer errors, slash redirects and supported preflight are no-store. This backend
 contract still needs reviewed deployment before any frontend reader can use it.
+
+Known first-cut availability limit: valid owner-assumed reference JSON can contain
+high-precision decimal spellings that the producer rounds to float64. PostgreSQL's
+exact numeric comparison can reject that representation even when the producer
+accepts it. This returns503, never empty success or altered Q. It is a representation
+compatibility limit, not corrupt input. Follow-up must align this narrow comparison
+without weakening primary frozen-curve byte identity or parse budgets. Qualified
+fixtures do not establish full21-station or all-history availability.

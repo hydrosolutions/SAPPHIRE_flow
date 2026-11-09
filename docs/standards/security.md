@@ -2315,3 +2315,16 @@ HTTPS host/default-port/trailing-slash normalization. Provider text stays privat
 Discharge is JSON number/null; QC rule version is required string/null. Native
 JSON/UUID/time/number data exceptions become a fixed database error before leaving
 the projection; cancellation, bounds and integrity failures remain failures.
+
+Legacy custody requires typed UTC start/end, a nonempty evidence reference and
+`start <= sample < end`. Capacity fixtures bind the full synthetic period before
+hashing; earlier short-custody fixture timings are not final qualification. Sample
+assertions use timestamp identity, not the projection's arbitrary fingerprint order.
+
+Known first-cut availability limit: valid owner-assumed reference JSON can contain
+high-precision decimal spellings that the producer rounds to float64. PostgreSQL's
+exact numeric comparison can reject that representation even when the producer
+accepts it. This returns503, never empty success or altered Q. It is a representation
+compatibility limit, not corrupt input. Follow-up must align this narrow comparison
+without weakening primary frozen-curve byte identity or parse budgets. Qualified
+fixtures do not establish full21-station or all-history availability.

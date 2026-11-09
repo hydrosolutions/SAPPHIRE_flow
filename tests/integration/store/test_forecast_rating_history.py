@@ -244,6 +244,9 @@ def _dense_parent(
         timestamp = start + timedelta(minutes=cadence_minutes * index)
         row = dict(template)
         data = json.loads(template["content"])
+        if version == 1:
+            data["feed"]["start"] = start.isoformat()
+            data["feed"]["end"] = parent.issued_at.isoformat()
         if timestamp != template["timestamp"]:
             row["observation_id"] = uuid4()
             row["timestamp"] = timestamp
@@ -1168,17 +1171,19 @@ class TestFrozenJsonTypes:
 
 class TestReferenceProducerCompatibility:
     @pytest.mark.parametrize(
-        "endpoint",
+        "endpoint,curve_spelling",
         [
-            "HTTPS://EXAMPLE.INVALID:00443/levels",
-            "https://example.invalid:/levels/?#",
-            "https://example.invalid/levels///",
+            ("HTTPS://EXAMPLE.INVALID:00443/levels", "whitespace"),
+            ("https://example.invalid:/levels/?#", "whitespace"),
+            ("https://example.invalid/levels///", "whitespace"),
+            ("https://example.invalid/levels/", "rounded_decimal"),
         ],
     )
-    def test_v2_equivalent_endpoint_and_noncanonical_assumed_curve_are_valid(
+    def test_v2_producer_reference_representations(
         self,
         db_connection: sa.Connection,
         endpoint: str,
+        curve_spelling: str,
     ) -> None:
         from dataclasses import asdict
         from uuid import UUID
@@ -1189,6 +1194,7 @@ class TestReferenceProducerCompatibility:
         from sapphire_flow.types.rating_reference import (
             AssumedCurveSnapshot,
             OwnerAssumedZeroReference,
+            assumed_curve_content,
         )
         from tests.integration.store.test_rejected_forecast_store import (
             savepoint_factory,
@@ -1200,12 +1206,20 @@ class TestReferenceProducerCompatibility:
             canonical_provider_endpoint(endpoint)
             == data["feed"]["provider"]["endpoint"]
         )
+        curve_content = json.dumps(data["curve"], indent=2)
+        if curve_spelling == "rounded_decimal":
+            token = '"water_level": 0.1'
+            assert token in curve_content
+            curve_content = curve_content.replace(
+                token, '"water_level": 0.10000000000000000001', 1
+            )
+        assert assumed_curve_content(curve_content) == canonical_content(data["curve"])
         reference = OwnerAssumedZeroReference(
             id=UUID(data["reference"]["id"]),
             tenant_id=row["tenant_id"],
             station_id=row["station_id"],
             rating_curve_id=row["rating_curve_id"],
-            curve=AssumedCurveSnapshot(content=json.dumps(data["curve"], indent=2)),
+            curve=AssumedCurveSnapshot(content=curve_content),
             endpoint=endpoint,
             api_station_id=1,
             level_unit="m",
@@ -1250,6 +1264,29 @@ class TestReferenceProducerCompatibility:
             .values(input_lineage=canonical_content(lineage))
         )
         db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+        if curve_spelling == "rounded_decimal":
+            from uuid import uuid4
+
+            from fastapi import HTTPException
+
+            from sapphire_flow.api.forecast_rating_history import (
+                ForecastRatingHistoryReader,
+            )
+            from sapphire_flow.api.security import Principal
+            from sapphire_flow.types.enums import AccessTokenRole
+            from sapphire_flow.types.ids import AccessTokenId
+
+            principal = Principal(
+                token_id=AccessTokenId(uuid4()),
+                role=AccessTokenRole.ADMIN,
+                tenant_id=None,
+                station_ids=frozenset(),
+            )
+            with pytest.raises(HTTPException) as error:
+                ForecastRatingHistoryReader(db_connection, principal).read(parent.id)
+            assert error.value.status_code == 503
+            assert error.value.detail == "Provisional rating evidence is unavailable"
+            return
         result = db_connection.scalar(
             sa.select(sa.func.forecast_rating_input_history(parent.id))
         )
@@ -1351,6 +1388,88 @@ class TestFrozenNullDischarge:
         raw = db_connection.scalar(
             sa.select(sa.func.forecast_rating_input_history(parent.id))
         )
-        assert raw["samples"][0]["discharge"] is None
-        assert raw["samples"][0]["rejection"] == "source_qc_rejected"
-        assert raw["samples"][1]["discharge"] == samples[1].discharge
+        projected = sorted(raw["samples"], key=lambda sample: sample["timestamp"])
+        assert projected[0]["discharge"] is None
+        assert projected[0]["rejection"] == "source_qc_rejected"
+        assert projected[1]["discharge"] == samples[1].discharge
+
+
+class TestFrozenCustody:
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "missing_start",
+            "missing_end",
+            "empty_interval",
+            "before_start",
+            "at_end",
+            "numeric_start",
+            "empty_evidence",
+        ],
+    )
+    def test_invalid_frozen_custody_is_unavailable(
+        self,
+        db_connection: sa.Connection,
+        case: str,
+    ) -> None:
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        from fastapi import HTTPException
+
+        from sapphire_flow.api.forecast_rating_history import (
+            ForecastRatingHistoryReader,
+        )
+        from sapphire_flow.api.security import Principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
+
+        parent = _stored_parent(db_connection)
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            feed = data["feed"]
+            timestamp = data["source"]["timestamp"]
+            if case == "missing_start":
+                feed.pop("start")
+            elif case == "missing_end":
+                feed.pop("end")
+            elif case == "empty_interval":
+                feed["end"] = feed["start"]
+            elif case == "before_start":
+                feed["start"] = (
+                    datetime.fromisoformat(timestamp) + timedelta(seconds=1)
+                ).isoformat()
+            elif case == "at_end":
+                feed["end"] = timestamp
+            elif case == "numeric_start":
+                feed["start"] = 1
+            else:
+                feed["evidence_reference"] = " "
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        principal = Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
+        with pytest.raises(HTTPException) as error:
+            ForecastRatingHistoryReader(db_connection, principal).read(parent.id)
+        assert error.value.status_code == 503
+
+    def test_custody_start_is_inclusive(self, db_connection: sa.Connection) -> None:
+        parent = _stored_parent(db_connection)
+
+        def mutate(raw: str) -> str:
+            data = json.loads(raw)
+            data["feed"]["start"] = data["source"]["timestamp"]
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, mutate)
+        result = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        assert len(result["samples"]) == 1
+        assert result["samples"][0]["discharge"] is not None
