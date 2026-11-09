@@ -2328,3 +2328,7 @@ accepts it. This returns503, never empty success or altered Q. It is a represent
 compatibility limit, not corrupt input. Follow-up must align this narrow comparison
 without weakening primary frozen-curve byte identity or parse budgets. Qualified
 fixtures do not establish full21-station or all-history availability.
+
+The integration security inventory explicitly includes the reviewed read-only
+history definer. Current-head downgrade-refusal and readiness-isolation fixtures
+pin revision 0083. Their exact ACL/schema rollback and scientific-oracle checks remain intact.
