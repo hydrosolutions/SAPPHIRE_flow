@@ -4,6 +4,14 @@
 >
 > **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A3 (no PgBouncer), § A1 (no partitioning/DLQ), § A2 (no cold storage), § A6 (single work pool), § A10 (simple backup), § F (simplified Docker topology).
 
+## CI action-pin updates
+
+A reviewed action-pin change in `.github/workflows/ci.yml` must also refresh
+`WORKFLOW_SHA256` in `tools/ci_attest.py` and advance `RELEASE_TARGET` by one
+patch from the tested base. Dependabot does not update these repository-specific
+metadata fields. Run the workflow-inventory and release-target tests before
+pushing the correction; do not disable either check.
+
 ## Docker Compose service topology
 
 Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets up to ~170 stations; architecture supports ~1000 stations across deployments.
