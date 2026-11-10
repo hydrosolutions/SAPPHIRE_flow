@@ -2548,3 +2548,19 @@ API map contract and generated spec. Tests: unit/api and unit/services
 `test_*forecast_rating_history.py`; integration/store `test_forecast_rating_history.py`
 and integration/db `test_forecast_rating_history_roles.py`. Qualify all caps and
 real-role upgrade/downgrade/restore paths locally before operational acceptance.
+
+## Synthetic station preparation preflight
+
+| Touchpoint | Contract | Verification |
+|---|---|---|
+| `types/station_preparation.py` | Frozen synthetic request and visibility-safe evidence. Distinct text station identity, gauge/basin/HRU/polygon, package ID/canonical/source/derived fingerprints; finite metadata, unique bounded expected bindings | `tests/unit/types/test_station_preparation.py` |
+| `services/station_preparation.py` | Injected read-only repository, no production adapter. Existing station holds; unknown is not absent; exact identity/binding comparison; opaque conflicts and no mismatched payload in results | `tests/unit/services/test_station_preparation.py`, including foreign identity/binding sentinels |
+| `services/station_preparation_report.py` | Escaped bounded HTML string only; caller-supplied synthetic scenario, NOT ASSESSED operational state, no permissions | `tests/unit/services/test_station_preparation_report.py` |
+
+Do not route these results into station creation, observation publication, assignment
+or activation. No CLI/DB/schema/role/provider/API/Gateway/parser/model path is changed.
+`StationConfig`, imported binding records and `ApprovedHandover` are not proposed
+request types; no internal station ID or import timestamps are fabricated. Eventual
+integration needs complete OFF/currentness/tenant/privacy guards and separate proof.
+Current shared restore/control-plane and registrar preservation blockers remain held;
+this pure seam does not implement recovery or clear deployment/Gateway acceptance.
