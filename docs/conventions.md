@@ -648,3 +648,21 @@ explicit safe parent-column SELECT grants; this does not grant raw input-lineage
 access or permit marker mutation. The authoritative SQL is
 `docker/bootstrap-roles.sql` and migrations 0081/0082; see the
 [security boundary](standards/security.md#selected-operational-weather-storage-boundary).
+
+## Synthetic station preparation assessments
+
+`types/station_preparation.py` defines proposed identities, not persisted stations.
+`services/station_preparation.assess_station_preparation` reads an injected, read-only
+evidence repository; there is no production adapter. Only synthetic evidence is
+accepted. Network/code text, static gauge, basin/HRU/polygon and each package
+fingerprint remain distinct and match exactly. Expected bindings are unique; repository
+duplicates/ambiguity use opaque `CONFLICT`, not invalid visible records. Unknown,
+hidden and foreign evidence never establish absence or enter the assessment payload.
+
+Assessments retain requested facts and generic typed holds only. The report renderer
+returns escaped HTML text (128 KiB maximum); it writes no files and loads no external
+resources. Inputs allow at most 64 bindings and 256 characters per text field. Numeric
+station metadata must be finite. Actual observation, conversion, assignment and forecast
+state is **NOT ASSESSED**. `OFFLINE_PREFLIGHT_ONLY` grants no admission, activation,
+approval, readiness or authentication permission. Persistence, real data, credentials,
+providers, thresholds, runtime integration and deployment are outside this seam.
