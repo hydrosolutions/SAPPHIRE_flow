@@ -23,7 +23,7 @@ x-app-build: &app-build
 
 services:
   postgres:
-    image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07  # postgis/postgis:16-3.4
+    image: postgis/postgis:16-3.6@sha256:d07ce3f06f657b6516c7511412232e97174d7e9dcf4c9fe520109b682b44a201  # postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: ${DB_USER:-sapphire}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
@@ -366,7 +366,7 @@ services:
         max-file: "5"
 
   caddy:
-    image: caddy:2.11.7@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e  # manifest-list pin verified 2026-11-04
+    image: caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0  # manifest-list pin verified 2026-11-04
     ports:
       - "80:80"
       - "443:443"
