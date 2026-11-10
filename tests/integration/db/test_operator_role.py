@@ -1770,7 +1770,7 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0083"
+        assert before[0] == "0084"
         with pytest.raises(NotImplementedError, match="requires a drained deployment"):
             _alembic("downgrade", "0066")
         assert snapshot() == before

@@ -206,6 +206,7 @@ def _dense_parent(
     count: int = 2016,
     cadence_minutes: int = 5,
     discharge: float | None = None,
+    extra_curve_points: int = 0,
 ) -> tuple[OperationalForecast, list[RatingDerivedDischarge]]:
     from dataclasses import replace
     from datetime import timedelta
@@ -235,6 +236,20 @@ def _dense_parent(
         template.pop("stored_order")
         template.pop("stored_order_basis")
         cap_template = None
+    if extra_curve_points:
+        data = json.loads(template["content"])
+        first = data["curve"]["points"][0]
+        data["curve"]["points"] = [
+            {
+                "water_level": first["water_level"] - index,
+                "discharge": 0.0,
+            }
+            for index in range(extra_curve_points, 0, -1)
+        ] + data["curve"]["points"]
+        data["reference"]["curve"]["content"] = canonical_content(data["curve"])
+        template["content"] = canonical_content(data)
+        template["fingerprint"] = content_digest(template["content"])
+        conn.execute(sa.insert(rating_derived_discharge).values(**template))
     observation = dict(conn.execute(sa.select(observations)).mappings().one())
     start = parent.issued_at.replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -325,6 +340,58 @@ def _dense_parent(
         ),
     )
     return parent, samples
+
+
+class TestRepeatedCurveValidation:
+    @pytest.mark.parametrize("version", [1, 2])
+    def test_dense_rich_curve_history_keeps_all_samples(
+        self, db_connection: sa.Connection, version: int
+    ) -> None:
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        parent, samples = _dense_parent(
+            db_connection,
+            version,
+            count=944,
+            cadence_minutes=10,
+            extra_curve_points=80,
+        )
+        PgForecastStore(
+            db_connection,
+            data_use=parent.data_use,
+            transaction_factory=savepoint_factory(db_connection),
+        ).store_forecast(parent)
+        metrics = db_connection.execute(
+            sa.text("""
+            SELECT sum(octet_length(r.content) +
+                       coalesce(octet_length(c.source_content),0) +
+                       coalesce(octet_length(c.evidence_content),0)) AS bytes,
+                   max(octet_length(r.content)) AS largest,
+                   sum(public.rating_history_json_nodes(r.content,500000) +
+                       public.rating_history_json_nodes(
+                           r.content::jsonb->'reference'->'curve'->>'content',500000) +
+                       CASE WHEN c.id IS NULL THEN 0 ELSE
+                       public.rating_history_json_nodes(c.source_content,500000) +
+                       public.rating_history_json_nodes(c.evidence_content,500000)
+                       END) AS nodes
+            FROM rating_derived_discharge r
+            LEFT JOIN native_measurement_captures c ON c.id=r.capture_id
+        """)
+        ).one()
+        assert metrics.nodes > 500000
+        assert parent.input_lineage is not None
+        assert metrics.bytes + len(parent.input_lineage.content.encode()) < 16777216
+        assert metrics.largest < 262144
+        db_connection.execute(sa.text("SET LOCAL statement_timeout='5s'"))
+        raw = db_connection.scalar(
+            sa.select(sa.func.forecast_rating_input_history(parent.id))
+        )
+        assert raw is not None
+        assert len(raw["samples"]) == len(samples)
+        assert all(row["discharge"] == samples[0].discharge for row in raw["samples"])
 
 
 class TestHistoryCapacity:
@@ -455,6 +522,55 @@ def _replace_sample_content(
         )
     )
     conn.execute(sa.text("SET LOCAL session_replication_role = origin"))
+
+
+class TestCachedCurveIntegrity:
+    @pytest.mark.parametrize(
+        "mutation", ["curve", "reference", "inner_duplicate", "root_duplicate"]
+    )
+    def test_later_sample_cannot_reuse_validation_for_changed_bytes(
+        self, db_connection: sa.Connection, mutation: str
+    ) -> None:
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from tests.integration.store.test_rejected_forecast_store import (
+            savepoint_factory,
+        )
+
+        parent, samples = _dense_parent(db_connection, 2, count=2)
+        PgForecastStore(
+            db_connection,
+            data_use=parent.data_use,
+            transaction_factory=savepoint_factory(db_connection),
+        ).store_forecast(parent)
+        # Also exercise a second request: cached validation must not survive it.
+        assert (
+            len(
+                db_connection.scalar(
+                    sa.select(sa.func.forecast_rating_input_history(parent.id))
+                )["samples"]
+            )
+            == 2
+        )
+
+        def change(raw: str) -> str:
+            if mutation == "root_duplicate":
+                return raw.replace("{", '{"curve":{},', 1)
+            if mutation == "inner_duplicate":
+                return raw.replace('"curve":{', '"curve":{"id":"ignored",', 1)
+            data = json.loads(raw)
+            if mutation == "curve":
+                data["curve"]["version"] += 1
+            else:
+                ref = json.loads(data["reference"]["curve"]["content"])
+                ref["version"] += 1
+                data["reference"]["curve"]["content"] = canonical_content(ref)
+            return canonical_content(data)
+
+        _replace_sample_content(db_connection, parent, change, samples[-1].fingerprint)
+        with pytest.raises(sa.exc.DBAPIError, match="rating history (shape|reference)"):
+            db_connection.scalar(
+                sa.select(sa.func.forecast_rating_input_history(parent.id))
+            )
 
 
 class TestCorruptEvidence:
