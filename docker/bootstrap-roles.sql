@@ -351,7 +351,8 @@ DO $$
 DECLARE f text; r text;
 BEGIN
     FOREACH f IN ARRAY ARRAY['forecast_rating_input_history(uuid)',
-        'rating_history_json_nodes(text,integer)'] LOOP
+        'rating_history_json_nodes(text,integer)',
+        'rating_history_sample_json_nodes(text,integer,text)'] LOOP
         IF to_regprocedure('public.' || f) IS NOT NULL THEN
             FOREACH r IN ARRAY ARRAY['PUBLIC','sapphire_api','sapphire_worker',
                 'sapphire_operator','sapphire_publication_health'] LOOP

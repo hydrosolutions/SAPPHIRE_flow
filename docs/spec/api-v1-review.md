@@ -575,6 +575,18 @@ failures/limits return503 rather than a current-curve recomputation. All respons
 outer errors, slash redirects and supported preflight are no-store. This backend
 contract still needs reviewed deployment before any frontend reader can use it.
 
+History validation reuses an exact frozen curve/reference text pair only within
+one request. The first occurrence is fully traversed; later samples still check
+surrounding duplicate keys, their own digests, identities, captures, QC, validity
+and discharge semantics. Changed curve or reference bytes cannot reuse validation.
+The owner-only helper skips only the already-validated top-level curve subtree,
+at the same depth. The 500,000-node work budget charges the full subtree once,
+then one node per repeated occurrence. The 64-entry limit applies to exact
+curve/reference text pairs; formatting variants consume separate entries.
+Existing byte, depth, sample and output limits remain; large unique evidence
+still returns503. Migration0084 adds this optimization;
+it does not change evidence, API authorization, output or public error handling.
+
 Known first-cut availability limit: valid owner-assumed reference JSON can contain
 high-precision decimal spellings that the producer rounds to float64. PostgreSQL's
 exact numeric comparison can reject that representation even when the producer

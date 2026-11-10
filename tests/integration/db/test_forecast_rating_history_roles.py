@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 _ENTRY = "public.forecast_rating_input_history(uuid)"
 _HELPER = "public.rating_history_json_nodes(text,integer)"
+_CACHED_HELPER = "public.rating_history_sample_json_nodes(text,integer,text)"
 _ROLES = (
     "sapphire_api",
     "sapphire_worker",
@@ -53,7 +54,10 @@ def _projection(conn: sa.Connection, forecast_id: object) -> dict:
 
 
 def _assert_acl(conn: sa.Connection) -> None:
-    for signature in (_ENTRY, _HELPER):
+    signatures = [_ENTRY, _HELPER]
+    if conn.scalar(sa.text("SELECT to_regprocedure(:sig)"), {"sig": _CACHED_HELPER}):
+        signatures.append(_CACHED_HELPER)
+    for signature in signatures:
         assert not conn.scalar(
             sa.text(
                 "SELECT EXISTS (SELECT 1 FROM pg_proc p, "
@@ -144,6 +148,7 @@ def test_helper_is_private_and_runtime_cannot_replace_or_reach_owner(
         conn.execute(sa.text(f"SET LOCAL ROLE {role}"))
         for query in (
             "SELECT public.rating_history_json_nodes('{}',10)",
+            "SELECT public.rating_history_sample_json_nodes('{}',10,NULL)",
             "CREATE OR REPLACE FUNCTION public.forecast_rating_input_history"
             "(identity uuid) "
             "RETURNS jsonb LANGUAGE sql AS 'SELECT NULL::jsonb'",
@@ -192,7 +197,7 @@ def test_bootstrap_repairs_dirty_acl_and_is_repeatable(
 ) -> None:
     _bootstrap(role_harness)
     with role_harness.owner_engine.begin() as conn:
-        for signature in (_ENTRY, _HELPER):
+        for signature in (_ENTRY, _HELPER, _CACHED_HELPER):
             conn.execute(
                 sa.text(
                     f"GRANT EXECUTE ON FUNCTION {signature} TO PUBLIC, "
@@ -243,6 +248,36 @@ def test_upgrade_downgrade_reupgrade_preserves_frozen_evidence(
             with engine.connect() as conn:
                 expected = _projection(conn, native.id)
                 assert expected["samples"]
+                _assert_acl(conn)
+                original_projection = conn.scalar(
+                    sa.text("SELECT pg_get_functiondef(to_regprocedure(:sig))"),
+                    {"sig": _ENTRY},
+                )
+            command.upgrade(config, "0084")
+            _bootstrap(harness)
+            with engine.connect() as conn:
+                assert _projection(conn, native.id) == expected
+                _assert_acl(conn)
+            command.downgrade(config, "0083")
+            with engine.connect() as conn:
+                assert (
+                    conn.scalar(
+                        sa.text("SELECT pg_get_functiondef(to_regprocedure(:sig))"),
+                        {"sig": _ENTRY},
+                    )
+                    == original_projection
+                )
+                assert (
+                    conn.scalar(
+                        sa.text("SELECT to_regprocedure(:sig)"), {"sig": _CACHED_HELPER}
+                    )
+                    is None
+                )
+                assert _projection(conn, native.id) == expected
+                _assert_acl(conn)
+            command.upgrade(config, "0084")
+            with engine.connect() as conn:
+                assert _projection(conn, native.id) == expected
                 _assert_acl(conn)
             command.downgrade(config, "0082")
             _bootstrap(harness)
