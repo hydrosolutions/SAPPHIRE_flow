@@ -47,7 +47,8 @@ as they are, and the command never writes or bypasses them.
 6. Activation: the command also starts the stack and verifies it, subject to invariant I1 below.
 7. Hotfix track: the owner only, per use (sole developer for now; revisit when that changes).
 8. Host-local config follows design item 5.
-9. This is an **MVP**: hardening and refactoring are deferred (see MVP scope).
+9. Automatic tagging stays retired; this plan does not revive it.
+10. This is an **MVP**: hardening and refactoring are deferred (see MVP scope).
 
 ## MVP scope
 
@@ -144,9 +145,12 @@ stay in scope because they protect existing gates, not because they are hardenin
 ## Tasks (order matters)
 
 - **T0** Read-only: per-phase timing of the mini deploy (and the Nepal route for the later plan);
-  list every manual step; secrets audit of the mini's three local edits; **settle the documented
-  state of the tagging workflow** (cicd.md says retired, AGENTS.md says active). T0's tagging
-  answer gates T1 because identity derivation depends on it.
+  list every manual step; secrets audit of the mini's three local edits; **tagging is settled, not open:** the
+  automatic `tag-main.yml` publisher was removed in #371 and stays retired (owner decision
+  2026-11-11); tags are owner-published annotated tags plus the `release-state` ref. The MVP needs
+  no automatic tagging: the test track uses a sha-based test identity (I2), the release track uses
+  an owner-published tag, and a hotfix deploys a merged commit with a provisional receipt (I4).
+  No repository workflow uses an LLM, so none spends agent tokens.
 - **T1** Profile schema, mini profile, `tools/deploy.py` dry-run, fake-host executor, tests for
   I1-I5 including the I2 identity proof.
 - **T2** Execute path: lock, anchor, verify, rollback, receipt, abort; failure-branch tests.
