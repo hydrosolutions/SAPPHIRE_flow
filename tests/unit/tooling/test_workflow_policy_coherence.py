@@ -10,25 +10,11 @@ def _normalized(path: Path) -> str:
 
 
 class TestAgentInstructionPolicy:
-    def test_workflow_comes_from_global_skills(self) -> None:
+    def test_no_retired_workflow_machinery_in_agent_instructions(self) -> None:
         guidelines = _normalized(_REPO_ROOT / "AGENTS.md")
 
-        assert (
-            "Follow the user's approved scope and the applicable globally "
-            "installed skills." in guidelines
-        )
-        assert (
-            "Skills own planning, delegation, review sequencing and delivery "
-            "procedures." in guidelines
-        )
-        assert (
-            "Do not add repository-local skills, workflow copies or extra "
-            "approval layers." in guidelines
-        )
-        assert (
-            "old agent roles and status gates do not override current "
-            "instructions or authorize unapproved work." in guidelines
-        )
+        assert "## Workflow authority" not in guidelines
+        assert "globally installed skills" not in guidelines
         assert not (_REPO_ROOT / "docs/workflow.md").exists()
         assert not (_REPO_ROOT / "scripts/check_readiness.py").exists()
         assert "The ORCHESTRATOR sets" not in guidelines
