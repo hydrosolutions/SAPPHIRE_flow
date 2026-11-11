@@ -94,10 +94,15 @@ stay in scope because they protect existing gates, not because they are hardenin
    - **Preflight:** host reachable (pinned known_hosts, never a key scan), engine up, disk
      headroom, clean tree (design item 5), migration head recorded, identity values derived from
      the ref and never typed. *Migrating update* = the alembic head differs between the running
-     and the target ref. A migrating update additionally requires a **fresh verified backup**:
-     `latest_backup_health` / `verify_protected_backup` (`ops/protected_evidence_backup.py`)
-     healthy, with a bundle no older than 26 h (one nightly cycle plus slack; the profile may
-     tighten it). A profile with no protected-backup target refuses migrating updates.
+     and the target ref. A migrating update additionally requires a **fresh verified backup**. On the mini the
+     only backups are the local nightly dumps on the mini itself (`backup-database`, volume
+     `/Volumes/sapphire-backup/pg_dumps`); there is no external or off-server copy anywhere (known
+     limitation, owner-confirmed 2026-11-11). The check is therefore: the newest published dump
+     passes `pg_restore --list` validation and is no older than 26 h (one nightly cycle plus
+     slack). Profiles with a protected-evidence target use `latest_backup_health` /
+     `verify_protected_backup` (`ops/protected_evidence_backup.py`) instead. A profile with neither
+     refuses migrating updates. The check proves a dump exists on the same disk as the database,
+     not that it survives losing the host; the preflight output says so.
    - **Anchor:** a unique tag per deploy, `rollback-<previous-version>`, protected from pruning
      like the existing `rollback-*` tags (cicd.md). Provisional receipts are never chosen as an
      anchor (I4). Rollback must leave no deployment on a workerless pool (both worker pools
@@ -154,8 +159,7 @@ stay in scope because they protect existing gates, not because they are hardenin
 
 ## Open questions for the reviewer
 
-None carried over. Not verified by review: whether the mini has a protected-backup target (T0),
-the required-check names, and whether the receipt directory can reuse `write_json_once`.
+None carried over. Not verified by review: the required-check names, and whether the receipt directory can reuse `write_json_once`.
 
 ## Risk and review
 
