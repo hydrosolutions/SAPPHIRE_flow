@@ -1,3 +1,11 @@
+## Token Efficiency & Behavioral Constraints
+To prevent context bloat and token exhaustion, you MUST strictly adhere to the following rules on every turn:
+
+1. **Zero-Fluff Communication:** No pleasantries, introductions, or conclusions. Do not say "Here is the code" or "I have updated the file." Output only the exact commands, precise code diffs, or direct answers.
+2. **Surgical Code Generation:** Never output an entire file if you are only changing a few lines. Output ONLY the specific class, function, or code block being modified.
+3. **No Over-Engineering:** Always prefer Python standard libraries or existing utilities within this codebase. Do not write custom wrappers or helpers unless absolutely necessary.
+4. **Context Garbage Collection:** When operating in an autonomous loop, summarize your resolution in one sentence after fixing a bug or completing a sub-task. Ignore and drop massive error tracebacks from your reasoning immediately after the underlying issue is resolved.
+
 # Agent Guidelines
 
 SAPPHIRE Flow ingests hydrological and weather data, runs ensemble forecasts,

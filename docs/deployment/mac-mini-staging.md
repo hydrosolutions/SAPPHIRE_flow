@@ -659,6 +659,17 @@ docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
 # still (or again) writing to a path that resolves to the boot disk.
 ```
 
+Backup-worker memory is declared in `docker-compose.macmini.yml`
+(`mem_limit: 2g`, `memswap_limit: 4g`) because the nightly dump is ~125 GB and the
+base 512m is too small. Never set it with `docker update`: a recreate reverts it
+silently. After any deploy, confirm it:
+
+```bash
+docker inspect sapphire_flow-prefect-worker-backup-1 \
+    --format 'mem={{.HostConfig.Memory}} swap={{.HostConfig.MemorySwap}}'
+# expect mem=2147483648 swap=4294967296
+```
+
 ### Stack won't come up
 
 ```bash

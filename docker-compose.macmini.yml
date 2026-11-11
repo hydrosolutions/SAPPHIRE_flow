@@ -66,6 +66,12 @@ services:
   # Verifying this is actually a MOUNTED volume (not a boot-disk directory)
   # is T6, deliberately deferred to Phase B.
   prefect-worker-backup:
+    # The base 512m limit is too small for this host's ~125 GB nightly dump. The
+    # 2 GiB RAM / 4 GiB RAM+swap trial gave ~102-104 min backups (2026-11-10/11)
+    # and was first applied live with `docker update`, which a container
+    # recreate silently reverts (2026-11-11). Declared here so it survives.
+    mem_limit: 2g
+    memswap_limit: 4g
     volumes:
       - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
 

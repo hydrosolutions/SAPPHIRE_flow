@@ -243,3 +243,14 @@ class TestMacminiOverlayBindsBackupVolumeToTheDedicatedWorker:
     def test_default_prefect_worker_no_longer_gets_the_bind_mount(self) -> None:
         svc = _service(_macmini_compose(), "prefect-worker")
         assert "/Volumes/sapphire-backup/pg_dumps" not in _volume_sources(svc)
+
+
+class TestMacminiBackupWorkerMemoryLimit:
+    """The ~125 GB nightly dump needs more than the base 512m. The limit was
+    once applied only live (`docker update`) and a recreate reverted it, so it
+    must be declared in the overlay actually deployed."""
+
+    def test_backup_worker_gets_two_gib_ram_and_four_gib_with_swap(self) -> None:
+        svc = _service(_macmini_compose(), "prefect-worker-backup")
+        assert int(str(svc["mem_limit"])) == 2 * 1024**3
+        assert int(str(svc["memswap_limit"])) == 4 * 1024**3
