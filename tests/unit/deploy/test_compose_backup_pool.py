@@ -254,3 +254,9 @@ class TestMacminiBackupWorkerMemoryLimit:
         svc = _service(_macmini_compose(), "prefect-worker-backup")
         assert int(str(svc["mem_limit"])) == 2 * 1024**3
         assert int(str(svc["memswap_limit"])) == 4 * 1024**3
+
+    def test_backup_worker_dump_ceiling_is_four_hours(self) -> None:
+        svc = _service(_macmini_compose(), "prefect-worker-backup")
+        env = svc["environment"]
+        assert isinstance(env, dict)
+        assert env["SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"] == "14400"

@@ -19,6 +19,7 @@ scheduler can never race the same directory.
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import secrets
@@ -60,6 +61,23 @@ def _read_required_env(name: str) -> str:
     if not value:
         msg = f"{name} is required and must not be empty"
         raise RuntimeError(msg)
+    return value
+
+
+def _dump_timeout_s() -> float:
+    """Default ceiling unless the deployment sets a larger-or-smaller positive
+    number of seconds; a malformed value fails loudly rather than silently
+    reverting to the default."""
+    raw = os.environ.get(DUMP_TIMEOUT_ENV)
+    if raw is None or raw == "":
+        return DUMP_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not math.isfinite(value) or value <= 0:
+        msg = f"{DUMP_TIMEOUT_ENV} must be a positive number of seconds, got {raw!r}"
+        raise BackupConfigError(msg)
     return value
 
 
@@ -140,7 +158,8 @@ _FINAL_NAME_RE = re.compile(r"^sapphire_\d{8}_\d{6}_[0-9a-f]{8}\.dump$")
 TEMP_NAME_GLOB = "sapphire_*.dump.tmp"
 LOCK_FILENAME = ".backup.lock"
 
-DUMP_TIMEOUT_S = 7200.0  # Interim 2 h ceiling; reassess after measured backups
+DUMP_TIMEOUT_S = 7200.0  # Default 2 h ceiling; a deployment may raise it via env
+DUMP_TIMEOUT_ENV = "SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"
 VALIDATE_TIMEOUT_S = 120.0
 LOCK_ACQUIRE_TIMEOUT_S = 30.0
 STALE_TEMP_AGE_S = 3600.0  # a temp older than this is a crashed prior run
@@ -496,6 +515,7 @@ def dump_database_task(
     backup_path.mkdir(parents=True, exist_ok=True)
 
     env = build_pg_child_env()
+    dump_timeout_s = _dump_timeout_s()
 
     now = clock()
     timestamp = now.strftime("%Y%m%d_%H%M%S")
@@ -517,7 +537,7 @@ def dump_database_task(
 
         start = time.perf_counter()
         try:
-            _dump_to_temp(temp_path=temp_path, env=env, timeout_s=DUMP_TIMEOUT_S)
+            _dump_to_temp(temp_path=temp_path, env=env, timeout_s=dump_timeout_s)
             _validate_dump(temp_path, timeout_s=VALIDATE_TIMEOUT_S)
             published = _publish(
                 backup_dir=backup_path, temp_path=temp_path, final_path=final_path

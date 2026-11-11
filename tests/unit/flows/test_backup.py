@@ -894,6 +894,44 @@ class TestDumpDatabaseTask:
         )
         assert dump_call.kwargs["timeout"] == 7200.0
 
+    def test_dump_deadline_is_overridable_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_backup_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SAPPHIRE_BACKUP_DUMP_TIMEOUT_S", "14400")
+        mock_run = MagicMock(side_effect=_dispatch_fake_subprocess_run().side_effect)
+
+        with _patch_subprocess_run(mock_run):
+            dump_database_task.fn(str(tmp_path / "backups"))
+
+        dump_call = next(
+            c for c in mock_run.call_args_list if c.args[0][0] == "pg_dump"
+        )
+        assert dump_call.kwargs["timeout"] == 14400.0
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5", "nan", "inf"])
+    def test_malformed_dump_deadline_fails_before_touching_backups(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+    ) -> None:
+        _set_backup_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("SAPPHIRE_BACKUP_DUMP_TIMEOUT_S", bad)
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        existing = backup_dir / "sapphire_20260101_000000_aaaaaaaa.dump"
+        existing.write_bytes(b"good")
+        mock_run = MagicMock()
+
+        with (
+            _patch_subprocess_run(mock_run),
+            pytest.raises(
+                backup_mod.BackupConfigError, match="SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"
+            ),
+        ):
+            dump_database_task.fn(str(backup_dir))
+
+        mock_run.assert_not_called()
+        assert existing.read_bytes() == b"good"
+
     def test_happy_path_publishes_a_single_validated_artifact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

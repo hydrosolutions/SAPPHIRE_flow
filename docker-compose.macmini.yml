@@ -72,6 +72,10 @@ services:
     # recreate silently reverts (2026-11-11). Declared here so it survives.
     mem_limit: 2g
     memswap_limit: 4g
+    # Dumps took 89 -> 104 min as they grew 105 -> 125 GB (2026-11-02..11); the
+    # default 2 h ceiling would be hit within about a week. 4 h = ~2x headroom.
+    environment:
+      SAPPHIRE_BACKUP_DUMP_TIMEOUT_S: "14400"
     volumes:
       - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
 
