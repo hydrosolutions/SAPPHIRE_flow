@@ -12,7 +12,9 @@ values fail after authentication. Existing routes are unchanged.
 Authentication tests inventory the overview separately because datum disclosure is
 role-dependent, and verify scoped consumer/reviewer rosters. Capacity benchmarks
 use the dedicated committed-write test database: concurrent requests require
-committed fixtures, which must not contaminate rollback-based store tests.
+committed fixtures, which must not contaminate rollback-based store tests. The
+21-station size runs with every PR; 160/200 are marked slow and run nightly,
+because seeding 10-minute observations at those sizes takes several minutes.
 Transport-log suppression tests explicitly enable their test logger and restore
 its previous state; API logging initialization can otherwise disable it before
 these tests, masking the restoration assertion.

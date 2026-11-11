@@ -37,7 +37,16 @@ NOW = ensure_utc(datetime(2026, 11, 10, 10, 20, tzinfo=UTC))
 OBSERVATION_STEPS = 168 * 6
 
 
-@pytest.mark.parametrize("station_count", [21, 160, 200])
+# Seeding 10-minute data takes minutes at 160/200 stations, beyond the PR
+# integration budget; those sizes run in the nightly slow job.
+@pytest.mark.parametrize(
+    "station_count",
+    [
+        21,
+        pytest.param(160, marks=pytest.mark.slow),
+        pytest.param(200, marks=pytest.mark.slow),
+    ],
+)
 def test_native_overview_capacity(
     isolated_committed_db_engine: sa.Engine, station_count: int
 ) -> None:
