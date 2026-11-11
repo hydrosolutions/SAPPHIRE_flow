@@ -582,6 +582,26 @@ evidence backup tooling retains its existing deadlines. A longer deadline
 does not establish independent storage or restore readiness: verify the
 backup destination and a current restore point before a database upgrade.
 
+Re-registration (including `init`) preserves the entire existing
+`backup-database` parameter mapping, including `backup_dir` and `keep_count`.
+New deployments keep the flow defaults; schedules and worker settings are unchanged.
+This does not authorize reducing retention before a replacement restore is verified.
+
+`scripts/restore-rehearsal.sh` records its newly created container ID in a private
+Docker cidfile. All subsequent operations use that ID. Exit and handled INT/TERM/HUP
+signals remove only the owned container and its anonymous volumes (`docker rm -f -v`),
+not named volumes. A name collision cannot authorize deletion. Missing ownership or
+failed teardown reports failure and retains the cidfile directory for inspection;
+never delete a container by name to resolve uncertainty. SIGKILL, host/daemon loss,
+and interruption before Docker records ownership still require operator recovery.
+
+Fast backups and emergency recovery within hours remain goals, not measured guarantees.
+End-to-end restore timing must include service activation and a usable forecast service;
+the numerical target is not yet settled. Neither the dump timeout nor a bounded
+rehearsal proves that recovery time. Deployment-sized restores need separate approval,
+Docker VM disk/resource checks, and timed evidence; local copies do not protect against
+loss of the server or its storage device.
+
 ### USB disk not detected / not verified
 
 Bootstrap step 6 (Plan 194) rejects `/Volumes/sapphire-backup` unless it

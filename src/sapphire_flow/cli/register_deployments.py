@@ -287,7 +287,7 @@ async def _register_one(spec: DeploymentSpec) -> None:
     if spec.concurrency_limit is not None:
         deploy_kwargs["concurrency_limit"] = spec.concurrency_limit
 
-    if spec.deployment_name == "forecast-cycle":
+    if spec.deployment_name in {"forecast-cycle", "backup-database"}:
         from prefect.client.orchestration import get_client
         from prefect.exceptions import ObjectNotFound
 
@@ -303,9 +303,10 @@ async def _register_one(spec: DeploymentSpec) -> None:
                 variables = existing.job_variables
                 parameters = dict(existing.parameters)
         deploy_kwargs["parameters"] = parameters
-        deploy_kwargs["job_variables"] = forecast_job_variables(
-            variables, spec.forecast_config_overlay
-        )
+        if spec.deployment_name == "forecast-cycle":
+            deploy_kwargs["job_variables"] = forecast_job_variables(
+                variables, spec.forecast_config_overlay
+            )
 
     deployment_id = await sourced_flow.adeploy(**deploy_kwargs)
     log.info(
