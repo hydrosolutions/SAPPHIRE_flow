@@ -11,10 +11,12 @@ CI test-run duration is out of scope here: see [faster-ci-feedback](faster-ci-fe
 
 ## Outcome
 
-One command updates any deployment profile (mac-mini, Nepal/Infomaniak, later production) to a
-given commit or release, verifies it, and rolls back automatically if verification fails. Test
-deployments update as soon as that commit's PR checks are green. Production gets a fast hotfix
-track. Nothing about existing gates is weakened without an owner decision recorded here.
+One command updates a deployment to a given commit or release, verifies it, and rolls back
+automatically when that is safe. The first version ships the mac-mini profile only (minimal
+schema, no speculative generality). Test deployments on the mini update as soon as that commit's
+PR checks are green. A hotfix track exists for the owner. **No existing gate is weakened**:
+release identity, receiver approval, admission data and the no-schema-downgrade contract stay
+as they are, and the command never writes or bypasses them.
 
 ## Measured baseline (2026-11-11)
 
@@ -35,66 +37,106 @@ track. Nothing about existing gates is weakened without an owner decision record
 
 ## Owner decisions (2026-11-11)
 
-1. Build a one-command deploy that is generic across deployments.
+1. Build a one-command deploy that is generic across deployments (design for it; ship the mini).
 2. Test/MVP deployments may update from a PR branch once that PR's checks are green; production
    requires a merged, tagged release.
 3. Emergency gate: targeted tests + image build + health check. The full suite starts in parallel
    with the fast deploy; if it fails, debugging and fixing continue.
 4. The existing Nepal CI route (admission-bound, digest-attested) is improved, not bypassed.
 5. Trigger: the owner, and later a production administrator. No other triggers.
-6. Activation: the command also starts the stack and verifies it, including on the Nepal route.
-   The existing receiver approval binding stays; its interaction with a single command is for the
-   reviewer to settle.
+6. Activation: the command also starts the stack and verifies it, subject to invariant I1 below.
 7. Hotfix track: the owner only, per use (sole developer for now; revisit when that changes).
-8. Host-local config follows the practice below.
+8. Host-local config follows item 6 of the design.
+
+## Invariants (each must have a test)
+
+- **I1 No approval, no activation.** On a profile with a receiver approval or admission data, the
+  command only orchestrates the existing phases: dispatch, wait, then stop and print the exact
+  approval request if the approval is absent. It never writes the receiver config, the admin key
+  or any approval. Activation (init, up, verify) is a separate phase that runs only after the
+  recorded approved load. The owner's single command means dispatch + wait + hand-off, not
+  approval bypass.
+- **I2 Test identity is never release identity.** The test track is allowed only on profiles with
+  no admission data (host-build, i.e. the mini); the profile schema rejects it elsewhere. Test
+  builds carry a sha-based, clearly non-release identity and a receipt kind `test`. The release
+  identity tooling is not modified to accept it.
+- **I3 Migrations are never rolled back by image swap.** Preflight records the migration head.
+  Verify failure with an unchanged head: automatic image rollback. Head advanced: no image
+  rollback; leave the stack as is, print the backup-restore instructions, never auto-restore.
+- **I4 Provisional never promotes.** A provisional (hotfix) receipt is not a basis for the release
+  track and not a rollback target.
+- **I5 One deploy at a time per host** (lock), and no secret in argv, logs, env dumps or receipts.
 
 ## Design
 
-1. **Profiles.** `deploy/profiles/<name>.toml` declares: host, compose file list, build mode
-   (`host-build` or `prebuilt-archive`), required secrets, health URL, profile-specific checks
-   (e.g. overlay path resolved, backup-worker memory) and which tracks are allowed.
-2. **Command.** `tools/deploy.py <profile> --ref <sha|tag> --track test|release|hotfix`.
-   Phases, each timed: preflight (host reachable, engine up, disk headroom, identity values
-   *derived* from the ref, never typed) -> anchor (tag current images, save `.env`) -> update ->
-   build or load -> up -> verify (version read inside the container equals the ref, init exit 0,
-   migration head, health, profile checks, no tracebacks for N minutes) -> receipt with per-phase
-   timings. Failed verify triggers automatic rollback; if migrations ran, stop and require an
-   explicit owner flag instead of rolling back blindly.
-3. **Tracks.** `test`: queries that the PR checks at that SHA are green. `release`: existing
-   release-identity and receipt checks, unchanged. `hotfix`: targeted tests mapped from changed
-   files + build + health; records an obligation that the full suite runs in parallel, marks the
-   receipt provisional until it passes, and surfaces a failure loudly.
-4. **Nepal route.** Measure per phase first. Candidate speedups that keep its attestations: reuse
-   results already produced for the same SHA instead of re-running retained checks (only if
-   provably equivalent), layer caching, transferring changed layers rather than the whole archive,
-   and one `deploy` entry point that also performs activation (currently held by a separate
-   receiver approval: owner decision).
-5. **Host-local config (recommended practice).** The deployed checkout is treated as read-only and
-   clean; `deploy` refuses a dirty tree. Non-secret, per-deployment settings (the mini's tenant and
-   group IDs, roster hash, image digest pins) live in committed per-deployment overlays, so they
-   are reviewed, reproducible and survive a host rebuild. Only secrets (`./secrets/`) and values
-   generated at runtime (e.g. Prefect deployment IDs) stay off git, supplied by untracked files or
-   environment. The mini's three uncommitted edits migrate to overlays in T3; any value that turns
-   out to be secret or runtime-generated is flagged then, not committed.
+1. **Profile.** `deploy/profiles/<name>.toml` with a minimal schema: host, compose file list,
+   build mode (`host-build` now; `prebuilt-archive` reserved), required secrets, health URL,
+   profile-specific checks (e.g. overlay path resolved, backup-worker memory), allowed tracks.
+2. **Command.** `tools/deploy.py <profile> --ref <sha|tag> --track test|release|hotfix`. Phases,
+   each timed, with persisted host-side state so an interrupted run can resume or abort (not
+   held only in the controlling process): lock -> preflight -> anchor -> update -> build or load
+   -> up -> verify -> receipt.
+   - Preflight: host reachable (pinned known_hosts, never a key scan), engine up, disk headroom,
+     clean tree (I-config below), migration head recorded, and **a fresh verified backup
+     required before any update that carries migrations**. Identity values are derived from the
+     ref and checked against the existing release-identity rules; never typed.
+   - Anchor: reuse the existing no-overwrite rollback-image evidence and prune protection of the
+     `rollback-*` tags (cicd.md); image rollback must keep both worker pools consistent so no
+     deployment is left on a workerless pool.
+   - Verify: version read inside the container equals the ref, init exit 0, migration head,
+     health, profile checks, and zero tracebacks for a fixed window (set in T1, from container
+     logs).
+   - Receipt: credential-free, per-phase timings, stored immutably (no overwrite) outside the
+     checkout.
+3. **Tracks.**
+   - `test`: mini only (I2). "PR checks green" means: every required check listed in the profile
+     passed, on a head SHA equal to the SHA being built, re-queried at deploy time so a
+     force-push invalidates it.
+   - `release`: the existing release-identity and receipt checks, unchanged.
+   - `hotfix`: owner only, a recorded reason and the full SHA, on a commit merged to main. Targeted
+     tests come from a conservative allowlist mapping changed files to tests, falling back to the
+     full suite; then build + health. The full suite starts in parallel. The receipt is
+     provisional (I4) and opens a blocking obligation: the next deploy is refused until the full
+     suite on that SHA is green or the owner records a waiver.
+4. **Nepal route: deferred.** Not part of the first version. After T0 measurements, a separate
+   plan decides speedups (re-use of same-SHA results, layer-delta transfer), each of which makes
+   attestation-equivalence claims that need their own security review. Until then the command
+   may only wrap the existing dispatch/approval flow under I1.
+5. **Host-local config (recommended practice).** The deployed checkout is read-only and clean;
+   `deploy` refuses a dirty tree. `.env` is host-local and untracked: it is outside the clean-tree
+   check and its identity values are written only through the existing atomic dotenv helper
+   (`tools/release_env_identity.py`). Non-secret per-deployment settings (the mini's tenant and
+   group IDs, roster hash, image digest pins) move to committed per-deployment overlays, so they
+   are reviewed, reproducible and survive a host rebuild; an overlay change is an ordinary PR with
+   the release-target rule. A secrets audit of every value **precedes** its commit (T0), not after:
+   secrets (`./secrets/`) and runtime-generated values (e.g. Prefect deployment IDs) stay off git.
+6. **Testability.** The host executor is an injected Protocol; tests use a fake that records
+   commands. Dry-run prints a diffable plan. Every phase failure branch is covered by a fake-host
+   test before any real-host use.
 
-## Tasks
+## Tasks (order matters)
 
-- **T0** Read-only: per-phase timing of the Nepal route and of the mini deploy; list every manual
-  step of both.
-- **T1** Profile schema, mini profile, `tools/deploy.py` plan/dry-run mode, tests with a fake host.
-- **T2** Execute path: anchor, verify, rollback, receipt; tests for each failure branch.
-- **T3** Move the mini onto it; delete the manual ritual from the runbook (keep as fallback).
-- **T4** Nepal profile and the agreed speedups.
-- **T5** Hotfix track, runbook and `docs/standards/cicd.md` updates.
+- **T0** Read-only: per-phase timing of the Nepal route and the mini deploy; list every manual
+  step; secrets audit of the mini's three uncommitted edits; settle the documented-vs-actual state
+  of the tagging workflow (cicd.md says retired, AGENTS.md says active) because identity depends
+  on it.
+- **T1** Profile schema, mini profile, `tools/deploy.py` dry-run, fake-host executor and tests for
+  I1-I5.
+- **T2** Execute path: lock, anchor, verify, rollback, receipt, resume/abort; failure-branch
+  tests.
+- **T3** Hotfix track and its obligation mechanism (before any real-host use, per the reviewer).
+- **T4** Move the mini onto it (overlays, clean tree); keep the manual runbook as fallback.
+- **T5** Runbook and `docs/standards/cicd.md` updates.
 
 ## Open questions for the reviewer
 
-- How a single command that activates the stack satisfies the Nepal route's separate receiver
-  approval without weakening it.
-- Which of the mini's uncommitted values are secret or runtime-generated (T3 audit).
+- Does the I1 hand-off design leave the Nepal receiver approval and admission data fully intact?
+- Is the I3 rule sufficient given the one-version additive migration window?
 
 ## Risk and review
 
 High risk: credentials, remote execution, production deployment. One independent reviewer with
-security and deployment expertise per `docs/workflow.md`. No deployment, secret change or
+security and deployment expertise per `docs/workflow.md`. A first review (2026-11-11) returned
+NEEDS CHANGES on three blockers (activation vs receiver approval, test track vs release gate,
+migration rollback); this revision addresses them as I1-I3. No deployment, secret change or
 workflow-permission change happens under this plan without a separate owner approval.
