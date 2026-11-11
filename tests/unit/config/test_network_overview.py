@@ -51,9 +51,10 @@ class TestNetworkOverviewConfig:
             "UTC",
         )
 
-    def test_unknown_issue_timezone_is_rejected(self) -> None:
+    @pytest.mark.parametrize("zone", ["Invalid/Zone", ""])
+    def test_unknown_or_blank_issue_timezone_is_rejected(self, zone: str) -> None:
         data = policy().model_dump()
-        data["issue_timezone"] = "Invalid/Zone"
+        data["issue_timezone"] = zone
         with pytest.raises(ValidationError, match="unknown issue timezone"):
             OverviewFreshnessPolicyConfig.model_validate(data)
 

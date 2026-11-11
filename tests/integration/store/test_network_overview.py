@@ -5,13 +5,15 @@ from datetime import UTC, datetime, timedelta
 import sqlalchemy as sa
 
 from sapphire_flow.store.observation_store import PgObservationStore
+from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.network_overview import (
     ObservationAvailability,
     ProtectedObservationVisibility,
 )
-from tests.conftest import make_observation
+from tests.conftest import make_observation, make_station_config
+from tests.integration.store.test_bafu_unit_read_filter import hold
 from tests.integration.store.test_observation_store import _seed_station
 
 NOW = ensure_utc(datetime(2026, 11, 10, 10, 20, tzinfo=UTC))
@@ -161,3 +163,36 @@ class TestOverviewObservations:
             protected_visibility=ProtectedObservationVisibility.DETAIL_AUTHORIZED,
         )
         assert result[sid, "discharge"].latest.sample is None
+
+    def test_unit_held_newest_sample_falls_back_to_older_one(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = make_station_config(code="HELD-001", rng=random.Random(81))
+        PgStationStore(db_connection).store_station(station)
+        store = PgObservationStore(db_connection)
+        hour = ensure_utc(NOW.replace(minute=0))
+        store.store_observations(
+            [
+                make_observation(
+                    station_id=station.id,
+                    timestamp=ensure_utc(hour - timedelta(minutes=minutes)),
+                    value=float(minutes),
+                    rng=random.Random(minutes),
+                )
+                for minutes in (10, 40)
+            ]
+        )
+        hold(
+            db_connection,
+            (station.id, station.tenant_id),
+            start=ensure_utc(hour - timedelta(minutes=20)),
+        )
+        result = store.fetch_overview_observations(
+            [station.id],
+            as_of=NOW,
+            protected_visibility=ProtectedObservationVisibility.EXCLUDE,
+        )[station.id, "discharge"]
+        older = ensure_utc(hour - timedelta(minutes=40))
+        assert result.latest.sample is not None
+        assert result.latest.sample.timestamp == older
+        assert result.hourly[-1].sample == result.latest.sample

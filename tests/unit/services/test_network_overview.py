@@ -208,8 +208,10 @@ class TestForecastFreshness:
         [
             (datetime(2026, 11, 10, tzinfo=UTC), 6),
             (datetime(2026, 7, 10, tzinfo=UTC), 5),
+            (datetime(2026, 3, 29, tzinfo=UTC), 5),
+            (datetime(2026, 10, 25, tzinfo=UTC), 6),
         ],
-        ids=["winter", "summer"],
+        ids=["winter", "summer", "spring_forward", "fall_back"],
     )
     def test_swiss_utc_issue_stays_current_until_seven_local(
         self, day: datetime, deadline_utc_hour: int

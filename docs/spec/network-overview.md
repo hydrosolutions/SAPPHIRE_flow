@@ -160,6 +160,10 @@ unit-read check runs on candidates only; JIT is off for that statement. On the s
 200-station data it took about 0.8 s, versus more than 3.6 s (statement timeout)
 for the earlier whole-cohort ranking. Its 2 s statement timeout is unchanged.
 An earlier hourly-only fixture (72 rows per parameter) understated this cost.
+Early stopping needs eligible samples: a series with none in the window (for
+example all unit-held, or all failed QC) is checked row by row across the whole
+168 h, as every row was before, and the failed-marker read scans the window for all
+stations. The benchmark has no such series and no sub-10-minute cadence.
 
 The one-second target is not met at160/200 stations. With 10-minute observations
 both the 160- and 200-station responses exceed 1MiB gzip. Do not advertise these caps

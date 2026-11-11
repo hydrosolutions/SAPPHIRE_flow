@@ -188,7 +188,7 @@ def test_native_overview_capacity(
                     completed_query_seconds=query_times,
                     started_query_count=len(queries),
                     last_query_kind="observations"
-                    if "overview_observation_cohort" in queries[-1]
+                    if "overview_series" in queries[-1]
                     else "forecast_values"
                     if "forecast_values" in queries[-1]
                     else "other",

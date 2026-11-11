@@ -36,8 +36,10 @@ class OverviewFreshnessPolicyConfig(BaseModel):
         except ZoneInfoNotFoundError as exc:
             raise ValueError("unknown product timezone") from exc
         try:
-            issue_zone = ZoneInfo(self.issue_timezone) if self.issue_timezone else zone
-        except ZoneInfoNotFoundError as exc:
+            issue_zone = (
+                zone if self.issue_timezone is None else ZoneInfo(self.issue_timezone)
+            )
+        except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("unknown issue timezone") from exc
         return OverviewFreshnessPolicy(
             tenant_id=TenantId(self.tenant_id),

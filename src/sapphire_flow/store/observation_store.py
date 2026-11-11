@@ -818,6 +818,8 @@ class PgObservationStore:
             raise ValueError("overview station admission exceeded")
         if not station_ids:
             return {}
+        # Duplicates would repeat VALUES rows and fake an equal-time ambiguity.
+        station_ids = list(dict.fromkeys(station_ids))
         hour = ensure_utc(as_of.replace(minute=0, second=0, microsecond=0))
         windows = [(0, ensure_utc(as_of - timedelta(hours=168)), as_of)] + [
             (
