@@ -5,6 +5,7 @@ import re
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from sapphire_flow.api.network_overview_cache import network_overview_path
 from sapphire_flow.api.publication_cache import shared_forecast_read_path
 
 
@@ -22,6 +23,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         headers={"Cache-Control": "no-store"}
         if (
             shared_forecast_read_path(request.url.path)
+            or network_overview_path(request.url.path)
             or re.fullmatch(
                 r"/api/v1/forecasts/[^/]+/rating-input-history/?", request.url.path
             )

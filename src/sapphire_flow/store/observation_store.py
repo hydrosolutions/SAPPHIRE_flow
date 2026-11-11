@@ -11,6 +11,7 @@ import structlog
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.sql.selectable import LateralFromClause  # noqa: TC002
 
 from sapphire_flow.db.metadata import observations as observations_table
 from sapphire_flow.exceptions import DeliveryCollisionError
@@ -19,9 +20,18 @@ from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.store.bafu_unit_read_filter import (
     unit_read_predicate,
 )
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
+from sapphire_flow.types.network_overview import (
+    ObservationAvailability,
+    OverviewObservation,
+    OverviewObservations,
+    OverviewObservationSlot,
+    ProtectedObservationVisibility,
+)
 from sapphire_flow.types.observation import (
     Observation,
     RawObservation,
@@ -792,6 +802,186 @@ class PgObservationStore:
             observation = _row_to_domain(row)
             result[observation.station_id] = observation
         return result
+
+    def fetch_overview_observations(
+        self,
+        station_ids: list[StationId],
+        *,
+        as_of: UtcDatetime,
+        protected_visibility: ProtectedObservationVisibility,
+    ) -> dict[tuple[StationId, str], OverviewObservations]:
+        if self._purpose is not ObservationReadPurpose.TRUSTED:
+            raise ValueError("overview observations require trusted read purpose")
+        if protected_visibility not in tuple(ProtectedObservationVisibility):
+            raise ValueError("overview protected visibility must be typed")
+        if len(station_ids) > 200:
+            raise ValueError("overview station admission exceeded")
+        if not station_ids:
+            return {}
+        hour = ensure_utc(as_of.replace(minute=0, second=0, microsecond=0))
+        windows = [(0, ensure_utc(as_of - timedelta(hours=168)), as_of)] + [
+            (
+                index + 1,
+                ensure_utc(hour - timedelta(hours=72 - index)),
+                ensure_utc(hour - timedelta(hours=71 - index)),
+            )
+            for index in range(72)
+        ]
+        obs = observations_table
+        parameters = ("water_level", "discharge")
+        eligible: list[sa.ColumnElement[bool]] = [
+            obs.c.source.in_(
+                (
+                    ObservationSource.MEASURED.value,
+                    ObservationSource.MANUAL_IMPORT.value,
+                )
+            ),
+            # A scalar subquery keeps this a per-row check; as a semi-join the
+            # planner would evaluate the whole security-barrier view.
+            sa.select(unit_read_predicate(obs, self._purpose))
+            .correlate(obs)
+            .scalar_subquery(),
+        ]
+        if protected_visibility is ProtectedObservationVisibility.EXCLUDE:
+            eligible.append(obs.c.delivery_id.is_distinct_from(DELIVERY_ID))
+        accepted = [
+            obs.c.qc_status.in_(
+                [
+                    status.value
+                    for status in (
+                        QcStatus.RAW,
+                        QcStatus.QC_UNCHECKED,
+                        QcStatus.QC_SUSPECT,
+                        QcStatus.QC_PASSED,
+                    )
+                ]
+            ),
+            obs.c.value > float("-inf"),
+            obs.c.value < float("inf"),
+        ]
+        series = sa.values(
+            sa.column("station_id", sa.Uuid),
+            sa.column("parameter", sa.Text),
+            name="overview_series",
+        ).data([(sid, parameter) for sid in station_ids for parameter in parameters])
+        slots = sa.values(
+            sa.column("slot", sa.Integer),
+            sa.column("lower", sa.DateTime(timezone=True)),
+            sa.column("upper", sa.DateTime(timezone=True)),
+            name="overview_slots",
+        ).data(windows[1:])
+
+        # Walk the station/time index newest-first and stop at the first eligible
+        # sample, so the costly unit-read check runs on candidates, not the cohort.
+        def newest(*bounds: sa.ColumnElement[bool]) -> LateralFromClause:
+            return (
+                sa.select(obs.c.timestamp, obs.c.value, obs.c.source, obs.c.qc_status)
+                .where(
+                    obs.c.station_id == series.c.station_id,
+                    obs.c.parameter == series.c.parameter,
+                    *bounds,
+                    *accepted,
+                    *eligible,
+                )
+                .order_by(obs.c.timestamp.desc())
+                .fetch(1, with_ties=True)
+                .lateral()
+            )
+
+        latest = newest(obs.c.timestamp >= windows[0][1], obs.c.timestamp <= as_of)
+        hourly = newest(
+            obs.c.timestamp > slots.c.lower, obs.c.timestamp <= slots.c.upper
+        )
+        no_failure = sa.cast(sa.null(), sa.DateTime(timezone=True)).label("failed_at")
+        latest_query = sa.select(
+            series.c.station_id,
+            series.c.parameter,
+            latest,
+            sa.literal(0).label("slot"),
+            no_failure,
+        ).select_from(series.join(latest, sa.true()))
+        hourly_query = sa.select(
+            series.c.station_id,
+            series.c.parameter,
+            hourly,
+            slots.c.slot,
+            no_failure,
+        ).select_from(series.join(slots, sa.true()).join(hourly, sa.true()))
+        failed_query = (
+            sa.select(
+                obs.c.station_id,
+                obs.c.parameter,
+                sa.cast(sa.null(), sa.DateTime(timezone=True)).label("timestamp"),
+                sa.cast(sa.null(), sa.Float()).label("value"),
+                sa.cast(sa.null(), sa.Text()).label("source"),
+                sa.cast(sa.null(), sa.Text()).label("qc_status"),
+                sa.literal(-1).label("slot"),
+                sa.func.max(obs.c.timestamp).label("failed_at"),
+            )
+            .where(
+                obs.c.station_id.in_(station_ids),
+                obs.c.parameter.in_(parameters),
+                obs.c.timestamp >= windows[0][1],
+                obs.c.timestamp <= as_of,
+                obs.c.qc_status == QcStatus.QC_FAILED.value,
+                *eligible,
+            )
+            .group_by(obs.c.station_id, obs.c.parameter)
+        )
+        self._conn.execute(sa.text("SET LOCAL statement_timeout = '2s'"))
+        # The per-row unit check inflates cost estimates; JIT compilation then
+        # takes longer than the early-stopping index walks it would speed up.
+        self._conn.execute(sa.text("SET LOCAL jit = off"))
+        rows = self._conn.execute(
+            latest_query.union_all(hourly_query, failed_query)
+        ).mappings()
+        selected: dict[tuple[StationId, str, int], list[OverviewObservation]] = {}
+        failed_times: dict[tuple[StationId, str], UtcDatetime | None] = {}
+        for row in rows:
+            sid = StationId(row["station_id"])
+            key = (sid, row["parameter"], row["slot"])
+            samples = selected.setdefault(key, [])
+            if row["timestamp"] is not None:
+                samples.append(
+                    OverviewObservation(
+                        timestamp=utc_from_row(row["timestamp"]),
+                        value=row["value"],
+                        source=ObservationSource(row["source"]),
+                        qc_status=QcStatus(row["qc_status"]),
+                    )
+                )
+            if row["slot"] == -1:
+                failed_times[(sid, row["parameter"])] = utc_or_none(row["failed_at"])
+
+        def slot(sid: StationId, parameter: str, index: int) -> OverviewObservationSlot:
+            samples = selected.get((sid, parameter, index), [])
+            ambiguous = (
+                len(samples) == 2 and samples[0].timestamp == samples[1].timestamp
+            )
+            state = (
+                ObservationAvailability.AMBIGUOUS_SOURCE
+                if ambiguous
+                else ObservationAvailability.AVAILABLE
+                if samples
+                else ObservationAvailability.NO_ELIGIBLE
+            )
+            return OverviewObservationSlot(
+                end=windows[index][2],
+                availability=state,
+                sample=samples[0] if samples and not ambiguous else None,
+            )
+
+        return {
+            (sid, parameter): OverviewObservations(
+                station_id=sid,
+                parameter=parameter,
+                latest=slot(sid, parameter, 0),
+                latest_failed_at=failed_times.get((sid, parameter)),
+                hourly=tuple(slot(sid, parameter, index) for index in range(1, 73)),
+            )
+            for sid in station_ids
+            for parameter in ("water_level", "discharge")
+        }
 
     def fetch_latest_capture_timestamp(
         self, station_id: StationId, parameter: str

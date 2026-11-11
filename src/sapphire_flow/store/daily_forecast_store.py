@@ -59,7 +59,7 @@ from sapphire_flow.types.ids import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from contextlib import AbstractContextManager
 
     from sqlalchemy import RowMapping
@@ -623,6 +623,183 @@ class PgDailyForecastStore:
             authoritative=authoritative,
             recovery_status=recovery,
         )
+
+    def read_days_bounded(
+        self, keys: tuple[DailyClaimKey, ...]
+    ) -> dict[DailyClaimKey, DailyDaySnapshot]:
+        """Read latest and authoritative summaries without loading retry history."""
+        if len(keys) > 112 or len(set(keys)) != len(keys):
+            raise DailyAuthorityIntegrityError("daily key admission exceeded")
+        if not keys:
+            return {}
+        from sapphire_flow.db.metadata import daily_forecast_attempts as attempts
+
+        requested = (
+            sa.values(
+                sa.column("key_index", sa.Integer()),
+                sa.column("tenant_id", sa.Uuid()),
+                sa.column("deployment", sa.Text()),
+                sa.column("group_id", sa.Uuid()),
+                sa.column("model_id", sa.Text()),
+                sa.column("issued_at", sa.DateTime(timezone=True)),
+                name="overview_daily_keys",
+            )
+            .data(
+                [
+                    (
+                        i,
+                        key.tenant_id,
+                        key.deployment,
+                        key.group_id,
+                        key.model_id,
+                        key.context.issue_time,
+                    )
+                    for i, key in enumerate(keys)
+                ]
+            )
+            .cte()
+        )
+        scoped = sa.select(attempts.c.id).where(
+            attempts.c.tenant_id == requested.c.tenant_id,
+            attempts.c.deployment == requested.c.deployment,
+            attempts.c.group_id == requested.c.group_id,
+            attempts.c.model_id == requested.c.model_id,
+            attempts.c.issued_at == requested.c.issued_at,
+            attempts.c.data_use == ForecastDataUse.STANDARD.value,
+            attempts.c.trigger_kind == "scheduled",
+        )
+        latest = (
+            scoped.order_by(attempts.c.ordinal.desc())
+            .limit(1)
+            .correlate(requested)
+            .scalar_subquery()
+        )
+        authority = (
+            scoped.where(attempts.c.summary.is_not(None))
+            .order_by(attempts.c.ordinal.desc())
+            .limit(1)
+            .correlate(requested)
+            .scalar_subquery()
+        )
+        recovered = (
+            scoped.where(attempts.c.recovery.is_not(None)).correlate(requested).exists()
+        )
+        with self._begin() as txn:
+            txn.execute(sa.text("SET LOCAL statement_timeout = '2s'"))
+            identities = (
+                txn.execute(
+                    sa.select(
+                        requested.c.key_index,
+                        latest.label("latest"),
+                        authority.label("authority"),
+                        recovered.label("recovered"),
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            ids = {
+                row[column]
+                for row in identities
+                for column in ("latest", "authority")
+                if row[column] is not None
+            }
+            if len(ids) > 224:
+                raise DailyAuthorityIntegrityError("daily attempt admission exceeded")
+            rows: Sequence[RowMapping]
+            if ids:
+                # Only scalar sizes leave PostgreSQL before admitting frozen bodies.
+                byte_count = txn.execute(
+                    sa.select(
+                        sa.func.sum(
+                            sa.func.octet_length(sa.cast(attempts.c.roster, sa.Text()))
+                            + sa.func.octet_length(
+                                sa.cast(attempts.c.output_contracts, sa.Text())
+                            )
+                            + sa.func.coalesce(
+                                sa.func.octet_length(
+                                    sa.cast(attempts.c.summary, sa.Text())
+                                ),
+                                0,
+                            )
+                            + sa.func.coalesce(
+                                sa.func.octet_length(
+                                    sa.cast(attempts.c.recovery, sa.Text())
+                                ),
+                                0,
+                            )
+                        )
+                    ).where(attempts.c.id.in_(ids))
+                ).scalar_one()
+                if byte_count is None or byte_count > 8 * 1024 * 1024:
+                    raise DailyAuthorityIntegrityError(
+                        "daily frozen payload admission exceeded"
+                    )
+                member_count = txn.execute(
+                    sa.text("""
+                    SELECT coalesce(sum(jsonb_array_length(roster)),0)
+                        + coalesce(sum(jsonb_array_length(
+                            coalesce(summary,'[]'::jsonb))),0)
+                        + coalesce(sum((SELECT coalesce(sum(jsonb_array_length(
+                            coalesce(member->'references','[]'::jsonb))),0)
+                            FROM jsonb_array_elements(
+                                coalesce(summary,'[]'::jsonb)) member)),0)
+                    FROM daily_forecast_attempts WHERE id = ANY(:ids)
+                """),
+                    {"ids": list(ids)},
+                ).scalar_one()
+                if member_count > 25000:
+                    raise DailyAuthorityIntegrityError(
+                        "daily member admission exceeded"
+                    )
+                rows = (
+                    txn.execute(
+                        sa.text("""
+                    WITH selected AS MATERIALIZED (
+                        SELECT * FROM daily_forecast_attempts WHERE id = ANY(:ids)
+                    ), budget AS MATERIALIZED (
+                        SELECT sum(octet_length(roster::text)
+                            + octet_length(output_contracts::text)
+                            + coalesce(octet_length(summary::text),0)
+                            + coalesce(octet_length(recovery::text),0)) AS bytes,
+                            sum(jsonb_array_length(roster)
+                                + jsonb_array_length(coalesce(summary,'[]'::jsonb))
+                                + (SELECT coalesce(sum(jsonb_array_length(
+                                    coalesce(member->'references','[]'::jsonb))),0)
+                                    FROM jsonb_array_elements(
+                                        coalesce(summary,'[]'::jsonb)) member))
+                                AS members
+                        FROM selected
+                    ) SELECT selected.* FROM selected CROSS JOIN budget
+                      WHERE budget.bytes <= 8388608 AND budget.members <= 25000
+                """),
+                        {"ids": list(ids)},
+                    )
+                    .mappings()
+                    .all()
+                )
+            else:
+                rows = []
+        try:
+            snapshots = {row["id"]: _snapshot(row) for row in rows}
+            if set(snapshots) != ids:
+                raise ValueError("selected daily attempt disappeared")
+            return {
+                keys[row["key_index"]]: DailyDaySnapshot(
+                    latest=snapshots.get(row["latest"]),
+                    authoritative=snapshots.get(row["authority"]),
+                    recovery_status=(
+                        DailyRecoveryStatus.OPERATOR_RECOVERED
+                        if row["recovered"]
+                        else DailyRecoveryStatus.UNTOUCHED
+                    ),
+                )
+                for row in identities
+            }
+        except (ValueError, TypeError, KeyError) as exc:
+            raise DailyAuthorityIntegrityError(
+                "invalid persisted daily authority"
+            ) from exc
 
     def pending_keys(
         self,

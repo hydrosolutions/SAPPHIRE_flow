@@ -301,9 +301,13 @@ def test_subscription_write_preserves_typed_failure_category(
 
 @pytest.mark.parametrize("exit_mode", ["normal", "exception"])
 def test_transport_suppresses_above_critical_and_restores_nested_threshold(
-    caplog: pytest.LogCaptureFixture, exit_mode: str
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_mode: str,
 ) -> None:
     logger = logging.getLogger("httpx")
+    # Test threshold restoration with an enabled logger, independent of API setup.
+    monkeypatch.setattr(logger, "disabled", False)
     caplog.set_level(1, logger="httpx")
     original = logging.root.manager.disable
     logging.disable(17)

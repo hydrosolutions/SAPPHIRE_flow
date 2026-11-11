@@ -38,6 +38,11 @@ app = FastAPI(
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.add_middleware(PublicationCacheMiddleware)
+from sapphire_flow.api.network_overview_cache import (  # noqa: E402
+    NetworkOverviewCacheMiddleware,
+)
+
+app.add_middleware(NetworkOverviewCacheMiddleware)
 # jinja2 stubs over-narrow env.globals' value type to the default-globals
 # union; at runtime it is a plain str-keyed dict accepting any value.
 cast("dict[str, object]", templates.env.globals)["prefect_ui_url"] = _PREFECT_UI_URL
@@ -144,3 +149,9 @@ app.include_router(_rating_history.router, dependencies=[Depends(require_reviewe
 # Review routes depend on a named OIDC human. Consumer publication routes
 # retain the existing service-token authorization and station scope.
 app.include_router(_publication.router)
+
+from sapphire_flow.api.routes import (  # noqa: E402
+    api_network_overview as _network_overview,
+)
+
+app.include_router(_network_overview.router, dependencies=[Depends(require_principal)])

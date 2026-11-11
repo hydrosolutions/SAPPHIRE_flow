@@ -594,3 +594,14 @@ accepts it. This returns503, never empty success or altered Q. It is a represent
 compatibility limit, not corrupt input. Follow-up must align this narrow comparison
 without weakening primary frozen-curve byte identity or parse budgets. Qualified
 fixtures do not establish full21-station or all-history availability.
+
+
+## Network overview
+
+Map contract2.11 adds `GET /api/v1/networks/{network}/overview` without changing
+older endpoint defaults. The complete observation/forecast, entitlement, compact
+series and private conditional-polling contract is maintained in
+[network-overview.md](network-overview.md). Existing configured thresholds are
+batched into each station; datum metadata retains reviewer/admin-only disclosure.
+Reported-threshold imports remain a separate delivery; this route neither imports
+thresholds nor activates alerts.

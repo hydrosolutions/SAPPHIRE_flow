@@ -4,9 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import zlib
-from collections import defaultdict
+from collections import ChainMap, defaultdict
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -135,7 +135,7 @@ def _combined_contributor_gap(
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractContextManager as ContextManager
 
     from sqlalchemy import RowMapping
@@ -494,6 +494,86 @@ class PgForecastStore:
             except ValueError as exc:
                 if self._data_use is not ForecastDataUse.STANDARD:
                     raise
+                raise StoredForecastDecodeError(
+                    "invalid stored forecast record"
+                ) from exc
+
+    def fetch_bounded_forecasts_by_ids(
+        self, forecast_ids: list[ForecastId]
+    ) -> dict[ForecastId, OperationalForecast]:
+        """Caller supplies authorized IDs; do not repeat lineage for every value."""
+        if not forecast_ids:
+            return {}
+        if len(forecast_ids) > 800:
+            raise ValueError("forecast header admission exceeded")
+        with protect_lineage_errors(self._data_use):
+            headers = (
+                sa.select(*forecast_columns(forecasts, self._data_use))
+                .where(
+                    forecasts.c.id.in_(forecast_ids),
+                    forecasts.c.data_use == self._data_use.value,
+                )
+                .cte("bounded_forecast_headers")
+                .prefix_with("MATERIALIZED")
+            )
+            size = sa.select(
+                sa.func.coalesce(
+                    sa.func.sum(
+                        sa.func.coalesce(
+                            sa.func.octet_length(headers.c.input_lineage), 0
+                        )
+                        + sa.func.coalesce(
+                            sa.func.octet_length(
+                                sa.cast(headers.c.qc_flags, sa.Text())
+                            ),
+                            0,
+                        )
+                        + sa.func.coalesce(
+                            sa.func.octet_length(
+                                sa.cast(headers.c.input_quality_flags, sa.Text())
+                            ),
+                            0,
+                        )
+                    ),
+                    0,
+                )
+            ).scalar_subquery()
+            header_rows = (
+                self._conn.execute(sa.select(headers).where(size <= 8 * 1024 * 1024))
+                .mappings()
+                .all()
+            )
+            if {row["id"] for row in header_rows} != set(forecast_ids):
+                raise ValueError(
+                    "forecast header unavailable or payload admission exceeded"
+                )
+            by_id = {row["id"]: dict(row) for row in header_rows}
+            values = (
+                self._conn.execute(
+                    sa.select(
+                        forecast_values.c.forecast_id,
+                        forecast_values.c.valid_time,
+                        forecast_values.c.member_id,
+                        forecast_values.c.quantile,
+                        forecast_values.c.value,
+                    )
+                    .where(forecast_values.c.forecast_id.in_(forecast_ids))
+                    .limit(250001)
+                )
+                .mappings()
+                .all()
+            )
+            if len(values) > 250000:
+                raise ValueError("forecast value admission exceeded")
+            grouped: dict[ForecastId, list[Mapping[str, Any]]] = {}
+            for row in values:
+                fid = ForecastId(row["forecast_id"])
+                grouped.setdefault(fid, []).append(ChainMap(by_id[fid], dict(row)))
+            if set(grouped) != set(forecast_ids):
+                raise ValueError("selected forecast values unavailable")
+            try:
+                return {fid: _rows_to_domain(rows) for fid, rows in grouped.items()}
+            except ValueError as exc:
                 raise StoredForecastDecodeError(
                     "invalid stored forecast record"
                 ) from exc
@@ -987,7 +1067,9 @@ def _parse_qc_flags(raw: object) -> tuple[QcFlag, ...]:
     )
 
 
-def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
+def _rows_to_domain(
+    rows: Sequence[RowMapping | Mapping[str, Any]],
+) -> OperationalForecast:
     header = rows[0]
     representation = EnsembleRepresentation(header["representation"])
     is_members = representation == EnsembleRepresentation.MEMBERS

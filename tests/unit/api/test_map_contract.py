@@ -26,6 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONTRACT_PATH = _REPO_ROOT / "docs/spec/api-v1-map.openapi.json"
 
 _EXPECTED_PATHS = {
+    "/api/v1/networks/{network}/overview",
     "/api/v1/stations",
     "/api/v1/stations/{station_id}",
     "/api/v1/stations/{station_id}/observations",

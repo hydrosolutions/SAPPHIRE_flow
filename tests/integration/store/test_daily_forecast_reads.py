@@ -1,6 +1,7 @@
 from dataclasses import replace
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.store.daily_forecast_store import PgDailyForecastStore
@@ -38,6 +39,12 @@ class TestDailyReads:
         day = PgDailyForecastStore(isolated_committed_db_engine.begin).read_day(key)
         assert day.latest is None
         assert day.authoritative is None
+        assert (
+            PgDailyForecastStore(isolated_committed_db_engine.begin).read_days_bounded(
+                (key,)
+            )[key]
+            == day
+        )
 
     def test_active_retry_does_not_replace_prior_coherent_summary(
         self,
@@ -75,6 +82,7 @@ class TestDailyReads:
         )
         assert isinstance(retry, DailyClaim)
         day = store.read_day(key)
+        assert store.read_days_bounded((key,))[key] == day
         assert day.latest is not None and day.latest.claim.id == retry.id
         assert day.latest.state is DailyAttemptState.ACTIVE
         assert day.authoritative is not None and day.authoritative.claim.id == first.id
@@ -92,6 +100,7 @@ class TestDailyReads:
         day = store.read_day(key)
         assert day.authoritative is not None and day.authoritative.claim.id == retry.id
         assert day.authoritative.outcomes == (now_failed, failed)
+        assert store.read_days_bounded((key,))[key] == day
 
     def test_shared_failure_has_no_authoritative_output(
         self,
@@ -168,3 +177,63 @@ class TestDailyReads:
         assert (
             store.pending_keys(other_tenant, key.deployment, _later(key).context) == ()
         )
+
+
+class TestBoundedDailyRead:
+    @pytest.mark.parametrize("oversize", ["bytes", "members"])
+    def test_admission_precedes_snapshot_materialization(
+        self,
+        isolated_committed_db_engine: sa.Engine,
+        assignment: tuple[DailyClaimKey, FrozenDailyAssignment],
+        monkeypatch: pytest.MonkeyPatch,
+        oversize: str,
+    ) -> None:
+        from datetime import timedelta
+
+        from sapphire_flow.db.metadata import daily_forecast_attempts
+        from sapphire_flow.exceptions import DailyAuthorityIntegrityError
+        from sapphire_flow.store import daily_forecast_store
+        from sapphire_flow.types.daily_forecast import ScheduledDailyForecast
+        from sapphire_flow.types.datetime import ensure_utc
+
+        key, frozen = assignment
+        store = PgDailyForecastStore(isolated_committed_db_engine.begin)
+        attempt_id = uuid4()
+        store.claim(
+            key, frozen, attempt_id=attempt_id, owner_id=uuid4(), started_at=NOW
+        )
+        next_issue = ensure_utc(NOW + timedelta(days=1))
+        with isolated_committed_db_engine.begin() as conn:
+            row = dict(
+                conn.execute(
+                    sa.select(daily_forecast_attempts).where(
+                        daily_forecast_attempts.c.id == attempt_id
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            row.update(
+                id=uuid4(),
+                issued_at=next_issue,
+                scheduled_tick=next_issue,
+                started_at=next_issue,
+                summary=sa.null(),
+                recovery=sa.null(),
+            )
+            # Corrupt oversized persisted evidence must be refused before decoding.
+            if oversize == "bytes":
+                row["output_contracts"] = [{"parameter": "x" * (8 * 1024 * 1024)}]
+            else:
+                row["roster"] = row["roster"] * 25001
+            conn.execute(sa.insert(daily_forecast_attempts).values(**row))
+
+        def forbidden(row: object) -> None:
+            pytest.fail("oversized daily evidence reached snapshot decoder")
+
+        monkeypatch.setattr(daily_forecast_store, "_snapshot", forbidden)
+        next_key = replace(
+            key, context=ScheduledDailyForecast(scheduled_tick=next_issue)
+        )
+        with pytest.raises(DailyAuthorityIntegrityError, match="admission exceeded"):
+            store.read_days_bounded((next_key,))
