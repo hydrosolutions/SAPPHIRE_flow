@@ -132,6 +132,10 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
+_CONTAINER_ID = "a" * 64
+
 _SCRIPT = (
     Path(__file__).parent.parent.parent.parent / "scripts" / "restore-rehearsal.sh"
 )
@@ -141,6 +145,11 @@ def _write_fake_docker(
     bin_dir: Path,
     args_log: Path,
     *,
+    run_exit: int = 0,
+    start_exit: int = 0,
+    cid_value: str = _CONTAINER_ID,
+    signal_after_create: str = "",
+    rm_exit: int = 0,
     createdb_exit: int = 0,
     createdb_stderr: str = "",
     pg_restore_exit: int = 0,
@@ -163,8 +172,21 @@ def _write_fake_docker(
         printf '\\n' >> "{args_log}"
         case "$1" in
           run)
-            echo "fake-container-id"
-            exit 0
+            if [[ {run_exit} -ne 0 ]]; then
+              exit {run_exit}
+            fi
+            while [[ $# -gt 0 ]]; do
+              if [[ "$1" == "--cidfile" ]]; then
+                printf '%s' {shlex.quote(cid_value)} > "$2"
+                break
+              fi
+              shift
+            done
+            if [[ -n {shlex.quote(signal_after_create)} ]]; then
+              kill -s {shlex.quote(signal_after_create)} "$PPID"
+            fi
+            echo "{_CONTAINER_ID}"
+            exit {start_exit}
             ;;
           logs)
             echo "PostgreSQL init process complete; ready for start up."
@@ -174,7 +196,7 @@ def _write_fake_docker(
             exit 0
             ;;
           rm)
-            exit 0
+            exit {rm_exit}
             ;;
           exec)
             case "$*" in
@@ -845,6 +867,8 @@ class TestNetworkIsolation:
             "none",
             "--name",
             container_name,
+            "--cidfile",
+            _flag_value(run_argv, "--cidfile"),
             "-e",
             "POSTGRES_PASSWORD=rehearsal",
             sentinel_image,
@@ -868,3 +892,84 @@ class TestMissingDump:
 
         assert result.returncode != 0
         assert not args_log.exists(), "docker was invoked despite a missing dump file"
+
+
+class TestOwnedContainerCleanup:
+    @pytest.mark.parametrize("restore_exit", [0, 1])
+    def test_removes_only_owned_id_and_anonymous_volumes(
+        self, tmp_path: Path, restore_exit: int
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(tmp_path, args_log, pg_restore_exit=restore_exit)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert (result.returncode == 0) == (restore_exit == 0)
+        assert [shlex.split(c) for c in _rm_calls(args_log)] == [
+            ["rm", "-f", "-v", _CONTAINER_ID]
+        ]
+        cidfile = Path(_flag_value(_run_call_argv(args_log), "--cidfile"))
+        assert not cidfile.parent.exists()
+        assert all(
+            shlex.split(c)[1] == _CONTAINER_ID
+            for c in _all_lines(args_log)
+            if c.startswith("exec ")
+        )
+
+    def test_failed_create_or_name_collision_never_removes_existing_resource(
+        self, tmp_path: Path
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(tmp_path, args_log, run_exit=125)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert result.returncode != 0
+        assert not _rm_calls(args_log)
+        assert "ownership" in result.stderr
+
+    def test_failed_start_after_creation_still_cleans_owned_resource(
+        self, tmp_path: Path
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(tmp_path, args_log, start_exit=125)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert result.returncode != 0
+        assert [shlex.split(c) for c in _rm_calls(args_log)] == [
+            ["rm", "-f", "-v", _CONTAINER_ID]
+        ]
+        assert "PASS" not in result.stdout
+
+    @pytest.mark.parametrize("signal_name", ["TERM", "INT", "HUP"])
+    def test_signal_after_create_before_run_returns_cleans_owned_id(
+        self, tmp_path: Path, signal_name: str
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(tmp_path, args_log, signal_after_create=signal_name)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert result.returncode != 0
+        assert [shlex.split(c) for c in _rm_calls(args_log)] == [
+            ["rm", "-f", "-v", _CONTAINER_ID]
+        ]
+        assert "PASS" not in result.stdout
+
+    @pytest.mark.parametrize("cid_value", ["", "test-restore-rehearsal", "a" * 12])
+    def test_uncertain_ownership_reports_without_removing_by_name(
+        self, tmp_path: Path, cid_value: str
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(tmp_path, args_log, cid_value=cid_value)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert result.returncode != 0
+        assert not _rm_calls(args_log)
+        assert "ownership" in result.stderr
+        assert "PASS" not in result.stdout
+
+    @pytest.mark.parametrize("restore_exit", [0, 1])
+    def test_cleanup_failure_is_reported_even_after_restore_failure(
+        self, tmp_path: Path, restore_exit: int
+    ) -> None:
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            tmp_path, args_log, rm_exit=1, pg_restore_exit=restore_exit
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+        assert result.returncode != 0
+        assert "teardown failed" in result.stderr
+        assert "PASS" not in result.stdout

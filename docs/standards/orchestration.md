@@ -509,7 +509,10 @@ and rollback](../deployment/nhs-forecast-configuration.md).
 Forecast-cycle re-registration preserves existing parameters and unrelated job
 variables; it does not reset an operator's approved `data_use` or issue selection.
 New deployments start with empty parameters. Cron remains driven by
-`SCHEDULE_FORECAST_CYCLE`. Other deployments retain their existing behavior.
+`SCHEDULE_FORECAST_CYCLE`. Backup re-registration also preserves its entire
+existing parameter mapping (`backup_dir`, `keep_count`, and any other parameters),
+without adding forecast job variables. New backup deployments use flow defaults.
+Other deployments retain their existing behavior.
 Automatic selected daily issuance requires the explicit IANA calendar opt-in and
 an omitted `cycle_time`; it is not inferred from UI timezone or age settings.
 Frozen daily claims retain their own issue and default execution hash. Typed age

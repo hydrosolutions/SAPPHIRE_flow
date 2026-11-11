@@ -350,7 +350,14 @@ class TestRegisterOne:
         mock_module = MagicMock()
         mock_module.backup_database_flow = mock_flow
 
-        with patch("importlib.import_module", return_value=mock_module) as mock_import:
+        client = AsyncMock()
+        client.read_deployment_by_name.return_value.parameters = {}
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch("importlib.import_module", return_value=mock_module) as mock_import,
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            get_client.return_value.__aexit__ = AsyncMock(return_value=False)
             await _register_one(spec)
 
         mock_import.assert_called_once_with("sapphire_flow.flows.backup")
@@ -795,3 +802,137 @@ class TestForecastDeploymentRegistration:
             if existing:
                 assert call.kwargs["job_variables"]["env"]["OTHER"] == "preserved"
         assert (parameters, variables) == original
+
+
+class TestBackupDeploymentRegistration:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("existing", [False, True])
+    async def test_preserves_complete_parameters_on_repeated_registration(
+        self, existing: bool
+    ) -> None:
+        from types import SimpleNamespace
+
+        from prefect.client.schemas.responses import DeploymentResponse
+        from prefect.exceptions import ObjectNotFound
+
+        parameters = {
+            "backup_dir": "/operator/backups",
+            "keep_count": 2,
+            "future_parameter": {"preserve": ["all", "values"]},
+        }
+        client = AsyncMock()
+        if existing:
+            client.read_deployment_by_name.return_value = DeploymentResponse(
+                name="backup-database",
+                flow_id="00000000-0000-0000-0000-000000000001",
+                parameters=parameters,
+            )
+        else:
+            client.read_deployment_by_name.side_effect = ObjectNotFound(
+                http_exc=RuntimeError("absent")
+            )
+        sourced = MagicMock(adeploy=AsyncMock(return_value="deployment-id"))
+        flow = MagicMock(afrom_source=AsyncMock(return_value=sourced))
+        flow.name = "backup-database"
+        module = SimpleNamespace(backup_database_flow=flow)
+        spec = next(s for s in _build_specs() if s.deployment_name == "backup-database")
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch("importlib.import_module", return_value=module),
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            await _register_one(spec)
+            await _register_one(spec)
+        assert client.read_deployment_by_name.await_count == 2
+        client.read_deployment_by_name.assert_awaited_with(
+            "backup-database/backup-database"
+        )
+        for call in sourced.adeploy.await_args_list:
+            assert call.kwargs["parameters"] == (parameters if existing else {})
+            assert "job_variables" not in call.kwargs
+            assert call.kwargs["work_pool_name"] == BACKUP_POOL
+            assert call.kwargs["cron"] == "0 2 * * *"
+            assert "concurrency_limit" not in call.kwargs
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_stops_registration(self) -> None:
+        from types import SimpleNamespace
+
+        client = AsyncMock()
+        client.read_deployment_by_name.side_effect = RuntimeError("lookup unavailable")
+        sourced = MagicMock(adeploy=AsyncMock())
+        flow = MagicMock(afrom_source=AsyncMock(return_value=sourced))
+        flow.name = "backup-database"
+        spec = next(s for s in _build_specs() if s.deployment_name == "backup-database")
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch(
+                "importlib.import_module",
+                return_value=SimpleNamespace(backup_database_flow=flow),
+            ),
+            pytest.raises(RuntimeError, match="lookup unavailable"),
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            await _register_one(spec)
+        sourced.adeploy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("existing", [False, True])
+    async def test_real_prefect_deployment_carries_preserved_parameters(
+        self, existing: bool
+    ) -> None:
+        from prefect.client.schemas.responses import DeploymentResponse
+        from prefect.exceptions import ObjectNotFound
+
+        from sapphire_flow.flows.backup import backup_database_flow
+
+        parameters = {"backup_dir": "/operator/backups", "keep_count": 2}
+        client = AsyncMock()
+        if existing:
+            client.read_deployment_by_name.return_value = DeploymentResponse(
+                name="backup-database",
+                flow_id="00000000-0000-0000-0000-000000000001",
+                parameters=parameters,
+            )
+        else:
+            client.read_deployment_by_name.side_effect = ObjectNotFound(
+                http_exc=RuntimeError("absent")
+            )
+        spec = next(s for s in _build_specs() if s.deployment_name == "backup-database")
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch.object(
+                backup_database_flow,
+                "afrom_source",
+                AsyncMock(return_value=backup_database_flow),
+            ),
+            patch(
+                "prefect.deployments.runner.adeploy", new_callable=AsyncMock
+            ) as deploy,
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            deploy.return_value = ["deployment-id"]
+            await _register_one(spec)
+            deployment = deploy.await_args.args[0]
+            # The real pinned Prefect Flow.adeploy / ato_deployment constructs
+            # the model used for the API update. Omitting parameters resets it.
+            assert deployment.model_dump(exclude_unset=True)["parameters"] == (
+                parameters if existing else {}
+            )
+            await backup_database_flow.adeploy(
+                name="backup-database",
+                work_pool_name=BACKUP_POOL,
+                build=False,
+                push=False,
+                print_next_steps=False,
+            )
+            assert (
+                deploy.await_args.args[0].model_dump(exclude_unset=True)["parameters"]
+                == {}
+            )
+        defaults = backup_database_flow.parameters.properties
+        assert defaults["backup_dir"]["default"] == "/data/backups"
+        assert defaults["keep_count"]["default"] == 7

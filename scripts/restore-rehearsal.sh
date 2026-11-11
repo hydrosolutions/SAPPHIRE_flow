@@ -38,25 +38,42 @@ DB_NAME="${RESTORE_DB_NAME:-rehearsal}"
 WAIT_ATTEMPTS="${RESTORE_WAIT_ATTEMPTS:-60}"
 WAIT_INTERVAL="${RESTORE_WAIT_INTERVAL:-1}"
 
-# Set BEFORE the `docker run` call returns (not after) so a signal landing
-# between container creation and this assignment cannot skip cleanup.
-MAY_EXIST=0
+# Docker writes the newly created ID before starting it. A private cidfile
+# also lets the EXIT trap recover ownership if run is interrupted.
+CID_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sapphire-restore.XXXXXXXX")" || exit 1
+CID_FILE="${CID_DIR}/container.cid"
+CONTAINER_ID=""
 PASS=0
 CHECKS_DONE=""
 
+read_owned_container() {
+    [[ -f "${CID_FILE}" ]] || return 1
+    CONTAINER_ID="$(cat "${CID_FILE}")" || return 1
+    [[ "${CONTAINER_ID}" =~ ^[0-9a-f]{64}$ ]]
+}
+
 cleanup() {
-    local rm_status=0
-    if [[ "${MAY_EXIST}" -eq 1 ]]; then
-        "${DOCKER}" rm -f "${CONTAINER}" >/dev/null 2>&1 || rm_status=1
-    fi
-    if [[ "${PASS}" -eq 1 && "${rm_status}" -eq 0 ]]; then
-        echo "PASS: restore rehearsal succeeded (${CHECKS_DONE})"
-    elif [[ "${PASS}" -eq 1 ]]; then
-        echo "FAIL: assertions passed but teardown failed — ${CONTAINER} may still exist" >&2
+    local status=$?
+    if ! read_owned_container; then
+        echo "FAIL: container ownership uncertain; no resource removed; inspect ${CID_FILE}" >&2
         exit 1
     fi
+    # -v removes this container's anonymous volumes, never named volumes.
+    if ! "${DOCKER}" rm -f -v "${CONTAINER_ID}" >/dev/null 2>&1; then
+        echo "FAIL: teardown failed — owned container ${CONTAINER_ID} or its anonymous volumes may remain; ownership record: ${CID_FILE}" >&2
+        exit 1
+    fi
+    rm -f "${CID_FILE}"
+    rmdir "${CID_DIR}"
+    if [[ "${PASS}" -eq 1 && "${status}" -eq 0 ]]; then
+        echo "PASS: restore rehearsal succeeded (${CHECKS_DONE})"
+    fi
+    return "${status}"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 fail() {
     echo "FAIL: $1" >&2
@@ -66,7 +83,7 @@ fail() {
 psql_exec() {
     # $2, if given, is the target database; defaults to postgres (used only
     # by the readiness probe below, before DB_NAME exists).
-    "${DOCKER}" exec "${CONTAINER}" psql -U postgres -d "${2:-postgres}" \
+    "${DOCKER}" exec "${CONTAINER_ID}" psql -U postgres -d "${2:-postgres}" \
         -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
@@ -78,18 +95,18 @@ psql_exec() {
 # already-vetted `postgis/postgis` pin above, not a substitute for it: nothing
 # needs container-initiated network access, since every interaction below is
 # `docker exec`/`docker cp` from the host. ---------------------------------
-MAY_EXIST=1
-"${DOCKER}" run -d --network none --name "${CONTAINER}" \
+"${DOCKER}" run -d --network none --name "${CONTAINER}" --cidfile "${CID_FILE}" \
     -e POSTGRES_PASSWORD=rehearsal \
     "${IMAGE}" >/dev/null || fail "docker run failed"
+read_owned_container || fail "container ownership could not be established"
 
 # --- wait for the FINAL server, not the temp init server. The official
 # entrypoint starts a temp server, runs init scripts, stops it, then starts
 # the real one — pg_isready alone can succeed against the temp server. -----
 ready=0
 for ((i = 0; i < WAIT_ATTEMPTS; i++)); do
-    if "${DOCKER}" logs "${CONTAINER}" 2>&1 | grep -q "PostgreSQL init process complete" \
-        && "${DOCKER}" exec "${CONTAINER}" pg_isready -U postgres >/dev/null 2>&1 \
+    if "${DOCKER}" logs "${CONTAINER_ID}" 2>&1 | grep -q "PostgreSQL init process complete" \
+        && "${DOCKER}" exec "${CONTAINER_ID}" pg_isready -U postgres >/dev/null 2>&1 \
         && psql_exec "SELECT 1" >/dev/null 2>&1; then
         ready=1
         break
@@ -99,7 +116,7 @@ done
 [[ "${ready}" -eq 1 ]] || fail "final Postgres server never became ready"
 
 # --- copy only the selected dump file in; never bind-mount its directory. --
-"${DOCKER}" cp "${DUMP_PATH}" "${CONTAINER}:/tmp/restore.dump" >/dev/null 2>&1 \
+"${DOCKER}" cp "${DUMP_PATH}" "${CONTAINER_ID}:/tmp/restore.dump" >/dev/null 2>&1 \
     || fail "docker cp failed"
 
 # --- createdb: a FRESH database, never the image's pre-populated default.
@@ -108,7 +125,7 @@ done
 # the same defence-in-depth reasoning as pg_restore's explicit -d below.
 # Stderr is captured (not discarded) for the same reason as pg_restore's
 # below: a swallowed diagnostic hides the real failure reason. -------------
-createdb_err="$("${DOCKER}" exec "${CONTAINER}" createdb -U postgres -- "${DB_NAME}" 2>&1 1>/dev/null)"
+createdb_err="$("${DOCKER}" exec "${CONTAINER_ID}" createdb -U postgres -- "${DB_NAME}" 2>&1 1>/dev/null)"
 createdb_status=$?
 if [[ "${createdb_status}" -ne 0 ]]; then
     fail "createdb '${DB_NAME}' failed (exit ${createdb_status}): $(printf '%s' "${createdb_err}" | head -n 20)"
@@ -119,7 +136,7 @@ fi
 # statements referencing them — without these flags a fresh cluster dies on
 # `ERROR: role "sapphire" does not exist`. Roles are recreated afterwards by
 # bootstrap-roles.sh, not by this rehearsal. -------------------------------
-pg_restore_err="$("${DOCKER}" exec "${CONTAINER}" pg_restore --single-transaction \
+pg_restore_err="$("${DOCKER}" exec "${CONTAINER_ID}" pg_restore --single-transaction \
     --exit-on-error --no-owner --no-acl -U postgres -d "${DB_NAME}" \
     /tmp/restore.dump 2>&1 1>/dev/null)"
 pg_restore_status=$?
