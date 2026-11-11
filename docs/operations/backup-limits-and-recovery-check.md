@@ -34,8 +34,8 @@ prunes to one copy before dumping (`keep_count - 1`), so steady state is two dum
 and peak temporary space is one extra dump in flight. This was **not yet observed**; check the
 volume after the 2026-11-12 02:00 run.
 
-No dump was published for 2026-11-06 to 2026-11-09. Those four flow runs are still `Running` in
-Prefect with no process behind them (the 512 MiB backup worker was the suspected cause; not
+No dump was published for 2026-11-06 to 2026-11-09. Those four flow runs sat in `Running` in
+Prefect with no process behind them until an operator cancelled them on 2026-11-11 (the 512 MiB backup worker was the suspected cause; not
 proven). Earlier failures: headroom errors (Oct 29-31) and OOM kills (Oct 31, Nov 1).
 
 ## Limits chosen
@@ -96,6 +96,5 @@ the remainder into a fresh database. Remove the container with `docker rm -f -v`
 - **No off-server copy exists.** Dumps share a failure domain with the database. Local copies do
   not protect against losing the server or its disk.
 - Nightly dumps give a worst-case data loss of about 24 h, not the provisional one-hour target.
-- The four hung `Running` backup runs from 11-06 to 11-09 are not reconciled.
 - Dump size and duration keep growing (about 2.4 GB/day); the 4 h ceiling is a stopgap, and the
   durable fix is the weather decision in Effort #483.
