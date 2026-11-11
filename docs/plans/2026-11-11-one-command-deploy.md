@@ -41,6 +41,12 @@ track. Nothing about existing gates is weakened without an owner decision record
 3. Emergency gate: targeted tests + image build + health check. The full suite starts in parallel
    with the fast deploy; if it fails, debugging and fixing continue.
 4. The existing Nepal CI route (admission-bound, digest-attested) is improved, not bypassed.
+5. Trigger: the owner, and later a production administrator. No other triggers.
+6. Activation: the command also starts the stack and verifies it, including on the Nepal route.
+   The existing receiver approval binding stays; its interaction with a single command is for the
+   reviewer to settle.
+7. Hotfix track: the owner only, per use (sole developer for now; revisit when that changes).
+8. Host-local config follows the practice below.
 
 ## Design
 
@@ -63,8 +69,13 @@ track. Nothing about existing gates is weakened without an owner decision record
    provably equivalent), layer caching, transferring changed layers rather than the whole archive,
    and one `deploy` entry point that also performs activation (currently held by a separate
    receiver approval: owner decision).
-5. **Host-local config.** Replace uncommitted edits to tracked files with committed per-deployment
-   overlays or untracked override files so pulls never need a stash.
+5. **Host-local config (recommended practice).** The deployed checkout is treated as read-only and
+   clean; `deploy` refuses a dirty tree. Non-secret, per-deployment settings (the mini's tenant and
+   group IDs, roster hash, image digest pins) live in committed per-deployment overlays, so they
+   are reviewed, reproducible and survive a host rebuild. Only secrets (`./secrets/`) and values
+   generated at runtime (e.g. Prefect deployment IDs) stay off git, supplied by untracked files or
+   environment. The mini's three uncommitted edits migrate to overlays in T3; any value that turns
+   out to be secret or runtime-generated is flagged then, not committed.
 
 ## Tasks
 
@@ -76,13 +87,11 @@ track. Nothing about existing gates is weakened without an owner decision record
 - **T4** Nepal profile and the agreed speedups.
 - **T5** Hotfix track, runbook and `docs/standards/cicd.md` updates.
 
-## Open questions for the owner
+## Open questions for the reviewer
 
-- Who may trigger: owner only, or the orchestrator for staging?
-- May the Nepal command also activate (start the stack), or must activation stay a separate
-  approval?
-- Hotfix sign-off: per use by the owner, or pre-authorised for named failure classes?
-- Where host-local config should live (item 5).
+- How a single command that activates the stack satisfies the Nepal route's separate receiver
+  approval without weakening it.
+- Which of the mini's uncommitted values are secret or runtime-generated (T3 audit).
 
 ## Risk and review
 
