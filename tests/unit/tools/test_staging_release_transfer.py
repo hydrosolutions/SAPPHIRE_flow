@@ -257,6 +257,7 @@ class TestEnvelope:
             {"Lint": "passed"},
             {"lint/../x": "passed"},
             {f"gate-{n}": "passed" for n in range(transfer.MAX_GATES + 1)},
+            {"g" * 65: "passed"},
         ],
     )
     def test_gate_inventory_must_be_well_formed(
@@ -1528,7 +1529,9 @@ class TestReuseCustody:
         self, tmp_path: Path, status: str
     ) -> None:
         envelope, _ = reuse_payload(tmp_path)
-        with pytest.raises(transfer.TransferError, match="reuse release gates"):
+        with pytest.raises(
+            transfer.TransferError, match="reuse release gates incomplete"
+        ):
             replace(
                 envelope,
                 gates={**envelope.gates, "integration-mid": status},
@@ -1538,6 +1541,20 @@ class TestReuseCustody:
                         origin="local", local_status=status, ci=None
                     ),
                 },
+            )
+
+    def test_reuse_release_needs_a_locally_passed_gate(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        reused = transfer.GateCoverage(
+            origin="canonical_ci", local_status="not_run_here", ci=envelope.binding.ci
+        )
+        with pytest.raises(
+            transfer.TransferError, match="reuse release gates incomplete"
+        ):
+            replace(
+                envelope,
+                gates=dict.fromkeys(envelope.gates, "reused"),
+                coverage=dict.fromkeys(envelope.coverage, reused),
             )
 
     def test_reuse_coverage_must_match_gates(self, tmp_path: Path) -> None:

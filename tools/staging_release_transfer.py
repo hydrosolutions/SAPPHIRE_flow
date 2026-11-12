@@ -492,6 +492,8 @@ class Envelope:
         return result
 
 
+# Sender-only: tools/staging_release.py labels gates with these. The receiver
+# does not enforce them (see GATE_NAMES).
 FRESH_CI_REUSE_GATES = frozenset(
     {"build-image-and-scan", "aquacast-release-image-proof"}
 )
@@ -563,7 +565,10 @@ class ReuseEnvelope(Envelope):
                 or self.proof_failure is not None
             ):
                 raise TransferError("incomplete reuse release payload")
-            if not set(self.gates.values()) <= {"passed", "reused"}:
+            # At least one locally passed gate keeps fresh delivery evidence
+            # (the sender's image gates) without binding gate names.
+            statuses = set(self.gates.values())
+            if not statuses <= {"passed", "reused"} or "passed" not in statuses:
                 raise TransferError("reuse release gates incomplete")
             if (
                 len(self.images) != 2
