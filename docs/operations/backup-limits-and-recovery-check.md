@@ -31,8 +31,12 @@ measured, so none is recommended or assumed to help.
 Retained on the backup volume at measurement time: **630 GiB** (six dumps), well above the
 selected `keep_count=2`, because the setting took effect after the 2026-11-11 run. The next run
 prunes to one copy before dumping (`keep_count - 1`), so steady state is two dumps (about 250 GB)
-and peak temporary space is one extra dump in flight. This was **not yet observed**; check the
-volume after the 2026-11-12 02:00 run.
+and peak temporary space is one extra dump in flight.
+
+**Observed 2026-11-12:** the 02:00 run pruned five old dumps (11-02 to 11-05 and 11-10) before
+dumping, then completed in 106 min with a 126.8 GB dump. The volume now holds two dumps (11-11 and
+11-12, about 252 GB) plus two small leftover folders from earlier work, down from 630 GiB. The
+backup worker kept its 2 GiB / 4 GiB limits after the recreate.
 
 No dump was published for 2026-11-06 to 2026-11-09. Those four flow runs sat in `Running` in
 Prefect with no process behind them until an operator cancelled them on 2026-11-11 (the 512 MiB backup worker was the suspected cause; not
