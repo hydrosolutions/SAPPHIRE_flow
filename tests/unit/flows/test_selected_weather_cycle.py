@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import pandas as pd
 import polars as pl
 import pytest
+import structlog
 
 from sapphire_flow.adapters.recap_gateway import (
     RecapDataUnavailableError,
@@ -1235,6 +1236,190 @@ class TestSelectedWeatherIssuance:
             configure_cycle=configure,
             verify_cycle=verify,
         )
+
+    @staticmethod
+    def _automatic_retry_config(
+        cycle_time: str | None,
+    ) -> Callable[
+        [dict[str, object], object, DeploymentConfig, ModelId], dict[str, object]
+    ]:
+        from zoneinfo import ZoneInfo
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            return {
+                "config": config.model_copy(
+                    update={
+                        "operational_weather": config.operational_weather.model_copy(
+                            update={
+                                "automatic_issue_timezone": ZoneInfo("Asia/Kathmandu"),
+                            }
+                        ),
+                    }
+                ),
+                "cycle_time": cycle_time,
+            }
+
+        return configure
+
+    def test_scheduled_retry_skips_delivered_issue_day(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Two automatic ticks on the same Nepal day (00:00 and 06:00 UTC).
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
+            assert result.health is ForecastCycleHealth.HEALTHY
+            assert result.stations_attempted == 0
+            assert result.forecasts_stored == 0
+            assert len(forecasts) == 1
+            assert forecasts[0].created_at == ISSUE
+
+        with structlog.testing.capture_logs() as captured:
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=True,
+                capture_fault="none",
+                configure_cycle=self._automatic_retry_config(None),
+                verify_cycle=verify,
+                execution_runs=2,
+                data_use=ForecastDataUse.PROVISIONAL_RATING,
+            )
+        assert [
+            (entry["cycle_time"], entry["forecasts"], entry["stations"])
+            for entry in captured
+            if entry["event"] == "forecast_cycle.already_delivered"
+        ] == [(ISSUE.isoformat(), 1, 1)]
+        assert not any(
+            entry["event"] == "forecast_cycle.no_forecasts_stored" for entry in captured
+        )
+
+    def test_manual_rerun_ignores_delivered_issue_day(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        delivered_checks: list[object] = []
+        manual = self._automatic_retry_config(ISSUE.isoformat())
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            # Report the day as delivered; a manual rerun must not consult it.
+            # Removed in `verify`, before the helper reads the store itself.
+            stores["forecast_store"].fetch_forecasts_for_cycle = (  # type: ignore[attr-defined]
+                lambda issued_at, *args, **kwargs: (
+                    delivered_checks.append(issued_at) or [object()]
+                )
+            )
+            return manual(stores, groups, config, mid)
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            del stores["forecast_store"].fetch_forecasts_for_cycle  # type: ignore[attr-defined]
+            assert result.stations_attempted == 1
+            assert result.forecasts_stored == 1, result.errors
+
+        _run_selected_cycle(
+            monkeypatch,
+            group_run=True,
+            capture_fault="none",
+            configure_cycle=configure,
+            verify_cycle=verify,
+            data_use=ForecastDataUse.PROVISIONAL_RATING,
+        )
+        assert delivered_checks == []
+
+    @pytest.mark.parametrize(
+        "case", ["standard_lane", "other_station", "unbound_station"]
+    )
+    def test_scheduled_tick_runs_when_not_delivered_for_its_scope(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        case: Literal["standard_lane", "other_station", "unbound_station"],
+    ) -> None:
+        from types import SimpleNamespace
+
+        automatic = self._automatic_retry_config(None)
+        # STANDARD: this run's own station is "delivered", but the daily ledger
+        # owns repeated ticks there. Provisional: the delivered forecast belongs
+        # to a station outside this run, or to an operational station without a
+        # provisional rating binding.
+        foreign = SimpleNamespace(
+            station_id=_DEFAULT_STATION_ID
+            if case == "standard_lane"
+            else StationId(uuid4())
+        )
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            if case == "unbound_station":
+                stores["station_store"].store_station(  # type: ignore[attr-defined]
+                    make_station_config(
+                        station_id=foreign.station_id, basin_id=BasinId(uuid4())
+                    )
+                )
+            store = stores["forecast_store"]
+            real = store.fetch_forecasts_for_cycle  # type: ignore[attr-defined]
+            store.fetch_forecasts_for_cycle = (  # type: ignore[attr-defined]
+                lambda issued_at, *args, **kwargs: [
+                    *real(issued_at, *args, **kwargs),
+                    foreign,
+                ]
+            )
+            return automatic(stores, groups, config, mid)
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            del stores["forecast_store"].fetch_forecasts_for_cycle  # type: ignore[attr-defined]
+            # The run went ahead (the unbound station is attempted as well).
+            assert result.stations_attempted >= 1
+            assert result.forecasts_stored == 1, result.errors
+
+        with structlog.testing.capture_logs() as captured:
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=True,
+                capture_fault="none",
+                configure_cycle=configure,
+                verify_cycle=verify,
+                data_use=ForecastDataUse.STANDARD
+                if case == "standard_lane"
+                else ForecastDataUse.PROVISIONAL_RATING,
+            )
+        assert not any(
+            entry["event"] == "forecast_cycle.already_delivered" for entry in captured
+        )
+
+    def test_cycle_without_forecasts_logs_blocking_reasons(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with structlog.testing.capture_logs() as captured:
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=False,
+                capture_fault="none",
+                future_support_days=3,
+                expected_forecasts=0,
+            )
+        [entry] = [
+            entry
+            for entry in captured
+            if entry["event"] == "forecast_cycle.no_forecasts_stored"
+        ]
+        assert entry["log_level"] == "error"
+        assert entry["error_count"] >= 1
+        assert any("full requested future window" in error for error in entry["errors"])
+        assert all(len(error) <= 300 for error in entry["errors"])
 
     @pytest.mark.parametrize("purpose", ["standard", "provisional", "replay"])
     def test_entry_refusal_uses_existing_fatal_freshness_boundary(
