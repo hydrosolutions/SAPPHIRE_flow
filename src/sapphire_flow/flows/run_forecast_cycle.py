@@ -177,6 +177,114 @@ log = structlog.get_logger(__name__)
 REJECTED_CAPTURE_DEADLINE_S = 10.0
 
 
+def _already_delivered_result(
+    *,
+    selected_weather_route: bool,
+    cycle_time: str | None,
+    store: ForecastStore,
+    station_store: StationStore,
+    rated_station_ids: Iterable[UUID],
+    issue_time: UtcDatetime,
+    data_use: ForecastDataUse,
+    flow_t0: float,
+) -> ForecastCycleResult | None:
+    """Scheduled provisional selected-weather ticks retry the issue day until
+    one of this run's operational, rating-bound stations has a current
+    forecast; later ticks do nothing. An explicit ``cycle_time`` (manual
+    rerun) always runs. STANDARD is excluded: its daily ledger already governs
+    repeated automatic ticks."""
+    if (
+        not selected_weather_route
+        or cycle_time is not None
+        or data_use is not ForecastDataUse.PROVISIONAL_RATING
+    ):
+        return None
+    rated = set(rated_station_ids)
+    operational = {
+        station.id
+        for station in station_store.fetch_all_stations(kind=StationKind.RIVER)
+        if station.station_status == StationStatus.OPERATIONAL and station.id in rated
+    }
+    delivered = [
+        forecast
+        for forecast in store.fetch_forecasts_for_cycle(issue_time)
+        if forecast.station_id in operational
+    ]
+    if not delivered:
+        return None
+    log.info(
+        "forecast_cycle.already_delivered",
+        cycle_time=issue_time.isoformat(),
+        data_use=data_use.value,
+        forecasts=len(delivered),
+        stations=len({forecast.station_id for forecast in delivered}),
+    )
+    return ForecastCycleResult(
+        cycle_time=issue_time,
+        health=ForecastCycleHealth.HEALTHY,
+        stations_attempted=0,
+        stations_succeeded=0,
+        stations_failed=0,
+        forecasts_stored=0,
+        alerts_checked=False,
+        duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
+        errors=(),
+    )
+
+
+def _no_operational_result(
+    *,
+    daily_execution: DailyForecastExecution | None,
+    daily_preflight_errors: list[str],
+    pipeline_health_store: object | None,
+    data_use: ForecastDataUse,
+    cycle_time: str | None,
+    resolved_cycle_time: UtcDatetime,
+    clock: Callable[[], UtcDatetime],
+    flow_t0: float,
+) -> ForecastCycleResult:
+    # Kept out of the flow body, which is at pyright's code-complexity limit.
+    if daily_execution is not None:
+        daily_execution.fail_unstarted(DailyFailureReason.NO_OPERATIONAL_STATIONS)
+    no_operational_errors = tuple(daily_preflight_errors) + (
+        tuple(daily_execution.errors) if daily_execution is not None else ()
+    )
+    log.info("forecast_cycle.no_operational_stations")
+    _emit_forecast_freshness_record(
+        pipeline_health_store if data_use is ForecastDataUse.STANDARD else None,
+        cycle_time_param=cycle_time,
+        resolved_cycle_time=resolved_cycle_time,
+        forecasts_stored=0,
+        checked_at=clock(),
+    )
+    return ForecastCycleResult(
+        cycle_time=resolved_cycle_time,
+        health=ForecastCycleHealth.DEGRADED
+        if no_operational_errors
+        else ForecastCycleHealth.HEALTHY,
+        stations_attempted=0,
+        stations_succeeded=0,
+        stations_failed=0,
+        forecasts_stored=0,
+        alerts_checked=False,
+        duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
+        errors=no_operational_errors,
+    )
+
+
+def _log_undelivered_cycle(result: ForecastCycleResult) -> None:
+    if result.forecasts_stored == 0 and result.stations_attempted:
+        log.error(
+            "forecast_cycle.no_forecasts_stored",
+            cycle_time=str(result.cycle_time),
+            error_count=len(result.errors),
+            errors=[
+                error[:_MAX_LOGGED_ERROR_CHARS]
+                for error in result.errors[:_MAX_LOGGED_CYCLE_ERRORS]
+            ],
+        )
+
+
 def _require_selected_issue_day(
     issue_time: UtcDatetime, actual_time: UtcDatetime, timezone: ZoneInfo
 ) -> None:
@@ -506,6 +614,9 @@ _ICON_NWP_SOURCE = "icon_ch2_eps"
 _IFS_NWP_SOURCE = "ifs_ecmwf"
 _NWP_CADENCE_HOURS = 6.0
 _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
+# Bounds the per-station reasons logged when a cycle stores no forecasts.
+_MAX_LOGGED_CYCLE_ERRORS = 25
+_MAX_LOGGED_ERROR_CHARS = 300
 
 # Plan 151 T8a (D28, ruling 4): the ONE named default for
 # ForcingResolutionPolicy.max_retries. `max_retries` has NO config default
@@ -3145,6 +3256,21 @@ def run_forecast_cycle_flow(
             else _resolve_cycle_time(cycle_time, clock)
         )
 
+        delivered = _already_delivered_result(
+            selected_weather_route=selected_weather_route,
+            cycle_time=cycle_time,
+            store=forecast_store,
+            station_store=station_store,
+            rated_station_ids=(
+                binding.station_id for binding in config.provisional_ratings
+            ),
+            issue_time=resolved_cycle_time,
+            data_use=data_use,
+            flow_t0=flow_t0,
+        )
+        if delivered is not None:
+            return delivered
+
         daily_preflight_errors: list[str] = []
         try:
             daily_execution = (
@@ -3183,33 +3309,15 @@ def run_forecast_cycle_flow(
         ]
 
         if not operational:
-            if daily_execution is not None:
-                daily_execution.fail_unstarted(
-                    DailyFailureReason.NO_OPERATIONAL_STATIONS
-                )
-            no_operational_errors = tuple(daily_preflight_errors) + (
-                tuple(daily_execution.errors) if daily_execution is not None else ()
-            )
-            log.info("forecast_cycle.no_operational_stations")
-            _emit_forecast_freshness_record(
-                pipeline_health_store if data_use is ForecastDataUse.STANDARD else None,
-                cycle_time_param=cycle_time,
+            return _no_operational_result(
+                daily_execution=daily_execution,
+                daily_preflight_errors=daily_preflight_errors,
+                pipeline_health_store=pipeline_health_store,
+                data_use=data_use,
+                cycle_time=cycle_time,
                 resolved_cycle_time=resolved_cycle_time,
-                forecasts_stored=0,
-                checked_at=clock(),
-            )
-            return ForecastCycleResult(
-                cycle_time=resolved_cycle_time,
-                health=ForecastCycleHealth.DEGRADED
-                if no_operational_errors
-                else ForecastCycleHealth.HEALTHY,
-                stations_attempted=0,
-                stations_succeeded=0,
-                stations_failed=0,
-                forecasts_stored=0,
-                alerts_checked=False,
-                duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
-                errors=no_operational_errors,
+                clock=clock,
+                flow_t0=flow_t0,
             )
 
         log.info("forecast_cycle.starting", stations=len(operational))
@@ -4910,6 +5018,7 @@ def run_forecast_cycle_flow(
             errors=tuple(errors),
         )
 
+        _log_undelivered_cycle(result)
         log.info(
             "forecast_cycle.complete",
             cycle_time=str(resolved_cycle_time),

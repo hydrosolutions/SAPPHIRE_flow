@@ -6728,6 +6728,26 @@ Entry-day refusal uses the existing fatal freshness boundary: one CRITICAL
 zero-output record for STANDARD automatic work, none for provisional or explicit
 replay. The original exception is re-raised before provider work.
 
+Several automatic ticks may target the same issue day (a schedule with retries,
+because the Recap operational product can be incomplete at the first tick). On
+this route in the `provisional_rating` lane, an omitted `cycle_time` whose issue
+day already has a current forecast for one of the run's operational river
+stations with a `provisional_ratings` binding returns before any provider
+request (configuration and client setup still run): HEALTHY, zero stations
+attempted, `alerts_checked=False`, no freshness record (none is emitted for this
+lane), and event `forecast_cycle.already_delivered` with the delivered forecast
+and station counts. The store's data-use scope and this station filter exclude
+other lanes' and other stations' rows in a shared database. STANDARD ticks are not skipped: the daily evaluation ledger already
+governs repeated automatic ticks there. Any delivered station counts, so a
+partially delivered day is not retried automatically; the incomplete-product
+failure this addresses rejects every station of the shared HRU request together,
+and some stations never forecast (for example without rating days), so "all
+stations" would never be reached. An
+explicit manual issue always runs, superseding as before. Any cycle that
+attempts stations but stores no forecast logs `forecast_cycle.no_forecasts_stored`
+(error) with its first 25 per-station reasons, each truncated to 300 characters;
+the returned result is unchanged.
+
 `selected_weather_issuance_refusal` checks the immutable consumed future cycle
 against actual execution time immediately before prediction and again after QC
 and post-processing, before successful forecast construction. The lower age bound
