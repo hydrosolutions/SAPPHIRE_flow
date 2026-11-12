@@ -56,10 +56,10 @@ def prune_old_cycles(
     if not base_path.exists():
         return
     cutoff = clock() - timedelta(days=retention_days)
-    for source_dir in base_path.iterdir():
+    for source_dir in list(base_path.iterdir()):
         if not source_dir.is_dir():
             continue
-        for entry in source_dir.iterdir():
+        for entry in list(source_dir.iterdir()):
             cycle_time = _parse_cycle_time(entry.name)
             if cycle_time is None or cycle_time >= cutoff:
                 continue
