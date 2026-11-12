@@ -6439,7 +6439,10 @@ It never falls back to older matching events. Evidence absence alone does not
 exclude unprotected, unheld legacy rows. No raw event SELECT is granted to API.
 
 `PgObservationStore.fetch_observations` keeps the trusted disposition predicate in
-an observation-correlated scalar subquery, like `fetch_latest_observations`. This
+an observation-correlated scalar subquery, like `fetch_latest_observations` and
+`fetch_delivery_observations` (the DHM delivery import and qualification read
+back about 10^5 delivery rows; flattened, that read did not finish in 10 minutes
+on a deployment with 1.4 million observations). This
 prevents flattening the trust check into an all-history projection scan before
 applying the station/parameter/time bounds. The half-open window, optional source
 and QC filters, and chronological ordering are unchanged; QC-context reads still
