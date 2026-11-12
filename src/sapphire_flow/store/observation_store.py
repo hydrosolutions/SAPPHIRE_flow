@@ -245,7 +245,14 @@ class PgObservationStore:
         rows = (
             self._conn.execute(
                 self._select_observations()
-                .where(unit_read_predicate(observations_table, self._purpose))
+                # Per-row trust check, as in the bounded readers: a flattened
+                # EXISTS evaluates the whole security-barrier view (minutes to
+                # hours on a deployment with a large observation history).
+                .where(
+                    sa.select(unit_read_predicate(observations_table, self._purpose))
+                    .correlate(observations_table)
+                    .scalar_subquery()
+                )
                 .where(observations_table.c.delivery_id == delivery_id)
                 .where(observations_table.c.station_id.in_(station_ids))
                 .order_by(

@@ -46,6 +46,7 @@ from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.observation import RawObservation
 from tests.conftest import make_station_config
+from tests.integration.store.test_bafu_unit_read_filter import hold
 
 
 def _seed_station(
@@ -225,6 +226,33 @@ class TestStoreRawUpsertRestatement:
         )
         assert corrected.value == 4.0
         assert corrected.delivery_id is None
+
+    def test_delivery_read_applies_unit_hold_per_row(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = make_station_config(code="DELIVERY-406", rng=random.Random(406))
+        PgStationStore(db_connection).store_station(station)
+        store = PgObservationStore(db_connection)
+        store.store_raw_observations(
+            [
+                RawObservation(
+                    station_id=station.id,
+                    timestamp=_utc(hour=hour),
+                    parameter="discharge",
+                    value=float(hour),
+                    # The unit filter acts on measured readings only; a
+                    # measured row is what makes the per-row check observable.
+                    source=ObservationSource.MEASURED,
+                    delivery_id="delivery-a",
+                )
+                for hour in (0, 2)
+            ]
+        )
+        hold(db_connection, (station.id, station.tenant_id), start=_utc(hour=1))
+
+        rows = store.fetch_delivery_observations("delivery-a", [station.id])
+
+        assert [row.timestamp for row in rows] == [_utc(hour=0)]
 
     def test_unchanged_value_no_write_and_no_qc_churn(
         self, db_connection: sa.Connection

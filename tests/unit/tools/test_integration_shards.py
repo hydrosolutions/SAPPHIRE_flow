@@ -277,7 +277,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "12 selected nodes, 13 non-live files"
+            "14 selected nodes, 15 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:
