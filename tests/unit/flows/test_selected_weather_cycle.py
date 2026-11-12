@@ -1289,10 +1289,10 @@ class TestSelectedWeatherIssuance:
                 execution_runs=2,
             )
         assert [
-            entry["cycle_time"]
+            (entry["cycle_time"], entry["forecasts"], entry["stations"])
             for entry in captured
             if entry["event"] == "forecast_cycle.already_delivered"
-        ] == [ISSUE.isoformat()]
+        ] == [(ISSUE.isoformat(), 1, 1)]
 
     def test_manual_rerun_ignores_delivered_issue_day(
         self,
@@ -1350,6 +1350,7 @@ class TestSelectedWeatherIssuance:
         assert entry["log_level"] == "error"
         assert entry["error_count"] >= 1
         assert any("full requested future window" in error for error in entry["errors"])
+        assert all(len(error) <= 300 for error in entry["errors"])
 
     @pytest.mark.parametrize("purpose", ["standard", "provisional", "replay"])
     def test_entry_refusal_uses_existing_fatal_freshness_boundary(

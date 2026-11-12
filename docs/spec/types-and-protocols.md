@@ -6731,12 +6731,17 @@ replay. The original exception is re-raised before provider work.
 Several automatic ticks may target the same issue day (a schedule with retries,
 because the Recap operational product can be incomplete at the first tick). On
 this route, an omitted `cycle_time` whose issue day already has current
-forecasts for the run's data use returns before provider work: HEALTHY, zero
-stations attempted, event `forecast_cycle.already_delivered`, no freshness
-record. A partially delivered day therefore is not retried automatically. An
+forecasts for the run's data use returns before any provider request: HEALTHY,
+zero stations attempted, no freshness record, and event
+`forecast_cycle.already_delivered` with the delivered forecast and station
+counts. Any current forecast counts, so a partially delivered day is not retried
+automatically; the incomplete-product failure this addresses rejects every
+station of the shared HRU request together, and some stations never forecast
+(for example without rating days), so "all stations" would never be reached. An
 explicit manual issue always runs, superseding as before. Any cycle that
 attempts stations but stores no forecast logs `forecast_cycle.no_forecasts_stored`
-(error) with its first 25 per-station reasons; the returned result is unchanged.
+(error) with its first 25 per-station reasons, each truncated to 300 characters;
+the returned result is unchanged.
 
 `selected_weather_issuance_refusal` checks the immutable consumed future cycle
 against actual execution time immediately before prediction and again after QC

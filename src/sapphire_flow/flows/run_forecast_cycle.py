@@ -189,16 +189,17 @@ def _already_delivered_result(
     """Scheduled selected-weather ticks retry the issue day until it is
     delivered; once it has current forecasts, later ticks do nothing. An
     explicit ``cycle_time`` (manual rerun) always runs."""
-    if (
-        not selected_weather_route
-        or cycle_time is not None
-        or not store.fetch_forecasts_for_cycle(issue_time)
-    ):
+    if not selected_weather_route or cycle_time is not None:
+        return None
+    delivered = store.fetch_forecasts_for_cycle(issue_time)
+    if not delivered:
         return None
     log.info(
         "forecast_cycle.already_delivered",
         cycle_time=issue_time.isoformat(),
         data_use=data_use.value,
+        forecasts=len(delivered),
+        stations=len({forecast.station_id for forecast in delivered}),
     )
     return ForecastCycleResult(
         cycle_time=issue_time,
@@ -259,7 +260,10 @@ def _log_undelivered_cycle(result: ForecastCycleResult) -> None:
             "forecast_cycle.no_forecasts_stored",
             cycle_time=str(result.cycle_time),
             error_count=len(result.errors),
-            errors=list(result.errors[:_MAX_LOGGED_CYCLE_ERRORS]),
+            errors=[
+                error[:_MAX_LOGGED_ERROR_CHARS]
+                for error in result.errors[:_MAX_LOGGED_CYCLE_ERRORS]
+            ],
         )
 
 
@@ -594,6 +598,7 @@ _NWP_CADENCE_HOURS = 6.0
 _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
 # Bounds the per-station reasons logged when a cycle stores no forecasts.
 _MAX_LOGGED_CYCLE_ERRORS = 25
+_MAX_LOGGED_ERROR_CHARS = 300
 
 # Plan 151 T8a (D28, ruling 4): the ONE named default for
 # ForcingResolutionPolicy.max_retries. `max_retries` has NO config default
