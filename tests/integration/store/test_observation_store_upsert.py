@@ -46,6 +46,7 @@ from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.observation import RawObservation
 from tests.conftest import make_station_config
+from tests.integration.store.test_bafu_unit_read_filter import hold
 
 
 def _seed_station(
@@ -229,8 +230,6 @@ class TestStoreRawUpsertRestatement:
     def test_delivery_read_applies_unit_hold_per_row(
         self, db_connection: sa.Connection
     ) -> None:
-        from tests.integration.store.test_bafu_unit_read_filter import hold
-
         station = make_station_config(code="DELIVERY-406", rng=random.Random(406))
         PgStationStore(db_connection).store_station(station)
         store = PgObservationStore(db_connection)
