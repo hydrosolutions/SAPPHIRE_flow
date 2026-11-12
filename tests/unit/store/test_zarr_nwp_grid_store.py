@@ -254,10 +254,34 @@ class TestPruneOldCycles:
         src = base / "icon_ch2_eps"
         src.mkdir(parents=True)
         (src / "not-a-cycle").mkdir()
-        (src / "20260401T00_v1").mkdir()  # versioned dir, not `.zarr` — skip
+        (src / "20260401T00_v1.bak").mkdir()  # not a cycle name — skip
         (src / "README.txt").write_text("keep me")
 
         prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
 
         remaining = {p.name for p in src.iterdir()}
-        assert remaining == {"not-a-cycle", "20260401T00_v1", "README.txt"}
+        assert remaining == {"not-a-cycle", "20260401T00_v1.bak", "README.txt"}
+
+    def test_removes_symlink_and_versioned_dirs_of_real_layout(
+        self, tmp_path: object
+    ) -> None:
+        """The writer stores `<cycle>_vN` plus a `<cycle>.zarr` symlink; the prune
+        must remove both for an old cycle (and stale `_tmp`), keep recent ones."""
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        base = Path(str(tmp_path))
+        src = base / "icon_ch2_eps"
+        src.mkdir(parents=True)
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        for stem, versions in (("20260401T00", (1, 2)), ("20260409T06", (1,))):
+            for v in versions:
+                (src / f"{stem}_v{v}").mkdir()
+                (src / f"{stem}_v{v}" / ".zgroup").write_text("{}")
+            (src / f"{stem}.zarr").symlink_to(f"{stem}_v{versions[-1]}")
+        (src / "20260401T12_v1_tmp").mkdir()  # stale write leftover, old
+
+        prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
+
+        assert {p.name for p in src.iterdir()} == {"20260409T06.zarr", "20260409T06_v1"}
