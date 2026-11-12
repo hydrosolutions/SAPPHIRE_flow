@@ -707,7 +707,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [heavy, rest]
+        shard: [heavy, mid, rest]
     timeout-minutes: 25
     services:
       postgres:

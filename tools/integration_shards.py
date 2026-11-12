@@ -49,6 +49,31 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/store/test_swiss_overview.py",
         ),
     ),
+    (
+        # Measured 2026-11-12 (run 43230845697): the former catch-all took 1293 s
+        # against 744 s for heavy. These slowest rest files (~650 s) form a third
+        # runner so the three jobs finish together; the remainder stays `rest`.
+        "mid",
+        (
+            "tests/integration/api/test_native_selected_weather.py",
+            "tests/integration/api/test_tables_protected_storage.py",
+            "tests/integration/db/test_bafu_claude_followups.py",
+            "tests/integration/db/test_bafu_guard_regressions.py",
+            "tests/integration/db/test_bounded_qc_serialization.py",
+            "tests/integration/db/test_forecast_lineage_historical.py",
+            "tests/integration/db/test_forecast_lineage_roles.py",
+            "tests/integration/db/test_migration_0033_camels_retire.py",
+            "tests/integration/db/test_migration_0039_basin_static_provenance.py",
+            "tests/integration/db/test_migration_forecast_publication_data_use.py",
+            "tests/integration/db/test_migration_provisional_discharge.py",
+            "tests/integration/db/test_provisional_discharge_roles.py",
+            "tests/integration/flows/test_forecast_provider_configuration.py",
+            "tests/integration/store/test_daily_forecast_flow.py",
+            "tests/integration/store/test_daily_forecast_one_shot_runtime.py",
+            "tests/integration/store/test_forecast_rating_history.py",
+            "tests/integration/store/test_network_overview_performance.py",
+        ),
+    ),
 )
 
 
@@ -104,6 +129,7 @@ SHARDS = tuple(group for group in GROUPS if group.id != "performance")
 SHARD_IDS = tuple(shard.id for shard in SHARDS)
 EXECUTION_GROUPS: dict[str, tuple[str, ...]] = {
     "heavy": ("performance", "heavy"),
+    "mid": ("mid",),
     "rest": ("rest",),
 }
 STRESS_NODE = (
