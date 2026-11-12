@@ -1135,6 +1135,33 @@
         "title": "DailyRecoveryStatus",
         "type": "string"
       },
+      "DisclosedWaterLevelDatumResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "const": "disclosed",
+            "default": "disclosed",
+            "title": "Availability",
+            "type": "string"
+          },
+          "value_masl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Masl"
+          }
+        },
+        "required": [
+          "value_masl"
+        ],
+        "title": "DisclosedWaterLevelDatumResponse",
+        "type": "object"
+      },
       "EnsembleRepresentation": {
         "enum": [
           "members",
@@ -1989,6 +2016,15 @@
         "title": "EvaluationValue",
         "type": "object"
       },
+      "ForecastDataUse": {
+        "enum": [
+          "standard",
+          "expired_rating_test",
+          "provisional_rating"
+        ],
+        "title": "ForecastDataUse",
+        "type": "string"
+      },
       "ForecastDetail": {
         "properties": {
           "combination_strategy": {
@@ -2279,6 +2315,27 @@
         "title": "ForecastDetail",
         "type": "object"
       },
+      "ForecastGapResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "ForecastGapResponse",
+        "type": "object"
+      },
       "ForecastLabSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -2325,6 +2382,50 @@
           "stations"
         ],
         "title": "ForecastLabSnapshot",
+        "type": "object"
+      },
+      "ForecastPointResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "median": {
+            "title": "Median",
+            "type": "number"
+          },
+          "p25": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P25"
+          },
+          "p75": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "valid_time",
+          "median",
+          "p25",
+          "p75"
+        ],
+        "title": "ForecastPointResponse",
         "type": "object"
       },
       "ForecastQcRuleResponse": {
@@ -3022,6 +3123,75 @@
         "title": "ModelAssignmentResponse",
         "type": "object"
       },
+      "NetworkOverviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "forecast_lookback_seconds": {
+            "const": 604800,
+            "default": 604800,
+            "title": "Forecast Lookback Seconds",
+            "type": "integer"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "hourly_count": {
+            "const": 72,
+            "default": 72,
+            "title": "Hourly Count",
+            "type": "integer"
+          },
+          "hourly_end": {
+            "format": "date-time",
+            "title": "Hourly End",
+            "type": "string"
+          },
+          "hourly_step_seconds": {
+            "const": 3600,
+            "default": 3600,
+            "title": "Hourly Step Seconds",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewStationResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "latest_lookback_seconds": {
+            "const": 604800,
+            "default": 604800,
+            "title": "Latest Lookback Seconds",
+            "type": "integer"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "station_count": {
+            "title": "Station Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated_at",
+          "hourly_end",
+          "network",
+          "station_count",
+          "items"
+        ],
+        "title": "NetworkOverviewResponse",
+        "type": "object"
+      },
       "NonFiniteValue": {
         "description": "The evidence non-finite encoding (`services/forecast_evidence.py`),\nreused at the wire boundary: `repr(value)` is one of `nan`, `inf`,\n`-inf`.",
         "properties": {
@@ -3048,6 +3218,15 @@
           "runoff_only"
         ],
         "title": "NwpCycleSource",
+        "type": "string"
+      },
+      "ObservationAvailability": {
+        "enum": [
+          "available",
+          "no_eligible_reading",
+          "ambiguous_source"
+        ],
+        "title": "ObservationAvailability",
         "type": "string"
       },
       "ObservationHistoryItem": {
@@ -3344,6 +3523,69 @@
         "title": "ObservationResponse",
         "type": "object"
       },
+      "ObservationSampleResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "qc_status": {
+            "$ref": "#/components/schemas/QcStatus"
+          },
+          "source": {
+            "enum": [
+              "measured",
+              "supplied"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "value",
+          "source",
+          "qc_status"
+        ],
+        "title": "ObservationSampleResponse",
+        "type": "object"
+      },
+      "ObservationSlotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ObservationAvailability"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObservationSampleResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "end",
+          "availability",
+          "sample"
+        ],
+        "title": "ObservationSlotResponse",
+        "type": "object"
+      },
       "ObservationSource": {
         "enum": [
           "measured",
@@ -3413,6 +3655,16 @@
         "title": "ObservationsSectionSchema",
         "type": "object"
       },
+      "OverviewAvailability": {
+        "enum": [
+          "available",
+          "expired",
+          "invalid_series",
+          "compact_series_unavailable"
+        ],
+        "title": "OverviewAvailability",
+        "type": "string"
+      },
       "OverviewFlowClass": {
         "properties": {
           "availability": {
@@ -3454,6 +3706,285 @@
         },
         "title": "OverviewFlowClass",
         "type": "object"
+      },
+      "OverviewForecastResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_forecast",
+                  "withheld_or_ineligible"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/OverviewAvailability"
+              }
+            ],
+            "title": "Availability"
+          },
+          "band_availability": {
+            "anyOf": [
+              {
+                "enum": [
+                  "available",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Band Availability"
+          },
+          "data_use": {
+            "$ref": "#/components/schemas/ForecastDataUse"
+          },
+          "delivery_deadline": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Deadline"
+          },
+          "detail_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail Url"
+          },
+          "expected_issue": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Issue"
+          },
+          "forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Id"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/OverviewFreshness",
+            "default": "freshness_unknown"
+          },
+          "gaps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ForecastGapResponse"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "input_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Quality"
+          },
+          "input_quality_codes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Input Quality Codes",
+            "type": "array"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "original_horizon_steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Horizon Steps"
+          },
+          "original_point_count": {
+            "default": 0,
+            "title": "Original Point Count",
+            "type": "integer"
+          },
+          "parameter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameter"
+          },
+          "peak": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPointResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provisional": {
+            "enum": [
+              "provisional",
+              "standard"
+            ],
+            "title": "Provisional",
+            "type": "string"
+          },
+          "qc_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QcStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quartile_method": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuartileMethod"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reduction": {
+            "const": "original_points_gap_peak_anchors",
+            "default": "original_points_gap_peak_anchors",
+            "title": "Reduction",
+            "type": "string"
+          },
+          "returned_point_count": {
+            "default": 0,
+            "title": "Returned Point Count",
+            "type": "integer"
+          },
+          "series": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ForecastPointResponse"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "support_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support End"
+          },
+          "support_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support Start"
+          },
+          "time_step_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Step Seconds"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "model_id",
+          "parameter",
+          "data_use",
+          "availability",
+          "provisional"
+        ],
+        "title": "OverviewForecastResponse",
+        "type": "object"
+      },
+      "OverviewFreshness": {
+        "enum": [
+          "current",
+          "stale",
+          "freshness_unknown"
+        ],
+        "title": "OverviewFreshness",
+        "type": "string"
       },
       "OverviewHour": {
         "properties": {
@@ -3561,6 +4092,70 @@
         "title": "OverviewObservation",
         "type": "object"
       },
+      "OverviewObservationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "hourly": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationSlotResponse"
+            },
+            "title": "Hourly",
+            "type": "array"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/ObservationSlotResponse"
+          },
+          "latest_failed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Failed At"
+          },
+          "newer_failed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newer Failed"
+          },
+          "parameter": {
+            "enum": [
+              "water_level",
+              "discharge"
+            ],
+            "title": "Parameter",
+            "type": "string"
+          },
+          "unit": {
+            "enum": [
+              "m",
+              "m\u00b3/s"
+            ],
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parameter",
+          "unit",
+          "latest",
+          "latest_failed_at",
+          "newer_failed",
+          "hourly"
+        ],
+        "title": "OverviewObservationResponse",
+        "type": "object"
+      },
       "OverviewReportedLevel": {
         "properties": {
           "availability": {
@@ -3651,6 +4246,98 @@
           "code"
         ],
         "title": "OverviewStation",
+        "type": "object"
+      },
+      "OverviewStationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "discharge": {
+            "$ref": "#/components/schemas/OverviewObservationResponse"
+          },
+          "forecast_availability": {
+            "enum": [
+              "no_forecast",
+              "outputs"
+            ],
+            "title": "Forecast Availability",
+            "type": "string"
+          },
+          "forecasts": {
+            "items": {
+              "$ref": "#/components/schemas/OverviewForecastResponse"
+            },
+            "title": "Forecasts",
+            "type": "array"
+          },
+          "latitude": {
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "title": "Longitude",
+            "type": "number"
+          },
+          "measured_parameters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Measured Parameters",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "network": {
+            "title": "Network",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "thresholds": {
+            "items": {
+              "$ref": "#/components/schemas/ThresholdResponse"
+            },
+            "title": "Thresholds",
+            "type": "array"
+          },
+          "water_level": {
+            "$ref": "#/components/schemas/OverviewObservationResponse"
+          },
+          "water_level_datum": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisclosedWaterLevelDatumResponse"
+              },
+              {
+                "$ref": "#/components/schemas/UndisclosedWaterLevelDatumResponse"
+              }
+            ],
+            "title": "Water Level Datum"
+          }
+        },
+        "required": [
+          "station_id",
+          "code",
+          "name",
+          "network",
+          "latitude",
+          "longitude",
+          "measured_parameters",
+          "water_level_datum",
+          "thresholds",
+          "water_level",
+          "discharge",
+          "forecasts",
+          "forecast_availability"
+        ],
+        "title": "OverviewStationResponse",
         "type": "object"
       },
       "PaginatedResponse_ForecastSummary_": {
@@ -4452,6 +5139,14 @@
         ],
         "title": "QuantileEnvelopeSchema",
         "type": "object"
+      },
+      "QuartileMethod": {
+        "enum": [
+          "stored_quantiles",
+          "member_empirical_type7"
+        ],
+        "title": "QuartileMethod",
+        "type": "string"
       },
       "RatingHistoryCurve": {
         "properties": {
@@ -6200,6 +6895,19 @@
         "title": "ThresholdResponse",
         "type": "object"
       },
+      "UndisclosedWaterLevelDatumResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "const": "not_disclosed",
+            "default": "not_disclosed",
+            "title": "Availability",
+            "type": "string"
+          }
+        },
+        "title": "UndisclosedWaterLevelDatumResponse",
+        "type": "object"
+      },
       "UnknownCoverage": {
         "additionalProperties": false,
         "properties": {
@@ -6494,7 +7202,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.10"
+    "version": "2.11"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6842,6 +7550,186 @@
         "summary": "Rating Input History",
         "tags": [
           "forecasts"
+        ]
+      }
+    },
+    "/api/v1/networks/{network}/overview": {
+      "get": {
+        "description": "Complete authorized network roster with measured/supplied WL/Q, 72 completed UTC hours, independent 168-hour latest window and per-model/purpose compact forecast bands. Explicit provisional opt-in requires reviewer/admin. Consumer protected deliveries excluded; reviewers retain detail-equivalent private access. Existing routes remain no-store. This route recomputes auth, scope and data before conditional304; generated_at belongs to the retained200 body, not the latest check. Limits fail503.",
+        "operationId": "network_overview_api_v1_networks__network__overview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "network",
+            "required": true,
+            "schema": {
+              "title": "Network",
+              "type": "string"
+            }
+          },
+          {
+            "explode": true,
+            "in": "query",
+            "name": "data_use",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "standard",
+                  "provisional_rating"
+                ],
+                "type": "string"
+              },
+              "maxItems": 2,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "style": "form"
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkOverviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache, max-age=0, must-revalidate",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Date": {
+                "description": "Current request check time.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Private weak semantic validator.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Vary": {
+                "description": "Authorization, Origin, Accept-Encoding",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Authorized representation unchanged",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache, max-age=0, must-revalidate",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Date": {
+                "description": "Current request check time.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Private weak semantic validator.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Vary": {
+                "description": "Authorization, Origin, Accept-Encoding",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Provisional purpose requires reviewer/admin."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or unauthorized network."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid network or query; authenticated first."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Overview evidence or admission unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Network Overview",
+        "tags": [
+          "network-overview"
         ]
       }
     },

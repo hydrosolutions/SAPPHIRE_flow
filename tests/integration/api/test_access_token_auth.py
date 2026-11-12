@@ -757,6 +757,8 @@ _COLLECTION_ROUTES: dict[str, str] = {
     "/api/v1/alerts": "/api/v1/alerts?station_id={sid}",
     "/api/v1/forecast-lab/snapshot": "/api/v1/forecast-lab/snapshot",
 }
+# Overview metadata intentionally differs by role; test it separately below.
+_OVERVIEW_ROUTES = {"/api/v1/networks/{network}/overview"}
 _PUBLICATION_DETAIL_ROUTES: dict[str, str] = {
     "/api/v1/stations/{station_id}/forecasts/latest-published": (
         "/api/v1/stations/{sid}/forecasts/latest-published?parameter=discharge"
@@ -838,7 +840,35 @@ class TestReviewerOnPrincipalRoutes:
             | set(_COLLECTION_ROUTES)
             | set(_PUBLICATION_DETAIL_ROUTES)
             | set(_PUBLICATION_COLLECTION_ROUTES)
+            | _OVERVIEW_ROUTES
         )
+
+    @_TENANT_BOUND_ROLES
+    def test_overview_filters_scope_with_role_specific_datum(
+        self, client: TestClient, db_connection: sa.Connection, role: AccessTokenRole
+    ) -> None:
+        scene = _Scene(db_connection)
+        key = _make_token(
+            db_connection, role=role, station_ids=frozenset({scene.in_scope})
+        )
+        station = PgStationStore(db_connection).fetch_station(scene.in_scope)
+        assert station is not None
+        response = client.get(
+            f"/api/v1/networks/{station.network}/overview", headers=_auth(key)
+        )
+        assert response.status_code == 200, response.text
+        items = response.json()["items"]
+        assert [item["station_id"] for item in items] == [str(scene.in_scope)]
+        assert items[0]["water_level_datum"] == (
+            {"availability": "not_disclosed"}
+            if role is AccessTokenRole.CONSUMER
+            else {
+                "availability": "disclosed",
+                "value_masl": station.water_level_datum_masl,
+            }
+        )
+        hidden = client.get("/api/v1/networks/absent/overview", headers=_auth(key))
+        assert hidden.status_code == 404
 
     def _keys(self, conn: sa.Connection, scene: _Scene) -> dict[AccessTokenRole, str]:
         return {

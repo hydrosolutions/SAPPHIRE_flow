@@ -13,6 +13,7 @@ from sapphire_flow.config.daily_evaluation import DailyEvaluationConfig  # noqa:
 from sapphire_flow.config.evaluation_forecasts import (
     EvaluationForecastsConfig,  # noqa: TC001
 )
+from sapphire_flow.config.network_overview import NetworkOverviewConfig  # noqa: TC001
 from sapphire_flow.config.operational_weather import (
     OperationalWeatherConfig,  # noqa: TC001
 )
@@ -97,6 +98,9 @@ class InputQualityConfig(BaseModel):
 class DeploymentConfig(BaseModel):
     operational_weather: OperationalWeatherConfig = Field(
         default_factory=OperationalWeatherConfig
+    )
+    network_overview: NetworkOverviewConfig = Field(
+        default_factory=NetworkOverviewConfig
     )
     swiss_overview: SwissOverviewConfig | None = None
     swiss_observation_history: bool = False

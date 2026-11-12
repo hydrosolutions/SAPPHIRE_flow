@@ -186,6 +186,28 @@ class PgStationStore:
         )
         return [_row_to_threshold(row) for row in rows]
 
+    def fetch_thresholds_for(
+        self, station_ids: list[StationId]
+    ) -> dict[StationId, tuple[StationThreshold, ...]]:
+        grouped: dict[StationId, list[StationThreshold]] = {
+            station_id: [] for station_id in station_ids
+        }
+        if not station_ids:
+            return {}
+        rows = self._conn.execute(
+            sa.select(station_thresholds)
+            .where(station_thresholds.c.station_id.in_(station_ids))
+            .order_by(
+                station_thresholds.c.parameter,
+                station_thresholds.c.danger_level,
+                station_thresholds.c.source,
+            )
+        ).mappings()
+        for row in rows:
+            threshold = _row_to_threshold(row)
+            grouped[threshold.station_id].append(threshold)
+        return {station_id: tuple(values) for station_id, values in grouped.items()}
+
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None:
         for t in thresholds:
             stmt = (

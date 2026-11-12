@@ -2564,3 +2564,20 @@ request types; no internal station ID or import timestamps are fabricated. Event
 integration needs complete OFF/currentness/tenant/privacy guards and separate proof.
 Current shared restore/control-plane and registrar preservation blockers remain held;
 this pure seam does not implement recovery or clear deployment/Gateway acceptance.
+
+
+### Network overview read projection
+
+Route/schema: `api/routes/api_network_overview.py`, `api/network_overview_schemas.py`;
+scoped assembly: `api/network_overview.py`; semantic conditional headers:
+`api/network_overview_cache.py`, route-only `api/cors.py`. Pure series/freshness:
+`services/network_overview.py`, deployment-boundary `config/network_overview.py`.
+Batched reads remain in observation, forecast and daily stores; observation trust
+composes `unit_read_predicate`. Future preparation currentness must compose at this
+same store boundary, not copy a private predicate into the API.
+
+Preserve daily whole-summary/publication-before-value authority, scoped native
+lineage, consumer protected-delivery exclusion, all old routes and frozen evidence.
+Run network overview unit/native API/store tests, daily-reader parity, security/CORS
+and map-contract drift tests. Native capacity tests measure21/160/200 admitted
+nonempty shapes; performance receipts do not authorize deployment or live reads.

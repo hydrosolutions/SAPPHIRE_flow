@@ -6,6 +6,10 @@ from urllib.parse import urlsplit
 
 from fastapi.middleware.cors import CORSMiddleware
 
+from sapphire_flow.api.network_overview_cache import (
+    NetworkOverviewCacheMiddleware,
+    network_overview_path,
+)
 from sapphire_flow.api.publication_cache import shared_forecast_read_path
 from sapphire_flow.exceptions import ConfigurationError
 
@@ -51,6 +55,13 @@ class ScopedCorsMiddleware:
             allow_methods=["GET"],
             allow_headers=["Authorization", "Content-Type"],
         )
+        self._overview = CORSMiddleware(
+            app,
+            allow_origins=consumer_origins,
+            allow_methods=["GET"],
+            allow_headers=["Authorization", "Content-Type", "If-None-Match"],
+            expose_headers=["ETag", "Date"],
+        )
         self._review = (
             CORSMiddleware(
                 app,
@@ -83,6 +94,9 @@ class ScopedCorsMiddleware:
             await self._app(scope, receive, send)
             return
         path = scope.get("path", "")
+        if network_overview_path(path):
+            await NetworkOverviewCacheMiddleware(self._overview)(scope, receive, send)
+            return
         if path == _REVIEW_PREFIX or path.startswith(f"{_REVIEW_PREFIX}/"):
             target = self._review if self._review is not None else self._app
         elif _REJECTED_FORECASTS_PATH.match(path):

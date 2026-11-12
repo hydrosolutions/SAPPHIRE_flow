@@ -26,7 +26,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.10"
+MAP_CONTRACT_VERSION = "2.11"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -34,6 +34,7 @@ _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", _SNAPSHOT_PATH),
+        ("GET", "/api/v1/networks/{network}/overview"),
         ("GET", "/api/v1/swiss/overview"),
         ("GET", "/api/v1/swiss/observation-history"),
         ("GET", "/api/v1/observations/latest"),
@@ -431,6 +432,72 @@ def build_map_openapi() -> dict[str, Any]:
                 responses["503"] = _error_response(
                     "Swiss observation history is unavailable."
                 )
+            if path == "/api/v1/networks/{network}/overview":
+                operation["description"] = (
+                    "Complete authorized network roster with measured/supplied WL/Q, "
+                    "72 completed UTC hours, independent 168-hour latest window and "
+                    "per-model/purpose compact forecast bands. Explicit provisional "
+                    "opt-in requires reviewer/admin. Consumer protected deliveries "
+                    "excluded; reviewers retain detail-equivalent private access. "
+                    "Existing routes remain no-store. This route recomputes auth, "
+                    "scope and data before conditional304; generated_at belongs to "
+                    "the retained200 body, not the latest check. Limits fail503."
+                )
+                operation.setdefault("parameters", []).extend(
+                    [
+                        {
+                            "name": "data_use",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "array",
+                                "uniqueItems": True,
+                                "maxItems": 2,
+                                "items": {
+                                    "type": "string",
+                                    "enum": ["standard", "provisional_rating"],
+                                },
+                            },
+                            "style": "form",
+                            "explode": True,
+                        },
+                        {
+                            "name": "If-None-Match",
+                            "in": "header",
+                            "required": False,
+                            "schema": {"type": "string"},
+                        },
+                    ]
+                )
+                for status, description in {
+                    "403": "Provisional purpose requires reviewer/admin.",
+                    "404": "Unknown or unauthorized network.",
+                    "422": "Invalid network or query; authenticated first.",
+                    "500": "Sanitized internal error.",
+                    "503": "Overview evidence or admission unavailable.",
+                }.items():
+                    responses[status] = _error_response(description)
+                for status in ("200", "304"):
+                    responses[status]["headers"] = {
+                        "ETag": {
+                            "schema": {"type": "string"},
+                            "description": "Private weak semantic validator.",
+                        },
+                        "Cache-Control": {
+                            "schema": {"type": "string"},
+                            "description": (
+                                "private, no-cache, max-age=0, must-revalidate"
+                            ),
+                        },
+                        "Vary": {
+                            "schema": {"type": "string"},
+                            "description": "Authorization, Origin, Accept-Encoding",
+                        },
+                        "Date": {
+                            "schema": {"type": "string"},
+                            "description": "Current request check time.",
+                        },
+                    }
             if path == "/api/v1/swiss/overview":
                 responses["500"] = _error_response("Swiss overview internal error.")
                 responses["503"] = _error_response(

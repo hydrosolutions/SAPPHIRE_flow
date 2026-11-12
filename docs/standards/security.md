@@ -2332,3 +2332,32 @@ fixtures do not establish full21-station or all-history availability.
 The integration security inventory explicitly includes the reviewed read-only
 history definer. Current-head downgrade-refusal and readiness-isolation fixtures
 pin revision 0083. Their exact ACL/schema rollback and scientific-oracle checks remain intact.
+
+
+### Private network overview conditional read
+
+The new `GET /api/v1/networks/{network}/overview` is PRINCIPAL-gated. For this
+explicit contract, the owner/root accepted scoped reviewer fleet aggregation
+equivalent to already-authorized station detail history. Consumers exclude
+protected deliveries inside latest/hourly/failed-marker cohorts; reviewers/admin
+retain detail-equivalent access. This is private review, not public redistribution.
+The older latest-observation and Swiss exclusions remain unchanged.
+
+STANDARD publication selection applies before values on both daily and ordinary
+paths, including admin. Daily REJECTED references never load numeric evidence.
+Provisional requires explicit opt-in and reviewer/admin scope before native lineage.
+All stores and publication locks share the authenticated request connection.
+Configured thresholds are batched only for the already-scoped roster. Datum
+metadata preserves the QC-route reviewer/admin restriction: consumers receive
+`water_level_datum.availability=not_disclosed`, without a value. A disclosed null
+means no configured datum, never nondisclosure. Both metadata projections are
+covered by the role-bound representation validator; read failures fail closed.
+
+Only this route permits private conditional200/304 and route-local negotiated gzip.
+Auth, persisted grants, purpose and the complete authorized projection are rechecked
+before304; no shared body cache exists. Weak ETags bind token identity/scope and
+semantic data but do not refresh generated_at. Vary includes Authorization, Origin
+and Accept-Encoding. Errors, redirects and preflights remain no-store. Existing
+consumer origins gain If-None-Match and ETag/Date exposure for this route only,
+without additional credentials, origins or methods. See the
+[network contract](../spec/network-overview.md).
