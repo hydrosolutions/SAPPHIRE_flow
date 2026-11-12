@@ -183,24 +183,27 @@ def _already_delivered_result(
     cycle_time: str | None,
     store: ForecastStore,
     station_store: StationStore,
+    rated_station_ids: Iterable[UUID],
     issue_time: UtcDatetime,
     data_use: ForecastDataUse,
     flow_t0: float,
 ) -> ForecastCycleResult | None:
     """Scheduled provisional selected-weather ticks retry the issue day until
-    one of this run's operational stations has a current forecast; later ticks
-    do nothing. An explicit ``cycle_time`` (manual rerun) always runs. STANDARD
-    is excluded: its daily ledger already governs repeated automatic ticks."""
+    one of this run's operational, rating-bound stations has a current
+    forecast; later ticks do nothing. An explicit ``cycle_time`` (manual
+    rerun) always runs. STANDARD is excluded: its daily ledger already governs
+    repeated automatic ticks."""
     if (
         not selected_weather_route
         or cycle_time is not None
         or data_use is not ForecastDataUse.PROVISIONAL_RATING
     ):
         return None
+    rated = set(rated_station_ids)
     operational = {
         station.id
         for station in station_store.fetch_all_stations(kind=StationKind.RIVER)
-        if station.station_status == StationStatus.OPERATIONAL
+        if station.station_status == StationStatus.OPERATIONAL and station.id in rated
     }
     delivered = [
         forecast
@@ -3258,6 +3261,9 @@ def run_forecast_cycle_flow(
             cycle_time=cycle_time,
             store=forecast_store,
             station_store=station_store,
+            rated_station_ids=(
+                binding.station_id for binding in config.provisional_ratings
+            ),
             issue_time=resolved_cycle_time,
             data_use=data_use,
             flow_t0=flow_t0,

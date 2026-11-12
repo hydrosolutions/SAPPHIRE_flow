@@ -1294,6 +1294,9 @@ class TestSelectedWeatherIssuance:
             for entry in captured
             if entry["event"] == "forecast_cycle.already_delivered"
         ] == [(ISSUE.isoformat(), 1, 1)]
+        assert not any(
+            entry["event"] == "forecast_cycle.no_forecasts_stored" for entry in captured
+        )
 
     def test_manual_rerun_ignores_delivered_issue_day(
         self,
@@ -1332,18 +1335,21 @@ class TestSelectedWeatherIssuance:
         )
         assert delivered_checks == []
 
-    @pytest.mark.parametrize("case", ["standard_lane", "other_station"])
+    @pytest.mark.parametrize(
+        "case", ["standard_lane", "other_station", "unbound_station"]
+    )
     def test_scheduled_tick_runs_when_not_delivered_for_its_scope(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        case: Literal["standard_lane", "other_station"],
+        case: Literal["standard_lane", "other_station", "unbound_station"],
     ) -> None:
         from types import SimpleNamespace
 
         automatic = self._automatic_retry_config(None)
         # STANDARD: this run's own station is "delivered", but the daily ledger
         # owns repeated ticks there. Provisional: the delivered forecast belongs
-        # to a station outside this run.
+        # to a station outside this run, or to an operational station without a
+        # provisional rating binding.
         foreign = SimpleNamespace(
             station_id=_DEFAULT_STATION_ID
             if case == "standard_lane"
@@ -1356,6 +1362,12 @@ class TestSelectedWeatherIssuance:
             config: DeploymentConfig,
             mid: ModelId,
         ) -> dict[str, object]:
+            if case == "unbound_station":
+                stores["station_store"].store_station(  # type: ignore[attr-defined]
+                    make_station_config(
+                        station_id=foreign.station_id, basin_id=BasinId(uuid4())
+                    )
+                )
             store = stores["forecast_store"]
             real = store.fetch_forecasts_for_cycle  # type: ignore[attr-defined]
             store.fetch_forecasts_for_cycle = (  # type: ignore[attr-defined]
@@ -1368,7 +1380,8 @@ class TestSelectedWeatherIssuance:
 
         def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
             del stores["forecast_store"].fetch_forecasts_for_cycle  # type: ignore[attr-defined]
-            assert result.stations_attempted == 1
+            # The run went ahead (the unbound station is attempted as well).
+            assert result.stations_attempted >= 1
             assert result.forecasts_stored == 1, result.errors
 
         with structlog.testing.capture_logs() as captured:
