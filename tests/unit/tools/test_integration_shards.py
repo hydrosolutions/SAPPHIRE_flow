@@ -64,7 +64,6 @@ _SELECTED_FIXTURE = {
     (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS): (*_CURATED_NODES, _REST_NODE),
     selected_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
     selected_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
-    selected_args(GROUP_BY_ID["mid"]): _GROUP_NODES["mid"],
     selected_args(GROUP_BY_ID["rest"]): (_REST_NODE,),
     (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT): (
         *_CURATED_NODES,
@@ -73,7 +72,6 @@ _SELECTED_FIXTURE = {
     ),
     all_non_live_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
     all_non_live_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
-    all_non_live_args(GROUP_BY_ID["mid"]): _GROUP_NODES["mid"],
     all_non_live_args(GROUP_BY_ID["rest"]): (_REST_NODE, _SLOW_ONLY_NODE),
 }
 
@@ -162,17 +160,11 @@ class TestIntegrationShardDefinitions:
         assert path in shards["heavy"].paths
         assert path in shards["rest"].ignores
 
-    def test_shard_ids_are_heavy_mid_and_rest(self) -> None:
-        assert SHARD_IDS == ("heavy", "mid", "rest")
-        assert tuple(group.id for group in GROUPS) == (
-            "performance",
-            "heavy",
-            "mid",
-            "rest",
-        )
+    def test_shard_ids_remain_heavy_and_rest(self) -> None:
+        assert SHARD_IDS == ("heavy", "rest")
+        assert tuple(group.id for group in GROUPS) == ("performance", "heavy", "rest")
         assert EXECUTION_GROUPS == {
             "heavy": ("performance", "heavy"),
-            "mid": ("mid",),
             "rest": ("rest",),
         }
 
@@ -285,7 +277,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "29 selected nodes, 30 non-live files"
+            "14 selected nodes, 15 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:
@@ -336,7 +328,7 @@ class TestInjectedPartitionProof:
                 repo_root=_REPO_ROOT,
                 collector=_fake_collector,
             )
-            for group_id, _ in NAMED_GROUPS
+            for group_id in ("performance", "heavy")
         }
 
         report = check_partition(shard_items=listed_only, all_items=selected_nodes)
@@ -367,7 +359,7 @@ class TestInjectedPartitionProof:
         all_mark_calls = [
             args for args in seen_args if args[:2] == ALL_NON_LIVE_ARGS[:2]
         ]
-        assert len(all_mark_calls) == 5
+        assert len(all_mark_calls) == 4
 
     def test_performance_group_must_select_exactly_one_node(self) -> None:
         extra = (
@@ -420,7 +412,7 @@ class TestCuratedPathValidation:
     ) -> None:
         selected = tuple(
             node
-            for group_id, _ in NAMED_GROUPS
+            for group_id in ("performance", "heavy")
             for node in _fake_collector(
                 selected_args(GROUP_BY_ID[group_id]), repo_root=_REPO_ROOT
             )
