@@ -1282,11 +1282,12 @@ class TestSelectedWeatherIssuance:
         with structlog.testing.capture_logs() as captured:
             _run_selected_cycle(
                 monkeypatch,
-                group_run=False,
+                group_run=True,
                 capture_fault="none",
                 configure_cycle=self._automatic_retry_config(None),
                 verify_cycle=verify,
                 execution_runs=2,
+                data_use=ForecastDataUse.PROVISIONAL_RATING,
             )
         assert [
             (entry["cycle_time"], entry["forecasts"], entry["stations"])
@@ -1323,12 +1324,67 @@ class TestSelectedWeatherIssuance:
 
         _run_selected_cycle(
             monkeypatch,
-            group_run=False,
+            group_run=True,
             capture_fault="none",
             configure_cycle=configure,
             verify_cycle=verify,
+            data_use=ForecastDataUse.PROVISIONAL_RATING,
         )
         assert delivered_checks == []
+
+    @pytest.mark.parametrize("case", ["standard_lane", "other_station"])
+    def test_scheduled_tick_runs_when_not_delivered_for_its_scope(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        case: Literal["standard_lane", "other_station"],
+    ) -> None:
+        from types import SimpleNamespace
+
+        automatic = self._automatic_retry_config(None)
+        # STANDARD: this run's own station is "delivered", but the daily ledger
+        # owns repeated ticks there. Provisional: the delivered forecast belongs
+        # to a station outside this run.
+        foreign = SimpleNamespace(
+            station_id=_DEFAULT_STATION_ID
+            if case == "standard_lane"
+            else StationId(uuid4())
+        )
+
+        def configure(
+            stores: dict[str, object],
+            groups: object,
+            config: DeploymentConfig,
+            mid: ModelId,
+        ) -> dict[str, object]:
+            store = stores["forecast_store"]
+            real = store.fetch_forecasts_for_cycle  # type: ignore[attr-defined]
+            store.fetch_forecasts_for_cycle = (  # type: ignore[attr-defined]
+                lambda issued_at, *args, **kwargs: [
+                    *real(issued_at, *args, **kwargs),
+                    foreign,
+                ]
+            )
+            return automatic(stores, groups, config, mid)
+
+        def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
+            del stores["forecast_store"].fetch_forecasts_for_cycle  # type: ignore[attr-defined]
+            assert result.stations_attempted == 1
+            assert result.forecasts_stored == 1, result.errors
+
+        with structlog.testing.capture_logs() as captured:
+            _run_selected_cycle(
+                monkeypatch,
+                group_run=True,
+                capture_fault="none",
+                configure_cycle=configure,
+                verify_cycle=verify,
+                data_use=ForecastDataUse.STANDARD
+                if case == "standard_lane"
+                else ForecastDataUse.PROVISIONAL_RATING,
+            )
+        assert not any(
+            entry["event"] == "forecast_cycle.already_delivered" for entry in captured
+        )
 
     def test_cycle_without_forecasts_logs_blocking_reasons(
         self,

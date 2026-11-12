@@ -6730,14 +6730,17 @@ replay. The original exception is re-raised before provider work.
 
 Several automatic ticks may target the same issue day (a schedule with retries,
 because the Recap operational product can be incomplete at the first tick). On
-this route, an omitted `cycle_time` whose issue day already has current
-forecasts for the run's data use returns before any provider request: HEALTHY,
-zero stations attempted, no freshness record, and event
-`forecast_cycle.already_delivered` with the delivered forecast and station
-counts. Any current forecast counts, so a partially delivered day is not retried
-automatically; the incomplete-product failure this addresses rejects every
-station of the shared HRU request together, and some stations never forecast
-(for example without rating days), so "all stations" would never be reached. An
+this route in the `provisional_rating` lane, an omitted `cycle_time` whose issue
+day already has a current forecast for one of the run's operational river
+stations returns before any provider request: HEALTHY, zero stations attempted,
+and event `forecast_cycle.already_delivered` with the delivered forecast and
+station counts. Forecasts of other stations or tenants in the same database do
+not count. STANDARD ticks are not skipped: the daily evaluation ledger already
+governs repeated automatic ticks there. Any delivered station counts, so a
+partially delivered day is not retried automatically; the incomplete-product
+failure this addresses rejects every station of the shared HRU request together,
+and some stations never forecast (for example without rating days), so "all
+stations" would never be reached. An
 explicit manual issue always runs, superseding as before. Any cycle that
 attempts stations but stores no forecast logs `forecast_cycle.no_forecasts_stored`
 (error) with its first 25 per-station reasons, each truncated to 300 characters;

@@ -182,16 +182,31 @@ def _already_delivered_result(
     selected_weather_route: bool,
     cycle_time: str | None,
     store: ForecastStore,
+    station_store: StationStore,
     issue_time: UtcDatetime,
     data_use: ForecastDataUse,
     flow_t0: float,
 ) -> ForecastCycleResult | None:
-    """Scheduled selected-weather ticks retry the issue day until it is
-    delivered; once it has current forecasts, later ticks do nothing. An
-    explicit ``cycle_time`` (manual rerun) always runs."""
-    if not selected_weather_route or cycle_time is not None:
+    """Scheduled provisional selected-weather ticks retry the issue day until
+    one of this run's operational stations has a current forecast; later ticks
+    do nothing. An explicit ``cycle_time`` (manual rerun) always runs. STANDARD
+    is excluded: its daily ledger already governs repeated automatic ticks."""
+    if (
+        not selected_weather_route
+        or cycle_time is not None
+        or data_use is not ForecastDataUse.PROVISIONAL_RATING
+    ):
         return None
-    delivered = store.fetch_forecasts_for_cycle(issue_time)
+    operational = {
+        station.id
+        for station in station_store.fetch_all_stations(kind=StationKind.RIVER)
+        if station.station_status == StationStatus.OPERATIONAL
+    }
+    delivered = [
+        forecast
+        for forecast in store.fetch_forecasts_for_cycle(issue_time)
+        if forecast.station_id in operational
+    ]
     if not delivered:
         return None
     log.info(
@@ -3242,6 +3257,7 @@ def run_forecast_cycle_flow(
             selected_weather_route=selected_weather_route,
             cycle_time=cycle_time,
             store=forecast_store,
+            station_store=station_store,
             issue_time=resolved_cycle_time,
             data_use=data_use,
             flow_t0=flow_t0,
