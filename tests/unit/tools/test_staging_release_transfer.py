@@ -234,6 +234,39 @@ class TestEnvelope:
         with pytest.raises(transfer.TransferError, match="gates failed"):
             replace(envelope, gates={**envelope.gates, "lint": "failed"})
 
+    def test_receiver_accepts_any_passed_gate_inventory(self, tmp_path: Path) -> None:
+        # CI jobs can be added, split or renamed without a receiver upgrade.
+        envelope, _ = payload(tmp_path)
+        extra = replace(envelope, gates={**envelope.gates, "integration-mid": "passed"})
+        renamed = replace(envelope, gates={"ci-all": "passed"})
+        assert transfer.Envelope.parse(extra.encode()) == extra
+        assert transfer.Envelope.parse(renamed.encode()) == renamed
+
+    @pytest.mark.parametrize("status", ["failed", "blocked"])
+    def test_any_unpassed_gate_refuses_release(
+        self, tmp_path: Path, status: str
+    ) -> None:
+        envelope, _ = payload(tmp_path)
+        with pytest.raises(transfer.TransferError, match="release gates failed"):
+            replace(envelope, gates={**envelope.gates, "integration-mid": status})
+
+    @pytest.mark.parametrize(
+        "gates",
+        [
+            {},
+            {"Lint": "passed"},
+            {"lint/../x": "passed"},
+            {f"gate-{n}": "passed" for n in range(transfer.MAX_GATES + 1)},
+            {"g" * 65: "passed"},
+        ],
+    )
+    def test_gate_inventory_must_be_well_formed(
+        self, tmp_path: Path, gates: dict[str, str]
+    ) -> None:
+        envelope, _ = payload(tmp_path)
+        with pytest.raises(transfer.TransferError, match="invalid gate inventory"):
+            replace(envelope, gates=gates)
+
     def test_duplicate_or_unknown_fields_fail(self, tmp_path: Path) -> None:
         envelope, _ = payload(tmp_path)
         with pytest.raises(transfer.TransferError, match="duplicate"):
@@ -1453,37 +1486,83 @@ class TestReuseCustody:
         ):
             replace(envelope, files=files)
 
-    def test_reused_gates_cannot_be_reported_as_locally_passed(
+    def test_reuse_accepts_locally_passed_and_extra_reused_gates(
         self, tmp_path: Path
     ) -> None:
+        # Gate names no longer decide reuse vs. local: each gate's recorded
+        # origin does. A locally passed gate and an extra reused gate are fine.
         envelope, _ = reuse_payload(tmp_path)
-        with pytest.raises(transfer.TransferError, match="invalid local gate origin"):
+        changed = replace(
+            envelope,
+            gates={**envelope.gates, "lint": "passed", "integration-mid": "reused"},
+            coverage={
+                **envelope.coverage,
+                "lint": transfer.GateCoverage(
+                    origin="local", local_status="passed", ci=None
+                ),
+                "integration-mid": transfer.GateCoverage(
+                    origin="canonical_ci",
+                    local_status="not_run_here",
+                    ci=envelope.binding.ci,
+                ),
+            },
+        )
+        assert transfer.ReuseEnvelope.parse(changed.encode()) == changed
+
+    def test_reused_gate_must_cite_the_admitted_ci_run(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        other = replace(envelope.binding.ci, run_id="999")
+        with pytest.raises(transfer.TransferError, match="invalid reused gate origin"):
             replace(
                 envelope,
-                gates={**envelope.gates, "lint": "passed"},
+                gates={**envelope.gates, "integration-mid": "reused"},
                 coverage={
                     **envelope.coverage,
-                    "lint": transfer.GateCoverage(
-                        origin="local", local_status="passed", ci=None
+                    "integration-mid": transfer.GateCoverage(
+                        origin="canonical_ci", local_status="not_run_here", ci=other
                     ),
                 },
             )
 
-    def test_image_gates_cannot_be_reused(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("status", ["failed", "blocked"])
+    def test_any_unpassed_local_gate_refuses_reuse_release(
+        self, tmp_path: Path, status: str
+    ) -> None:
         envelope, _ = reuse_payload(tmp_path)
-        with pytest.raises(transfer.TransferError, match="invalid reused gate origin"):
+        with pytest.raises(
+            transfer.TransferError, match="reuse release gates incomplete"
+        ):
             replace(
                 envelope,
-                gates={**envelope.gates, "build-image-and-scan": "reused"},
+                gates={**envelope.gates, "integration-mid": status},
                 coverage={
                     **envelope.coverage,
-                    "build-image-and-scan": transfer.GateCoverage(
-                        origin="canonical_ci",
-                        local_status="not_run_here",
-                        ci=envelope.binding.ci,
+                    "integration-mid": transfer.GateCoverage(
+                        origin="local", local_status=status, ci=None
                     ),
                 },
             )
+
+    def test_reuse_release_needs_a_locally_passed_gate(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        reused = transfer.GateCoverage(
+            origin="canonical_ci", local_status="not_run_here", ci=envelope.binding.ci
+        )
+        with pytest.raises(
+            transfer.TransferError, match="reuse release gates incomplete"
+        ):
+            replace(
+                envelope,
+                gates=dict.fromkeys(envelope.gates, "reused"),
+                coverage=dict.fromkeys(envelope.coverage, reused),
+            )
+
+    def test_reuse_coverage_must_match_gates(self, tmp_path: Path) -> None:
+        envelope, _ = reuse_payload(tmp_path)
+        coverage = dict(envelope.coverage)
+        del coverage["lint"]
+        with pytest.raises(transfer.TransferError, match="incomplete reuse gate"):
+            replace(envelope, coverage=coverage)
 
     def test_sealed_delivery_carries_exact_proof_and_is_idempotent(
         self, tmp_path: Path

@@ -53,6 +53,11 @@ RUNTIME_FILES = (
     "docker/bootstrap-roles.sql",
     "config/overlays/nepal-cloud.toml",
 )
+# The sender's gate inventory (tools/staging_release.py builds envelopes from
+# it). The receiver does not check gate names: CI jobs can be added, split or
+# renamed without a receiver upgrade. It accepts any well-formed inventory in
+# which every reported gate passed (or, for ci-reuse, was reused from exactly
+# the admitted CI run); a failed or blocked gate still refuses a release.
 GATE_NAMES = (
     "lint",
     "unit-scripts",
@@ -67,6 +72,17 @@ GATE_NAMES = (
     "build-image-and-scan",
     "aquacast-release-image-proof",
 )
+
+
+_GATE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+MAX_GATES = 64
+
+
+def require_gate_inventory(gates: dict[str, str]) -> None:
+    if not 0 < len(gates) <= MAX_GATES or not all(
+        _GATE_NAME.fullmatch(name) for name in gates
+    ):
+        raise TransferError("invalid gate inventory")
 
 
 class DeliveryMode(StrEnum):
@@ -394,11 +410,8 @@ class Envelope:
             or not isinstance(self.kind, PayloadKind)
         ):
             raise TransferError("unsupported envelope")
-        if set(self.gates) != set(GATE_NAMES) or not set(self.gates.values()) <= {
-            "passed",
-            "failed",
-            "blocked",
-        }:
+        require_gate_inventory(self.gates)
+        if not set(self.gates.values()) <= {"passed", "failed", "blocked"}:
             raise TransferError("incomplete gate record")
         if self.kind == PayloadKind.DIAGNOSTIC:
             if (
@@ -479,6 +492,8 @@ class Envelope:
         return result
 
 
+# Sender-only: tools/staging_release.py labels gates with these. The receiver
+# does not enforce them (see GATE_NAMES).
 FRESH_CI_REUSE_GATES = frozenset(
     {"build-image-and-scan", "aquacast-release-image-proof"}
 )
@@ -507,21 +522,20 @@ class ReuseEnvelope(Envelope):
             or not isinstance(cast("object", self.kind), PayloadKind)
         ):
             raise TransferError("unsupported reuse envelope")
-        if set(self.gates) != set(GATE_NAMES) or set(self.coverage) != set(GATE_NAMES):
+        require_gate_inventory(self.gates)
+        if set(self.coverage) != set(self.gates):
             raise TransferError("incomplete reuse gate inventory")
         for name, status in self.gates.items():
             coverage = self.coverage[name]
             if status == "reused":
                 if (
-                    name not in REUSED_GATES
-                    or coverage.origin != "canonical_ci"
+                    coverage.origin != "canonical_ci"
                     or coverage.local_status != "not_run_here"
                     or coverage.ci != self.binding.ci
                 ):
                     raise TransferError("invalid reused gate origin")
             elif (
-                (name in REUSED_GATES and status != "blocked")
-                or status not in ("passed", "failed", "blocked")
+                status not in ("passed", "failed", "blocked")
                 or coverage.origin != "local"
                 or coverage.local_status != status
                 or coverage.ci is not None
@@ -551,11 +565,10 @@ class ReuseEnvelope(Envelope):
                 or self.proof_failure is not None
             ):
                 raise TransferError("incomplete reuse release payload")
-            if any(
-                self.gates[name]
-                != ("passed" if name in FRESH_CI_REUSE_GATES else "reused")
-                for name in GATE_NAMES
-            ):
+            # At least one locally passed gate keeps fresh delivery evidence
+            # (the sender's image gates) without binding gate names.
+            statuses = set(self.gates.values())
+            if not statuses <= {"passed", "reused"} or "passed" not in statuses:
                 raise TransferError("reuse release gates incomplete")
             if (
                 len(self.images) != 2

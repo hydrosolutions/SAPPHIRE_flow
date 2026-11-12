@@ -164,6 +164,19 @@ The envelope binds the existing receipt, raw and normalized config IDs, platform
 actual store mode, all gate outcomes and exact same-source allowlisted runtime
 bundle. No protected data, runtime secrets or model artifacts are included.
 
+The receiver does not check gate names: CI jobs may be added, split or renamed
+without a receiver upgrade. The sender's list (`GATE_NAMES` and the
+`tools/private_verification*`/`tools/ci_attest.py` inventories) still changes in
+the same PR as the CI jobs. It requires a well-formed inventory (1–64 lowercase
+names) in which every gate passed; for ci-reuse each gate is either locally
+`passed` or `reused` from exactly the admitted CI run, with matching coverage, and
+a release needs at least one locally passed gate. Any failed or blocked gate
+still refuses a release. Which gates ran fresh (the image build and scan) is no
+longer enforced by name; the receiver still checks both distinct images, digests
+and the receipt, but no longer that a gate of that name passed. A receiver older
+than this rule rejects any changed `GATE_NAMES`, so upgrade the receiver before
+the first gate rename.
+
 The receiver rejects malformed/duplicate metadata, unexpected names, mismatched
 hashes/lengths, trailing bytes, unsafe archives, conflicting accepted identities
 and unapproved load. Partial attempts are retained for explicit operator handling;
