@@ -21,10 +21,12 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# Plan 095: a cycle archive is named `{cycle_stem}.zarr` where cycle_stem is
-# `%Y%m%dT%H` (see `_safe_zarr_path`). The prune parses the cycle timestamp from
-# this stem — NOT from filesystem mtime, so re-archiving does not reset the age.
-_CYCLE_STEM_RE = re.compile(r"^(?P<cycle>\d{8}T\d{2})\.zarr$")
+# Plan 095: a cycle archive is `{cycle_stem}.zarr`, a symlink to the real
+# `{cycle_stem}_vN` directory (plus `_vN_tmp` while writing), where cycle_stem is
+# `%Y%m%dT%H` (see `archive`). The prune parses the cycle timestamp from this
+# stem — NOT from filesystem mtime, so re-archiving does not reset the age — and
+# removes the symlink and every versioned directory of an expired cycle.
+_CYCLE_STEM_RE = re.compile(r"^(?P<cycle>\d{8}T\d{2})(?:\.zarr|_v\d+(?:_tmp)?)$")
 
 
 def _parse_cycle_time(name: str) -> UtcDatetime | None:
@@ -54,22 +56,30 @@ def prune_old_cycles(
     if not base_path.exists():
         return
     cutoff = clock() - timedelta(days=retention_days)
-    for source_dir in base_path.iterdir():
+    for source_dir in list(base_path.iterdir()):
         if not source_dir.is_dir():
             continue
-        for cycle_dir in source_dir.iterdir():
-            if not cycle_dir.is_dir():
+        for entry in list(source_dir.iterdir()):
+            cycle_time = _parse_cycle_time(entry.name)
+            if cycle_time is None or cycle_time >= cutoff:
                 continue
-            cycle_time = _parse_cycle_time(cycle_dir.name)
-            if cycle_time is None:
-                continue
-            if cycle_time < cutoff:
-                shutil.rmtree(cycle_dir, ignore_errors=True)
-                log.info(
-                    "nwp.old_cycle_pruned",
-                    path=str(cycle_dir),
-                    cycle_time=cycle_time.isoformat(),
+            try:
+                if entry.is_symlink():
+                    entry.unlink()
+                elif entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    continue
+            except OSError as exc:
+                log.warning(
+                    "nwp.old_cycle_prune_failed", path=str(entry), error=str(exc)
                 )
+                continue
+            log.info(
+                "nwp.old_cycle_pruned",
+                path=str(entry),
+                cycle_time=cycle_time.isoformat(),
+            )
 
 
 # CONSTRAINT: all per-cycle paths (symlink, versioned dirs, _tmp) must reside on
