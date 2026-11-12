@@ -6728,6 +6728,16 @@ Entry-day refusal uses the existing fatal freshness boundary: one CRITICAL
 zero-output record for STANDARD automatic work, none for provisional or explicit
 replay. The original exception is re-raised before provider work.
 
+Several automatic ticks may target the same issue day (a schedule with retries,
+because the Recap operational product can be incomplete at the first tick). On
+this route, an omitted `cycle_time` whose issue day already has current
+forecasts for the run's data use returns before provider work: HEALTHY, zero
+stations attempted, event `forecast_cycle.already_delivered`, no freshness
+record. A partially delivered day therefore is not retried automatically. An
+explicit manual issue always runs, superseding as before. Any cycle that
+attempts stations but stores no forecast logs `forecast_cycle.no_forecasts_stored`
+(error) with its first 25 per-station reasons; the returned result is unchanged.
+
 `selected_weather_issuance_refusal` checks the immutable consumed future cycle
 against actual execution time immediately before prediction and again after QC
 and post-processing, before successful forecast construction. The lower age bound
