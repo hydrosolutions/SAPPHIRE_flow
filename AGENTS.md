@@ -12,14 +12,6 @@ SAPPHIRE Flow ingests hydrological and weather data, runs ensemble forecasts,
 checks alert thresholds, and serves results through an API and review dashboard.
 This is the single repository instruction file for coding agents.
 
-## Workflow authority
-
-- Follow the user's approved scope and the applicable globally installed skills.
-- Skills own planning, delegation, review sequencing and delivery procedures.
-- Do not add repository-local skills, workflow copies or extra approval layers.
-- Historical plans record design decisions; old agent roles and status gates do
-  not override current instructions or authorize unapproved work.
-
 ## Project safeguards
 
 - The owner approves and merges PRs, accepts exceptional risks, and authorizes
