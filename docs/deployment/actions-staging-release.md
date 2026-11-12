@@ -164,6 +164,14 @@ The envelope binds the existing receipt, raw and normalized config IDs, platform
 actual store mode, all gate outcomes and exact same-source allowlisted runtime
 bundle. No protected data, runtime secrets or model artifacts are included.
 
+The receiver does not check gate names: CI jobs may be added, split or renamed
+without a receiver upgrade (the sender's list, `GATE_NAMES`, changes with them).
+It requires a well-formed inventory (1–64 lowercase names) in which every gate
+passed; for ci-reuse each gate is either locally `passed` or `reused` from exactly
+the admitted CI run, with matching coverage. Any failed or blocked gate still
+refuses a release. Which gates ran fresh is no longer enforced by name; the image
+evidence (both distinct images, digests, receipt) is unchanged.
+
 The receiver rejects malformed/duplicate metadata, unexpected names, mismatched
 hashes/lengths, trailing bytes, unsafe archives, conflicting accepted identities
 and unapproved load. Partial attempts are retained for explicit operator handling;
