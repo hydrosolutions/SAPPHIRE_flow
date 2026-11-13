@@ -179,6 +179,100 @@ artifact/configuration. Preserve missingness; never invent measured discharge.
 Do not present unavailable observed-discharge verification as a weak skill score or
 claim model accuracy from successful ingestion.
 
+## MVP first proof and deferrals
+
+Owner priority (2026-11-13): NHS staff can onboard their own stations. A cumbersome but
+working and documented path is acceptable; the sandbox run in the overarching vision
+proves it and the admin checklist lets NHS adapt it to their stations. For the first
+proof the sections above apply in reduced form:
+
+- **First proof:** one new trial station, one observation source (or none), no fallback.
+- **Precedence:** keep the default (reviewed history over unchecked operational data) and
+  record which source supplies which measurement. Per-measurement, per-period precedence
+  review is deferred.
+- **Fallback gap filling:** deferred. Gaps are retained and reported.
+- **Approval:** the reviewer approves or holds the saved report; record reviewer name,
+  report hash and reason. Re-approval bound to exact material input and rule versions is
+  deferred.
+- **Multiple sources per station, plots in the report, BAFU route verification:** deferred.
+- **Manual steps stay manual:** tenant declaration and `init`, the DAGs-dashboard
+  backfill, Gateway registration by hydrosolutions, and an explicit command to switch on
+  observation collection.
+
+## Delivered historical files for existing stations (first slice, MVP)
+
+Owner decisions of 2026-11-13. This slice does not wait for the Gateway Effort (#452):
+it needs no basin or Gateway work. It is the one place where #453 touches stations that
+already exist, by owner exception; everything else here still uses new trial stations.
+Because it writes history into stations that the Nepal-cloud evaluation deployment also
+uses, it is coordinated with that session through the owner and starts only after the
+owner's go-ahead.
+
+**Outcome.** An authorized operator can admit a delivered batch of daily discharge files
+for stations that already exist in their tenant (first customer: DHM's October 2026
+delivery), without a code change or migration per delivery, and a hydrologist can see
+the data's quality problems. The October rating tables are already admitted through the
+existing rating route, so this slice is discharge only. How many October stations
+overlap the September six, and on which days, is measured during the dry run.
+
+**Delivery facts are data, not code.** Extend the existing run-time rating manifest
+(delivery id, delivered date, per-file station code, network, path, SHA-256) with a file
+kind, instead of inventing a second manifest. It is supplied at run time, specific to the
+deployment, not committed, and carries no observation values. The new route has no
+hard-coded delivery identity, station list or station count. The September import command
+stays as it is; only its admission is seeded.
+
+**Admission before write.** One migration adds an admission table and rewrites the
+operator guard to check it instead of one fixed delivery identity. A deliberate admission
+command, run with the owner-level database role (not hand-written SQL), records delivery,
+tenant and manifest hash. The September delivery is seeded. The guard stays at least as
+strong as today: untagged rows and other tenants remain refused, rows may not move
+between stations or deliveries, and the import role cannot admit anything itself.
+Scoping an admission to stations or parameters is later hardening.
+
+**Load as delivered, check with the shared rules.** Values are loaded unchanged. October
+preliminary QC uses the network rules with the same `gross_outlier` skip as the September
+import and adds no per-station ceilings (September keeps its own). Flagged values stay
+stored with their flags; nothing is dropped or corrected. Days already held by another
+admitted delivery are skipped when equal and refused when different (the natural key
+has no delivery identity, so this is forced), and the skipped days are recorded in the
+audit entry as dates and counts, never values.
+
+**Problems are visible to operators first.** The MVP produces an operator report or CLI
+output per station: coverage, counts by QC status, gaps and flagged ranges, with no
+values in logs or issues. Add an API endpoint only if that proves insufficient for a
+dashboard, and then only after auditing what the existing observation endpoints already
+return. Mapping flagged ranges to model input windows is later work.
+
+**Operator material.** An admin checklist in the style of the approved-basin runbook
+(stage table, plain bullets, copy-paste commands).
+
+### Later: water-level files, the 24:00 convention and datum offsets
+
+Not part of the first proof; each needs the owner and, for the datum, DHM.
+
+DHM's delivered daily discharge, water level and rating tables come from gauges that are
+not exactly the operational water-level gauges. Time zone is Nepal standard time, as for
+discharge. The datum is assumed equal to the operational water level for now and must be
+confirmed by DHM; until then it stays explicitly `owner_assumed_same_zero`, and delivered
+level would be stored under its own source label, never merged silently into the
+operational series. No delivered water-level parser exists yet.
+
+Readings stamped 24:00 would belong to the day they close (assumption: NHS aggregates
+days from 01:00 to 24:00; to be confirmed with NHS), stored at 00:00 of the following
+day. This is a convention change, not a check: the current local-day code assigns 00:00
+to the new day.
+
+A per-station level offset for operational water level, applied before rating conversion,
+is an open question and an exception to this vision's rule against new datum adjustment,
+so it needs an explicit owner decision. A first-pass, unreviewed comparison of the
+September and October rating files (2026-11-13, aggregates only) is a hypothesis to
+re-check, not a finding: the deliveries agree where they overlap; most stations change
+little between consecutive blocks but about six change by 5-25%, a stage shift explains
+most of that (typically 0.1-0.5 m) while shape changes also occur; the files do not record
+the datum. If adopted, the offset would be per rating period, not one constant per
+station, and would build on the existing assumed/verified reference proofs.
+
 ## Trishuli and model-contract context
 
 The approved Trishuli research station `00001` has no discharge observations and
