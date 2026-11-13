@@ -48,9 +48,13 @@ about any other deployment):
 | Share of the nightly dump | about two thirds of a 125 GB dump |
 | Evidence rows | 100,526, none `complete`; 98,547 only because the image digest is unset |
 
-Not measured: Nepal snapshot size and volume (the mini's Nepal database predates the
-evidence tables; the Infomaniak host was not inspected), whether a snapshot really
-reproduces a forecast bit for bit, replay cost in time.
+Measured on the Nepal (Infomaniak) host, 2026-11-13, read-only: 9 blobs, 14 MB in total
+(8 snapshots averaging 1.6 MB, 1 model artifact of 1.8 MB), 99 forecasts since 2026-11-07,
+one new snapshot per day because the forecasts of a day share it, about 1.7 MB/day. Six months
+is therefore roughly 300 MB: storage is not a constraint for Nepal. All 99 rows are
+`evidence_incomplete`.
+
+Not measured: whether a snapshot really reproduces a forecast bit for bit, replay cost in time.
 
 ## Decisions proposed for the owner
 
@@ -58,7 +62,8 @@ reproduces a forecast bit for bit, replay cost in time.
    the model on the stored snapshot with the stored artifact, not re-running upstream
    grid processing. Runtime identity is the source revision, `python_version` and
    dependency versions already in the manifest, plus the image ID once it is set.
-   Retaining every image archive is **not** part of this Effort; state it as a limit.
+   Retaining image archives is **not** part of this Effort (owner, 2026-11-13: old images
+   are not kept on servers; the stored release number allows rebuilding); state it as a limit.
 2. **Nepal: six months. Swiss: seven days**, with the reason (about 300 GB per six
    months on a disk shared with the database and its dumps) written in the operator
    docs. Both configurable per deployment.
@@ -79,7 +84,7 @@ reproduces a forecast bit for bit, replay cost in time.
   tolerance match or mismatch with the reason. Reuse `restore_snapshot`; no replay
   platform.
 - **T2 Size model.** From the measured snapshot size and forecast rate, write the
-  per-deployment cost of 7 days, 30 days and 6 months, and measure Nepal volume.
+  per-deployment cost of 7 days, 30 days and 6 months, (Nepal already measured: about 1.7 MB/day).
 - **T3 Retention setting and docs.** A per-deployment retention value (default: keep
   everything, i.e. no behaviour change), the documented Nepal/Swiss windows, the
   image-ID step, and the stated limits. No deletion code in this task.
@@ -111,5 +116,4 @@ changing the `complete` semantics or the CHWRR gate, upstream-archive substituti
 
 - A snapshot may not reproduce a forecast exactly (non-deterministic models,
   floating-point or dependency drift). T1 decides how "exact" is worded.
-- Six-month Nepal storage depends on a measurement not yet taken.
 - Final liability periods remain with the hydromet partners.
