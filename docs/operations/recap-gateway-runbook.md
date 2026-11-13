@@ -6,7 +6,77 @@ coverage-manifest recording, live smoke execution, `NWP_DELIVERY` watchdog
 triage, API-key handling, and snow-variable status. Does **not** document the
 upstream `recap-dg-client` fixes as complete — see § Snow-variable status.
 
-## Prepare an approved basin handover
+## Prepare an approved basin handover — admin checklist
+
+Goal: get one approved basin handover registered, subscribed and covered in the
+recap Gateway. Nothing here imports stations, runs models or activates forecasts.
+Details and rules for every step are in § Technical reference below.
+
+### Inputs you must provide
+
+| Input | Variable | Where it comes from | Example |
+|---|---|---|---|
+| Approved handover folder | `$HANDOVER` | Basin review tool, `handovers/approved-…` | `…/handovers/approved-4bb03b…` |
+| Private evidence folder | `$EVIDENCE` | You create it, **outside any Git repo** | `~/sapphire-evidence/trishuli` |
+| Scope file | `$SCOPE` | Hydrologist: model, history years, forecast cycles/leads | `scope.json` |
+| New Gateway name (HRU) | `$NEW_HRU` | Agree with the Gateway admin; must be new | `trishuli_00001` |
+| Recap config | `$CONFIG` | Ops config with `[adapters.recap_gateway]` and base URL | `config/overlays/nepal-history.toml` |
+| API key file | `$KEY_FILE` | Existing secret file (mode 600); never paste the key | `~/secrets/recap_api_key` |
+| Your name | `$ACTOR` | You; recorded as a label, not authentication | `a.admin` |
+| Review reference | `$REVIEW_REFERENCE` | Integration review ticket/ID | issue or review ID |
+
+### Steps
+
+| # | Step | Command (after `prepare_gateway`) | What it does | Who |
+|---|---|---|---|---|
+| 1 | Prepare | `prepare --scope` then `prepare --scope … --confirm REV --vatro-review REF` | Shows the proposal; confirm it. No Gateway writes. | Admin + hydrologist |
+| 2 | Register | `register --hru --config --secret-file` | Uploads `basins.gpkg` once. | Admin |
+| 3 | Reconcile | `reconcile --outcome confirmed --actor --evidence` | Records proof the upload landed. | Admin |
+| 4 | Subscribe | `subscribe …` then `subscribe --confirm REV …` | Preview, then apply the subscription change. | Admin |
+| 5 | History | `history`, then `history --stream … --job-reference` | Prints manual ERA5 DAG steps; you start the job and record its reference. | Admin |
+| 6 | Resume | `resume --config --secret-file` | Fetches and checks coverage. | Admin |
+| 7 | Status | `status` | Lists each station eligible or held. | Admin |
+
+Exit code `0` = this Gateway scope passed (not model readiness). `2` = something is held.
+
+### Copy-paste
+
+```bash
+export HANDOVER=… EVIDENCE=… SCOPE=… NEW_HRU=… CONFIG=… KEY_FILE=… ACTOR=… REVIEW_REFERENCE=…
+```
+
+Replace each `…` with your value (table above). Then, from the repo root:
+
+```bash
+uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" prepare --scope "$SCOPE"
+uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" register --hru "$NEW_HRU" --config "$CONFIG" --secret-file "$KEY_FILE"
+uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" subscribe --config "$CONFIG" --secret-file "$KEY_FILE"
+uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" resume --config "$CONFIG" --secret-file "$KEY_FILE"
+uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" status
+```
+
+The confirm, reconcile and history variants need a revision or reference from the
+previous output; their full commands are in the steps of § Technical reference.
+
+### Rules that never change
+
+- Never delete anything in the Gateway to recover from an error.
+- On a timeout or unclear response: stop. Do not rename or retry the upload.
+- The API key goes only in the key file, never on the command line.
+- Use one workspace on one host; never copy it or start a second one to get past a hold.
+- Do not start shared IFS refreshes here.
+- Eligible means Gateway coverage only. It does not authorize training or activation.
+
+### If it stops
+
+| Symptom | Do |
+|---|---|
+| Exit `2` | Run `status`; read the hold reason for the station. Fix upstream, do not edit state files. |
+| Upload timeout / conflict | Stop; follow § Technical reference step 3 (reconcile). |
+| Subscription drift | Re-run the `subscribe` preview, confirm the new revision. |
+| Missing coverage after `resume` | Check the history job finished; run `resume` again. |
+
+## Technical reference — approved basin handover
 
 The local companion CLI is `python -m sapphire_flow.cli.prepare_gateway`.
 It does not launch a server, import stations, access a database, run a model,
