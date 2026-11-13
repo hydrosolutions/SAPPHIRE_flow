@@ -22,6 +22,10 @@
 
 ## November 2026 integration status (not a retrospective agreement change)
 
+The [SnowMapper delivery draft](05-snowmapper-gateway-contract.md) proposes the
+new mosaic snow-file and gateway interface, with owner decisions and acceptance
+checks. It remains pending owner confirmation and does not replace this agreement.
+
 The June baseline below remains the dated agreement. On 2026-11-06 the public
 OpenAPI documented geometry upload, parameter catalog reads and scoped subscription
 list/create/update APIs. Authenticated read-only metadata later confirmed current
