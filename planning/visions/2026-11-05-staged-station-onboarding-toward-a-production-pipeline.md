@@ -208,46 +208,60 @@ owner when shared service changes, model defaults, database migrations, deployme
 registration or live acceptance would overlap. Branch isolation alone does not
 isolate shared runtimes. This vision authorizes no deployment or live-data writes.
 
-## 10. Installation check with a disposable demo stack (draft, 2026-11-13)
+## 10. Installation check with a disposable demo stack (draft, grill-me 2026-11-13)
 
-Owner decisions so far. The design still has open points and needs a focused vision
-before implementation. It runs across the Gateway and SAPPHIRE-preparation efforts
-(#452, #453); it stops before models, so it does not involve #454.
+Owner decisions from the grill-me session. It runs across the Gateway and SAPPHIRE
+preparation efforts (#452, #453), stops before models (so it does not involve #454), and
+still needs a focused vision before implementation. Anyone who sets up a deployment (an
+installer or admin, not only hydrosolutions) can run it to prove the onboarding modules
+are configured correctly, and then repeat the same checklist on their own stations.
 
-Anyone who sets up a deployment (an installer or admin, not only hydrosolutions) can run
-an installation check that proves the onboarding modules are configured correctly, and
-then repeat the same checklist on their own stations:
+**Staging (the Nepal workshop is about two weeks away).**
+1. *Workshop:* the admin checklist, run by a facilitator on prepared data. A self-service
+   check is not buildable in that time. Nepali counterparts may onboard additional
+   stations during or after the workshop; the second DHM batch (October 2026 delivery,
+   #453 M1) tests part of the onboarding and is not forgotten.
+2. *Swiss installation check first:* guided steps with real public Swiss data.
+3. *Then a synthetic Nepal test gauge* (not the project's "virtual station", which means
+   ungauged/calculated): synthetic observations for history and live, to prove the basin
+   extraction package, the real Gateway path and the Nepal weather route. Needs a
+   generator that must stay consistent with the real formats, so it comes second.
+Later: a one-command mode that does most steps (minimise manual steps); users then choose
+guided or one-command.
 
-- **Disposable stack.** The check runs in a separate throwaway stack (its own Compose
-  project and database volume, on Infomaniak or the user's machine). Teardown is deleting
-  that stack. Nothing in the real deployment is created, so no deletion exception and no
-  new deletion code are needed, and an organization named `sandbox` exists only inside
-  the throwaway stack. The one thing that stays is a validation record kept as an
-  evidence file: installation validated, when, by whom, which checks passed.
-- **Two layers.** A quick read-only configuration check (credentials, addresses, database
-  roles, Gateway reachable), then a demo run of one or two public Swiss gauge stations
-  through the real onboarding steps, from the approved handover to station records,
-  history import, QC, the readiness report and switching on observation collection. It
-  stops there: no model training and no forecast.
-- **Time.** The under-15-minute target covers the steps inside SAPPHIRE only. The Gateway
-  history backfill is a manual, slow step and is done once for the demo basin in advance;
-  the check verifies the coverage it finds.
-- **Gateway.** The demo uses one permanent demo basin on the shared Gateway, registered
-  once and reused (matching retries keep identities). Gateway removal stays excluded;
-  the owner pursues a scoped removal with the Gateway developer separately.
-- **Swiss data only.** Nepal data cannot be published in the public repository, so the
-  demo and its fixtures use public Swiss data only. Open feasibility point: the basin
-  step and the weather selection are built for the Nepal route. If a Swiss basin cannot
-  go through them, the demo uses a prebuilt public demo handover package and the
-  checklist starts at "approved handover". Demo observations come from an existing
-  supported public route (for example CAMELS-CH files or the existing BAFU routes).
-  The new BAFU water-observations product is not part of this effort unless its data
-  can be obtained and verified elsewhere.
+**What is tested.** The installer's own real configuration (settings, credentials,
+Gateway key, overlays) running against a throwaway database in a separate Compose project
+(Infomaniak or the user's machine). Teardown is deleting that stack: no deletion
+exception and no new deletion code, and the `sandbox` organization exists only inside it.
+The one thing that stays is a local evidence file (date, who, tool version, per-step
+results) that the installer may send to hydrosolutions; nothing is sent automatically.
 
-Open points for the focused vision: how the demo handover package is produced and kept
-public-safe; whether the Swiss demo basin works with the Gateway history and the
-statics tooling; what the check reports when a step fails; and how a user maps the demo
-steps to their own stations.
+**Steps.** A quick read-only configuration check, then the real onboarding steps on two
+Swiss discharge stations, from the approved handover to station records, history import
+through the delivered-files route, QC, the readiness report, and switching on observation
+collection with one live poll for the two stations (well inside the BAFU rate limit). No
+models, no forecast. A final check command reports pass or fail per step; known setup
+problems get a plain-language fix and a pointer to the checklist row, others show the raw
+error with a log pointer. The core check targets about 15 minutes.
+
+**Demo package.** Prebuilt from the project's public BAFU data: basin outlines, static
+attributes, daily discharge history and a small weather history, so the check does not
+need the Nepal extraction tools or the slow Gateway backfill. Real public Swiss data, no
+fake adapter, nothing invented. Hosting: a release file if size allows, otherwise Zenodo
+or large-file storage, verified by checksum in the first step. Redistribution licences of
+the underlying datasets must be confirmed first.
+
+**Gateway.** The Gateway keeps basins per customer account. Each installer registers the
+demo basin once under their own account in an optional second part (with the real
+backfill, when they have time); it stays and is reused, and is documented as the one known
+leftover until removal is possible. Gateway removal stays excluded; the owner pursues a
+scoped removal with the Gateway developer separately.
+
+Open points for the focused vision: licences and hosting of the package; whether Swiss
+basins pass through the Gateway and statics tooling (the prebuilt package avoids
+extraction, the optional Gateway part still needs it); the exact list of known setup
+problems with plain-language fixes; the synthetic gauge generator; and how a user maps
+the demo steps to their own stations.
 
 ## Evidence of success
 
