@@ -6,6 +6,9 @@ This agreement defines the snow files, the gateway output and the handover neede
 to use them. **Next milestone: representative 00Z and 12Z forecast files and one
 reanalysis day in the agreed format.**
 
+00Z and 12Z mean forecasts initialized at 00:00 and 12:00 UTC, not their delivery
+times. A forecast “tail” is the future part appended to the historical series.
+
 **Status:** confirmed points below are carried forward from the source discussions;
 other delivery requirements are proposed for Joel and Vatro to confirm. This draft
 does not replace the [existing Nepal gateway agreement](01-data-gateway-requirements.md)
@@ -21,11 +24,12 @@ new supplier sign-off on this draft.
 | Reanalysis | Daily files; history from 2025 on S3; longer training history offline | History route confirmed: Joel, 11 Nov; update lag to confirm |
 | Variables | `swe`: snow water equivalent in mm at the timestamp. `rof`: mm over the following interval, not a running accumulation | Proposed; Joel states whether `rof` includes rainfall as well as snowmelt |
 | Time | UTC, start stamps: `rof` at 00:00 covers [00:00, 03:00); `swe` at 00:00 is the state at 00:00 | Start stamps confirmed: Joel and Vatro, 11 Nov; example assumes 3-hour output |
-| Gateway output | One requested variable, UTC index, one column per registered polygon, and row-level `source` / `source_run`; retain source units and time step | Existing output structure; Vatro confirms new-file handling |
+| Gateway output | One requested variable, UTC timestamps, one column per registered polygon, and each row's dataset (`source`) and producing cycle/date (`source_run`); retain source units and time step | Existing output structure; Vatro confirms new-file handling |
 | Gateway processing | No further time shift or differencing. Same spatial statistic and missing-cell policy for history and forecasts; missing is never zero | Required by forecast tools; Vatro documents the existing method or any necessary change |
 | Mosaic handling | Crop for each deployment through one data flow; stitch from two daily cycles | Cropping and two-cycle feasibility confirmed: Vatro, 9/11 Nov |
 
-A gateway **HRU** is a registered geometry file and may contain several polygons,
+A gateway **HRU** is a registered geometry file and may contain several polygons
+(catchments or elevation bands),
 per the [existing agreement](01-data-gateway-requirements.md#1-context--the-agreed-division).
 The agreed exclusion of a 00:00 value belonging to the previous day must not exclude
 a valid start-stamped interval [00:00, 03:00).
@@ -36,13 +40,14 @@ a valid start-stamped interval [00:00, 03:00).
   exact forecast cycles: the gateway must return that cycle or report it unavailable.
   We do not silently substitute, fill missing values or extend an exhausted tail.
 - **Forecast tools own daily aggregation.** The recorded provisional Nepal operating
-  day is **18:00–18:00 UTC**, accepting a 15-minute displacement from civil midnight
-  without shifting source timestamps. Bea clarifies the convention and SWE aggregation
-  with Sandro; only after that discussion, reconciles the plans and checks training and
-  forecast implementation. The 18:00 boundary is not implemented in the current
+  day is **18:00–18:00 UTC**, or **23:45–23:45 Nepal time**: it starts 15 minutes
+  before civil midnight, without shifting source timestamps. Bea clarifies the daily
+  boundary and how SWE is summarized with Sandro. Only after that discussion will
+  Bea reconcile the plans and check that training and forecasts use the agreed
+  convention. The 18:00 boundary is not implemented in the current
   shared resampler; this draft does not claim otherwise.
 - **Bea handles scope and migration.** We supply the required deployment areas,
-  check existing consumers before dropping `hs`, and set forecast-run times from
+  check existing consumers before dropping snow depth (`hs`), and set forecast-run times from
   confirmed delivery times. No new regional coverage is assumed.
 - **Bea owns acceptance and cutover**, including the integration checks and parallel
   run in both deployments, with Sandro's model acceptance before switching.
@@ -56,7 +61,7 @@ can proceed in parallel; operational arrangements need not delay the first sampl
 | Owner | What we need |
 | --- | --- |
 | **Joel — files and samples** | Supply the forecast and reanalysis samples with the short file specification below; confirm forecast coverage, runoff meaning, reanalysis update lag and whether the uploaded history matches. State when each cycle is complete on S3, in hours after 00Z/12Z. |
-| **Vatro — gateway delivery** | Verify the samples, state when each cycle is served, and document extraction and operational-series behavior: statistic/no-data policy, joins, tail and stale-data limit. With Joel, specify complete-upload detection and recovery of missed ingests or revised history. |
+| **Vatro — gateway delivery** | Verify the samples, state when each cycle is served, and document how polygon values are calculated, missing cells handled, and history joined to forecasts, including the selected tail and maximum age of fallback data. With Joel, specify complete-upload detection and recovery of missed ingests or revised history. |
 | **Sandro — model inputs** | Confirm runoff suitability, daily boundary/SWE aggregation, and the training period, variables and resolution needed from Joel. Accept the retrained models against the current models before cutover. |
 
 For an operational stitched series, an older **complete** run may be used only
