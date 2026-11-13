@@ -298,6 +298,15 @@ PARTIAL older gaps. This quality label never admits a refused member or invents
 source lineage. Run `test_native_rating_assembly.py`, normal group tests and FI
 NaN-gate tests; preserve real-checkpoint no-network edge proof outside Git.
 
+For a completely absent daily discharge history on the opted-in rating route,
+the assembler supplies missing calendar slots to gated models; FI still decides
+admission. No consumed rating days means no rating lineage. Group outputs then
+use STANDARD, with an observation warning for all-missing discharge. The cycle
+routes these successes and QC rejections to ordinary stores built by `_db.py`;
+actual rating consumers retain their purpose-scoped stores. Preserve store/SQL
+guards and verify mixed output/rejection routing in
+`test_selected_weather_native_rating.py`.
+
 **Operational inputs / time-series preprocessing**
 
 How raw source data becomes prediction inputs, *before* the model boundary above.

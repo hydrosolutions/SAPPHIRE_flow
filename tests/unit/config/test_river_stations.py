@@ -184,7 +184,8 @@ class TestDailyWeatherOverlayChain:
             base, (worker, policy), selected
         )
         gateway = load_recap_gateway_config(base)
-        assert config.nwp_max_fallback_age_hours == gateway.max_cycle_age_hours == 36.0
+        assert config.nwp_max_fallback_age_hours == gateway.max_cycle_age_hours == 60.0
+        assert config.nwp_grid_retention_days == 4
         assert config.operational_weather.automatic_issue_timezone == ZoneInfo(
             "Asia/Kathmandu"
         )

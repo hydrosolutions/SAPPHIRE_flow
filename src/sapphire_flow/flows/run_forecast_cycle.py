@@ -373,9 +373,31 @@ def _log_rejected_write_failed(
         )
 
 
+def _group_output_store(
+    forecast: OperationalForecast,
+    cycle_data_use: ForecastDataUse,
+    forecast_store: object,
+    standard_store: object | None,
+) -> ForecastStore:
+    if (
+        cycle_data_use is ForecastDataUse.PROVISIONAL_RATING
+        and forecast.data_use is ForecastDataUse.STANDARD
+    ):
+        if (
+            standard_store is None
+            or getattr(standard_store, "data_use", None) is not ForecastDataUse.STANDARD
+        ):
+            raise ConfigurationError(
+                "no-rating forecast requires an ordinary-purpose forecast store"
+            )
+        return cast("ForecastStore", standard_store)
+    return cast("ForecastStore", forecast_store)
+
+
 def _capture_rejected_forecasts(
     store: RejectedForecastStore | None,
     buffer: list[RejectedForecastEntry],
+    standard_store: RejectedForecastStore | None = None,
 ) -> None:
     """Plan 404 D5/D6 — the run's LAST database write, on its own bounded
     connection/transaction (T1), best-effort: a failure or timeout here never
@@ -383,6 +405,18 @@ def _capture_rejected_forecasts(
     counted in the group path's fatal store call. A run with no rejection
     (`store is None` — an injected caller that omitted it — or an empty
     buffer) opens no capture connection at all."""
+    if standard_store is not None:
+        ordinary = [
+            entry
+            for entry in buffer
+            if entry.payload.data_use is ForecastDataUse.STANDARD
+        ]
+        _capture_rejected_forecasts(standard_store, ordinary)
+        buffer = [
+            entry
+            for entry in buffer
+            if entry.payload.data_use is not ForecastDataUse.STANDARD
+        ]
     if store is None or not buffer:
         return
     # The one deliberate broad `except` on this path (docs/conventions.md §
@@ -2819,6 +2853,8 @@ def run_forecast_cycle_flow(
     daily_forecast_writer: object | None = None,
     data_use: ForecastDataUse = ForecastDataUse.STANDARD,
     rating_inputs: object | None = None,
+    standard_forecast_store: object | None = None,
+    standard_rejected_forecast_store: object | None = None,
     operational_weather_cache: object | None = None,
     operational_weather_adapter: object | None = None,
     operational_weather_principal: object | None = None,
@@ -2898,6 +2934,11 @@ def run_forecast_cycle_flow(
             )
             if data_use is ForecastDataUse.PROVISIONAL_RATING and rating_inputs is None:
                 rating_inputs = stores["rating_derived_store"]
+            if data_use is ForecastDataUse.PROVISIONAL_RATING:
+                standard_forecast_store = stores["standard_forecast_store"]
+                standard_rejected_forecast_store = stores[
+                    "standard_rejected_forecast_store"
+                ]
             station_store = cast("StationStore", stores["station_store"])
             obs_store = cast("ObservationStore", stores["obs_store"])
             weather_forecast_store = cast(
@@ -4798,7 +4839,12 @@ def run_forecast_cycle_flow(
                                 fc, active_rating_curves, all_thresholds
                             )
                             try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                _group_output_store(
+                                    fc,
+                                    data_use,
+                                    forecast_store,
+                                    standard_forecast_store,
+                                ).store_forecast(fc)
                                 forecasts_stored += 1
                             except Exception as exc:
                                 # Fixer round (blocker, take 3): the prior
@@ -5065,7 +5111,13 @@ def run_forecast_cycle_flow(
                 # the SAME `try` let a `close()` failure skip the D5/D6 write
                 # entirely, on exactly the abort path D5 says must still
                 # capture.
-                _capture_rejected_forecasts(rejected_forecast_store, rejected_buffer)  # type: ignore[arg-type]
+                _capture_rejected_forecasts(
+                    rejected_forecast_store,  # type: ignore[arg-type]
+                    rejected_buffer,
+                    cast(
+                        "RejectedForecastStore | None", standard_rejected_forecast_store
+                    ),
+                )
         finally:
             # Runs on every exit, regardless of whether attempt_id was ever
             # bound (unbinding an unbound key is a no-op), so a later

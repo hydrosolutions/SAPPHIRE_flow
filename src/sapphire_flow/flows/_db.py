@@ -88,6 +88,11 @@ def make_pg_stores(
         "skill_store": PgSkillStore(conn),
         "weather_forecast_store": PgWeatherForecastStore(conn),
         "forecast_store": PgForecastStore(conn, data_use=data_use),
+        "standard_forecast_store": PgForecastStore(conn),
+        "standard_rejected_forecast_store": PgRejectedForecastStore(
+            conn,
+            transaction_factory=rejected_capture_transaction_factory(conn.engine.url),
+        ),
         "model_state_store": PgModelStateStore(conn),
         "parameter_store": PgParameterStore(conn),
         "pipeline_health_store": PgPipelineHealthStore(conn),

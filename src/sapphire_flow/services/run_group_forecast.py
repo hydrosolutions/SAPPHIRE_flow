@@ -681,10 +681,14 @@ def _provisional_discharge_flags(
     recent_steps: int,
 ) -> list[InputQualityFlag]:
     lineage = metadata.input_lineage
-    if lineage is None or lineage.rating_input is None or lookback_steps <= 0:
+    if lookback_steps <= 0:
         return []
     frame = group_inputs.for_station(station_id).past_targets
     if "discharge" not in frame.columns:
+        return []
+    if (lineage is None or lineage.rating_input is None) and frame[
+        "discharge"
+    ].is_finite().any():
         return []
     expected = expected_past_buckets(
         group_inputs.issue_time, group_inputs.time_step, lookback_steps

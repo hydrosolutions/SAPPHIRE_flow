@@ -1,8 +1,9 @@
 # Opt-in forecast-worker policy. This does not enable weather or a schedule.
-nwp_max_fallback_age_hours = 36.0
+nwp_max_fallback_age_hours = 60.0
+nwp_grid_retention_days = 4
 
 [adapters.recap_gateway]
-max_cycle_age_hours = 36.0
+max_cycle_age_hours = 60.0
 
 [operational_weather]
 automatic_issue_timezone = "Asia/Kathmandu"

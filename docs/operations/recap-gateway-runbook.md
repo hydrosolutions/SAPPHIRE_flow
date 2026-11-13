@@ -676,12 +676,16 @@ for worker config, credentials, endpoint, batch semantics and coverage limits.
 ## Opt-in daily operational-weather issuance
 
 `config/overlays/nepal-daily-weather.toml` sets the two existing age limits to
-36 hours and sets `operational_weather.automatic_issue_timezone` to
+60 hours and sets `operational_weather.automatic_issue_timezone` to
 `Asia/Kathmandu`. It does not enable the selected weather route, station/model
 admission or a schedule. The default execution/selection limits remain 12/18
 hours. Provider/archive data must still cover the full shifted ten-day forecast
-and all declared past inputs. A previous 00 UTC cycle can need data through
-+264 hours; a 72-hour cycle cannot meet this requirement.
+and all declared past inputs. Keep using 00 UTC weather cycles for Nepal's
+ten-day horizon. A two-day-old 00 UTC cycle can need data through +288 hours;
+a 72-hour cycle cannot meet this requirement. The limit applies at actual
+forecast creation, not just the nominal issue time.
+The overlay retains four days of NWP grids, the existing validation minimum
+for a 60-hour fallback window plus one day.
 
 Activation needs separate owner/operator approval. Keep this policy in the
 forecast worker's ordered `SAPPHIRE_CONFIG_OVERLAY` chain. Include the identical

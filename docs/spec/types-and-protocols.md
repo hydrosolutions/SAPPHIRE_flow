@@ -6705,6 +6705,15 @@ and model-interface/input-requirement docs were checked; no FI or model contract
 changes are required. B2 uses consumed archive members only and keeps rating
 lineage on real archive IDs, with no synthetic history versions.
 
+On the opted-in daily rating route, completely absent discharge history is
+represented as missing lookback slots for models implementing `GroupInputGate`.
+The FI tolerance gate remains authoritative. With no consumed rating samples,
+group outputs and QC rejections use STANDARD and no rating lineage; a fully
+missing discharge history adds a DEGRADED observation-input warning. Actual
+rating consumers remain PROVISIONAL_RATING. The cycle uses matching purpose-scoped
+stores for both categories; source-identity holds and SQL lineage guards remain
+unchanged. Existing API purpose filters apply to each category independently.
+
 The native owner now prepares all active station/group requests, freezes polygon
 bindings, fetches paired past weather once, and resolves shared native future
 tracks before terminal cache publication and any selected input assembly.
