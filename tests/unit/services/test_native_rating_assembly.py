@@ -392,6 +392,7 @@ def _assemble_daily_discharge(
     issue_hour: int = 0,
     missing_values: dict[int, float | None] | None = None,
     gated: bool = True,
+    rating_samples: bool = True,
 ) -> tuple:
     import json
 
@@ -486,7 +487,9 @@ def _assemble_daily_discharge(
             end: datetime,
             at: datetime,
         ) -> tuple:
-            return tuple(row for row in rows if start <= row.timestamp < end)
+            return tuple(
+                row for row in rows if rating_samples and start <= row.timestamp < end
+            )
 
     native = NativeRatingInputs(reader=Reader(), bindings=(binding,), dhm=dhm)
     adapter, recording = _daily_fi_model(max_nan, q_lookback)
@@ -925,6 +928,58 @@ def test_exact_nanosecond_midnights_preserve_finite_values(
     assert frame.filter(pl.col("discharge").is_finite())["discharge"].to_list() == [
         20.0 if i == 28 else 100.0 + i for i in range(30) if i != 10
     ]
+
+
+@pytest.mark.parametrize("max_nan", [0, 29, 30])
+def test_absent_discharge_reaches_fi_gate_without_rating_claim(max_nan: int) -> None:
+    from sapphire_flow.types.enums import ForecastDataUse, InputQualityCategory
+
+    assembly, adapter, recording, group = _assemble_daily_discharge(
+        set(range(30)), max_nan=max_nan, rating_samples=False
+    )
+    assert assembly.inputs is not None
+    assert assembly.inputs.past_targets["discharge"].is_nan().sum() == 30
+    assert all(m.input_lineage is None for m in assembly.metadata_by_station.values())
+    outcome = _run_daily_assembly(assembly, adapter, recording, group)
+    if max_nan < 30:
+        assert outcome.results == {}
+        assert recording.predict_inputs is None
+    else:
+        forecast = next(iter(outcome.results.values())).forecasts[0]
+        assert forecast.data_use is ForecastDataUse.STANDARD
+        assert forecast.input_lineage is None
+        assert any(
+            flag.category is InputQualityCategory.OBSERVATION
+            and flag.level.value == "degraded"
+            and "30 of 30" in flag.detail
+            for flag in forecast.input_quality_flags
+        )
+        assert recording.predict_inputs is not None
+
+
+@pytest.mark.parametrize("omitted", [set(), set(range(30))])
+def test_no_rating_days_still_skip_ungated_models(omitted: set[int]) -> None:
+    assembly, _, recording, _ = _assemble_daily_discharge(
+        omitted, rating_samples=False, gated=False
+    )
+    assert assembly.inputs is None
+    assert recording.predict_inputs is None
+
+
+def test_measured_discharge_without_rating_additions_still_forecasts() -> None:
+    from sapphire_flow.types.enums import ForecastDataUse
+
+    assembly, adapter, recording, group = _assemble_daily_discharge(
+        {29}, max_nan=0, rating_samples=False
+    )
+    assert assembly.inputs is not None
+    assert assembly.inputs.past_targets["discharge"].to_list() == [
+        100.0 + i for i in range(28)
+    ]
+    outcome = _run_daily_assembly(assembly, adapter, recording, group)
+    forecast = next(iter(outcome.results.values())).forecasts[0]
+    assert forecast.data_use is ForecastDataUse.STANDARD
+    assert forecast.input_lineage is None
 
 
 def test_success_coverage_fault_does_not_change_admission(

@@ -56,6 +56,21 @@ standard model state and never enter daily standard attempts or alerts.
 Daily conversion runs before aggregation. Accepted measured discharge takes precedence
 for the whole day. Partial daily support and unassessed source QC remain visible.
 
+Missing rating-derived discharge does not veto prediction. Daily discharge-only
+models implementing the input gate receive an explicitly missing lookback when
+no target history exists; the model's FI `max_nan` declaration decides admission.
+Partially delivered histories retain their edges. Identity and reconciliation
+holds still refuse, and precipitation/temperature requirements stay strict.
+No observations or rating evidence are created for missing input slots.
+
+An output that consumes no rating-derived discharge is stored as `standard`,
+including measured-only forecasts. Completely missing discharge carries a
+DEGRADED observation-input warning. Actual rating consumers retain
+`provisional_rating` and their lineage. The same cycle routes successful outputs
+and QC rejections to matching purpose-scoped stores; database guards are unchanged.
+Consumers requesting only `provisional_rating` must also request `standard` to
+see the weather-only outputs. Neither category is a claim of predictive skill.
+
 Authenticated forecast list/detail and `data.json` accept
 `data_use=provisional_rating`. They show a persistent PROVISIONAL label and persisted
 input warnings. Default requests remain standard-only. Publication remains forbidden.

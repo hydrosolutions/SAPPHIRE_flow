@@ -1202,47 +1202,69 @@ def assemble_station_operational_inputs(
                 "operational_inputs.no_provisional_rating_days",
                 station_id=str(station_id),
             )
-            return None
-        assert rating_lineage.rating_input is not None
-        rejected_measured = obs_store.fetch_observations(
-            station_id=station_id,
-            parameter="discharge",
-            start=past_targets_start,
-            end=past_targets_end,
-            qc_status=(QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING),
-        )
-        rejected_counts: dict[UtcDatetime, int] = {}
-        for observation in rejected_measured:
-            day = ensure_utc(
-                observation.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
-            )
-            rejected_counts[day] = rejected_counts.get(day, 0) + 1
-        rating_lineage = replace(
-            rating_lineage,
-            rating_input=replace(
-                rating_lineage.rating_input,
-                days=tuple(
-                    replace(
-                        day,
-                        measured_rejected=rejected_counts.get(day.day, 0),
-                        warnings=tuple(
-                            sorted(
-                                set(day.warnings)
-                                | (
-                                    {"measured_discharge_rejected"}
-                                    if rejected_counts.get(day.day, 0)
-                                    else set()
-                                )
-                            )
+            if not (
+                reqs.required_past_targets == frozenset({"discharge"})
+                and reqs.target_parameters == frozenset({"discharge"})
+                and isinstance(model, GroupInputGate)
+            ):
+                return None
+            # Missing target history is an input to the model's FI tolerance gate,
+            # not evidence that rating-derived discharge was consumed.
+            if past_targets.is_empty():
+                past_targets = pl.DataFrame(
+                    {
+                        "timestamp": pl.datetime_range(
+                            past_targets_start,
+                            past_targets_end,
+                            interval=time_step,
+                            closed="left",
+                            eager=True,
                         ),
+                    }
+                ).with_columns(pl.lit(float("nan")).alias("discharge"))
+        else:
+            assert rating_lineage.rating_input is not None
+            rejected_measured = obs_store.fetch_observations(
+                station_id=station_id,
+                parameter="discharge",
+                start=past_targets_start,
+                end=past_targets_end,
+                qc_status=(QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING),
+            )
+            rejected_counts: dict[UtcDatetime, int] = {}
+            for observation in rejected_measured:
+                day = ensure_utc(
+                    observation.timestamp.replace(
+                        hour=0, minute=0, second=0, microsecond=0
                     )
-                    for day in rating_lineage.rating_input.days
+                )
+                rejected_counts[day] = rejected_counts.get(day, 0) + 1
+            rating_lineage = replace(
+                rating_lineage,
+                rating_input=replace(
+                    rating_lineage.rating_input,
+                    days=tuple(
+                        replace(
+                            day,
+                            measured_rejected=rejected_counts.get(day.day, 0),
+                            warnings=tuple(
+                                sorted(
+                                    set(day.warnings)
+                                    | (
+                                        {"measured_discharge_rejected"}
+                                        if rejected_counts.get(day.day, 0)
+                                        else set()
+                                    )
+                                )
+                            ),
+                        )
+                        for day in rating_lineage.rating_input.days
+                    ),
                 ),
-            ),
-        )
-        assert rating_lineage.rating_input is not None
-        if any(day.unassessed for day in rating_lineage.rating_input.days):
-            observation_qc_coverage = ObservationQcCoverage.CONTAINS_UNCHECKED
+            )
+            assert rating_lineage.rating_input is not None
+            if any(day.unassessed for day in rating_lineage.rating_input.days):
+                observation_qc_coverage = ObservationQcCoverage.CONTAINS_UNCHECKED
 
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.
@@ -1256,8 +1278,7 @@ def assemble_station_operational_inputs(
     # branch degrades this one cycle cleanly, instead of raising into the
     # generic per-station `except Exception` that counts it as a failure.
     normalize_discharge = (
-        rating_lineage is not None
-        and rating_lineage.rating_input is not None
+        rating_inputs is not None
         and time_step == timedelta(days=1)
         and reqs.target_parameters == frozenset({"discharge"})
         and set(past_targets.columns) == {"timestamp", "discharge"}

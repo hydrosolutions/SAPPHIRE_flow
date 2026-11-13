@@ -21,8 +21,10 @@ from tests.unit.flows.test_run_forecast_cycle import (
 from tests.unit.services.test_provisional_discharge import inputs
 
 if TYPE_CHECKING:
+    from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.model import GroupModelInputs
     from sapphire_flow.types.rating_derived import RatingDerivedDischarge
     from sapphire_flow.types.station import StationConfig
 
@@ -145,4 +147,137 @@ def test_provisional_selected_capture_failure_is_failed(
         group_run=True,
         capture_fault=fault,
         data_use=ForecastDataUse.PROVISIONAL_RATING,
+    )
+
+
+@pytest.mark.parametrize("reject_ordinary", [False, True])
+def test_mixed_rating_and_missing_discharge_outputs_use_matching_stores(
+    monkeypatch: pytest.MonkeyPatch, reject_ordinary: bool
+) -> None:
+    from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet
+    from sapphire_flow.types.enums import AlertEligibility, SpatialRepresentation
+    from tests.fakes.fake_models import FakeGroupForecastModel
+    from tests.fakes.fake_stores import FakeForecastStore
+    from tests.unit.flows.test_run_forecast_cycle_rejected_capture import _StubStore
+    from tests.unit.flows.test_selected_weather_cycle import _run_selected_cycle
+
+    class TolerantGroupModel(FakeGroupForecastModel):
+        def assess_group_inputs(self, inputs: GroupModelInputs) -> tuple:
+            return ()
+
+    model = TolerantGroupModel()
+    model.alert_eligibility = AlertEligibility.SKILL_FORECAST
+    model.data_requirements = replace(
+        model.data_requirements,
+        supported_time_steps=frozenset({timedelta(days=1)}),
+        required_past_targets=frozenset({"discharge"}),
+        lookback_steps=2,
+        forecast_horizon_steps=10,
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+    )
+    ordinary = FakeForecastStore()
+    ordinary_rejected = _StubStore()
+    native_rejected = _StubStore()
+    native_rejected.data_use = ForecastDataUse.PROVISIONAL_RATING
+    original_read = NativeRatingInputs.read_window
+    missing_sid = None
+
+    def read_window(
+        self: NativeRatingInputs, sid: object, *args: object, **kwargs: object
+    ) -> object:
+        result = original_read(self, sid, *args, **kwargs)
+        return (
+            replace(result, records=(), source_count=0)
+            if sid == missing_sid
+            else result
+        )
+
+    monkeypatch.setattr(NativeRatingInputs, "read_window", read_window)
+
+    def configure(
+        stores: dict, groups: object, config: DeploymentConfig, mid: ModelId
+    ) -> dict:
+        nonlocal missing_sid
+        stations = stores["station_store"].fetch_all_stations()
+        stations = [
+            replace(station, code=f"fixture-{index}")
+            for index, station in enumerate(stations)
+        ]
+        for station in stations:
+            stores["station_store"].update_station(station)
+        missing_sid = stations[-1].id
+        fixtures = [rating_fixture(station, mid, 2) for station in stations]
+        native = fixtures[0][0]
+        native = replace(
+            native,
+            bindings=tuple(
+                binding for item, _ in fixtures for binding in item.bindings
+            ),
+            dhm=replace(
+                native.dhm,
+                bindings=tuple(
+                    binding for item, _ in fixtures for binding in item.dhm.bindings
+                ),
+            ),
+        )
+        options = {
+            "config": config.model_copy(
+                update={
+                    "provisional_ratings": tuple(
+                        opt for _, opts in fixtures for opt in opts
+                    )
+                }
+            ),
+            "rating_inputs": native,
+            "standard_forecast_store": ordinary,
+            "standard_rejected_forecast_store": ordinary_rejected,
+            "rejected_forecast_store": native_rejected,
+        }
+        if reject_ordinary:
+            # Reject every output to exercise both rejection stores in one cycle.
+            options["qc_rules"] = ForecastQcRuleSet(
+                version="reject",
+                rules=(
+                    ForecastQcRuleParams(
+                        rule_id="negative_value",
+                        rule_version="1",
+                        parameter="discharge",
+                        time_step=timedelta(days=1),
+                        thresholds={"value_min": 1e9},
+                    ),
+                ),
+            )
+        return options
+
+    def verify(result: object, stores: dict) -> None:
+        if reject_ordinary:
+            assert result.forecasts_stored == 0
+            assert len(ordinary_rejected.calls[0]) == 1
+            assert (
+                ordinary_rejected.calls[0][0].payload.data_use
+                is ForecastDataUse.STANDARD
+            )
+            assert len(native_rejected.calls[0]) == 1
+        else:
+            assert result.forecasts_stored == 2
+            forecasts = ordinary.fetch_forecasts_for_cycle(ISSUE)
+            assert len(forecasts) == 1
+            assert forecasts[0].station_id == missing_sid
+            assert forecasts[0].input_lineage is None
+            assert forecasts[0].weather_evidence_version == 1
+            assert len(stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)) == 1
+
+    _run_selected_cycle(
+        monkeypatch,
+        group_run=True,
+        capture_fault="none",
+        station_count=2,
+        model_override=model,
+        omitted_observation_days=frozenset({0, 1}),
+        data_use=ForecastDataUse.PROVISIONAL_RATING,
+        configure_cycle=configure,
+        verify_cycle=verify,
     )

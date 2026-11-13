@@ -240,7 +240,10 @@ def test_excess_lookup_results_fail_closed(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.parametrize("epsilon", [timedelta(0), timedelta(microseconds=1)])
-def test_selected_weather_actual_36_hour_boundary(epsilon: timedelta) -> None:
+@pytest.mark.parametrize("max_age_hours", [36, 60])
+def test_selected_weather_actual_age_boundary(
+    epsilon: timedelta, max_age_hours: int
+) -> None:
     import polars as pl
 
     from sapphire_flow.services.daily_weather_cycle import DailyWeatherAssembly
@@ -284,8 +287,8 @@ def test_selected_weather_actual_36_hour_boundary(epsilon: timedelta) -> None:
             cycle_source=NwpCycleSource.PRIMARY,
             reference_time=ISSUE,
             issue_time=ISSUE,
-            now=ensure_utc(ISSUE + timedelta(hours=36) + epsilon),
-            max_age_hours=36,
+            now=ensure_utc(ISSUE + timedelta(hours=max_age_hours) + epsilon),
+            max_age_hours=max_age_hours,
             selected_weather=selected,
         )
 
