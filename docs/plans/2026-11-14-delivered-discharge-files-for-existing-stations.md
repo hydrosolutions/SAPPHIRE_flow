@@ -59,25 +59,41 @@ next batch) needs only a new run-time manifest entry and one admission command.
   property that no row moves between deliveries. If the old row is referenced elsewhere
   and cannot be deleted, that day is held and reported instead. Reports show station,
   dates and counts only. Mapping the mark to a QC flag or an API field is deferred.
-- **D-g** Problems are visible first as operator CLI output per station: coverage, counts
-  by QC status, gaps, flagged ranges, no values in logs or issues. An API endpoint only if
-  that proves insufficient, after auditing existing endpoints. Mapping flagged ranges to
-  model windows is deferred.
-- **D-j** (owner, 2026-11-14; clarified after review) October daily values link to their
-  rating tables, as September's do: each row carries the `rating_curve_id` of the latest
-  valid rating table covering that day. Candidates are only curves tagged with the October
-  rating delivery (a link to a September curve would block September's `replace`); on
-  overlap the October delivery's table is used. Tables that fail numerical validation (20
-  older October blocks do) are not stored, so block coverage comes from the manifest's own
-  rating files: a day inside an invalid block stays **unlinked** and is listed, because the
-  native rule is that an invalid block never causes fallback to an earlier one
-  (`docs/native-provisional-rating.md`). A day after the last block ends is
-  **provisional** and links to the most recent past valid table. Provisional is derivable
-  (the linked table's validity does not cover the day), so no new column; the report counts
-  provisional and unlinked days per station as dates and counts. Open: Q8.
+- **D-g** (revised 2026-11-14, vision merged in #516) Problems are visible in two places:
+  the operator CLI report per station (coverage, counts by QC status, gaps, flagged
+  ranges, rating-status counts, no values in logs or issues) and the observation API,
+  which returns a rating status and reason for every delivered observation (D-l). Mapping
+  flagged ranges to model windows is deferred.
+- **D-j** (owner, 2026-11-14; aligned with the merged vision) October daily values link to
+  the rating table in force for the day, selected as the native rating route selects:
+  per station the newest delivered rating file wins, and within it the block with the
+  latest start on or before the day. Candidates are curves tagged with the rating delivery
+  ids named in the manifest; never the September `replace` delivery's own curves
+  (`dhm-barkhk-2026-09-08`: October rows linked to them would block September's
+  `replace`). A station with no October rating file (for example 450) falls back to its
+  September-delivered table through the same rule. The status of each day:
+  `rated` (in force, inside validity, value inside the table's discharge range);
+  `provisional` with reason `after_last_table` (the in-force valid block's validity has
+  ended: link stays to that most recent past table), `outside_range_below` or
+  `outside_range_above`; `no_rating` with reason `invalid_table` (the in-force block failed
+  validation: conversion is held, never a fallback to an earlier block),
+  `before_first_table` or `no_table`. Supplied discharge is never altered or refused by
+  its status. Invalid blocks are not stored (admission audits only their start date and
+  reason), so their spans are derived from the rating files named in the manifest with the
+  same validation as admission (T3). Q8 is closed by the merged vision.
 - **D-k** (owner, 2026-11-14) October values get exactly September's visibility: hidden
   from consumer tokens, visible to reviewers in scope and to admins (restricted DHM data;
   public release was never authorized). Hence T4.
+- **D-l** (owner, 2026-11-14) The observation API exposes the rating status and reason of
+  every delivered observation (null for other rows), efficiently. The status is **stored at
+  load time** in two nullable columns on `observations` (`rating_status`, `rating_reason`,
+  `CHECK`ed enumerations), because the invalid-block and before-first-table cases cannot be
+  derived from stored curves alone. The extrapolation bounds agreed in September **still
+  stand** (confirmed 2026-11-14): above the table top plus 1.0 m refuse, below half the
+  lowest tabulated discharge refuse, never store 0.0. They govern level-to-discharge
+  conversion, which is outside this slice (discharge only); they do not touch supplied
+  discharge. Where the conversion milestone persists its range flag is decided there,
+  and may reuse these columns.
 - **D-h** Discharge only. Water level, 24:00 and datum offsets are out.
 - **D-i** Coordinated with the Nepal-cloud session through the owner; implementation
   starts only on the owner's go-ahead. Deployment to the Nepal host belongs to the owner
@@ -182,7 +198,8 @@ CHWRR overlay; the tenant-generic CLI identity is deferred):
   check that the admission for `D` exists, is not revoked, and has the same tenant and
   hash. Resolve stations by code and network in the tenant, as `admit_rating_deliveries`
   does: missing, ambiguous or foreign refuses. Build `RawObservation(parameter="discharge",
-  source=MANUAL_IMPORT, delivery_id=D, rating_curve_id=<per D-j>)` at
+  source=MANUAL_IMPORT, delivery_id=D, rating_curve_id=<per D-j>, rating_status and
+  rating_reason per D-j)` at
   `nepal_day_start(day)`. Classify each key against existing rows, read per station by time
   range with the per-row predicate (fact 8): *new* → insert; *own tag* → upsert (equal =
   no-op; a changed link resets QC to RAW, so a re-run is zero-write only when links are
@@ -224,8 +241,22 @@ for every non-admin; the station observations route excludes it for non-reviewer
 network overview shows it to reviewers. Untagged and non-admitted rows (for example
 BIPAD-feed tags) stay visible. D-k means "exactly as September today", path by path.
 
+**Rating link and status (D-j, D-l).** The discharge manifest entry also lists the
+station's rating files (kind `rating_table`) and the rating delivery ids that may be
+linked. The load parses those files with `parse_rating_tables` and the admission's
+validation to learn every block's start, validity and validity outcome; it then finds, per
+day, the in-force block (latest start on or before the day, over valid and invalid
+blocks), looks up the stored curve by station, delivery tag and start date, and sets
+`rating_curve_id`, `rating_status` and `rating_reason`. A stored curve that disagrees with
+the parsed file refuses the station. Additive migration `0086_observation_rating_status`
+adds the two nullable columns (cheap, metadata-only; not security-sensitive, so it ships in
+PR-B, and T3b's migration becomes `0087`). `RawObservation`/`Observation`, the store
+insert/upsert/read paths, `ObservationResponse` (new optional fields, default null, so old
+clients are unaffected) and the observation routes carry them. The upsert treats a changed
+status like a changed link.
+
 **Revised days (D-f, T3b; built only if the dry run shows differing days).** A separate
-small migration (`0086`) creates `delivery_value_revisions`: station, timestamp,
+small migration (`0087`) creates `delivery_value_revisions`: station, timestamp,
 parameter, previous value, previous delivery, previous `rating_curve_id`, new delivery,
 revised time, `status` (`pending` default, or `accepted`), reviewer name, reviewed time. It
 holds restricted values: no API role can read it, it joins the admin table browser's
@@ -286,10 +317,9 @@ revisions exist.
 
 7. **Days after the last rating block ends.** *Closed 2026-11-14 (D-j):* provisional,
    linked to the most recent past valid table.
-8. **Days inside an invalid rating block.** The review found that the repo's native rule is
-   that an invalid block never causes fallback to an earlier table. *Recommendation:* such
-   days stay unlinked and are listed; only days after the last block ends are provisional.
-   Do you accept this exception to "use the most recent past table"?
+8. **Days inside an invalid rating block.** *Closed 2026-11-14:* the merged vision (#516)
+   adopts the native rule: such days are `no_rating`/`invalid_table`, and only days after the
+   in-force valid block's validity are provisional.
 
 ## Tasks
 
@@ -345,16 +375,32 @@ Fixtures are synthetic; no delivered values.
   refuses non-admitted or revoked tags). Missing or foreign stations refuse. The admission
   is checked after the tenant lock. A re-run with unchanged links writes zero rows.
   Dry-run rolls back. Audit `detail` contains no delivered value (asserted by scanning for
-  every fixture value). Rating link per D-j: October-tagged candidates only; overlap goes
-  to October; a day inside an invalid block is unlinked; a day after the last block is
-  provisional and linked to the latest past table; none of these is guessed. QC uses no
+  every fixture value). Rating link and status per D-j: candidates only from the named rating deliveries, never
+  the September `replace` tag; the newest delivered file wins per station; the in-force
+  block is the latest start on or before the day, over valid and invalid blocks; a day whose
+  in-force block is invalid is `no_rating`/`invalid_table`; before the first block is
+  `before_first_table`; a day after the in-force valid block's validity is `provisional`/
+  `after_last_table` and keeps the link; a value outside the table's discharge range is
+  `provisional`/`outside_range_*` with the value unchanged; a disagreement between a parsed
+  rating file and the stored curves refuses that station; none of these is guessed. QC uses no
   station override, `gross_outlier` is never applied, single-day segments are
   `QC_UNCHECKED`, flags are stored not dropped, and fragmentation is counted. The report
   has dates and counts only. Withdraw removes only `D`'s rows, refuses the seed, and
   refuses while revisions exist. Water-level rows at the same stations are untouched.
+- **T3c Rating status stored and served** (additive migration; depends on T3). Files: new
+  `alembic/versions/0086_observation_rating_status.py`, `db/metadata.py`,
+  `types/observation.py`, `store/observation_store.py`, `protocols/stores.py` and fakes,
+  `api/schemas.py` (`ObservationResponse`), `api/routes/api_stations.py`,
+  `api/routes/api_swiss_observation_history.py` where observation rows are returned, the
+  API/OpenAPI documents under `docs/spec/`, `tests/unit/migrations`, store and API tests.
+  Tests: the two columns are nullable with enumerated values; old rows read as null; a
+  delivered row round-trips status and reason; the API returns them and old consumers still
+  parse the response; one request for a station's full history stays a bounded number of
+  queries (no per-row lookups); consumer tokens still do not see withheld delivery rows;
+  the upsert resets QC only when the link or status changes.
 - **T3b Revised days and review** (conditional: build only if the dry run finds differing
-  days; separate migration `0086`, PR-C). Files: new
-  `alembic/versions/0086_delivery_value_revisions.py`, `db/metadata.py`,
+  days; separate migration `0087`, PR-C). Files: new
+  `alembic/versions/0087_delivery_value_revisions.py`, `db/metadata.py`,
   `docker/bootstrap-roles.sql`, `src/sapphire_flow/api/routes/tables.py` (protected list),
   `services/delivered_discharge.py`, `cli/delivery_admission.py` (`discharge-review`), a
   store method for delete-plus-insert, grant-matrix and table-browser tests. Tests: a
@@ -384,25 +430,29 @@ Fixtures are synthetic; no delivered values.
   "tasks": [
     {"id": "T1", "depends_on": [], "estimate_days": 1.75, "risk": "high"},
     {"id": "T2", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "medium"},
-    {"id": "T3", "depends_on": ["T1", "T2"], "estimate_days": 2.5, "risk": "medium"},
+    {"id": "T3", "depends_on": ["T1", "T2"], "estimate_days": 3.0, "risk": "medium"},
+    {"id": "T3c", "depends_on": ["T3"], "estimate_days": 1.5, "risk": "medium"},
     {"id": "T4", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "high"},
-    {"id": "T5", "depends_on": ["T2", "T3", "T4"], "estimate_days": 0.5, "risk": "low"},
+    {"id": "T5", "depends_on": ["T2", "T3", "T3c", "T4"], "estimate_days": 0.5, "risk": "low"},
     {"id": "T6", "depends_on": ["T5"], "estimate_days": 0.75, "risk": "high", "owner_run": true},
     {"id": "T3b", "depends_on": ["T6"], "estimate_days": 1.25, "risk": "medium", "conditional": true}
   ]
 }
 ```
 
-Estimates are unmeasured. Build without T3b is about 6.75 days (T1-T5), plus 0.75 for the
-owner-run host steps; T3b adds about 1.25 only if the dry run finds differing days. T2 and
-T4 run in parallel after T1. Calendar reality: 14 November 2026 is a Saturday, so the
-24 November cut line leaves about seven working days, and reviews and the owner's merges
-come on top; even without T3b the cut line is tight, and the owner should expect the
-October load to land after it unless work starts Monday and reviews are quick. If time is
-short, cut the report's flagged-range detail first, never T1 or T4.
+Estimates are unmeasured. Build without T3b is 8.75 days in sum (T1 1.75, T2 1.0, T3 3.0,
+T3c 1.5, T4 1.0, T5 0.5; T2 and T4 run in parallel after T1, so the critical path
+T1-T2-T3-T3c-T5 is about 7.75), plus 0.75 for the owner-run host steps; T3b
+adds about 1.25 only if the dry run finds differing days. 14 November 2026 is a Saturday,
+so the 24 November cut line (about seven working days, with reviews and merges on top) is
+**not reachable** with the API requirement; expect early December. The agreed fallback
+applies: the workshop uses the September data and presents the October delivery as the next
+step. If time is short, cut the report's flagged-range detail first, never T1, T3c's
+tests, or T4.
 
 **PRs.** PR-A = T1 + T4 (database and withholding; the security review covers both; it
-deploys standalone and safely). PR-B = T2 + T3 + T5. PR-C = T3b, only if needed. PR-A
+deploys standalone and safely). PR-B = T2 + T3 + T3c + T5 (T3c's additive migration is not security-sensitive). PR-C =
+T3b, only if needed. PR-A
 merges and deploys first or together with PR-B; no October load before both are deployed.
 Each code PR advances `RELEASE_TARGET` exactly once (`.venv/bin/python -I
 tools/release_target.py bump --base-sha <base>`; `docs/standards/cicd.md` § Release
@@ -469,7 +519,8 @@ types and the full suite must pass after the final change.
   `docs/standards/security.md` also states plainly that the operator can delete or
   re-tag rows of any admitted delivery in its tenant (the guard bounds the set of
   deliveries, not which one a run touches). Also `docs/spec/api-v1-review.md`,
-  `docs/spec/network-overview.md` and `docs/spec/types-and-protocols.md` where the
+  `docs/spec/network-overview.md` and `docs/spec/types-and-protocols.md` (observation types,
+  `ObservationResponse`, the rating status and reason fields and their enumerations) where the
   withholding signature or wording changes, the "second delivery is a migration" text in
   `security.md`, and `docs/plans/README.md` index entry.
 
@@ -491,6 +542,11 @@ types and the full suite must pass after the final change.
 - **Rating link:** unlinked and provisional days are reported, never guessed. The October
   curves exist on the host only for stations whose newest rating file stored blocks;
   verify in the dry run.
+- **Status derivation correctness:** stored statuses are only as good as the parsed rating
+  files; a disagreement between parsed files and stored curves refuses the station, and
+  the dry run reports counts per status. A wrong enumeration value is blocked by `CHECK`.
+- **Two migrations:** `0085` (guard, security review) and `0086` (additive columns). They
+  ship in separate PRs so the security review stays small.
 - **Revoke versus load race:** closed by never deleting admission rows and taking the
   tenant lock in `admit`, `revoke` and `discharge` (admission checked after the lock).
 - **Wrong admission:** harmless until rows are written; `revoke` stops further writes, and
@@ -502,7 +558,8 @@ Station or parameter scoping of admissions; a tenant-generic operator CLI identi
 overlay stays CHWRR); re-approval bound to exact input and rule versions; cross-delivery QC
 continuity (and using other admitted rows as QC context); mapping flags to model windows;
 a JSON report output and a query-plan assertion; restoring September values after a
-revision; an API endpoint or dashboard view; reading
+revision; a dashboard view; persisting a conversion range flag (the level conversion
+milestone decides); reading
 October in training readiness (Q6); water level, 24:00 and datum (vision § Later);
 attribution beyond a label (the existing forged-audit residual stays).
 
