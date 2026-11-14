@@ -17,69 +17,93 @@ suitable. One person can do both jobs, but a successful run is not scientific ap
 stations the hydrologist approves. **Not covered here:** registering stations, the weather
 data service (next step) and forecasts.
 
-### Choose your route
+### Which route?
 
-| Route | Choose it when | You need |
-|---|---|---|
-| **1. Attach a package that already exists** | hydrosolutions (or anyone) gave you an extracted package, for example the pre-extracted Nepal basins | The unpacked package folder, its original ZIP, and the matching station sheet. No extractor and no datasets. |
-| **2. Run the extractor** | You have new or corrected stations and no package yet | The extractor, set up with hydrosolutions (see below), a command file, and your station sheet. |
+| | Choose it when | You need | Go to |
+|---|---|---|---|
+| **Route 1: attach a package that already exists** | hydrosolutions (or anyone) gave you an extracted package, for example the pre-extracted Nepal basins | The unpacked package folder, its original ZIP and the matching station sheet. No extractor, no datasets. | [Route 1](#route-1-attach-a-package-that-already-exists) |
+| **Route 2: run the extractor** | You have new or corrected stations and no package yet | The extractor (set up with hydrosolutions), a command file and your station sheet | [Route 2](#route-2-run-the-extractor) |
 
 The extractor is a separate project. Today it covers **Nepal only** (it needs a Nepal basin
 dataset, a Nepal attribute set and a Nepal weather store) and is delivered by hydrosolutions
 as a Linux (amd64) Docker bundle or as source plus three large datasets. Its repository is
 private. For another country, ask hydrosolutions before you plan: those datasets would have
-to be built first.
+to be built first. Both routes end at the same place: [Review and save the
+handover](#review-and-save-the-handover-both-routes).
 
-### Inputs you need
+### Route 1: attach a package that already exists
 
-| Input | What it is | Example |
-|---|---|---|
-| Station sheet | CSV or one-sheet Excel with `station_code`, `display_name`, `latitude`, `longitude` (optional `published_area_km2`). Codes are text: keep `00001`. | [template](../examples/basin-operator-stations.csv) |
-| Package folder and its ZIP (route 1) | The unpacked, validated package and the original ZIP, kept unchanged. For the pre-extracted Nepal basins hydrosolutions sends a download link together with the matching station sheet. | `/absolute/package` |
-| Extractor command file (route 2) | A JSON file that tells the tool how to start the extractor; set up with hydrosolutions. | `/absolute/private/extractor-command.json` |
-| Workspace | A new, empty private folder **outside any Git checkout** for this batch. | `/absolute/private/new-basin-review` |
-| Hydrologist | Reviews and records the decision; their name is a label, not a login. | |
-
-### Steps
+| You need | What it is |
+|---|---|
+| Station sheet | CSV or one-sheet Excel with `station_code`, `display_name`, `latitude`, `longitude` (optional `published_area_km2`). It must list **exactly** the package's stations and display names. For the pre-extracted Nepal basins, hydrosolutions sends it with the package. [Template](../examples/basin-operator-stations.csv) |
+| Package | The unpacked, validated folder and its original ZIP, kept unchanged |
+| Workspace | A new, empty private folder **outside any Git checkout** for this batch |
+| Hydrologist | Reviews and records the decision; their name is a label, not a login |
 
 | # | Step | Who | Done when |
 |---|---|---|---|
-| 1 | Prepare the station sheet. Compare codes and coordinates with your source; keep leading zeros (import as text). | Admin | The sheet matches the source |
-| 2 | Route 1: download the package and unpack it into a new folder; keep the original ZIP. Route 2: get the extractor ready with hydrosolutions. | Admin | Package folder and ZIP in hand, or the command file works |
-| 3 | Start the tool with the command for your route (below). | Admin | The page opens at `http://127.0.0.1:8765` |
-| 4 | Upload the station sheet, check the stations shown, and **Confirm**. | Admin, hydrologist | Route 1: the page shows **Existing extraction loaded** |
-| 5 | Route 2 only: click **Start extraction** once, then reload to check progress. Never start a second run while one is busy. | Admin | A basin is shown |
-| 6 | Review each basin and record a decision. Follow [Hydrologist: review the basin](#hydrologist-review-the-basin). | Hydrologist | Decisions recorded |
-| 7 | Click **Create immutable approved-only handover**. | Hydrologist, admin | The page shows **Handover saved:** and a folder path |
-| 8 | Keep the handover folder unchanged and go on with the [Gateway checklist](recap-gateway-runbook.md#prepare-an-approved-basin-handover--admin-checklist). | Admin | You have the folder path |
-
-Commands (replace the absolute paths; never put credentials in a command):
+| 1 | Check the station sheet against your source. Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source and the package |
+| 2 | Download the package and unpack it into a new folder. Keep the original ZIP. | Admin | Folder and ZIP in hand |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
+| 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows **Existing extraction loaded** |
+| 5 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
 
 ```bash
-# Route 1: attach an existing package (use the unpacked folder, not the ZIP)
+# Replace the absolute paths. Use the unpacked folder, not the ZIP. Never put credentials in a command.
 uv run python -m sapphire_flow.cli.basin_operator \
   --workspace /absolute/private/new-basin-review \
   --package-dir /absolute/package
+```
 
-# Route 2: run the extractor
+**Start extraction** stays disabled on this route: that is expected.
+
+### Route 2: run the extractor
+
+| You need | What it is |
+|---|---|
+| Station sheet | As above ([template](../examples/basin-operator-stations.csv)): `station_code`, `display_name`, `latitude`, `longitude`, optional `published_area_km2` |
+| Extractor | Set up with hydrosolutions (see the note under "Which route?") |
+| Command file | A JSON file that tells the tool how to start the extractor, for example `/absolute/private/extractor-command.json` |
+| Workspace | A new, empty private folder **outside any Git checkout** for this batch |
+| Hydrologist | Reviews and records the decision; their name is a label, not a login |
+
+| # | Step | Who | Done when |
+|---|---|---|---|
+| 1 | Prepare the station sheet from your source. Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source |
+| 2 | Get the extractor and its command file ready with hydrosolutions. | Admin | The command file works |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
+| 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows the stations and **Start extraction** is enabled |
+| 5 | Click **Start extraction** once, then reload to check progress. Never start a second run while one is busy: it clears the current decisions. | Admin | A basin is shown |
+| 6 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
+
+```bash
+# Replace the absolute paths. Never put credentials in a command.
 uv run python -m sapphire_flow.cli.basin_operator \
   --workspace /absolute/private/new-basin-review \
   --extractor-command /absolute/private/extractor-command.json \
   --extractor-interface v0.2.0
 ```
 
-Do not use both routes in one command. Basin outlines and coordinates can carry data-use
-restrictions: keep the package and workspace private, and share only `review.html` for
-feedback (never an approval).
+Do not combine the two routes in one command.
+
+### Review and save the handover (both routes)
+
+| # | Step | Who | Done when |
+|---|---|---|---|
+| 1 | Review each basin and record a decision. Follow [Hydrologist: review the basin](#hydrologist-review-the-basin) below. | Hydrologist | A decision is recorded for each station |
+| 2 | Click **Create immutable approved-only handover**. | Hydrologist, admin | The page shows **Handover saved:** and a folder path |
+| 3 | Keep the handover folder unchanged and go on with the [Gateway checklist](recap-gateway-runbook.md#prepare-an-approved-basin-handover--admin-checklist). | Admin | You have the folder path |
+
+Basin outlines and coordinates can carry data-use restrictions: keep the package and
+workspace private, and share only `review.html` for feedback (never an approval).
 
 ### If it stops
 
 | What you see | What to do |
 |---|---|
-| **Start extraction** is disabled | Expected on route 1. Confirm the stations and review the loaded package. |
-| The package is refused after Confirm | The sheet must list exactly the package's stations and display names. Compare them and correct the sheet; never edit the package. |
+| The package is refused after Confirm (route 1) | The sheet must list exactly the package's stations and display names. Compare them and correct the sheet; never edit the package. |
 | Station codes lost their leading zeros | Go back to the original source and import the column as text. |
-| An extraction is running | Reload to check. Do not start another run: it clears the current decisions. |
+| An extraction is running (route 2) | Reload to check. Do not start another run. |
 | A colleague cannot open the page | It is local to your computer. Send them `review.html` for feedback only. |
 | Anything else, or you need the extractor | See the troubleshooting table and details below, or ask hydrosolutions with the step number and the exact message (no values, no credentials). |
 
