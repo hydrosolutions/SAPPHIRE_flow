@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -9,6 +8,8 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherCoverageError,
     OperationalWeatherDay,
     OperationalWeatherWindow,
+    WeatherCoverage,
+    daily_weather_value,
     require_midnight,
 )
 
@@ -26,6 +27,7 @@ def reduce_daily_window(
     start: UtcDatetime,
     end: UtcDatetime,
     samples: tuple[OperationalWeatherSample, ...],
+    coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
 ) -> OperationalWeatherWindow:
     for bound in (issue_time, start, end):
         require_midnight(bound)
@@ -41,20 +43,19 @@ def reduce_daily_window(
     for offset in range((end - start).days):
         day = ensure_utc(start + timedelta(days=offset))
         rows = tuple(by_day.get(day, ()))
-        temperatures = tuple(
-            row.value for row in rows if row.parameter == "temperature"
-        )
-        if not temperatures:
+        temperature = daily_weather_value(day, rows, "temperature")
+        precipitation = daily_weather_value(day, rows, "precipitation")
+        if coverage is WeatherCoverage.COMPLETE and (
+            temperature is None or precipitation is None
+        ):
             raise OperationalWeatherCoverageError(
-                "operational weather is missing required temperature"
+                "operational weather has a gap in required daily support"
             )
         days.append(
             OperationalWeatherDay(
                 day=day,
-                precipitation_mm=math.fsum(
-                    row.value for row in rows if row.parameter == "precipitation"
-                ),
-                temperature_c=math.fsum(temperatures) / len(temperatures),
+                precipitation_mm=precipitation,
+                temperature_c=temperature,
                 samples=rows,
             )
         )

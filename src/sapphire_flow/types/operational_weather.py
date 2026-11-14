@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.weather_gap import WeatherGapFill, WeatherGapMethod
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -20,6 +21,11 @@ QUALIFIED_SOURCE_REVISION = "ceff18d099b277d6e237c2cb81fe2068a85d06e5"
 
 class OperationalWeatherCoverageError(ValueError):
     """Required source support is incomplete, without inventing missing samples."""
+
+
+class WeatherCoverage(StrEnum):
+    COMPLETE = "complete"
+    ALLOW_GAPS = "allow_gaps"
 
 
 class OperationalWeatherSource(StrEnum):
@@ -135,45 +141,51 @@ class OperationalWeatherSample:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class OperationalWeatherDay:
     day: UtcDatetime
-    precipitation_mm: float
-    temperature_c: float
+    precipitation_mm: float | None
+    temperature_c: float | None
     samples: tuple[OperationalWeatherSample, ...]
 
     def __post_init__(self) -> None:
         require_midnight(self.day)
-        if not self.samples:
-            raise ValueError("daily weather requires contributing samples")
-        end = self.day + timedelta(days=1)
         for parameter in ("precipitation", "temperature"):
-            rows = sorted(
-                (row for row in self.samples if row.parameter == parameter),
-                key=lambda row: row.valid_time,
-            )
-            cursor = self.day
-            for row in rows:
-                if row.valid_time > cursor:
-                    raise OperationalWeatherCoverageError("daily weather has a gap")
-                if row.valid_time < cursor:
-                    raise ValueError("daily weather has an overlap or duplicate")
-                cursor = row.valid_time + row.sample_step()
-            if cursor < end:
-                raise OperationalWeatherCoverageError(
-                    "daily weather does not cover the complete UTC grid"
-                )
-            if cursor > end:
-                raise ValueError("daily weather sample crosses a UTC day boundary")
-            reduced = math.fsum(row.value for row in rows)
-            if parameter == "temperature":
-                reduced /= len(rows)
+            reduced = daily_weather_value(self.day, self.samples, parameter)
             actual = (
                 self.precipitation_mm
                 if parameter == "precipitation"
                 else self.temperature_c
             )
-            if not math.isfinite(actual) or actual != reduced:
+            if reduced is None and actual is not None:
+                raise OperationalWeatherCoverageError("daily weather has a gap")
+            if actual != reduced or (actual is not None and not math.isfinite(actual)):
                 raise ValueError(
                     "daily weather value differs from contributing samples"
                 )
+
+
+def daily_weather_value(
+    day: UtcDatetime,
+    samples: tuple[OperationalWeatherSample, ...],
+    parameter: str,
+) -> float | None:
+    rows = sorted(
+        (row for row in samples if row.parameter == parameter),
+        key=lambda row: row.valid_time,
+    )
+    end = day + timedelta(days=1)
+    cursor = day
+    missing = False
+    for row in rows:
+        if row.valid_time > cursor:
+            missing = True
+        if row.valid_time < cursor:
+            raise ValueError("daily weather has an overlap or duplicate")
+        cursor = row.valid_time + row.sample_step()
+        if cursor > end:
+            raise ValueError("daily weather sample crosses a UTC day boundary")
+    if missing or cursor < end:
+        return None
+    value = math.fsum(row.value for row in rows)
+    return value / len(rows) if parameter == "temperature" else value
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -662,6 +674,7 @@ class PastWeatherUse:
     snapshot_issue_time: UtcDatetime
     binding_fingerprint: str
     days: tuple[OperationalWeatherDay, ...]
+    gap_fills: tuple[WeatherGapFill, ...] = ()
 
     def __post_init__(self) -> None:
         require_midnight(self.snapshot_issue_time)
@@ -688,6 +701,43 @@ class PastWeatherUse:
                 raise ValueError(
                     "past weather use requires canonical SHA256 identities"
                 )
+        by_day = {day.day: day for day in self.days}
+        filled: set[tuple[str, UtcDatetime]] = set()
+        for fill in self.gap_fills:
+            key = (fill.parameter, fill.day)
+            if (
+                key in filled
+                or fill.day not in by_day
+                or fill.parameter not in self.requirement.parameters
+            ):
+                raise ValueError("past weather fill scope mismatch or duplicate")
+            filled.add(key)
+            day = by_day[fill.day]
+            original = (
+                day.precipitation_mm
+                if fill.parameter == "precipitation"
+                else day.temperature_c
+            )
+            if original is not None:
+                raise ValueError("weather fill cannot replace complete source values")
+            if fill.parameter == "precipitation" and fill.value < math.fsum(
+                row.value for row in day.samples if row.parameter == "precipitation"
+            ):
+                raise ValueError("weather fill is below observed partial rainfall")
+            if fill.method is WeatherGapMethod.LINEAR:
+                for endpoint in fill.endpoints:
+                    support = by_day.get(endpoint.day)
+                    value = (
+                        None
+                        if support is None
+                        else support.precipitation_mm
+                        if fill.parameter == "precipitation"
+                        else support.temperature_c
+                    )
+                    if value != endpoint.value:
+                        raise ValueError(
+                            "weather fill endpoint lacks original daily support"
+                        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -784,6 +834,12 @@ class WeatherUse:
             or self.past.binding_fingerprint != self.attempt.key.binding_fingerprint
         ):
             raise ValueError("as-used past weather identity mismatch")
+        if isinstance(self.past, PastWeatherUse) and any(
+            row.station_id != self.station_id or row.cycle_time > self.issue_time
+            for fill in self.past.gap_fills
+            for row in fill.donor_records
+        ):
+            raise ValueError("as-used weather donor identity mismatch")
         if isinstance(self.future, FutureWeatherUse) and (
             self.future.requirement.station_id != self.station_id
             or self.future.requirement.issue_time != self.issue_time

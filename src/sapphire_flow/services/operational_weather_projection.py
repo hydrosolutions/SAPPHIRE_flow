@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sapphire_flow.services.operational_weather_proof import verify_future_receipt
@@ -10,9 +11,11 @@ from sapphire_flow.types.operational_weather import (
     FutureWeatherRequirement,
     FutureWeatherScope,
     FutureWeatherUse,
+    OperationalWeatherDay,
     PastWeatherUse,
     WeatherAttemptState,
     WeatherBlocked,
+    WeatherCoverage,
     WeatherFreshness,
     WeatherLegState,
     WeatherUnused,
@@ -36,6 +39,7 @@ def project_past_weather(
     expected_attempt: WeatherCacheAttempt,
     requirement: PastWeatherRequirement | None,
     max_past_bytes: int,
+    coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
 ) -> PastWeatherUse | WeatherBlocked | WeatherUnused:
     if requirement is None:
         return WeatherUnused()
@@ -56,9 +60,31 @@ def project_past_weather(
     if snapshot is None:
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
     verify_past_snapshot(snapshot, max_bytes=max_past_bytes)
-    if (
+    if coverage is WeatherCoverage.COMPLETE and (
         snapshot.window.start > requirement.start
         or snapshot.window.end < requirement.end
+    ):
+        return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
+    available = {day.day: day for day in snapshot.window.days}
+    days = tuple(
+        available.get(
+            requirement.start + timedelta(days=offset),
+            OperationalWeatherDay(
+                day=requirement.start + timedelta(days=offset),
+                precipitation_mm=None,
+                temperature_c=None,
+                samples=(),
+            ),
+        )
+        for offset in range((requirement.end - requirement.start).days)
+    )
+    if not any(day.samples for day in days):
+        return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
+    if coverage is WeatherCoverage.COMPLETE and any(
+        (day.precipitation_mm if parameter == "precipitation" else day.temperature_c)
+        is None
+        for day in days
+        for parameter in requirement.parameters
     ):
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
     return PastWeatherUse(
@@ -72,11 +98,7 @@ def project_past_weather(
         snapshot_sha256=snapshot.payload_sha256,
         snapshot_issue_time=snapshot.window.issue_time,
         binding_fingerprint=snapshot.window.binding_fingerprint,
-        days=tuple(
-            day
-            for day in snapshot.window.days
-            if requirement.start <= day.day < requirement.end
-        ),
+        days=days,
     )
 
 

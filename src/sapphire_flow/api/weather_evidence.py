@@ -61,6 +61,11 @@ def _leg(use: WeatherUse | None, leg: Literal["past", "future"]) -> WeatherLegRe
                 for day in fact.days
                 for row in day.samples
             }
+            | {
+                (row.nwp_source, row.cycle_time)
+                for fill in fact.gap_fills
+                for row in fill.donor_records
+            }
         )
         reason = fact.refresh_outcome.reason
         snapshot_id, digest, retrieved = (

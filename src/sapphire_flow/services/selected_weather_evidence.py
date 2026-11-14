@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from sapphire_flow.config.operational_weather import MAX_SELECTED_WEATHER_EVIDENCE_BYTES
 from sapphire_flow.exceptions import WeatherEvidenceCaptureError
 from sapphire_flow.types.datetime import UtcDatetime
+from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.ids import ForecastId, StationId
 from sapphire_flow.types.operational_weather import (
     DerivedWeatherUse,
@@ -41,6 +42,7 @@ _WEATHER_USE.rebuild(
         "StationId": StationId,
         "ForecastId": ForecastId,
         "UUID": UUID,
+        "SpatialRepresentation": SpatialRepresentation,
     }
 )
 
@@ -51,6 +53,7 @@ _DERIVED.rebuild(
         "StationId": StationId,
         "ForecastId": ForecastId,
         "UUID": UUID,
+        "SpatialRepresentation": SpatialRepresentation,
     }
 )
 

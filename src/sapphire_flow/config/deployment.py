@@ -21,6 +21,7 @@ from sapphire_flow.config.provisional_rating import (
     ProvisionalRatingConfig,  # noqa: TC001
 )
 from sapphire_flow.config.swiss_overview import SwissOverviewConfig  # noqa: TC001
+from sapphire_flow.config.weather_gap import WeatherGapConfig
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
     SeasonDefinition,
@@ -284,6 +285,7 @@ class DeploymentConfig(BaseModel):
     bafu_observation_archive_path: Path | None = None
 
     input_quality: InputQualityConfig = InputQualityConfig()
+    weather_gap_fill: WeatherGapConfig = WeatherGapConfig()
 
     @field_validator("nwp_cycle_min_age_minutes")
     @classmethod

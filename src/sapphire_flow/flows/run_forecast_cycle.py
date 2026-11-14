@@ -3651,6 +3651,9 @@ def run_forecast_cycle_flow(
                             earliest_cycle=weather_earliest_cycle,
                             max_past_bytes=config.operational_weather.max_cache_bytes,
                             ensemble_mode=requirement.ensemble_mode,
+                            model=models[mid],
+                            model_id=mid,
+                            gap_config=config.weather_gap_fill,
                         )
                     except ConfigurationError as exc:
                         errors.append(

@@ -44,6 +44,7 @@ from sapphire_flow.services.track_assembly import (
     ReadyContext,
     UnavailableTrackContext,
 )
+from sapphire_flow.services.weather_gap_fill import prepare_station_weather
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import (
     EnsembleMode,
@@ -315,6 +316,13 @@ def _run_single_model(
             cause=AssignmentFailureCause.MODEL_NOT_FOUND,
             detail=f"model {assignment.model_id} not found in registry",
         )
+
+    inputs = prepare_station_weather(
+        inputs,
+        model=model,
+        model_id=assignment.model_id,
+        config=config.weather_gap_fill,
+    )
 
     # Plan 090 D1/D2d/D3: post-download coverage safety net. A model that
     # declares future NWP forcing must receive >= its own forecast_horizon_steps
@@ -773,7 +781,9 @@ def _run_single_model(
     input_quality_flags = (
         *input_quality_flags,
         *forcing_flags,
-        *selected_weather_quality_flags(context.inputs.source_evidence),
+        *selected_weather_quality_flags(
+            context.inputs.source_evidence, issue_time=context.inputs.issue_time
+        ),
     )
     input_quality = aggregate_input_quality(list(input_quality_flags))
 

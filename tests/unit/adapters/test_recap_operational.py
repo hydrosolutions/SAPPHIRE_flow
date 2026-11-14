@@ -223,7 +223,11 @@ class TestRecapGatewayOperationalAdapter:
         result = adapter.fetch_windows(
             sources=[source], issue_time=ISSUE, start=START, end=ISSUE
         )
-        assert result[source.station_id].end == ISSUE
+        window = result[source.station_id]
+        assert window.end == ISSUE + timedelta(days=1)
+        assert window.days[-1].precipitation_mm is None
+        assert window.days[-1].temperature_c is None
+        assert not window.days[-1].samples
 
     def test_invalid_binding_is_rejected_before_any_call(self) -> None:
         api = RecordingApi({})
@@ -318,7 +322,7 @@ class TestPinnedSdkRequestContract:
 
 
 class TestOptionalBufferIntegrity:
-    @pytest.mark.parametrize("value", [float("nan"), -1.0])
+    @pytest.mark.parametrize("value", [float("inf"), -1.0])
     @pytest.mark.parametrize("scope", ["required", "optional"])
     def test_numeric_failure_is_confined_to_optional_scope(
         self,
@@ -346,6 +350,33 @@ class TestOptionalBufferIntegrity:
                 sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
             )
             assert result[make_binding().station_id].end == ISSUE
+
+    @pytest.mark.parametrize("scope", ["required", "optional"])
+    def test_missing_sample_preserves_partial_support_as_a_gap(
+        self, scope: str
+    ) -> None:
+        frames = {
+            "tp": pd.read_parquet(FIXTURES / "precipitation.parquet"),
+            "2t": pd.read_parquet(FIXTURES / "temperature.parquet"),
+        }
+        timestamp = ISSUE if scope == "optional" else START
+        frames["tp"].loc[timestamp, "g_225"] = float("nan")
+        adapter = RecapGatewayOperationalAdapter(
+            api=cast("EcmwfApiLike", RecordingApi(frames)),
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+        )
+        result = adapter.fetch_windows(
+            sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
+        )
+        missing = next(
+            day
+            for day in result[make_binding().station_id].days
+            if day.day == timestamp
+        )
+        assert missing.precipitation_mm is None
+        assert missing.temperature_c is not None
+        assert missing.samples
 
     def test_invalid_optional_value_does_not_hide_other_leg_identity(self) -> None:
         frames = {

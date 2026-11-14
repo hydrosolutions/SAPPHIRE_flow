@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timedelta
+from numbers import Real
 from typing import TYPE_CHECKING, Literal, cast
 
 import pandas as pd
@@ -29,6 +31,7 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherSample,
     OperationalWeatherSource,
     OperationalWeatherWindow,
+    WeatherCoverage,
     WeatherProductIdentity,
     require_midnight,
 )
@@ -101,12 +104,16 @@ def parse_operational_samples(
     if converter is None:
         raise RecapPayloadIntegrityError("operational variable has no unit contract")
     samples: list[OperationalWeatherSample] = []
+    seen: set[UtcDatetime] = set()
     try:
         for timestamp, series in response.iterrows():
             valid_time = ensure_utc(cast("pd.Timestamp", timestamp).to_pydatetime())
             source = OperationalWeatherSource(series["source"])
             if not start <= valid_time < end:
                 continue
+            if valid_time in seen:
+                raise ValueError("duplicate operational sample timestamp")
+            seen.add(valid_time)
             raw_meta = cast("object", series["source_meta"])
             if isinstance(raw_meta, str):
                 _SourceMetadata.model_validate_json(raw_meta)
@@ -138,6 +145,13 @@ def parse_operational_samples(
             ):
                 raise ValueError("invalid IFS cycle identity")
             if mode == "identity":
+                continue
+            raw_value = cast("object", series[polygon])
+            if (
+                raw_value is None
+                or raw_value is pd.NA
+                or (isinstance(raw_value, Real) and math.isnan(float(raw_value)))
+            ):
                 continue
             try:
                 value_row = _ProviderSample.model_validate(
@@ -325,6 +339,7 @@ class RecapGatewayOperationalAdapter:
                 start=start,
                 end=end,
                 samples=samples,
+                coverage=WeatherCoverage.ALLOW_GAPS,
             )
         except OperationalWeatherCoverageError as exc:
             raise RecapDataUnavailableError(
@@ -370,6 +385,7 @@ class RecapGatewayOperationalAdapter:
                 start=start,
                 end=buffer_end,
                 samples=samples + optional,
+                coverage=WeatherCoverage.ALLOW_GAPS,
             )
         except OperationalWeatherCoverageError:
             # Optional incomplete support cannot invalidate the required past.
