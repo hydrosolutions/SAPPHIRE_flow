@@ -49,24 +49,26 @@ next batch) needs only a new run-time manifest entry and one admission command.
 - **D-e** Values load as delivered. QC uses the network (`dhm`) rules with the same
   `gross_outlier` skip as September, no per-station ceilings, no change to the shared
   config. Flagged values are stored with their flags; nothing is dropped or corrected.
-- **D-f** (revised by the owner, 2026-11-14) A day already held by another admitted
-  delivery is skipped when equal. When it differs, only that day is held: it is not loaded,
-  the existing value stays, and everything else, including the rest of that station,
-  loads. Skipped and held days go into the audit entry and the report as station, dates
-  and counts only. Data can change after review by DHM, so a refusal of the whole bundle
-  (or of a whole station) would block too much. Taking DHM's corrected value is an
-  explicit later step, per station or range, that keeps the old value in the existing
-  `observation_versions` archive; it is deferred (the Nepal briefing found the two
-  overlapping stations identical day for day), but nothing here may prevent adding it.
+- **D-f** (owner, second revision 2026-11-14) The latest delivery wins. A day already held
+  by another admitted delivery is skipped when equal. When it differs, the newer
+  delivery's value is loaded and the day is marked as revised: the previous value and
+  delivery are kept in a small revisions table, and an administrator reviews the day and
+  marks it accepted. "Latest" is the later `delivered_on` in the manifest, never arrival
+  order. Until reviewed, the revised value is the one in use. Replacement is delete the
+  old row plus insert the new one in the same transaction, so the guard keeps its current
+  property that no row moves between deliveries. If the old row is referenced elsewhere
+  and cannot be deleted, that day is held and reported instead. Reports show station,
+  dates and counts only. Mapping the mark to a QC flag or an API field is deferred.
 - **D-g** Problems are visible first as operator CLI output per station: coverage, counts
   by QC status, gaps, flagged ranges, no values in logs or issues. An API endpoint only if
   that proves insufficient, after auditing existing endpoints. Mapping flagged ranges to
   model windows is deferred.
 - **D-j** (owner, 2026-11-14) October daily values link to their rating tables, as
-  September's do: each row carries the `rating_curve_id` of the single valid curve from
-  the already-admitted October rating delivery that covers that day. If zero or several
-  valid curves cover a day (20 older October blocks fail numerical validation), the link
-  stays empty and the report lists those days as dates and counts; nothing is guessed.
+  September's do: each row carries the `rating_curve_id` of the latest valid rating table
+  covering that day. Where several valid tables overlap, the October rating delivery's
+  table is used. Tables that fail numerical validation (20 older October blocks do) are
+  never candidates. A day with no valid table stays unlinked and is listed in the report
+  as dates and counts; nothing is guessed. (Open: days after the last block ends; see Q7.)
 - **D-k** (owner, 2026-11-14) October values get exactly September's visibility: hidden
   from consumer tokens, visible to reviewers in scope and to admins (restricted DHM data;
   public release was never authorized). Hence T4.
@@ -171,7 +173,8 @@ CHWRR overlay; the tenant-generic CLI identity is deferred):
   operator grant on the protected `rating_delivery_*` tables). Classify each key against
   existing rows, read per station by time range with the per-row predicate (fact 8):
   *new* → insert; *own tag* → upsert (equal = no-op); *other admitted tag, equal value* →
-  skip and record; *other admitted tag, different value* → hold that day only (D-f);
+  skip and record; *other admitted tag, different value* → replace the day and record a revision (D-f; the
+  interim behaviour until T3b lands is to hold that day only);
   *untagged or non-admitted tag* → refuse (`DeliveryCollisionError`). Equality means exact
   float equality of the parsed value with the stored value. Read back and compare the
   intended and written key sets. Write one audit entry: per station written/skipped
@@ -199,6 +202,15 @@ behind the existing `excluded_delivery_id`/`ProtectedObservationVisibility` call
 September behaviour is unchanged (it is the seed). Untagged and non-admitted rows (for
 example BIPAD-feed tags) stay visible. Visibility of October rows equals September's (D-k).
 
+**Revised days (D-f).** The migration also creates `delivery_value_revisions`: station,
+timestamp, parameter, previous value, previous delivery, new delivery, revised time,
+status (`pending` or `accepted`), reviewer name, reviewed time. It holds restricted
+values, so no API role can read it and the operator may only insert and select. The
+owner-level `discharge-review --tenant T --delivery D [--accept --reviewer NAME]` lists
+pending days (dates and counts) and marks them accepted, with an audit entry. The
+existing `observation_versions` cannot serve here: it stores a value only together with
+the rating curve that produced it.
+
 ## Questions settled from the code
 
 1. **Natural key vs delivery tag:** the tag is not in the key, so per-day ownership is
@@ -221,21 +233,28 @@ example BIPAD-feed tags) stay visible. Visibility of October rows equals Septemb
 
 ## Open questions for the owner (plain language)
 
-1. **Name of the October discharge delivery.** The October rating files are already
+1. **Name of the October discharge delivery.** *Closed 2026-11-14: same name.* The October rating files are already
    recorded under one delivery name. Should the discharge files go under the same name or
    a new one? *Recommendation:* the same name. It is one DHM delivery, and the manifest
    gains a file kind rather than a second entry.
 2. **Who may see October values.** *Closed 2026-11-14 (D-k):* same as September.
 3. **Link to rating tables.** *Closed 2026-11-14 (D-j):* yes, link; days without exactly
    one valid curve stay unlinked and are listed.
-4. **How the owner-level admission is run.** *Recommendation:* a one-off command through the
+4. **How the owner-level admission is run.** *Closed 2026-11-14: as recommended.*
+   *Recommendation:* a one-off command through the
    existing set-up container, which already holds the owner credential. This adds no new
    service and puts the credential nowhere new. The security reviewer should confirm it.
 5. **One differing day.** *Closed 2026-11-14 (D-f):* hold only the differing day; load
-   everything else; corrections are an explicit later step.
-6. **Retraining.** The training-readiness check reads only September today. Is it fine that
+   everything else; corrections are an explicit later step. *Superseded by D-f (second
+   revision): latest delivery wins, marked, admin review.*
+6. **Retraining.** *Closed 2026-11-14: follow-up, as recommended.* The training-readiness check reads only September today. Is it fine that
    making it read October is the next milestone's first small task, not this one?
    *Recommendation:* yes. It keeps this slice to loading and checking.
+
+7. **Days after the last rating block ends.** If a day falls after every valid table's
+   validity ends (for example 2025 days and a table ending 2024), link the latest valid
+   table anyway, or leave the day unlinked? *Recommendation:* leave unlinked and list
+   them, so no table is applied outside its stated validity.
 
 ## Tasks
 
@@ -244,10 +263,11 @@ gap exists. Integration tests run against the real PostGIS testcontainer through
 logins (`sapphire_operator`, `sapphire_api`, owner), as the existing operator tests do.
 Fixtures are synthetic; no delivered values.
 
-- **T1 Admission table, guard rewrite, bootstrap** (high risk; security review). Files:
+- **T1 Admission table, revisions table, guard rewrite, bootstrap** (high risk; security review). Files:
   `alembic/versions/0085_delivery_admissions.py`, `src/sapphire_flow/db/metadata.py`,
   `docker/bootstrap-roles.sql`, `tests/unit/db/test_alembic_head_release_b.py`,
-  `tests/integration/db/test_operator_role.py`, `test_operator_grant_matrix.py`,
+  `tests/integration/db/test_operator_role.py`, `test_operator_grant_matrix.py` (incl. the
+  new `delivery_value_revisions` grants),
   `test_operator_guard_historical.py`, new `tests/integration/db/test_delivery_admission_guard.py`.
   Tests: the September `replace`/`qc` pass unchanged on the seed. Untagged, non-admitted,
   admitted-but-other-tenant and missing-tenant writes are refused (INSERT NEW, DELETE OLD,
@@ -278,8 +298,8 @@ Fixtures are synthetic; no delivered values.
   method is added, new `tests/unit/services/test_delivered_discharge.py` (pure overlap
   classification, report aggregation), `tests/integration/cli/test_import_dhm_delivery.py`
   plus a new integration module for the discharge route. Tests: with the September seed
-  loaded, equal days are skipped and recorded. A differing day is held alone: the existing
-  value is untouched and every other day and station loads. An untagged collision
+  loaded, equal days are skipped and recorded. A differing day is held alone in this task (the existing
+  value is untouched and every other day and station loads); T3b replaces the hold. An untagged collision
   refuses. Each loaded day links to the single valid curve of the rating delivery; a day
   with none or several stays unlinked and is reported; no link is guessed. A non-admitted or wrong-hash delivery is refused
   by Python and, bypassing Python, by the guard. Missing or foreign stations refuse. A
@@ -288,6 +308,15 @@ Fixtures are synthetic; no delivered values.
   `gross_outlier` is never applied, single-day segments are `QC_UNCHECKED`, and flags are
   stored, not dropped. The report has dates and counts only. Withdraw removes only `D`'s
   rows and refuses the seed. Water-level rows at the same stations are untouched.
+- **T3b Revised days and review** (depends on T3; can be cut if the cut line is at risk,
+  leaving the hold behaviour). Files: `src/sapphire_flow/services/delivered_discharge.py`,
+  `src/sapphire_flow/cli/delivery_admission.py` (`discharge-review`), store method for
+  delete-plus-insert in one transaction, the `delivery_value_revisions` table is created in
+  T1. Tests: a differing day is replaced, the revision row holds the previous value and
+  delivery, status is pending; a referenced old row holds the day instead; a re-run writes
+  nothing; `discharge-review` lists dates and counts only, `--accept` marks accepted with
+  the reviewer name and an audit entry, and fails as operator; no API role reads the
+  table; the report counts pending revisions.
 - **T4 Withholding generalised** (restricted data; covered by the same security review).
   Files: `src/sapphire_flow/api/routes/api_stations.py`, `api_swiss_overview.py`,
   `api_swiss_observation_history.py`, `src/sapphire_flow/store/observation_store.py`,
@@ -303,18 +332,20 @@ Fixtures are synthetic; no delivered values.
 ```json
 {
   "tasks": [
-    {"id": "T1", "depends_on": [], "estimate_days": 1.5, "risk": "high"},
-    {"id": "T2", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "medium"},
+    {"id": "T1", "depends_on": [], "estimate_days": 2.0, "risk": "high"},
+    {"id": "T2", "depends_on": ["T1"], "estimate_days": 1.25, "risk": "medium"},
     {"id": "T3", "depends_on": ["T1", "T2"], "estimate_days": 2.5, "risk": "medium"},
+    {"id": "T3b", "depends_on": ["T3"], "estimate_days": 1.0, "risk": "medium"},
     {"id": "T4", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "high"},
-    {"id": "T5", "depends_on": ["T2", "T3", "T4"], "estimate_days": 0.5, "risk": "low"},
+    {"id": "T5", "depends_on": ["T2", "T3", "T3b", "T4"], "estimate_days": 0.5, "risk": "low"},
     {"id": "T6", "depends_on": ["T5"], "estimate_days": 0.75, "risk": "high", "owner_run": true}
   ]
 }
 ```
 
 Estimates are unmeasured and follow the overarching vision's track B as given in the brief:
-plan 1 day; build 5-7 days (T1-T5 sum to 6.5); dry run plus host run 0.5-1 day; cut line
+plan 1 day; build 5-7 days (T1-T5 including T3b sum to 8.25; the critical path T1-T2-T3-T3b-T5 is about 7.25, above
+the vision's 5-7. Cutting T3b brings it back to about 6.25 and keeps the hold behaviour); dry run plus host run 0.5-1 day; cut line
 24 November. T2 and T4 can run in parallel after T1. If the cut line is at risk, cut the
 report's flagged-range detail first (keep coverage and status counts), never T1 or T4.
 
@@ -406,9 +437,7 @@ attribution beyond a label (the existing forged-audit residual stays).
 
 ## Review plan
 
-- Plan: one independent Claude review (per the commissioning brief). The current
-  `AGENTS.md` on main asks for independent Claude **and** Codex reviews of non-trivial
-  plans and patches; the owner confirms whether Codex is required here.
+- Plan: one independent Claude review (owner confirmed 2026-11-14).
 - PR-A: an independent security-minded review of the migration, bootstrap grants, downgrade
   ordering and withholding, on the exact diff. PR-B: one independent review.
 - The orchestrator sets READY after review. The owner decides findings, approves and merges
