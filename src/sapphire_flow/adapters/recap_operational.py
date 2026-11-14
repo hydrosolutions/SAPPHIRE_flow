@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta
 from numbers import Real
 from typing import TYPE_CHECKING, Literal, cast
@@ -378,15 +379,15 @@ class RecapGatewayOperationalAdapter:
         except OperationalWeatherSupportError:
             return required
         try:
-            return reduce_daily_window(
+            buffer = reduce_daily_window(
                 station_id=source.station_id,
                 binding_fingerprint=fingerprint,
                 issue_time=issue_time,
-                start=start,
+                start=end,
                 end=buffer_end,
-                samples=samples + optional,
-                coverage=WeatherCoverage.ALLOW_GAPS,
+                samples=optional,
             )
+            return replace(required, end=buffer_end, days=required.days + buffer.days)
         except OperationalWeatherCoverageError:
             # Optional incomplete support cannot invalidate the required past.
             return required

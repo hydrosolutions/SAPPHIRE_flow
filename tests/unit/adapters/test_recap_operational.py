@@ -223,11 +223,7 @@ class TestRecapGatewayOperationalAdapter:
         result = adapter.fetch_windows(
             sources=[source], issue_time=ISSUE, start=START, end=ISSUE
         )
-        window = result[source.station_id]
-        assert window.end == ISSUE + timedelta(days=1)
-        assert window.days[-1].precipitation_mm is None
-        assert window.days[-1].temperature_c is None
-        assert not window.days[-1].samples
+        assert result[source.station_id].end == ISSUE
 
     def test_invalid_binding_is_rejected_before_any_call(self) -> None:
         api = RecordingApi({})
@@ -369,6 +365,9 @@ class TestOptionalBufferIntegrity:
         result = adapter.fetch_windows(
             sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
         )
+        if scope == "optional":
+            assert result[make_binding().station_id].end == ISSUE
+            return
         missing = next(
             day
             for day in result[make_binding().station_id].days
