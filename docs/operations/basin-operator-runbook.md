@@ -1,5 +1,10 @@
 # Get approved basins: extract or attach, review, save the handover
 
+**Why we do this:** a forecast model needs to know what each forecast location's catchment
+looks like (its outline, size, terrain, soil and climate). This step produces those static
+attributes for the catchment of every station, and a hydrologist checks them before any
+model uses them.
+
 > Part of the onboarding journey: see [onboarding-start-here.md](onboarding-start-here.md).
 
 This is the first step of onboarding stations. The **admin** (the person who runs the
@@ -33,58 +38,108 @@ handover](#review-and-save-the-handover-both-routes).
 
 ### Route 1: attach a package that already exists
 
+Example paths below use `/Users/yourname/...`; replace them with your own (on Linux, for
+example `/home/yourname/...`). Type the commands in a terminal, from the SAPPHIRE code
+folder, after the one-time setup in [README step 3](../../README.md#3-install-python-dependencies).
+
 | You need | What it is |
 |---|---|
-| Station sheet | CSV or one-sheet Excel with `station_code`, `display_name`, `latitude`, `longitude` (optional `published_area_km2`). It must list **exactly** the package's stations and display names. For the pre-extracted Nepal basins, hydrosolutions sends it with the package. [Template](../examples/basin-operator-stations.csv) |
-| Package | The unpacked, validated folder and its original ZIP, kept unchanged |
-| Workspace | A new, empty private folder **outside any Git checkout** for this batch |
+| Station sheet | CSV or one-sheet Excel with `station_code`, `display_name`, `latitude`, `longitude` (optional `published_area_km2`). It must list **exactly** the package's stations and display names. For the pre-extracted Nepal basins, hydrosolutions sends it with the package. Start from the [template](../examples/basin-operator-stations.csv). |
+| Package | The unpacked, validated folder and its original ZIP, kept unchanged, for example `/Users/yourname/sapphire-packages/nepal-basins/package` |
+| Workspace | A new, empty folder where the tool keeps this batch's files, for example `/Users/yourname/sapphire-review/nepal-batch-1`. Create it in your file manager (New Folder) or with `mkdir -p /Users/yourname/sapphire-review/nepal-batch-1`. It must **not** be inside the SAPPHIRE code folder (the folder with the hidden `.git` folder). Use a new folder for each batch. |
 | Hydrologist | Reviews and records the decision; their name is a label, not a login |
 
 | # | Step | Who | Done when |
 |---|---|---|---|
-| 1 | Check the station sheet against your source. Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source and the package |
+| 1 | Check the station sheet against your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source and the package |
 | 2 | Download the package and unpack it into a new folder. Keep the original ZIP. | Admin | Folder and ZIP in hand |
 | 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
 | 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows **Existing extraction loaded** |
 | 5 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
 
 ```bash
-# Replace the absolute paths. Use the unpacked folder, not the ZIP. Never put credentials in a command.
+# Use the unpacked folder, not the ZIP. Never put credentials in a command.
 uv run python -m sapphire_flow.cli.basin_operator \
-  --workspace /absolute/private/new-basin-review \
-  --package-dir /absolute/package
+  --workspace /Users/yourname/sapphire-review/nepal-batch-1 \
+  --package-dir /Users/yourname/sapphire-packages/nepal-basins/package
 ```
 
-**Start extraction** stays disabled on this route: that is expected.
+**What this command does:** it starts the local review page on your computer and loads the
+package you already have into it; it does not extract anything and does not change the
+package. **Start extraction** stays disabled on this route: that is expected.
 
 ### Route 2: run the extractor
 
+Example paths below use `/Users/yourname/...`; replace them with your own. Type the commands
+in a terminal. The tool command is run from the SAPPHIRE code folder
+([README step 3](../../README.md#3-install-python-dependencies)).
+
 | You need | What it is |
 |---|---|
-| Station sheet | As above ([template](../examples/basin-operator-stations.csv)): `station_code`, `display_name`, `latitude`, `longitude`, optional `published_area_km2` |
-| Extractor | Set up with hydrosolutions (see the note under "Which route?") |
-| Command file | A JSON file that tells the tool how to start the extractor, for example `/absolute/private/extractor-command.json` |
-| Workspace | A new, empty private folder **outside any Git checkout** for this batch |
+| Station sheet | `station_code`, `display_name`, `latitude`, `longitude`, optional `published_area_km2`. Start from the [template](../examples/basin-operator-stations.csv). |
+| Extractor | The extractor package and its three datasets, made ready in [step 2 in detail](#route-2-step-2-in-detail-get-the-extractor-ready) |
+| Command file | A small text file, `extractor-command.json`, that tells the tool how to start the extractor (example in step 2 in detail) |
+| Workspace | A new, empty folder for this batch, for example `/Users/yourname/sapphire-review/nepal-batch-2`, created as in Route 1. Not inside the SAPPHIRE code folder. |
 | Hydrologist | Reviews and records the decision; their name is a label, not a login |
 
 | # | Step | Who | Done when |
 |---|---|---|---|
-| 1 | Prepare the station sheet from your source. Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source |
-| 2 | Get the extractor and its command file ready with hydrosolutions. | Admin | The command file works |
+| 1 | Prepare the station sheet from your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source |
+| 2 | Get the extractor ready and write the command file: [step 2 in detail](#route-2-step-2-in-detail-get-the-extractor-ready). | Admin | The extractor prints its options and the command file exists |
 | 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
 | 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows the stations and **Start extraction** is enabled |
 | 5 | Click **Start extraction** once, then reload to check progress. Never start a second run while one is busy: it clears the current decisions. | Admin | A basin is shown |
 | 6 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
 
 ```bash
-# Replace the absolute paths. Never put credentials in a command.
+# Never put credentials in a command.
 uv run python -m sapphire_flow.cli.basin_operator \
-  --workspace /absolute/private/new-basin-review \
-  --extractor-command /absolute/private/extractor-command.json \
+  --workspace /Users/yourname/sapphire-review/nepal-batch-2 \
+  --extractor-command /Users/yourname/sapphire-extractor/extractor-command.json \
   --extractor-interface v0.2.0
 ```
 
-Do not combine the two routes in one command.
+**What this command does:** it starts the local review page on your computer and tells it
+how to launch the extractor when you click **Start extraction**. Do not combine the two
+routes in one command.
+
+### Route 2, step 2 in detail: get the extractor ready
+
+Keep the extractor in its own folder, separate from the SAPPHIRE code folder.
+
+1. **Download the extractor package** from the link hydrosolutions gives you (link to be
+   added here): release `v0.2.0`, source commit `25cc09c2aff192033abefaf6b052822ad7024d67`.
+   Unpack it, for example into `/Users/yourname/sapphire-extractor`.
+2. **Download the three datasets** from the links hydrosolutions gives you (links to be
+   added here) and note where you put them, for example:
+   - river network (HFX): `/Users/yourname/sapphire-datasets/nepal-hfx-v2/merit-hfx-pfaf45`
+   - attributes (HydroATLAS): `/Users/yourname/sapphire-datasets/nepal-hydroatlas-clip/nepal-hydroatlas-lev12.gpkg`
+   - weather store (ERA5-Land): `/Users/yourname/sapphire-datasets/nepal-era5-land-cube/nepal_cube/cube.zarr`
+     (point to the `cube.zarr` store itself, not the folder around it)
+3. **Install it once.** In a terminal, go into the extractor folder and run `uv sync`. This
+   creates its own environment (a `.venv` folder).
+4. **Check it works.** Run
+   `/Users/yourname/sapphire-extractor/.venv/bin/python -m static_attrs_nepal.appliance --help`.
+   It should print a list of options, not an error.
+5. **Write the command file.** In any text editor, create
+   `/Users/yourname/sapphire-extractor/extractor-command.json` with this content, using your
+   own paths (all paths must be complete, starting with `/`):
+
+   ```json
+   [
+     "/Users/yourname/sapphire-extractor/.venv/bin/python",
+     "-m", "static_attrs_nepal.appliance",
+     "--hfx-dataset-dir", "/Users/yourname/sapphire-datasets/nepal-hfx-v2/merit-hfx-pfaf45",
+     "--hydroatlas-clip", "/Users/yourname/sapphire-datasets/nepal-hydroatlas-clip/nepal-hydroatlas-lev12.gpkg",
+     "--era5-land-cube", "/Users/yourname/sapphire-datasets/nepal-era5-land-cube/nepal_cube/cube.zarr"
+   ]
+   ```
+
+   Do not add stations, `--output` or package options: the tool adds them for each run. Do
+   not put credentials in the file.
+
+If hydrosolutions gave you the Docker bundle instead (Linux, amd64 only), they also give you
+the command to put in this file; follow the bundle's own instructions for loading it.
 
 ### Review and save the handover (both routes)
 
