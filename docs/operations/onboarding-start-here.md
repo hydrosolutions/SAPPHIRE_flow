@@ -1,74 +1,67 @@
-# Start here: onboard stations
+# Onboard stations: the guide
 
-**What this is:** the map of the station-onboarding journey for Nepal. It tells a
-facilitator which document to open at each stage, what you get, and what is still
-done by hand. **What this is not:** a runbook. It repeats no commands except where
-one is the only entry point, and it activates no forecasts. (The README step
-"Onboard initial data (CAMELS-CH)" is Swiss developer setup, not station onboarding.)
+**Who this is for:** an organization (a hydromet service, a research group) that wants its
+own stations in a SAPPHIRE Flow deployment, and the facilitator helping them. **What
+"onboarding" means here:** bringing a station from "we have a list" to "its data is in the
+system, checked, and ready" — one ordered journey, the same for every organization. **What
+this is not:** the runbooks themselves. Each step below says what to do, which document
+holds the details, and how you know you are done.
 
-Status as of 2026-11-14, from a read-only look at the repository. Nothing was run.
+Status as of 2026-11-14, from a read-only look at the repository. Nothing was run. The
+README step "Load the demo stations" is the Swiss route in this journey.
 
-## Who does what
+## Two routes exist today
 
-| Role | Does |
-|---|---|
-| Facilitator | Runs the tools, keeps the evidence folder, chases open items |
-| Hydrologist | Decides whether each basin and station is suitable; owns the scope |
-| Admin | Holds the deployment, secrets and Gateway key; runs the Gateway steps |
-| hydrosolutions | Does the manual gaps below; owns the Gateway and models |
-
-## Inputs you need before you start
-
-| Input | Where it comes from |
-|---|---|
-| Station list: code, name, coordinates (leading zeros kept) | DHM published list, checked by the hydrologist |
-| Running deployment and tenant (`chwrr` for Nepal) | Admin |
-| Basin extraction tool and its result | Facilitator, see stage 1 |
-| New Gateway name, history years, forecast scope | Agreed with the Gateway admin and the hydrologist |
-| Gateway API key file (mode 600, never pasted) | Admin |
-| Evidence folder **outside any Git checkout** | Facilitator creates it |
-| Delivered DHM files, if any | DHM; stored outside any checkout |
-
-## The stages
-
-| Stage | Who | Open this | Status | What you get |
-|---|---|---|---|---|
-| 0. Deployment and tenant exist | Admin | [cicd standard](../standards/cicd.md) (`init`, `provision_tenants`), [deployment quick-start](../deployment-quickstart.md) | Ready | A running stack with the tenant created from the host's config |
-| 1. Basin extraction, review, handover | Facilitator, hydrologist | [Basin operator runbook](basin-operator-runbook.md) | Ready | An approved, immutable handover folder |
-| 2. Gateway registration, subscription, history | Admin | [Gateway runbook](recap-gateway-runbook.md), top section | Ready with manual steps (you start the history job yourself) | Basins registered and covered in the Gateway |
-| 3a. Station records for new stations | hydrosolutions | none | **Not built** (see gaps) | A station row per gauge |
-| 3b. Basin and static package import | Facilitator | [Basin importer runbook](basin-static-importer-runbook.md) | Ready once the station row exists (the generic importer looks stations up by code); the Nepal wrapper covers the six September gauges only | Basins and static attributes in the database |
-| 3c. Weather binding and ERA5 history | Facilitator | [Six-station runbook](nepal-station-onboarding-runbook.md) (sections "Confirm station rows exist" and "Run the six-station discharge preparation command"), [forcing runbook](nepal-forcing-runbook.md) | Partly: six fixed gauges only | Stored weather history per station |
-| 3d. Observations: delivered history | Facilitator | [September import](../runbooks/chwrr-dhm-history-import.md) | Partly: six fixed gauges only. The general route is a draft plan, not built | Daily discharge history |
-| 3d. Observations: live collection | hydrosolutions | none | Not available for stations in `onboarding`: live ingestion collects only `operational` stations (`is_ingest_station_judged`) | Live readings |
-| 3e. Quality checks and readiness report | Facilitator | six-station runbook, section "Run the six-station discharge preparation command" (`onboard_nepal qualify`) | Partly: six fixed gauges, per-station held or ready report | Ready or held, with a reason |
-| 4. Models, evaluation, activation | hydrosolutions, hydrologist | [Vision](../../planning/visions/2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md) §4-5 | Not built for onboarding (`cmal_small` runs only in the Swiss pipeline) | Nothing yet |
-| 5. Retire or reactivate a station | Admin | none | Not built | Nothing yet |
-
-No stage above activates forecasts. New stations stay in status `onboarding`, and
-the forecast cycle only picks up `operational` stations (`run_forecast_cycle.py`).
-
-## Known gaps today (done by hand by hydrosolutions)
-
-| Gap | Why it matters | What happens today |
+| | Swiss route | Nepal route |
 |---|---|---|
-| No general "register a new station" command | `import_dhm_delivery stations` accepts only codes 447, 450, 604.5, 647, 670, 684; `onboard_nepal` is limited to the `chwrr` tenant and those six | hydrosolutions creates the station row by hand; stages 3b-3e need it first |
-| Nepal commands are tied to the six-gauge batch and one Gateway name | New batches cannot reuse them unchanged | Treat as manual until the general route exists |
-| General October delivery route | Only a draft plan | The workshop uses the September data |
-| Separating "collect observations" from "run forecasts" | Live ingestion collects only `operational` stations, and the forecast cycle also picks up `operational` stations, so promoting a station to collect readings also makes it eligible for forecasts (see the [#453 vision](../../planning/visions/2026-11-07-prepare-new-stations-in-sapphire.md), "Reuse evidence and known gaps") | Ask hydrosolutions before promoting any station |
-| Model evaluation and activation for new stations | Not built | Out of scope until after the workshop |
-| Retirement and reactivation | Not built | Not available |
+| Who it serves | Swiss stations from the public CAMELS-CH data | The Nepal deployment (tenant `chwrr`), DHM stations |
+| How automated | One script or Prefect deployment does most steps ([README step 5](../../README.md), [deployment quick-start](../deployment-quickstart.md) § First data load) | Guided and partly manual; several steps are done by hydrosolutions |
+| Another organization | Needs a data adapter for its own sources first — contact hydrosolutions | Same |
+
+## Before you start
+
+| You need | From |
+|---|---|
+| A running deployment and your organization declared in it (a "tenant") | Admin; [deployment quick-start](../deployment-quickstart.md), [CI/CD standard](../standards/cicd.md) |
+| Station list: code, name, coordinates (keep leading zeros) | Your station register, checked by the hydrologist |
+| An evidence folder **outside any Git checkout** | Facilitator creates it |
+| Credentials as files (mode 600), never pasted into a command or a message | Admin |
+
+## The steps
+
+| # | You do | Open this | Done when | Who | Today |
+|---|---|---|---|---|---|
+| 0 | Deployment is up, your tenant exists | [Deployment quick-start](../deployment-quickstart.md) | Health checks pass; tenant created at startup from the host config | Admin | Ready |
+| 1 | Get each station's basin outline and approve it | [Basin operator runbook](basin-operator-runbook.md) | An approved handover folder exists | Facilitator, hydrologist | Nepal: ready. Swiss: CAMELS-CH supplies basins |
+| 2 | Register the basins with the weather data service, subscribe, hand off the history job, check coverage | [Gateway runbook](recap-gateway-runbook.md), top section | Coverage is verified; stations are eligible or held with a reason | Admin | Nepal: ready, with manual steps (you start the history job) |
+| 3 | Create the station records | none for new stations | A station row exists per gauge | **hydrosolutions** | Swiss: the script. Nepal: **not built**, done by hand |
+| 4 | Import basins and static attributes | [Basin importer runbook](basin-static-importer-runbook.md) | Basins stored per station | Facilitator | Ready once the station row exists |
+| 5 | Store the weather history and bind each station to its weather source | [Six-station runbook](nepal-station-onboarding-runbook.md), [forcing runbook](nepal-forcing-runbook.md) | History stored per station | Facilitator | Nepal: six fixed gauges only |
+| 6 | Load the observation history and run the quality checks | [September import](../runbooks/chwrr-dhm-history-import.md) | Daily values stored, checked, flags visible | Facilitator | Nepal: six fixed gauges only; the general route is planned ([#453 M1 plan](../plans/2026-11-14-delivered-discharge-files-for-existing-stations.md)) |
+| 7 | Read the readiness report: ready or held, with a reason | six-station runbook, section "Run the six-station discharge preparation command" | Every station is accounted for | Facilitator, hydrologist | Nepal: six fixed gauges only |
+| 8 | Switch on live data collection | none documented | Live readings arrive | **hydrosolutions** | Collection runs only for `operational` stations, and the forecast cycle also uses `operational` stations, so promoting a station does both |
+| 9 | Evaluate models and activate forecasts | [Vision](../../planning/visions/2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md) §4-5 | Hydrologist approves | Hydrologist | Swiss: Prefect model onboarding exists. Nepal: **not built** |
+| 10 | Retire or reactivate a station | none | — | Admin | **Not built** |
+
+Steps 0-7 do not activate forecasts. Step 8 can make a station eligible for the forecast cycle (see its note), and step 9 is where forecasts are approved and activated.
+
+## When a step has no tool yet
+
+Ask hydrosolutions for it and send: your organization, the step number, the station codes,
+what you expected and the exact message you saw. **Never send observation values, delivered
+files or credentials.** hydrosolutions does the manual part and records it in your
+evidence folder.
 
 ## Rules that never change
 
-- Restricted DHM data never goes into the repository, logs, issues or commits.
+- Restricted data never goes into the repository, logs, issues, commits or messages.
 - Delivered files stay outside any checkout.
 - No live Gateway step without the owner's go-ahead.
-- No onboarding step activates a forecast.
-- The reviewer's name is a label, not authentication.
+- The reviewer's name in any report is a label, not authentication.
 
 ## Planned, not available yet
 
-A disposable installation check (Swiss stations, no models) is planned, not
-available. See the [vision](../../planning/visions/2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md),
-section 10 (the check) and section 11 (order of work to the workshop).
+A disposable installation check (public Swiss stations, no models) will prove that a new
+installation is configured correctly before you start; it is planned, not available. See
+the [vision](../../planning/visions/2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md),
+sections 10 (the check) and 11 (order of work).

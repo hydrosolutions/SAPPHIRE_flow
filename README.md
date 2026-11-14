@@ -13,7 +13,15 @@
 [![Open issues](https://img.shields.io/github/issues/hydrosolutions/SAPPHIRE_flow)](https://github.com/hydrosolutions/SAPPHIRE_flow/issues)
 -->
 
-Operational hydrological forecasting system. Ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and will serve results via a REST API (in progress).
+Operational hydrological forecasting system. Ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API.
+
+## Choose your path
+
+| I want to… | Start here | What it is for |
+|---|---|---|
+| Run SAPPHIRE Flow locally | [Developer quick start](#developer-quick-start) | Development on your own machine, with public Swiss demo data. |
+| Deploy it on a server | [Deployment quick-start](docs/deployment-quickstart.md) | Setting up a fresh deployment for a new organization (Docker Compose, secrets, schedules). |
+| Onboard new stations | [Onboard stations: the guide](docs/operations/onboarding-start-here.md) | Adding your organization's stations to an existing deployment, step by step. |
 
 ## Maintenance Status
 
@@ -83,11 +91,11 @@ on its subsystem:
 
 - Docker >= 24, Docker Compose v2
 - [uv](https://docs.astral.sh/uv/) >= 0.5
-- Python 3.11+
+- Python 3.12+
 
-## Quick start
+## Developer quick start
 
-The quick start deploys SAPPHIRE Flow as a **demo** using publicly available Swiss data (CAMELS-CH stations, MeteoSwiss ICON-CH2-EPS forecasts, BAFU observations). This is the default configuration in v0 and is intended to showcase the pipeline end-to-end. Instructions for configuring the system against other areas of interest (custom station networks, alternative NWP sources, regional data) will be published as part of v1.
+This is the local development path. It runs SAPPHIRE Flow as a **demo** on your machine using publicly available Swiss data (CAMELS-CH stations, MeteoSwiss ICON-CH2-EPS forecasts, BAFU observations). To deploy on a server, see the [deployment quick-start](docs/deployment-quickstart.md). To onboard stations of your own organization, see [Onboard stations: the guide](docs/operations/onboarding-start-here.md).
 
 ### 1. Create secrets
 
@@ -147,9 +155,9 @@ DATABASE_URL="postgresql+psycopg://sapphire:${DB_PASS}@localhost:5438/sapphire" 
   uv run alembic upgrade head
 ```
 
-### 5. (Developer) Load Swiss CAMELS-CH data — not station onboarding
+### 5. Load the demo stations (the Swiss onboarding route)
 
-This is developer setup with Swiss data. To onboard stations, see [Start here: onboard stations](docs/operations/onboarding-start-here.md).
+This is the automated onboarding route for Swiss stations, using public CAMELS-CH data: it loads stations and their data into the database so the demo has something to run on. It is also the worked example of station onboarding. To onboard the stations of your own organization, follow [Onboard stations: the guide](docs/operations/onboarding-start-here.md).
 
 Downloads the CAMELS-CH dataset (~250 MB) and loads stations into the database:
 
@@ -188,7 +196,8 @@ uv run pytest
 
 ## Documentation
 
-- **Onboarding stations:** [docs/operations/onboarding-start-here.md](docs/operations/onboarding-start-here.md) -- start here
+- **Onboard stations:** [docs/operations/onboarding-start-here.md](docs/operations/onboarding-start-here.md) -- the step-by-step guide
+- [Deployment quick-start](docs/deployment-quickstart.md) -- set up a fresh deployment
 - [v0 scope](docs/v0-scope.md) -- what is built and in what order
 - [Architecture](docs/architecture-context.md) -- system design and data flows
 - [CI/CD standards](docs/standards/cicd.md) -- Docker topology, deployment, upgrades
