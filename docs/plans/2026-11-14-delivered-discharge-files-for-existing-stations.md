@@ -14,6 +14,53 @@ MVP)". Planning base: `origin/main` at `0020d0498` (Alembic head `0084`,
 `RELEASE_TARGET` `0.1.1134`). No live operation, deployment or restricted file is part
 of writing or reviewing this plan.
 
+## In plain words (read this first)
+
+**What we build.** A way to load DHM's October 2026 daily-discharge files for the Nepal
+stations that already exist, without writing new code for every delivery. The same route
+will take the next delivery too.
+
+**How it works, step by step.**
+1. A small data file (the *manifest*) lists the delivery: its name, date, the stations and
+   the files (with checksums). It holds no measurements and is not stored in the repository.
+2. The owner runs one command, *admit*, which tells the database "this delivery may be
+   loaded". Today a new delivery would need a new database change each time; after this,
+   it does not.
+3. The import account runs *discharge*: it reads the files and stores the values exactly as
+   delivered. Days that are already stored with the same value are skipped. Days where a
+   later delivery differs are replaced and marked for an administrator to review (this part
+   is built only if the dry run finds such days).
+4. *discharge-qc* runs the standard quality checks (no special limits per station). Flagged
+   values stay stored with their flags; nothing is removed or corrected.
+5. *discharge-report* prints, per station, what arrived, what is missing, and what QC found.
+   It prints dates and counts only, never measurement values.
+6. *discharge-withdraw* removes the delivery again if something looks wrong.
+
+**What users and tools will see.** Every loaded day carries a rating status, shown through
+the existing observation API: *rated* (a valid rating table covers the day and the value is
+in its range), *provisional* (the day is after the last table, so the most recent past table
+is used, or the value is outside the table's range), or *no rating* (with the reason, for
+example the table for that period failed validation). Supplied discharge is never changed by
+this status. Restricted values stay hidden from outside API users exactly as September's are.
+
+**What we deliberately do not do now (MVP).** No per-station quality limits, no water-level
+files, no model retraining, no dashboard, no time limits on admissions, no extra locking or
+validation machinery. Hardening and refactoring come later, when there is a production
+deployment to protect.
+
+**The few places where we stay careful even in an MVP.**
+- The import account must not be able to write rating tables for the new delivery (it keeps
+  its old narrow permission there).
+- The live Swiss data path must keep working when two new columns appear on observations.
+- The stored copy of each live water-level measurement keeps its exact shape.
+- Inserts are written in smaller batches (4,000 rows) so the database does not refuse them.
+
+**Effort and order.** About 8.75 working days of building, plus about 0.75 days for the
+owner-run dry run and host run; one optional part (about 1.25 days) is built only if the dry
+run finds differing days. The 24 November cut line is out of reach; the workshop uses the
+September data. Work ships in two or three small pull requests; the database part goes
+first and gets a security-minded review.
+
 ## Outcome
 
 An authorized operator admits a delivered batch of DHM daily-discharge files (`DFL_*`)
@@ -30,7 +77,8 @@ next batch) needs only a new run-time manifest entry and one admission command.
 - Retraining, model-input qualification, forecast activation, publication.
 - Per-station or per-delivery QC ceilings, changes to the shared `config.toml`.
 - Per-measurement or per-period precedence review, fallback gap filling.
-- A new API endpoint (only if the operator report proves insufficient; see D-g).
+- A new API endpoint or dashboard view (the existing observation API gains the rating
+  status fields, T3c; nothing else is added).
 - Changing the September command (`stations | replace | qc`) beyond its admission seed.
 
 ## Closed decisions (owner, 2026-11-13)
@@ -64,23 +112,32 @@ next batch) needs only a new run-time manifest entry and one admission command.
   ranges, rating-status counts, no values in logs or issues) and the observation API,
   which returns a rating status and reason for every delivered observation (D-l). Mapping
   flagged ranges to model windows is deferred.
-- **D-j** (owner, 2026-11-14; aligned with the merged vision) October daily values link to
-  the rating table in force for the day, selected as the native rating route selects:
-  per station the newest delivered rating file wins, and within it the block with the
-  latest start on or before the day. Candidates are curves tagged with the rating delivery
-  ids named in the manifest; never the September `replace` delivery's own curves
-  (`dhm-barkhk-2026-09-08`: October rows linked to them would block September's
-  `replace`). A station with no October rating file (for example 450) falls back to its
-  September-delivered table through the same rule. The status of each day:
-  `rated` (in force, inside validity, value inside the table's discharge range);
-  `provisional` with reason `after_last_table` (the in-force valid block's validity has
-  ended: link stays to that most recent past table), `outside_range_below` or
-  `outside_range_above`; `no_rating` with reason `invalid_table` (the in-force block failed
-  validation: conversion is held, never a fallback to an earlier block),
-  `before_first_table` or `no_table`. Supplied discharge is never altered or refused by
-  its status. Invalid blocks are not stored (admission audits only their start date and
-  reason), so their spans are derived from the rating files named in the manifest with the
-  same validation as admission (T3). Q8 is closed by the merged vision.
+- **D-j** (owner, 2026-11-14; aligned with the merged vision; cross-check fixes applied)
+  October daily values link to the rating table in force for the day, selected as the
+  native rating route selects. Candidates are the files returned by
+  `select_rating_deliveries(load_rating_manifest(M))` over the manifest's existing rating
+  entries (never a re-listing of files under the discharge entry: `ratings-only` would
+  re-admit them under that entry's id); any selected delivery id equal to the September
+  `replace` tag `dhm-barkhk-2026-09-08` refuses (October rows linked to those curves would
+  block September's `replace`). Per station the newest selected file wins (the native rule,
+  also when an older file would cover the day), and within it the in-force block is the one
+  with the latest start on or before the day, over valid and invalid blocks. A station with
+  no October rating file (for example 450) uses its September-delivered table through the
+  same rule, **provided** that file was admitted natively under an id other than the
+  `replace` tag; the dry run checks this precondition, and if it fails the station is
+  `no_table`. Statuses, in precedence order: `no_rating` / `invalid_table` (in-force block
+  failed validation), `before_first_table` (day before the newest file's first block),
+  `no_table` (no candidate file for the station; stored curves of an admitted rating
+  delivery not named in the manifest refuse the station instead, ignoring the September
+  `replace` tag, which sits on curves at every station); then `provisional` / `after_last_table` (the day
+  is on or after the in-force valid block's exclusive validity end; this also covers a day
+  in a gap between blocks, the reason meaning "after the in-force table's validity");
+  then `provisional` / `outside_range_below` or `_above` (the value is below the first or
+  above the last discharge of the in-force table, inclusive bounds); otherwise `rated`.
+  Supplied discharge is never altered or refused by its status. Invalid blocks are not
+  stored (admission audits only start date and reason), so their starts and outcomes come
+  from the same shared validation function that admission uses, run over the parsed
+  candidate files (T3). Q8 is closed by the merged vision.
 - **D-k** (owner, 2026-11-14) October values get exactly September's visibility: hidden
   from consumer tokens, visible to reviewers in scope and to admins (restricted DHM data;
   public release was never authorized). Hence T4.
@@ -152,9 +209,13 @@ without an admission (withholding stays on for every delivery ever admitted). Gr
 
 **Guard rewrite.** `CREATE OR REPLACE FUNCTION public.operator_guard_delivery_row()` keeps
 its name, `SECURITY INVOKER`, pinned `search_path`, schema-qualified relations, OLD/NEW
-checks and the no-move rule. Only the predicate changes, from "tag = literal AND station in
-tenant `chwrr`" to "an admission exists for `NEW/OLD.delivery_id`, is not revoked, AND the
-station's tenant code equals that admission's `tenant_code`". `NULL` tags fail the
+checks and the no-move rule. For `observations` only the predicate changes, from "tag =
+literal AND station in tenant `chwrr`" to "an admission exists for `NEW/OLD.delivery_id`, is
+not revoked, AND the station's tenant code equals that admission's `tenant_code`". **The
+`rating_curves` branch keeps the seed literal and the tenant check**: the function is shared
+by both tables and the operator holds INSERT and DELETE on `rating_curves`, so widening that
+branch would let the operator write curves tagged with October's own (native rating)
+delivery id. No new command writes curves. `NULL` tags fail the
 `EXISTS`, so untagged rows stay refused. Triggers, the station-insert guard (still
 `chwrr`-only, used only by the September `stations` command) and the truncate guard are
 untouched, so the bootstrap's `operator_guard_ok` check stays valid. Bootstrap adds the
@@ -176,8 +237,10 @@ SHA-256 of the original bytes, `parse_daily_flow`, the header code against the d
 code, at most one file per station, the path outside the checkout. The **manifest-entry
 hash** is SHA-256 of a canonical JSON of `{delivery_id, delivered_on, sorted [(network,
 station_code, kind, sha256)]}` for the selected entry. It excludes paths, so a dry-run copy
-and the host give the same hash, and other entries, so adding November later does not
-invalidate October.
+and the host give the same hash, and other discharge entries. The admission also binds the
+candidate rating set (below): the hash covers the entry plus that set, so a later rating
+entry that changes a station's candidates means October `discharge` is re-admitted before
+it can run again.
 
 **Admission command** (owner role): `python -m sapphire_flow.cli.delivery_admission admit
 --tenant T --manifest M --delivery D --admitted-by NAME --reason TEXT [--dry-run]`, run as a
@@ -202,16 +265,16 @@ CHWRR overlay; the tenant-generic CLI identity is deferred):
   rating_reason per D-j)` at
   `nepal_day_start(day)`. Classify each key against existing rows, read per station by time
   range with the per-row predicate (fact 8): *new* → insert; *own tag* → upsert (equal =
-  no-op; a changed link resets QC to RAW, so a re-run is zero-write only when links are
-  unchanged); *other admitted tag, equal value* → skip and record; *other admitted tag,
+  no-op; a changed link or status resets QC to RAW, so a re-run writes zero rows only when
+  links and statuses are unchanged); *other admitted tag, equal value* → skip and record; *other admitted tag,
   different value* → by delivery date from `delivery_admissions`: if `D` is strictly later,
   replace the day and record a revision (D-f; until T3b lands: hold that day only); if `D`
   is earlier, skip and record "held by newer delivery" (an older delivery never reverts a
   newer one); equal dates → refuse; *untagged or non-admitted tag* → refuse
   (`DeliveryCollisionError`). Equality means exact float equality. Read back and compare the
   intended and written key sets. One audit entry: per station written/skipped/held counts,
-  skipped and held date ranges with the holding delivery id, provisional and unlinked
-  days, the manifest-entry hash.
+  skipped and held date ranges with the holding delivery id, counts per rating status and
+  reason, the manifest-entry hash.
 - `discharge-qc --tenant T --delivery D [--dry-run]`. Rows tagged `D` only. Rules: `dhm`
   network discharge rules from the loaded config, `skipped_rule_ids={"gross_outlier"}`,
   `overrides=[]`. Refuse if no `dhm` discharge rule resolves. Reuse `_local_day_segments`,
@@ -222,7 +285,7 @@ CHWRR overlay; the tenant-generic CLI identity is deferred):
   status counts, the resolved rule ids and thresholds, and `obs_qc_rule_version`.
 - `discharge-report --tenant T --delivery D`. Read-only, stdout table. Per station: first
   and last day, day count, missing-day count and gap ranges, counts by QC status, flagged
-  date ranges per rule id, provisional/unlinked/held/revised day counts. Dates and counts
+  date ranges per rule id, counts per rating status and reason, held and revised day counts. Dates and counts
   only.
 - `discharge-withdraw --tenant T --delivery D [--dry-run]`. Deletes this delivery's rows in
   the tenant, then audit counts. Refuses the seeded September id (its own `replace`
@@ -241,19 +304,38 @@ for every non-admin; the station observations route excludes it for non-reviewer
 network overview shows it to reviewers. Untagged and non-admitted rows (for example
 BIPAD-feed tags) stay visible. D-k means "exactly as September today", path by path.
 
-**Rating link and status (D-j, D-l).** The discharge manifest entry also lists the
-station's rating files (kind `rating_table`) and the rating delivery ids that may be
-linked. The load parses those files with `parse_rating_tables` and the admission's
-validation to learn every block's start, validity and validity outcome; it then finds, per
-day, the in-force block (latest start on or before the day, over valid and invalid
-blocks), looks up the stored curve by station, delivery tag and start date, and sets
-`rating_curve_id`, `rating_status` and `rating_reason`. A stored curve that disagrees with
-the parsed file refuses the station. Additive migration `0086_observation_rating_status`
-adds the two nullable columns (cheap, metadata-only; not security-sensitive, so it ships in
-PR-B, and T3b's migration becomes `0087`). `RawObservation`/`Observation`, the store
-insert/upsert/read paths, `ObservationResponse` (new optional fields, default null, so old
-clients are unaffected) and the observation routes carry them. The upsert treats a changed
-status like a changed link.
+**Rating link and status (D-j, D-l).** `admit` (owner role, which can read
+`rating_delivery_files`) resolves the candidate rating files from the manifest's existing
+rating entries, checks that each candidate's SHA-256 and delivered date equal the stored
+original and that it is the newest file for its station, refuses a selected id equal to
+`DELIVERY_ID`, and binds the candidate set into the entry hash. The load parses the
+candidate files with `parse_rating_tables` to learn every block's start. Admission stores
+exactly the valid blocks of a station's winning file (a tied start stores none), so a parsed
+block with no stored curve under that file's delivery tag is an invalid block: no
+validation code is extracted or duplicated. A parsed file with blocks but no stored curve
+at all, or stored points that differ from the parsed points, refuses the station with a
+generic reason. Per day the load finds the in-force block, looks up the stored curve by
+station, delivery tag and start date (exactly one must exist), and sets `rating_curve_id`,
+`rating_status` and `rating_reason`. Migration `0086_observation_rating_status` adds the two
+nullable columns with plain `CHECK`s (enumerated values; only valid status-reason pairs,
+where `rated` has a null reason and every other status a reason; a status only when
+`delivery_id IS NOT NULL`). Migrations run in one transaction, so `NOT VALID` followed by
+validation would not avoid the exclusive lock; the scan time is measured on the dry-run
+copy instead. The migration **must also redefine `bafu_unit_observation_guard`**
+(migration `0076`, keeping its `extra_float_digits` and `search_path` settings): that
+deferred trigger raises "BAFU unsupported observation schema" for any column outside a
+fixed list, so the two new names are added to the key list only, never to the list of
+changes allowed on a protected row, so a protected BAFU row can never acquire a status.
+This is security-relevant and ships in PR-B under the security-minded review; T3b's
+migration becomes `0087`. Two further consequences of adding fields to `Observation`:
+`measurement_snapshot` (`types/rating_reference.py`) is built from all fields minus the QC
+keys and native capture checks an exact key set (migration `0080`), so the snapshot must
+also drop `rating_status` and `rating_reason` and the capture shape stays unchanged; and
+the shared insert grows from 12 to 14 bound columns per row, so the batch size drops from
+5,000 to 4,000 (56,000 parameters, under the 65,535 limit). `RawObservation`/`Observation`,
+the store insert/upsert/read paths (including `store_observations`), `ObservationResponse`
+(new optional fields, default null, so old clients are unaffected) and the observation
+routes carry them. The upsert treats a changed status like a changed link.
 
 **Revised days (D-f, T3b; built only if the dry run shows differing days).** A separate
 small migration (`0087`) creates `delivery_value_revisions`: station, timestamp,
@@ -287,7 +369,8 @@ revisions exist.
    on main; that part is not verified.
 3. **Migration number:** `0085`. No remote branch claims it. The stopped local one-off patch
    has an uncommitted `0085`, which must not be revived. Bump `_RELEASE_B_HEAD` in
-   `tests/unit/db/test_alembic_head_release_b.py` to `"0085"` with its comment line.
+   `tests/unit/db/test_alembic_head_release_b.py` to `"0085"` with its comment line (PR-A);
+   PR-B (merging after PR-A) moves it to `"0086"`, PR-C to `"0087"`.
 4. **Idempotent re-runs:** `admit` with the same hash is a no-op. `discharge` with
    unchanged files writes zero rows and still writes its audit entry. `discharge-qc`
    re-evaluates and gives the same result.
@@ -321,6 +404,12 @@ revisions exist.
    adopts the native rule: such days are `no_rating`/`invalid_table`, and only days after the
    in-force valid block's validity are provisional.
 
+9. **Rows that do not carry a status.** Only rows written by the load get a status.
+   September-tagged rows, including October days skipped as equal, keep null. The vision
+   says each delivered day. *Recommendation:* for this slice null means "not assessed" and
+   is documented in the API spec; giving September rows a status is a follow-up (it needs
+   its own rating files and an update of September rows). Do you accept this? *Default applies unless the owner objects before T3c starts.*
+
 ## Tasks
 
 Red-first means each new behaviour has a failing test first, failing for the reason the
@@ -333,11 +422,14 @@ Fixtures are synthetic; no delivered values.
   `docker/bootstrap-roles.sql`, `tests/unit/db/test_alembic_head_release_b.py`,
   `tests/unit/db/test_operator_guard_migration.py` (add: seed equals `DELIVERY_ID`),
   `tests/integration/db/test_operator_role.py`, `test_operator_grant_matrix.py`,
+  `tests/integration/services/nepal_readiness_isolation_fixture.py` (a second head pin at
+  `"0084"`),
   `test_operator_guard_historical.py`, new
   `tests/integration/db/test_delivery_admission_guard.py`. Tests: the September
   `replace`/`qc` pass unchanged on the seed. Untagged, non-admitted, revoked,
   admitted-but-other-tenant and missing-tenant writes are refused (INSERT NEW, DELETE OLD,
-  UPDATE both). No move of station or tag. Curve validity dates are fixed. The operator and
+  UPDATE both). An operator INSERT of a `rating_curves` row tagged with an admitted id other
+  than the seed is refused (the curve branch keeps the seed literal). No move of station or tag. Curve validity dates are fixed. The operator and
   api cannot INSERT/UPDATE/DELETE/TRUNCATE `delivery_admissions` (grant matrix updated and
   still minimal). Admission rows cannot be deleted by any role; UPDATE is refused except
   setting `revoked_at`. A temporary table named `delivery_admissions` cannot satisfy the
@@ -352,15 +444,18 @@ Fixtures are synthetic; no delivered values.
   new `src/sapphire_flow/cli/delivery_admission.py`, new
   `tests/unit/cli/test_rating_delivery_manifest.py` (the loader has no test today),
   `tests/integration/cli/test_rating_only.py`, new
-  `tests/integration/cli/test_delivery_admission.py`. Tests: old manifests load unchanged. A
+  `tests/integration/cli/test_delivery_admission.py`. Candidate rating files come from the existing rating entries as described under
+  Rating link and status; tests cover a candidate whose SHA-256 differs from the stored
+  original, an older file, and a selected id equal to `DELIVERY_ID` (all refuse). Tests:
+  old manifests load unchanged. A
   mixed manifest gives `ratings-only` only the rating files. The discharge loader refuses a
   hash mismatch, a header mismatch, a duplicate station, an unknown kind, an oversize file
   or a path inside the checkout. The entry hash ignores paths and other entries. `admit`
   works as owner and fails as operator (permission); it records `delivered_on`. Same hash:
   no-op; different hash or tenant: refused. Dry-run leaves no row. `revoke` sets
   `revoked_at`, takes the tenant lock, and the operator can then write nothing for the
-  delivery. A concurrent `discharge` and `revoke` cannot leave a state where tagged rows
-  are served to consumer tokens.
+  delivery. Withholding is keyed on every delivery ever admitted (revoked included), tested at
+  the predicate, so no revoke ordering can expose tagged rows.
 - **T3 Load, QC, report, withdraw.** Files: `src/sapphire_flow/cli/import_dhm_delivery.py`,
   new `src/sapphire_flow/services/delivered_discharge.py`,
   `src/sapphire_flow/store/observation_store.py` (bounded per-station existing-key reader),
@@ -387,17 +482,29 @@ Fixtures are synthetic; no delivered values.
   `QC_UNCHECKED`, flags are stored not dropped, and fragmentation is counted. The report
   has dates and counts only. Withdraw removes only `D`'s rows, refuses the seed, and
   refuses while revisions exist. Water-level rows at the same stations are untouched.
-- **T3c Rating status stored and served** (additive migration; depends on T3). Files: new
-  `alembic/versions/0086_observation_rating_status.py`, `db/metadata.py`,
-  `types/observation.py`, `store/observation_store.py`, `protocols/stores.py` and fakes,
-  `api/schemas.py` (`ObservationResponse`), `api/routes/api_stations.py`,
-  `api/routes/api_swiss_observation_history.py` where observation rows are returned, the
-  API/OpenAPI documents under `docs/spec/`, `tests/unit/migrations`, store and API tests.
-  Tests: the two columns are nullable with enumerated values; old rows read as null; a
-  delivered row round-trips status and reason; the API returns them and old consumers still
-  parse the response; one request for a station's full history stays a bounded number of
-  queries (no per-row lookups); consumer tokens still do not see withheld delivery rows;
-  the upsert resets QC only when the link or status changes.
+- **T3c Rating status stored and served** (depends on T1; security-relevant because of the
+  BAFU guard). Files: new `alembic/versions/0086_observation_rating_status.py` (columns,
+  plain checks, redefined `bafu_unit_observation_guard`), `db/metadata.py`,
+  `types/observation.py`, `types/rating_reference.py` (`measurement_snapshot` drops the two
+  fields), `store/observation_store.py` (every explicit select list, `_BATCH_SIZE` 4,000,
+  the insert, `store_observations` and the shared upsert), `protocols/stores.py` and fakes, `api/schemas.py`
+  (`ObservationResponse`), `api/routes/api_stations.py` (station observations and latest
+  observations), `docs/spec/api-v1-map.openapi.json` (regenerated; drift-tested by
+  `tests/unit/api/test_map_contract.py`), `src/sapphire_flow/api/map_contract.py`
+  (`MAP_CONTRACT_VERSION` minor bump from 2.11), `tests/observation_contract.py` (pins the
+  exact field set), migration tests under `tests/integration/db/`,
+  `tests/integration/store/test_bafu_unit_writer.py`, a native-capture and native-rating
+  regression test (stored captures keep their shape; check for pinned golden digests of
+  `asdict(RawObservation)`), `tests/integration/services/nepal_readiness_isolation_fixture.py`
+  (a second head pin at `"0084"`), store and API tests, including a write of more than
+  4,681 rows through the real store. Out of scope: the
+  Swiss history route (it withholds admitted rows for everyone) and the network overview
+  (its own type). Tests: the columns are nullable with enumerated values and valid pairs
+  only; old rows read as null; a delivered row round-trips status and reason; protected
+  BAFU discharge writes still commit and cannot carry a status; ordinary ingest rows stay
+  null and are not reset by the changed upsert condition; the API returns the fields and
+  old consumers still parse the response; a station's full history is still one query
+  (stored columns add none); withheld rows stay withheld.
 - **T3b Revised days and review** (conditional: build only if the dry run finds differing
   days; separate migration `0087`, PR-C). Files: new
   `alembic/versions/0087_delivery_value_revisions.py`, `db/metadata.py`,
@@ -430,8 +537,8 @@ Fixtures are synthetic; no delivered values.
   "tasks": [
     {"id": "T1", "depends_on": [], "estimate_days": 1.75, "risk": "high"},
     {"id": "T2", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "medium"},
-    {"id": "T3", "depends_on": ["T1", "T2"], "estimate_days": 3.0, "risk": "medium"},
-    {"id": "T3c", "depends_on": ["T3"], "estimate_days": 1.5, "risk": "medium"},
+    {"id": "T3", "depends_on": ["T1", "T2", "T3c"], "estimate_days": 3.0, "risk": "medium"},
+    {"id": "T3c", "depends_on": ["T1"], "estimate_days": 1.5, "risk": "high"},
     {"id": "T4", "depends_on": ["T1"], "estimate_days": 1.0, "risk": "high"},
     {"id": "T5", "depends_on": ["T2", "T3", "T3c", "T4"], "estimate_days": 0.5, "risk": "low"},
     {"id": "T6", "depends_on": ["T5"], "estimate_days": 0.75, "risk": "high", "owner_run": true},
@@ -441,8 +548,8 @@ Fixtures are synthetic; no delivered values.
 ```
 
 Estimates are unmeasured. Build without T3b is 8.75 days in sum (T1 1.75, T2 1.0, T3 3.0,
-T3c 1.5, T4 1.0, T5 0.5; T2 and T4 run in parallel after T1, so the critical path
-T1-T2-T3-T3c-T5 is about 7.75), plus 0.75 for the owner-run host steps; T3b
+T3c 1.5, T4 1.0, T5 0.5; T2, T3c and T4 run in parallel after T1, so the critical path
+T1-T3c-T3-T5 is about 6.75), plus 0.75 for the owner-run host steps; T3b
 adds about 1.25 only if the dry run finds differing days. 14 November 2026 is a Saturday,
 so the 24 November cut line (about seven working days, with reviews and merges on top) is
 **not reachable** with the API requirement; expect early December. The agreed fallback
@@ -451,9 +558,11 @@ step. If time is short, cut the report's flagged-range detail first, never T1, T
 tests, or T4.
 
 **PRs.** PR-A = T1 + T4 (database and withholding; the security review covers both; it
-deploys standalone and safely). PR-B = T2 + T3 + T3c + T5 (T3c's additive migration is not security-sensitive). PR-C =
-T3b, only if needed. PR-A
-merges and deploys first or together with PR-B; no October load before both are deployed.
+deploys standalone and safely). PR-B = T2 + T3 + T3c + T5 (the security-minded review also covers `0086` and the BAFU
+guard redefinition). Documentation ships with its code: the guard and withholding docs
+(`security.md`, touchpoint maps, `cicd.md`) belong to PR-A; the runbook, manifest and API
+docs to PR-B. PR-C = T3b, only if needed. PR-A must merge before PR-B (migration
+order), and deploys first or together with PR-B; no October load before both are deployed.
 Each code PR advances `RELEASE_TARGET` exactly once (`.venv/bin/python -I
 tools/release_target.py bump --base-sha <base>`; `docs/standards/cicd.md` § Release
 identity), with no hand-edited package versions and no tags. Lint, format, changed-module
@@ -465,7 +574,7 @@ types and the full suite must pass after the final change.
    on a laptop or in CI), with the release under test and the manifest mounted into
    `init`. Run `admit --dry-run`, then for real on the copy, then `discharge --dry-run`,
    `discharge`, `discharge-qc`, `discharge-report`. Record the counts, skipped, held and
-   differing days, provisional and unlinked days, QC fragmentation, refusals and wall
+   differing days, rating status counts, QC fragmentation, refusals and wall
    times. This measures the overlap with September (the vision leaves it to the dry run)
    and decides whether T3b is built. Run `discharge` again and expect zero rows written
    (links unchanged). Run `discharge-withdraw`, then `revoke`, to prove the undo path.
@@ -514,7 +623,7 @@ types and the full suite must pass after the final change.
 - `docs/standards/security.md`: three levels of identity (the owner also admits deliveries;
   the guard predicate; the admission-table grants) and the restricted DHM history bullet
   (all admitted deliveries). `docs/standards/cicd.md` § Operator role (admission through
-  `init`). `docs/spec/database-schema.md` (new table). `docs/native-provisional-rating.md`
+  `init`). `docs/spec/database-schema.md` (new tables and the two observation columns). `docs/native-provisional-rating.md`
   (manifest `kind`). The `0067` docstring stays historical; `0085` states the supersession.
   `docs/standards/security.md` also states plainly that the operator can delete or
   re-tag rows of any admitted delivery in its tenant (the guard bounds the set of
@@ -533,22 +642,26 @@ types and the full suite must pass after the final change.
 - **Owner credential use outside deploy.** Bounded to a one-off `init` command; reviewed.
 - **Lock duration on the live host.** About 254k new rows under `lock_tenant` would block
   `replace`/`qc`, and ingest's shared station locks. Mitigation: per-row predicate reads,
-  5,000-row batches, wall time measured in the dry run; run outside ingest peaks.
+  4,000-row batches (14 bound columns per row), wall time measured in the dry run; run outside ingest peaks.
 - **QC across delivery boundaries** (for example station 450, whose October period may
   start right after September's) is not checked. QC runs per delivery. Deferred.
 - **Old-period rows in current inputs:** the latest October day is 2025 (briefing). Verify
   in the dry run that no active forecast lookback reaches it; September rows set the
   precedent.
-- **Rating link:** unlinked and provisional days are reported, never guessed. The October
+- **Rating link:** `no_rating` and `provisional` days are reported, never guessed. The October
   curves exist on the host only for stations whose newest rating file stored blocks;
   verify in the dry run.
 - **Status derivation correctness:** stored statuses are only as good as the parsed rating
   files; a disagreement between parsed files and stored curves refuses the station, and
   the dry run reports counts per status. A wrong enumeration value is blocked by `CHECK`.
-- **Two migrations:** `0085` (guard, security review) and `0086` (additive columns). They
-  ship in separate PRs so the security review stays small.
+- **Two migrations on protected paths:** `0085` (operator guard) and `0086` (new columns,
+  which also require redefining the BAFU observation guard, see T3c). They ship in
+  separate PRs and both get the security-minded review.
 - **Revoke versus load race:** closed by never deleting admission rows and taking the
   tenant lock in `admit`, `revoke` and `discharge` (admission checked after the lock).
+- **Rating deliveries admitted after `admit`:** a newer rating delivery whose blocks are all
+  invalid stores no curves, so the load cannot see it. Rare; the runbook tells the admin to
+  re-run `admit` after any rating admission.
 - **Wrong admission:** harmless until rows are written; `revoke` stops further writes, and
   `discharge-withdraw` removes the rows.
 
@@ -567,6 +680,7 @@ attribution beyond a label (the existing forged-audit residual stays).
 
 - Plan: one independent Claude review (owner confirmed 2026-11-14).
 - PR-A: an independent security-minded review of the migration, bootstrap grants, downgrade
-  ordering and withholding, on the exact diff. PR-B: one independent review.
+  ordering and withholding, on the exact diff. PR-B: an independent security-minded review too, since it carries `0086` and the BAFU
+  guard redefinition. PR-C: one independent review.
 - The orchestrator sets READY after review. The owner decides findings, approves and merges
   every PR, and authorizes the host run.
