@@ -1,5 +1,7 @@
 # Review a station basin and save its handover
 
+> Part of the onboarding journey: see [onboarding-start-here.md](onboarding-start-here.md).
+
 Use this guide with a **facilitator-prepared local tool**. The facilitator handles
 setup; the hydrologist decides whether the basin is suitable. One person can do
 both jobs, but setup success is not scientific approval.

@@ -1,5 +1,7 @@
 # recap Data Gateway operations runbook
 
+> Part of the onboarding journey: see [onboarding-start-here.md](onboarding-start-here.md).
+
 Nepal v1 operational procedures for the recap Data Gateway integration
 (Plan 082). Scope: manual GeoPackage upload, historical back-extraction,
 coverage-manifest recording, live smoke execution, `NWP_DELIVERY` watchdog
