@@ -230,22 +230,66 @@ strong as today: untagged rows and other tenants remain refused, rows may not mo
 between stations or deliveries, and the import role cannot admit anything itself.
 Scoping an admission to stations or parameters is later hardening.
 
-**Load as delivered, check with the shared rules.** Values are loaded unchanged. October
+**Load as delivered, check with the shared rules.** Values are loaded as delivered (a later delivery's value replaces an earlier one only
+through the marked revision below). October
 preliminary QC uses the network rules with the same `gross_outlier` skip as the September
 import and adds no per-station ceilings (September keeps its own). Flagged values stay
 stored with their flags; nothing is dropped or corrected. Days already held by another
-admitted delivery are skipped when equal and refused when different (the natural key
-has no delivery identity, so this is forced), and the skipped days are recorded in the
-audit entry as dates and counts, never values.
+admitted delivery are skipped when equal. When a strictly later delivery differs, its value
+replaces the earlier one only through an explicit, marked revision: the observation row
+holds one value per day (the natural key has no delivery identity), the earlier value and
+its delivery are kept in a separate review record outside the observation row, and an
+administrator marks the revision accepted. This is the one deliberate exception to "no
+in-place edits"; it is recorded, never silent, and replacement is delete plus insert under
+the guard, not a move of a row between deliveries. An older delivery loaded after a newer
+one never overrides it: the day is skipped and recorded as held by the newer delivery.
+This revision review concerns one delivery superseding another; the general
+per-measurement precedence review stays deferred. Skipped, held and revised days are
+recorded as dates and counts, never values.
 
-**Problems are visible to operators first.** The MVP produces an operator report or CLI
-output per station: coverage, counts by QC status, gaps and flagged ranges, with no
-values in logs or issues. Add an API endpoint only if that proves insufficient for a
-dashboard, and then only after auditing what the existing observation endpoints already
-return. Mapping flagged ranges to model input windows is later work.
+**Problems are visible to operators and through the API.** The MVP produces an operator
+report or CLI output per station: coverage, counts by QC status, gaps, flagged ranges and
+rating-status counts, with no values in logs or issues. The observation API also tells a
+consumer, per observation, whether its value is rated, provisional, or has no rating at all
+(next subsection). Mapping flagged ranges to model input windows is later work.
 
 **Operator material.** An admin checklist in the style of the approved-basin runbook
 (stage table, plain bullets, copy-paste commands).
+
+### Rating status of delivered days (API requirement)
+
+Each delivered discharge day links to the rating table in force for it, selected as the
+native rating route selects (each station's newest delivered file, the latest block start
+on or before the day), so the October delivery's table is used for stations that have an
+October file; the link only ever points at tables of the already admitted rating delivery. The observation API returns, for each such observation, a rating
+status and a reason, efficiently (a lookup that scales to a station's full history, with no
+per-row queries in a loop; whether it is stored or derived is the plan's decision):
+
+- `rated`: a valid table covers the day and the value is inside that table's range.
+- `provisional`: the day lies after the end of the last table and that table is valid (the
+  most recent past table is used), or the value lies outside the table's range (reasons
+  `after_last_table`, `outside_range_below`, `outside_range_above`).
+- `no_rating`: no rating applies at all, with a reason: `invalid_table` (the table in force
+  for the day is a block that failed validation; it holds conversion and never causes
+  fallback to an earlier one), `before_first_table`, or `no_table`. Invalid blocks are not
+  stored; they are audited with their start date and reason only, so the plan decides how
+  their span is derived.
+
+Supplied discharge is never re-derived or altered by its status. Twenty older October rating
+blocks across five files currently fail numerical validation while the 21 newest validate
+(`docs/native-provisional-rating.md`), so those periods report `no_rating` with reason
+`invalid_table`.
+
+Level converted to discharge uses the established provisional pathway: a level outside the
+table is converted by linear extrapolation of the end segment and flagged below or above
+(`convert_provisional_level`); ordinary conversion keeps clamping and reporting the range.
+An earlier owner decision (2026-09-19, convert and flag at both ends; refined 2026-09-20 with
+bounds: refuse above the table top plus 1.0 m and below half of the lowest tabulated
+discharge, never store 0.0) was recorded outside this repository and is not in the code:
+today the provisional pathway extrapolates without those bounds and keeps its range
+warnings only in the provisional store, not on observations. Recorded here so it is not lost;
+whether the bounds stand and where the flag is persisted are owner decisions before the
+water-level milestone. This section changes no conversion code.
 
 ### Later: water-level files, the 24:00 convention and datum offsets
 
