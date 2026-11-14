@@ -32,7 +32,7 @@ README step "Load the demo stations" is the Swiss route in this journey.
 | # | You do | Open this | Done when | Who | Today |
 |---|---|---|---|---|---|
 | 0 | Deployment is up, your tenant exists | [Deployment quick-start](../deployment-quickstart.md) | Health checks pass; tenant created at startup from the host config | Admin | Ready |
-| 1 | Get each station's basin outline and approve it | [Basin operator runbook](basin-operator-runbook.md) | An approved handover folder exists | Facilitator, hydrologist | Nepal: ready. Swiss: CAMELS-CH supplies basins |
+| 1 | Get approved basins: attach an extracted package (for Nepal, the pre-extracted basins hydrosolutions sends you) or run the extractor, then have the hydrologist review and approve | [Basin runbook: admin checklist](basin-operator-runbook.md#get-approved-basins-admin-checklist) | A saved, approved handover folder | Admin, hydrologist | Nepal: ready (attach route needs no extractor). Other countries: the extractor covers Nepal only today; ask hydrosolutions. Swiss: CAMELS-CH supplies basins |
 | 2 | Register the basins with the weather data service, subscribe, hand off the history job, check coverage | [Gateway runbook](recap-gateway-runbook.md), top section | Coverage is verified; stations are eligible or held with a reason | Admin | Nepal: ready, with manual steps (you start the history job) |
 | 3 | Create the station records | none for new stations | A station row exists per gauge | **hydrosolutions** | Swiss: the script. Nepal: **not built**, done by hand |
 | 4 | Import basins and static attributes | [Basin importer runbook](basin-static-importer-runbook.md) | Basins stored per station | Facilitator | Ready once the station row exists |
