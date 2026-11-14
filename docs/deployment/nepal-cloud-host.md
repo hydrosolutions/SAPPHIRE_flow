@@ -16,6 +16,33 @@ Stack: `docker-compose.yml` + `docker-compose.nepal-cloud.yml`. Only Caddy publi
 it forwards `/api/v1/` and answers 404 to every other path. The Swiss BAFU collectors are not registered
 (`SAPPHIRE_SKIP_DEPLOYMENTS`), and the seeded `sapphire` tenant has no write authority.
 
+## Caddy health-check child cleanup
+
+The Nepal overlay enables `init: true` for Caddy. BusyBox `wget` can leave
+orphaned HTTPS helper processes; Docker's init process collects their exit
+status so they cannot accumulate and exhaust the container's process allowance.
+Keep the existing health probe and container restrictions.
+
+For an existing runtime, preserve its complete Compose file list. If it uses
+frozen release inputs, apply `services.caddy.init: true` in its mutable edge
+overlay shared by both the Caddy-only and full-stack commands. Do not edit the
+frozen files. Render both chains privately and confirm that only Caddy's init
+setting changes; retain the current immutable image, mounts and rollback config.
+
+After review and rollout approval, recreate only Caddy with `up -d --no-deps
+--no-build --pull never --force-recreate caddy`, using that runtime's directory,
+environment and full overlay list. Preserve the exact named volumes mounted at
+`/data` and `/config`; other service container IDs must remain unchanged. Expect
+a brief HTTPS interruption. No application-image rebuild or database work is
+needed for this setting.
+
+Check that init is PID 1, Caddy is its child, public HTTPS succeeds with normal
+certificate validation, and the existing health check passes. Observe at least
+30 health-check intervals for zero persistent `ssl_client` zombies and stable
+task counts. If HTTPS does not recover within two minutes, restore the previous
+mutable overlay and recreate only Caddy with the same image and volumes. This
+rollback restores the old cleanup behavior and is temporary recovery.
+
 ## 1. On the host, once
 
 ```bash
