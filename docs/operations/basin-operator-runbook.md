@@ -22,6 +22,20 @@ suitable. One person can do both jobs, but a successful run is not scientific ap
 stations the hydrologist approves. **Not covered here:** registering stations, the weather
 data service (next step) and forecasts.
 
+### Before you start
+
+For now hydrosolutions supports your **first run**: ask us before you begin and we will
+join the call. The aim is that you can later do it alone.
+
+| Check | What you need |
+|---|---|
+| Computer | Mac or Linux. Windows is **not tested**; the commands and paths below are Mac/Linux. |
+| Tools | `git` and `uv` installed. Get the SAPPHIRE code once with `git clone https://github.com/hydrosolutions/SAPPHIRE_flow.git`, then run `uv sync` inside the new folder ([README step 3](../../README.md#3-install-python-dependencies)). Install `uv` from <https://docs.astral.sh/uv/>. Docker is **not** needed for this step. |
+| Disk space | Route 1: room for the package (hydrosolutions tells you its size). Route 2: about **25 GB** free (the datasets are about 12 GB and need space to unpack). |
+| Internet | Needed to download, and for the map in the review page (it loads map tiles online; offline you get no map). |
+| Time | Not measured yet. Route 2 adds the downloads and one extraction run. Ask us for an estimate for your station count. |
+| People | You (admin) and a hydrologist who reviews each basin. |
+
 ### Which route?
 
 | | Choose it when | You need | Go to |
@@ -40,7 +54,7 @@ handover](#review-and-save-the-handover-both-routes).
 
 Example paths below use `/Users/yourname/...`; replace them with your own (on Linux, for
 example `/home/yourname/...`). Type the commands in a terminal, from the SAPPHIRE code
-folder, after the one-time setup in [README step 3](../../README.md#3-install-python-dependencies).
+folder, after the setup in [Before you start](#before-you-start).
 
 | You need | What it is |
 |---|---|
@@ -52,9 +66,9 @@ folder, after the one-time setup in [README step 3](../../README.md#3-install-py
 | # | Step | Who | Done when |
 |---|---|---|---|
 | 1 | Check the station sheet against your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source and the package |
-| 2 | Download the package and unpack it into a new folder. Keep the original ZIP. | Admin | Folder and ZIP in hand |
-| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
-| 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows **Existing extraction loaded** |
+| 2 | Get the package from hydrosolutions (they send you a download link) and unpack it into a new folder. Keep the original ZIP. | Admin | Folder and ZIP in hand |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` (type exactly this; `localhost` is refused) |
+| 4 | Upload the station sheet, check that the stations shown are the ones on your sheet and in the package, click **Confirm**. | Admin, hydrologist | The page shows **Existing extraction loaded** |
 | 5 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
 
 ```bash
@@ -72,7 +86,7 @@ package. **Start extraction** stays disabled on this route: that is expected.
 
 Example paths below use `/Users/yourname/...`; replace them with your own. Type the commands
 in a terminal. The tool command is run from the SAPPHIRE code folder
-([README step 3](../../README.md#3-install-python-dependencies)).
+(set up as in [Before you start](#before-you-start)).
 
 | You need | What it is |
 |---|---|
@@ -86,7 +100,7 @@ in a terminal. The tool command is run from the SAPPHIRE code folder
 |---|---|---|---|
 | 1 | Prepare the station sheet from your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source |
 | 2 | Get the extractor ready and write the command file: [step 2 in detail](#route-2-step-2-in-detail-get-the-extractor-ready). | Admin | The extractor prints its options and the command file exists |
-| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` (type exactly this; `localhost` is refused) |
 | 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows the stations and **Start extraction** is enabled |
 | 5 | Click **Start extraction** once, then reload to check progress. Never start a second run while one is busy: it clears the current decisions. | Admin | A basin is shown |
 | 6 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
@@ -107,20 +121,25 @@ routes in one command.
 
 Keep the extractor in its own folder, separate from the SAPPHIRE code folder.
 
-1. **Download the extractor package** from the link hydrosolutions gives you (link to be
-   added here): release `v0.2.0`, source commit `25cc09c2aff192033abefaf6b052822ad7024d67`.
-   Unpack it, for example into `/Users/yourname/sapphire-extractor`.
-2. **Download the three datasets** from the links hydrosolutions gives you (links to be
-   added here) and note where you put them, for example:
+1. **Get the extractor package** from hydrosolutions (its repository is private; ask us for
+   access or a download link; the link is not published yet). Use source commit
+   `25cc09c2aff192033abefaf6b052822ad7024d67` (the extractor's `v0.2.0` state; it has no
+   release tag, so the commit is what counts). Unpack it, for example into
+   `/Users/yourname/sapphire-extractor`.
+2. **Get the three datasets** (about 12 GB in total; hydrosolutions gives you the download
+   links, which are not published yet) and note where you put them. The folder names below
+   are examples; your paths can differ:
    - river network (HFX): `/Users/yourname/sapphire-datasets/nepal-hfx-v2/merit-hfx-pfaf45`
    - attributes (HydroATLAS): `/Users/yourname/sapphire-datasets/nepal-hydroatlas-clip/nepal-hydroatlas-lev12.gpkg`
    - weather store (ERA5-Land): `/Users/yourname/sapphire-datasets/nepal-era5-land-cube/nepal_cube/cube.zarr`
      (point to the `cube.zarr` store itself, not the folder around it)
-3. **Install it once.** In a terminal, go into the extractor folder and run `uv sync`. This
-   creates its own environment (a `.venv` folder).
+3. **Install it once.** In a terminal, go into the extractor folder and run
+   `uv sync --locked`. This creates its own environment (a `.venv` folder, about 700 MB) and
+   downloads the Python version it needs (3.13) by itself.
 4. **Check it works.** Run
    `/Users/yourname/sapphire-extractor/.venv/bin/python -m static_attrs_nepal.appliance --help`.
-   It should print a list of options, not an error.
+   It should print a list of options, not an error. The list shows `--output` as required;
+   that is normal, because the tool adds it for you.
 5. **Write the command file.** In any text editor, create
    `/Users/yourname/sapphire-extractor/extractor-command.json` with this content, using your
    own paths (all paths must be complete, starting with `/`):
@@ -135,7 +154,8 @@ Keep the extractor in its own folder, separate from the SAPPHIRE code folder.
    ]
    ```
 
-   Do not add stations, `--output` or package options: the tool adds them for each run. Do
+   Do not add stations, `--output` or package options: the tool adds them for each run (this
+   is why `--help` and your file differ). Do
    not put credentials in the file.
 
 If hydrosolutions gave you the Docker bundle instead (Linux, amd64 only), they also give you

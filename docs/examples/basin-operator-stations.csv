@@ -1,3 +1,4 @@
 station_code,display_name,latitude,longitude,published_area_km2,source
 001.0,Synthetic A,28,85,10,Synthetic example only
 002,Synthetic B,28.2,85.2,,Synthetic example only
+00001,Trishuli,28.164345566064725,85.33996353048586,,Test site: former research gauge (washed away); its hourly series is synthetic
