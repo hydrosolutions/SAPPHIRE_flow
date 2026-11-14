@@ -263,6 +263,28 @@ extraction, the optional Gateway part still needs it); the exact list of known s
 problems with plain-language fixes; the synthetic gauge generator; and how a user maps
 the demo steps to their own stations.
 
+## 11. Order of work to the Nepal workshop (agreed 2026-11-14)
+
+Reference only; estimates are unmeasured and the workshop date (about 27 November 2026)
+is approximate. The 19 November demo is not touched. Nothing here authorizes
+implementation, deployment or live writes; each step keeps its own gate.
+
+| Track | Work | Days | Gate |
+|---|---|---|---|
+| A. Gateway rehearsal (#452) | Owner reviews the workflow and supplies the inputs (Gateway base URL, new Gateway name, history window, forecast scope, actor name, review reference, evidence folder outside any repo); offline `prepare` for Trishuli, then live steps; Gateway-developer review of the checklist | 1-2 | Owner |
+| B. Delivered files (#453 M1) | Plan; build and test (manifest, admission command, one guard migration, QC, operator report); dry run, then deploy and run on the Nepal host | 1; 5-7; 0.5-1 | Independent review (security review for the guard); owner merges; owner and deployment operator for the host; Nepal-cloud coordination |
+| C. Facilitator checklist (#453 M3) | Spike: what a facilitator types today for a new station record, package and weather binding, and the gaps; then checklist v0 with explicit manual rows | 1; 1-2 | After A |
+| D. Sandbox groundwork | Confirm data licences, pick the two Swiss stations | 0.5 | Owner |
+
+Critical path is B (reaches the host around day 10-12 if started at once). Cut line
+24 November: if B is not deployed by then, the workshop uses the September data and
+presents the October delivery as the next step; nothing else depends on it.
+Not before the workshop: the self-service sandbox, the general "register a new station"
+command (#453 M2; the checklist covers the gap manually), water-level files, datum
+offsets and the synthetic Nepal gauge. A general station-registration command appears
+not to exist today (the existing stations command covers only the September six);
+the spike in C confirms this.
+
 ## Evidence of success
 
 An operator can take a new Nepal station batch through extraction, map review,
