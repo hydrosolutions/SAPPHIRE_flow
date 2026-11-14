@@ -67,8 +67,12 @@ next batch) needs only a new run-time manifest entry and one admission command.
   September's do: each row carries the `rating_curve_id` of the latest valid rating table
   covering that day. Where several valid tables overlap, the October rating delivery's
   table is used. Tables that fail numerical validation (20 older October blocks do) are
-  never candidates. A day with no valid table stays unlinked and is listed in the report
-  as dates and counts; nothing is guessed. (Open: days after the last block ends; see Q7.)
+  never candidates. A day with no covering valid table (for example after the last
+  block's end) is **provisional** and links to the most recent past valid table, as agreed
+  earlier for provisional ratings. Provisional is derivable (the linked table's validity
+  does not cover the day), so no new column is added; the report counts provisional days
+  per station as dates and counts. A day before the earliest valid table, or at a station
+  with no valid table, stays unlinked and is listed. Nothing else is guessed.
 - **D-k** (owner, 2026-11-14) October values get exactly September's visibility: hidden
   from consumer tokens, visible to reviewers in scope and to admins (restricted DHM data;
   public release was never authorized). Hence T4.
@@ -251,10 +255,8 @@ the rating curve that produced it.
    making it read October is the next milestone's first small task, not this one?
    *Recommendation:* yes. It keeps this slice to loading and checking.
 
-7. **Days after the last rating block ends.** If a day falls after every valid table's
-   validity ends (for example 2025 days and a table ending 2024), link the latest valid
-   table anyway, or leave the day unlinked? *Recommendation:* leave unlinked and list
-   them, so no table is applied outside its stated validity.
+7. **Days after the last rating block ends.** *Closed 2026-11-14 (D-j):* provisional,
+   linked to the most recent past valid table.
 
 ## Tasks
 
