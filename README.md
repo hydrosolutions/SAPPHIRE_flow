@@ -147,7 +147,9 @@ DATABASE_URL="postgresql+psycopg://sapphire:${DB_PASS}@localhost:5438/sapphire" 
   uv run alembic upgrade head
 ```
 
-### 5. Onboard initial data (CAMELS-CH)
+### 5. (Developer) Load Swiss CAMELS-CH data — not station onboarding
+
+This is developer setup with Swiss data. To onboard stations, see [Start here: onboard stations](docs/operations/onboarding-start-here.md).
 
 Downloads the CAMELS-CH dataset (~250 MB) and loads stations into the database:
 
@@ -186,6 +188,7 @@ uv run pytest
 
 ## Documentation
 
+- **Onboarding stations:** [docs/operations/onboarding-start-here.md](docs/operations/onboarding-start-here.md) -- start here
 - [v0 scope](docs/v0-scope.md) -- what is built and in what order
 - [Architecture](docs/architecture-context.md) -- system design and data flows
 - [CI/CD standards](docs/standards/cicd.md) -- Docker topology, deployment, upgrades

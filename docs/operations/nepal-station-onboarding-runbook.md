@@ -1,5 +1,7 @@
 # Nepal DHM station onboarding runbook
 
+> Historical six-station example (September 2026 batch). For the current journey start at [onboarding-start-here.md](onboarding-start-here.md).
+
 Repeatable procedure for preparing new DHM stations for a Nepal test deployment.
 It records the current six-station example and separates Gateway registration,
 which DHM/hydrosolutions operators perform, from SAP3 ingestion and readiness
