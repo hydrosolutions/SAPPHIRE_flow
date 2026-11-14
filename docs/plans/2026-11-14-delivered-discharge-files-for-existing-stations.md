@@ -80,8 +80,9 @@ next batch) needs only a new run-time manifest entry and one admission command.
   `replace` tag; the dry run checks this precondition, and if it fails the station is
   `no_table`. Statuses, in precedence order: `no_rating` / `invalid_table` (in-force block
   failed validation), `before_first_table` (day before the newest file's first block),
-  `no_table` (no candidate file for the station; stored curves of a delivery not named in
-  the manifest refuse the station instead); then `provisional` / `after_last_table` (the day
+  `no_table` (no candidate file for the station; stored curves of an admitted rating
+  delivery not named in the manifest refuse the station instead, ignoring the September
+  `replace` tag, which sits on curves at every station); then `provisional` / `after_last_table` (the day
   is on or after the in-force valid block's exclusive validity end; this also covers a day
   in a gap between blocks, the reason meaning "after the in-force table's validity");
   then `provisional` / `outside_range_below` or `_above` (the value is below the first or
@@ -161,9 +162,13 @@ without an admission (withholding stays on for every delivery ever admitted). Gr
 
 **Guard rewrite.** `CREATE OR REPLACE FUNCTION public.operator_guard_delivery_row()` keeps
 its name, `SECURITY INVOKER`, pinned `search_path`, schema-qualified relations, OLD/NEW
-checks and the no-move rule. Only the predicate changes, from "tag = literal AND station in
-tenant `chwrr`" to "an admission exists for `NEW/OLD.delivery_id`, is not revoked, AND the
-station's tenant code equals that admission's `tenant_code`". `NULL` tags fail the
+checks and the no-move rule. For `observations` only the predicate changes, from "tag =
+literal AND station in tenant `chwrr`" to "an admission exists for `NEW/OLD.delivery_id`, is
+not revoked, AND the station's tenant code equals that admission's `tenant_code`". **The
+`rating_curves` branch keeps the seed literal and the tenant check**: the function is shared
+by both tables and the operator holds INSERT and DELETE on `rating_curves`, so widening that
+branch would let the operator write curves tagged with October's own (native rating)
+delivery id. No new command writes curves. `NULL` tags fail the
 `EXISTS`, so untagged rows stay refused. Triggers, the station-insert guard (still
 `chwrr`-only, used only by the September `stations` command) and the truncate guard are
 untouched, so the bootstrap's `operator_guard_ok` check stays valid. Bootstrap adds the
@@ -185,8 +190,10 @@ SHA-256 of the original bytes, `parse_daily_flow`, the header code against the d
 code, at most one file per station, the path outside the checkout. The **manifest-entry
 hash** is SHA-256 of a canonical JSON of `{delivery_id, delivered_on, sorted [(network,
 station_code, kind, sha256)]}` for the selected entry. It excludes paths, so a dry-run copy
-and the host give the same hash, and other entries, so adding November later does not
-invalidate October.
+and the host give the same hash, and other discharge entries. The admission also binds the
+candidate rating set (below): the hash covers the entry plus that set, so a later rating
+entry that changes a station's candidates means October `discharge` is re-admitted before
+it can run again.
 
 **Admission command** (owner role): `python -m sapphire_flow.cli.delivery_admission admit
 --tenant T --manifest M --delivery D --admitted-by NAME --reason TEXT [--dry-run]`, run as a
@@ -255,26 +262,33 @@ BIPAD-feed tags) stay visible. D-k means "exactly as September today", path by p
 rating entries, checks that each candidate's SHA-256 and delivered date equal the stored
 original and that it is the newest file for its station, refuses a selected id equal to
 `DELIVERY_ID`, and binds the candidate set into the entry hash. The load parses the
-candidate files with `parse_rating_tables` and one shared pure validation function
-(extracted from `admit_rating_deliveries`: tied start, `build_delivery_curves`,
-`convert_provisional_level` on the first point) to learn every block's start, validity and
-outcome; it finds, per day, the in-force block, looks up the stored curve by station,
-delivery tag and start date, and sets `rating_curve_id`, `rating_status` and
-`rating_reason`. A stored curve that disagrees with the parsed file refuses the station
-and reports why (the manifest is not the one that was admitted; a newer delivery was
-admitted since; the validation code changed). Migration `0086_observation_rating_status`
-adds the two nullable columns with `CHECK`s added `NOT VALID` and then validated (a plain
-`CHECK` scans the whole table under an exclusive lock): enumerated values, only valid
-status-reason pairs (`rated` has a null reason, every other status a reason), and a status
-only when `delivery_id IS NOT NULL`. It **must also redefine
-`bafu_unit_observation_guard`** (migration `0076`): that deferred trigger raises "BAFU
-unsupported observation schema" for any column outside a fixed list, so the two new names
-are added to the key list only, never to the list of changes allowed on a protected row,
-so a protected BAFU row can never acquire a status. This is security-relevant and ships in
-PR-B under the security-minded review; T3b's migration becomes `0087`. `RawObservation`/`Observation`, the store
-insert/upsert/read paths, `ObservationResponse` (new optional fields, default null, so old
-clients are unaffected) and the observation routes carry them. The upsert treats a changed
-status like a changed link.
+candidate files with `parse_rating_tables` to learn every block's start. Admission stores
+exactly the valid blocks of a station's winning file (a tied start stores none), so a parsed
+block with no stored curve under that file's delivery tag is an invalid block: no
+validation code is extracted or duplicated. A parsed file with blocks but no stored curve
+at all, or stored points that differ from the parsed points, refuses the station with a
+generic reason. Per day the load finds the in-force block, looks up the stored curve by
+station, delivery tag and start date (exactly one must exist), and sets `rating_curve_id`,
+`rating_status` and `rating_reason`. Migration `0086_observation_rating_status` adds the two
+nullable columns with plain `CHECK`s (enumerated values; only valid status-reason pairs,
+where `rated` has a null reason and every other status a reason; a status only when
+`delivery_id IS NOT NULL`). Migrations run in one transaction, so `NOT VALID` followed by
+validation would not avoid the exclusive lock; the scan time is measured on the dry-run
+copy instead. The migration **must also redefine `bafu_unit_observation_guard`**
+(migration `0076`, keeping its `extra_float_digits` and `search_path` settings): that
+deferred trigger raises "BAFU unsupported observation schema" for any column outside a
+fixed list, so the two new names are added to the key list only, never to the list of
+changes allowed on a protected row, so a protected BAFU row can never acquire a status.
+This is security-relevant and ships in PR-B under the security-minded review; T3b's
+migration becomes `0087`. Two further consequences of adding fields to `Observation`:
+`measurement_snapshot` (`types/rating_reference.py`) is built from all fields minus the QC
+keys and native capture checks an exact key set (migration `0080`), so the snapshot must
+also drop `rating_status` and `rating_reason` and the capture shape stays unchanged; and
+the shared insert grows from 12 to 14 bound columns per row, so the batch size drops from
+5,000 to 4,000 (56,000 parameters, under the 65,535 limit). `RawObservation`/`Observation`,
+the store insert/upsert/read paths (including `store_observations`), `ObservationResponse`
+(new optional fields, default null, so old clients are unaffected) and the observation
+routes carry them. The upsert treats a changed status like a changed link.
 
 **Revised days (D-f, T3b; built only if the dry run shows differing days).** A separate
 small migration (`0087`) creates `delivery_value_revisions`: station, timestamp,
@@ -347,7 +361,7 @@ revisions exist.
    September-tagged rows, including October days skipped as equal, keep null. The vision
    says each delivered day. *Recommendation:* for this slice null means "not assessed" and
    is documented in the API spec; giving September rows a status is a follow-up (it needs
-   its own rating files and an update of September rows). Do you accept this?
+   its own rating files and an update of September rows). Do you accept this? *Default applies unless the owner objects before T3c starts.*
 
 ## Tasks
 
@@ -361,11 +375,14 @@ Fixtures are synthetic; no delivered values.
   `docker/bootstrap-roles.sql`, `tests/unit/db/test_alembic_head_release_b.py`,
   `tests/unit/db/test_operator_guard_migration.py` (add: seed equals `DELIVERY_ID`),
   `tests/integration/db/test_operator_role.py`, `test_operator_grant_matrix.py`,
+  `tests/integration/services/nepal_readiness_isolation_fixture.py` (a second head pin at
+  `"0084"`),
   `test_operator_guard_historical.py`, new
   `tests/integration/db/test_delivery_admission_guard.py`. Tests: the September
   `replace`/`qc` pass unchanged on the seed. Untagged, non-admitted, revoked,
   admitted-but-other-tenant and missing-tenant writes are refused (INSERT NEW, DELETE OLD,
-  UPDATE both). No move of station or tag. Curve validity dates are fixed. The operator and
+  UPDATE both). An operator INSERT of a `rating_curves` row tagged with an admitted id other
+  than the seed is refused (the curve branch keeps the seed literal). No move of station or tag. Curve validity dates are fixed. The operator and
   api cannot INSERT/UPDATE/DELETE/TRUNCATE `delivery_admissions` (grant matrix updated and
   still minimal). Admission rows cannot be deleted by any role; UPDATE is refused except
   setting `revoked_at`. A temporary table named `delivery_admissions` cannot satisfy the
@@ -390,11 +407,10 @@ Fixtures are synthetic; no delivered values.
   works as owner and fails as operator (permission); it records `delivered_on`. Same hash:
   no-op; different hash or tenant: refused. Dry-run leaves no row. `revoke` sets
   `revoked_at`, takes the tenant lock, and the operator can then write nothing for the
-  delivery. A concurrent `discharge` and `revoke` cannot leave a state where tagged rows
-  are served to consumer tokens.
+  delivery. Withholding is keyed on every delivery ever admitted (revoked included), tested at
+  the predicate, so no revoke ordering can expose tagged rows.
 - **T3 Load, QC, report, withdraw.** Files: `src/sapphire_flow/cli/import_dhm_delivery.py`,
-  new `src/sapphire_flow/services/delivered_discharge.py`, `src/sapphire_flow/services/rating_delivery.py`
-  (extract the shared block-validation function; admission behaviour unchanged),
+  new `src/sapphire_flow/services/delivered_discharge.py`,
   `src/sapphire_flow/store/observation_store.py` (bounded per-station existing-key reader),
   `protocols/stores.py` and the fake store if a method is added, new
   `tests/unit/services/test_delivered_discharge.py` (pure overlap classification, rating
@@ -421,15 +437,20 @@ Fixtures are synthetic; no delivered values.
   refuses while revisions exist. Water-level rows at the same stations are untouched.
 - **T3c Rating status stored and served** (depends on T1; security-relevant because of the
   BAFU guard). Files: new `alembic/versions/0086_observation_rating_status.py` (columns,
-  `NOT VALID` checks, redefined `bafu_unit_observation_guard`), `db/metadata.py`,
-  `types/observation.py`, `store/observation_store.py` (every explicit select list, the
-  insert and the shared upsert), `protocols/stores.py` and fakes, `api/schemas.py`
+  plain checks, redefined `bafu_unit_observation_guard`), `db/metadata.py`,
+  `types/observation.py`, `types/rating_reference.py` (`measurement_snapshot` drops the two
+  fields), `store/observation_store.py` (every explicit select list, `_BATCH_SIZE` 4,000,
+  the insert, `store_observations` and the shared upsert), `protocols/stores.py` and fakes, `api/schemas.py`
   (`ObservationResponse`), `api/routes/api_stations.py` (station observations and latest
   observations), `docs/spec/api-v1-map.openapi.json` (regenerated; drift-tested by
   `tests/unit/api/test_map_contract.py`), `src/sapphire_flow/api/map_contract.py`
   (`MAP_CONTRACT_VERSION` minor bump from 2.11), `tests/observation_contract.py` (pins the
   exact field set), migration tests under `tests/integration/db/`,
-  `tests/integration/store/test_bafu_unit_writer.py`, store and API tests. Out of scope: the
+  `tests/integration/store/test_bafu_unit_writer.py`, a native-capture and native-rating
+  regression test (stored captures keep their shape; check for pinned golden digests of
+  `asdict(RawObservation)`), `tests/integration/services/nepal_readiness_isolation_fixture.py`
+  (a second head pin at `"0084"`), store and API tests, including a write of more than
+  4,681 rows through the real store. Out of scope: the
   Swiss history route (it withholds admitted rows for everyone) and the network overview
   (its own type). Tests: the columns are nullable with enumerated values and valid pairs
   only; old rows read as null; a delivered row round-trips status and reason; protected
@@ -491,7 +512,9 @@ tests, or T4.
 
 **PRs.** PR-A = T1 + T4 (database and withholding; the security review covers both; it
 deploys standalone and safely). PR-B = T2 + T3 + T3c + T5 (the security-minded review also covers `0086` and the BAFU
-guard redefinition). PR-C = T3b, only if needed. PR-A must merge before PR-B (migration
+guard redefinition). Documentation ships with its code: the guard and withholding docs
+(`security.md`, touchpoint maps, `cicd.md`) belong to PR-A; the runbook, manifest and API
+docs to PR-B. PR-C = T3b, only if needed. PR-A must merge before PR-B (migration
 order), and deploys first or together with PR-B; no October load before both are deployed.
 Each code PR advances `RELEASE_TARGET` exactly once (`.venv/bin/python -I
 tools/release_target.py bump --base-sha <base>`; `docs/standards/cicd.md` § Release
@@ -572,7 +595,7 @@ types and the full suite must pass after the final change.
 - **Owner credential use outside deploy.** Bounded to a one-off `init` command; reviewed.
 - **Lock duration on the live host.** About 254k new rows under `lock_tenant` would block
   `replace`/`qc`, and ingest's shared station locks. Mitigation: per-row predicate reads,
-  5,000-row batches, wall time measured in the dry run; run outside ingest peaks.
+  4,000-row batches (14 bound columns per row), wall time measured in the dry run; run outside ingest peaks.
 - **QC across delivery boundaries** (for example station 450, whose October period may
   start right after September's) is not checked. QC runs per delivery. Deferred.
 - **Old-period rows in current inputs:** the latest October day is 2025 (briefing). Verify
@@ -589,6 +612,9 @@ types and the full suite must pass after the final change.
   separate PRs and both get the security-minded review.
 - **Revoke versus load race:** closed by never deleting admission rows and taking the
   tenant lock in `admit`, `revoke` and `discharge` (admission checked after the lock).
+- **Rating deliveries admitted after `admit`:** a newer rating delivery whose blocks are all
+  invalid stores no curves, so the load cannot see it. Rare; the runbook tells the admin to
+  re-run `admit` after any rating admission.
 - **Wrong admission:** harmless until rows are written; `revoke` stops further writes, and
   `discharge-withdraw` removes the rows.
 
@@ -607,6 +633,7 @@ attribution beyond a label (the existing forged-audit residual stays).
 
 - Plan: one independent Claude review (owner confirmed 2026-11-14).
 - PR-A: an independent security-minded review of the migration, bootstrap grants, downgrade
-  ordering and withholding, on the exact diff. PR-B: one independent review.
+  ordering and withholding, on the exact diff. PR-B: an independent security-minded review too, since it carries `0086` and the BAFU
+  guard redefinition. PR-C: one independent review.
 - The orchestrator sets READY after review. The owner decides findings, approves and merges
   every PR, and authorizes the host run.
