@@ -40,7 +40,7 @@ Status as of 2026-11-14, from a read-only look at the repository. Nothing was ru
 | 3b. Basin and static package import | Facilitator | [Basin importer runbook](basin-static-importer-runbook.md) | Ready once the station row exists (the generic importer looks stations up by code); the Nepal wrapper covers the six September gauges only | Basins and static attributes in the database |
 | 3c. Weather binding and ERA5 history | Facilitator | [Six-station runbook](nepal-station-onboarding-runbook.md) (sections "Confirm station rows exist" and "Run the six-station discharge preparation command"), [forcing runbook](nepal-forcing-runbook.md) | Partly: six fixed gauges only | Stored weather history per station |
 | 3d. Observations: delivered history | Facilitator | [September import](../runbooks/chwrr-dhm-history-import.md) | Partly: six fixed gauges only. The general route is a draft plan, not built | Daily discharge history |
-| 3d. Observations: live collection | hydrosolutions | none | Partly: no per-station switch documented | Live readings |
+| 3d. Observations: live collection | hydrosolutions | none | Not available for stations in `onboarding`: live ingestion collects only `operational` stations (`is_ingest_station_judged`) | Live readings |
 | 3e. Quality checks and readiness report | Facilitator | six-station runbook, section "Run the six-station discharge preparation command" (`onboard_nepal qualify`) | Partly: six fixed gauges, per-station held or ready report | Ready or held, with a reason |
 | 4. Models, evaluation, activation | hydrosolutions, hydrologist | [Vision](../../planning/visions/2026-11-05-staged-station-onboarding-toward-a-production-pipeline.md) §4-5 | Not built for onboarding (`cmal_small` runs only in the Swiss pipeline) | Nothing yet |
 | 5. Retire or reactivate a station | Admin | none | Not built | Nothing yet |
@@ -55,7 +55,7 @@ the forecast cycle only picks up `operational` stations (`run_forecast_cycle.py`
 | No general "register a new station" command | `import_dhm_delivery stations` accepts only codes 447, 450, 604.5, 647, 670, 684; `onboard_nepal` is limited to the `chwrr` tenant and those six | hydrosolutions creates the station row by hand; stages 3b-3e need it first |
 | Nepal commands are tied to the six-gauge batch and one Gateway name | New batches cannot reuse them unchanged | Treat as manual until the general route exists |
 | General October delivery route | Only a draft plan | The workshop uses the September data |
-| Separating "collect observations" from "run forecasts" | No documented switch found; normal ingestion depends on operational station state (see the [#453 vision](../../planning/visions/2026-11-07-prepare-new-stations-in-sapphire.md), "Reuse evidence and known gaps") | Ask hydrosolutions before enabling live collection |
+| Separating "collect observations" from "run forecasts" | Live ingestion collects only `operational` stations, and the forecast cycle also picks up `operational` stations, so promoting a station to collect readings also makes it eligible for forecasts (see the [#453 vision](../../planning/visions/2026-11-07-prepare-new-stations-in-sapphire.md), "Reuse evidence and known gaps") | Ask hydrosolutions before promoting any station |
 | Model evaluation and activation for new stations | Not built | Out of scope until after the workshop |
 | Retirement and reactivation | Not built | Not available |
 
