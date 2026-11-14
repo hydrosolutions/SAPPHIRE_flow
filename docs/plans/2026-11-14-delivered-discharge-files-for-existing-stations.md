@@ -14,6 +14,53 @@ MVP)". Planning base: `origin/main` at `0020d0498` (Alembic head `0084`,
 `RELEASE_TARGET` `0.1.1134`). No live operation, deployment or restricted file is part
 of writing or reviewing this plan.
 
+## In plain words (read this first)
+
+**What we build.** A way to load DHM's October 2026 daily-discharge files for the Nepal
+stations that already exist, without writing new code for every delivery. The same route
+will take the next delivery too.
+
+**How it works, step by step.**
+1. A small data file (the *manifest*) lists the delivery: its name, date, the stations and
+   the files (with checksums). It holds no measurements and is not stored in the repository.
+2. The owner runs one command, *admit*, which tells the database "this delivery may be
+   loaded". Today a new delivery would need a new database change each time; after this,
+   it does not.
+3. The import account runs *discharge*: it reads the files and stores the values exactly as
+   delivered. Days that are already stored with the same value are skipped. Days where a
+   later delivery differs are replaced and marked for an administrator to review (this part
+   is built only if the dry run finds such days).
+4. *discharge-qc* runs the standard quality checks (no special limits per station). Flagged
+   values stay stored with their flags; nothing is removed or corrected.
+5. *discharge-report* prints, per station, what arrived, what is missing, and what QC found.
+   It prints dates and counts only, never measurement values.
+6. *discharge-withdraw* removes the delivery again if something looks wrong.
+
+**What users and tools will see.** Every loaded day carries a rating status, shown through
+the existing observation API: *rated* (a valid rating table covers the day and the value is
+in its range), *provisional* (the day is after the last table, so the most recent past table
+is used, or the value is outside the table's range), or *no rating* (with the reason, for
+example the table for that period failed validation). Supplied discharge is never changed by
+this status. Restricted values stay hidden from outside API users exactly as September's are.
+
+**What we deliberately do not do now (MVP).** No per-station quality limits, no water-level
+files, no model retraining, no dashboard, no time limits on admissions, no extra locking or
+validation machinery. Hardening and refactoring come later, when there is a production
+deployment to protect.
+
+**The few places where we stay careful even in an MVP.**
+- The import account must not be able to write rating tables for the new delivery (it keeps
+  its old narrow permission there).
+- The live Swiss data path must keep working when two new columns appear on observations.
+- The stored copy of each live water-level measurement keeps its exact shape.
+- Inserts are written in smaller batches (4,000 rows) so the database does not refuse them.
+
+**Effort and order.** About 8.75 working days of building, plus about 0.75 days for the
+owner-run dry run and host run; one optional part (about 1.25 days) is built only if the dry
+run finds differing days. The 24 November cut line is out of reach; the workshop uses the
+September data. Work ships in two or three small pull requests; the database part goes
+first and gets a security-minded review.
+
 ## Outcome
 
 An authorized operator admits a delivered batch of DHM daily-discharge files (`DFL_*`)
