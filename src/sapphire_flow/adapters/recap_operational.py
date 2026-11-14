@@ -148,35 +148,35 @@ def parse_operational_samples(
             if mode == "identity":
                 continue
             raw_value = cast("object", series[polygon])
-            if (
+            missing_value = (
                 raw_value is None
                 or raw_value is pd.NA
                 or (isinstance(raw_value, Real) and math.isnan(float(raw_value)))
-            ):
-                continue
+            )
             try:
+                # Validate missing samples' source grid; never retain the placeholder.
                 value_row = _ProviderSample.model_validate(
-                    {**row.model_dump(), "value": series[polygon]}
+                    {**row.model_dump(), "value": 0.0 if missing_value else raw_value}
                 )
-                samples.append(
-                    OperationalWeatherSample(
-                        parameter=parameter,
-                        source=source,
-                        valid_time=valid_time,
-                        source_run=source_run,
-                        value=converter(value_row.value),
-                        product=(
-                            WeatherProductIdentity.REANALYSIS
-                            if source is OperationalWeatherSource.ERA5_LAND
-                            else WeatherProductIdentity.CONTROL
-                        ),
-                        interval_end=(
-                            ensure_utc(valid_time + timedelta(hours=hours))
-                            if parameter == "precipitation"
-                            else None
-                        ),
-                    )
+                sample = OperationalWeatherSample(
+                    parameter=parameter,
+                    source=source,
+                    valid_time=valid_time,
+                    source_run=source_run,
+                    value=converter(value_row.value),
+                    product=(
+                        WeatherProductIdentity.REANALYSIS
+                        if source is OperationalWeatherSource.ERA5_LAND
+                        else WeatherProductIdentity.CONTROL
+                    ),
+                    interval_end=(
+                        ensure_utc(valid_time + timedelta(hours=hours))
+                        if parameter == "precipitation"
+                        else None
+                    ),
                 )
+                if not missing_value:
+                    samples.append(sample)
             except (ValueError, TypeError) as exc:
                 raise OperationalWeatherSupportError(
                     "invalid operational numeric/day support"

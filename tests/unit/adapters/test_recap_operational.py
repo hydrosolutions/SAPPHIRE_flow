@@ -48,6 +48,22 @@ def precipitation() -> pd.DataFrame:
 
 
 class TestQualifiedOperationalReduction:
+    def test_missing_numeric_value_does_not_bypass_source_grid_validation(
+        self, precipitation: pd.DataFrame
+    ) -> None:
+        row = precipitation.iloc[:1].copy()
+        row.index = row.index + pd.Timedelta(minutes=30)
+        row.loc[:, "g_225"] = float("nan")
+        with pytest.raises(RecapPayloadIntegrityError, match="numeric/day"):
+            parse_operational_samples(
+                row,
+                polygon="g_225",
+                parameter="precipitation",
+                start=START,
+                end=END,
+                max_response_bytes=LIMIT,
+            )
+
     def test_actual_memberless_payload_all_21_stations_40_days(
         self, precipitation: pd.DataFrame
     ) -> None:

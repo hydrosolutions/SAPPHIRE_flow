@@ -169,3 +169,4 @@ Policy resolution lives in the selected assembler to keep the existing forecast
 flow within its type checker's complexity limit. No model contract was changed.
 The existing optional next-day buffer still requires complete support; missing
 required historical days alone enter the new fill policy.
+Missing numeric samples still validate their native source grid before omission.
