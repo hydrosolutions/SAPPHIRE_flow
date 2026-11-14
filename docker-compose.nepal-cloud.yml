@@ -46,6 +46,7 @@ services:
       - *nepal-overlay-mount
 
   caddy:
+    init: true
     environment:
       SAPPHIRE_DOMAIN: ${SAPPHIRE_DOMAIN:?SAPPHIRE_DOMAIN is required; set it in .env}
     volumes:
