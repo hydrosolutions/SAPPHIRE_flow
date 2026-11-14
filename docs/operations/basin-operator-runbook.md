@@ -1,26 +1,185 @@
-# Review a station basin and save its handover
+# Get approved basins: extract or attach, review, save the handover
+
+**Why we do this:** a forecast model needs to know what each forecast location's catchment
+looks like (its outline, size, terrain, soil and climate). This step produces those static
+attributes for the catchment of every station, and a hydrologist checks them before any
+model uses them.
 
 > Part of the onboarding journey: see [onboarding-start-here.md](onboarding-start-here.md).
 
-Use this guide with a **facilitator-prepared local tool**. The facilitator handles
-setup; the hydrologist decides whether the basin is suitable. One person can do
-both jobs, but setup success is not scientific approval.
+This is the first step of onboarding stations. The **admin** (the person who runs the
+tool; the tool's own pages call this person the "facilitator") prepares the inputs and runs
+a small local tool. The **hydrologist** looks at each basin and decides whether it is
+suitable. One person can do both jobs, but a successful run is not scientific approval.
 
 > This tool does **not** register stations or start forecasts. Reviewer names are
-> self-declared, not authenticated. The local review address works on the
-> facilitator's computer, not on a colleague's computer.
+> self-declared, not authenticated. The review page opens only on the admin's own computer
+> (`http://127.0.0.1:8765`), not on a colleague's computer.
+
+## Get approved basins: admin checklist
+
+**Goal:** one saved, approved handover folder with the basins and static attributes of the
+stations the hydrologist approves. **Not covered here:** registering stations, the weather
+data service (next step) and forecasts.
+
+### Which route?
+
+| | Choose it when | You need | Go to |
+|---|---|---|---|
+| **Route 1: attach a package that already exists** | hydrosolutions (or anyone) gave you an extracted package, for example the pre-extracted Nepal basins | The unpacked package folder, its original ZIP and the matching station sheet. No extractor, no datasets. | [Route 1](#route-1-attach-a-package-that-already-exists) |
+| **Route 2: run the extractor** | You have new or corrected stations and no package yet | The extractor (set up with hydrosolutions), a command file and your station sheet | [Route 2](#route-2-run-the-extractor) |
+
+The extractor is a separate project. Today it covers **Nepal only** (it needs a Nepal basin
+dataset, a Nepal attribute set and a Nepal weather store) and is delivered by hydrosolutions
+as a Linux (amd64) Docker bundle or as source plus three large datasets. Its repository is
+private. For another country, ask hydrosolutions before you plan: those datasets would have
+to be built first. Both routes end at the same place: [Review and save the
+handover](#review-and-save-the-handover-both-routes).
+
+### Route 1: attach a package that already exists
+
+Example paths below use `/Users/yourname/...`; replace them with your own (on Linux, for
+example `/home/yourname/...`). Type the commands in a terminal, from the SAPPHIRE code
+folder, after the one-time setup in [README step 3](../../README.md#3-install-python-dependencies).
+
+| You need | What it is |
+|---|---|
+| Station sheet | CSV or one-sheet Excel with `station_code`, `display_name`, `latitude`, `longitude` (optional `published_area_km2`). It must list **exactly** the package's stations and display names. For the pre-extracted Nepal basins, hydrosolutions sends it with the package. Start from the [template](../examples/basin-operator-stations.csv). |
+| Package | The unpacked, validated folder and its original ZIP, kept unchanged, for example `/Users/yourname/sapphire-packages/nepal-basins/package` |
+| Workspace | A new, empty folder where the tool keeps this batch's files, for example `/Users/yourname/sapphire-review/nepal-batch-1`. Create it in your file manager (New Folder) or with `mkdir -p /Users/yourname/sapphire-review/nepal-batch-1`. It must **not** be inside the SAPPHIRE code folder (the folder with the hidden `.git` folder). Use a new folder for each batch. |
+| Hydrologist | Reviews and records the decision; their name is a label, not a login |
+
+| # | Step | Who | Done when |
+|---|---|---|---|
+| 1 | Check the station sheet against your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source and the package |
+| 2 | Download the package and unpack it into a new folder. Keep the original ZIP. | Admin | Folder and ZIP in hand |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
+| 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows **Existing extraction loaded** |
+| 5 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
+
+```bash
+# Use the unpacked folder, not the ZIP. Never put credentials in a command.
+uv run python -m sapphire_flow.cli.basin_operator \
+  --workspace /Users/yourname/sapphire-review/nepal-batch-1 \
+  --package-dir /Users/yourname/sapphire-packages/nepal-basins/package
+```
+
+**What this command does:** it starts the local review page on your computer and loads the
+package you already have into it; it does not extract anything and does not change the
+package. **Start extraction** stays disabled on this route: that is expected.
+
+### Route 2: run the extractor
+
+Example paths below use `/Users/yourname/...`; replace them with your own. Type the commands
+in a terminal. The tool command is run from the SAPPHIRE code folder
+([README step 3](../../README.md#3-install-python-dependencies)).
+
+| You need | What it is |
+|---|---|
+| Station sheet | `station_code`, `display_name`, `latitude`, `longitude`, optional `published_area_km2`. Start from the [template](../examples/basin-operator-stations.csv). |
+| Extractor | The extractor package and its three datasets, made ready in [step 2 in detail](#route-2-step-2-in-detail-get-the-extractor-ready) |
+| Command file | A small text file, `extractor-command.json`, that tells the tool how to start the extractor (example in step 2 in detail) |
+| Workspace | A new, empty folder for this batch, for example `/Users/yourname/sapphire-review/nepal-batch-2`, created as in Route 1. Not inside the SAPPHIRE code folder. |
+| Hydrologist | Reviews and records the decision; their name is a label, not a login |
+
+| # | Step | Who | Done when |
+|---|---|---|---|
+| 1 | Prepare the station sheet from your source (start from the [template](../examples/basin-operator-stations.csv)). Codes are text: keep `00001` (import as text). | Admin | The sheet matches the source |
+| 2 | Get the extractor ready and write the command file: [step 2 in detail](#route-2-step-2-in-detail-get-the-extractor-ready). | Admin | The extractor prints its options and the command file exists |
+| 3 | Start the tool (command below). | Admin | The page opens at `http://127.0.0.1:8765` |
+| 4 | Upload the station sheet, check the stations shown, click **Confirm**. | Admin, hydrologist | The page shows the stations and **Start extraction** is enabled |
+| 5 | Click **Start extraction** once, then reload to check progress. Never start a second run while one is busy: it clears the current decisions. | Admin | A basin is shown |
+| 6 | Continue at [Review and save the handover](#review-and-save-the-handover-both-routes). | | |
+
+```bash
+# Never put credentials in a command.
+uv run python -m sapphire_flow.cli.basin_operator \
+  --workspace /Users/yourname/sapphire-review/nepal-batch-2 \
+  --extractor-command /Users/yourname/sapphire-extractor/extractor-command.json \
+  --extractor-interface v0.2.0
+```
+
+**What this command does:** it starts the local review page on your computer and tells it
+how to launch the extractor when you click **Start extraction**. Do not combine the two
+routes in one command.
+
+### Route 2, step 2 in detail: get the extractor ready
+
+Keep the extractor in its own folder, separate from the SAPPHIRE code folder.
+
+1. **Download the extractor package** from the link hydrosolutions gives you (link to be
+   added here): release `v0.2.0`, source commit `25cc09c2aff192033abefaf6b052822ad7024d67`.
+   Unpack it, for example into `/Users/yourname/sapphire-extractor`.
+2. **Download the three datasets** from the links hydrosolutions gives you (links to be
+   added here) and note where you put them, for example:
+   - river network (HFX): `/Users/yourname/sapphire-datasets/nepal-hfx-v2/merit-hfx-pfaf45`
+   - attributes (HydroATLAS): `/Users/yourname/sapphire-datasets/nepal-hydroatlas-clip/nepal-hydroatlas-lev12.gpkg`
+   - weather store (ERA5-Land): `/Users/yourname/sapphire-datasets/nepal-era5-land-cube/nepal_cube/cube.zarr`
+     (point to the `cube.zarr` store itself, not the folder around it)
+3. **Install it once.** In a terminal, go into the extractor folder and run `uv sync`. This
+   creates its own environment (a `.venv` folder).
+4. **Check it works.** Run
+   `/Users/yourname/sapphire-extractor/.venv/bin/python -m static_attrs_nepal.appliance --help`.
+   It should print a list of options, not an error.
+5. **Write the command file.** In any text editor, create
+   `/Users/yourname/sapphire-extractor/extractor-command.json` with this content, using your
+   own paths (all paths must be complete, starting with `/`):
+
+   ```json
+   [
+     "/Users/yourname/sapphire-extractor/.venv/bin/python",
+     "-m", "static_attrs_nepal.appliance",
+     "--hfx-dataset-dir", "/Users/yourname/sapphire-datasets/nepal-hfx-v2/merit-hfx-pfaf45",
+     "--hydroatlas-clip", "/Users/yourname/sapphire-datasets/nepal-hydroatlas-clip/nepal-hydroatlas-lev12.gpkg",
+     "--era5-land-cube", "/Users/yourname/sapphire-datasets/nepal-era5-land-cube/nepal_cube/cube.zarr"
+   ]
+   ```
+
+   Do not add stations, `--output` or package options: the tool adds them for each run. Do
+   not put credentials in the file.
+
+If hydrosolutions gave you the Docker bundle instead (Linux, amd64 only), they also give you
+the command to put in this file; follow the bundle's own instructions for loading it.
+
+### Review and save the handover (both routes)
+
+| # | Step | Who | Done when |
+|---|---|---|---|
+| 1 | Review each basin and record a decision. Follow [Hydrologist: review the basin](#hydrologist-review-the-basin) below. | Hydrologist | A decision is recorded for each station |
+| 2 | Click **Create immutable approved-only handover**. | Hydrologist, admin | The page shows **Handover saved:** and a folder path |
+| 3 | Keep the handover folder unchanged and go on with the [Gateway checklist](recap-gateway-runbook.md#prepare-an-approved-basin-handover--admin-checklist). | Admin | You have the folder path |
+
+Basin outlines and coordinates can carry data-use restrictions: keep the package and
+workspace private, and share only `review.html` for feedback (never an approval).
+
+### If it stops
+
+| What you see | What to do |
+|---|---|
+| The package is refused after Confirm (route 1) | The sheet must list exactly the package's stations and display names. Compare them and correct the sheet; never edit the package. |
+| Station codes lost their leading zeros | Go back to the original source and import the column as text. |
+| An extraction is running (route 2) | Reload to check. Do not start another run. |
+| A colleague cannot open the page | It is local to your computer. Send them `review.html` for feedback only. |
+| Anything else, or you need the extractor | See the troubleshooting table and details below, or ask hydrosolutions with the step number and the exact message (no values, no credentials). |
+
+### Words used here
+
+**Package:** the extracted ZIP with basin outlines and static attributes. **Outlet:** the
+point on the river where a basin ends. **Snap distance:** how far the tool moved your
+coordinate to reach the river. **Handover:** the saved folder of approved basins. **Workspace:**
+the private folder where the tool keeps its files.
 
 ## Hydrologist: review the basin
 
 1. **Check the station details.** Compare the displayed codes, names and coordinates
    with your source. Keep leading zeros: `00001` must stay `00001`. Tell the
-   facilitator about any mistake before confirming the inputs.
+   admin about any mistake before confirming the inputs.
 2. **Check that the basin is ready.** If the page says **Existing extraction
    loaded** or extraction is **completed** with a basin shown, skip Start
-   extraction. Otherwise, ask the facilitator to finish loading a valid result.
+   extraction. Otherwise, ask the admin to finish loading a valid result.
 3. **Inspect the basin and outlet.** Use the satellite and terrain backgrounds.
    Compare the original point, snapped outlet, boundary, area and snap distance.
-   Tell the facilitator if the map context you need is missing.
+   Tell the admin if the map context you need is missing.
 4. **Select the stations you mean to review.** Check the boxes in the table.
    **All stations are selected by default.** Choosing a station on the map does
    not change those checkboxes.
@@ -29,14 +188,14 @@ both jobs, but setup success is not scientific approval.
    Review any warnings before acknowledging them. Structural holds cannot be
    overridden.
 6. **Save the handover.** Click **Create immutable approved-only handover**.
-   Look for **Handover saved:** and ask the facilitator to open that folder.
+   Look for **Handover saved:** and ask the admin to open that folder.
    Only approved stations belong in the exported basin/static package.
 
 > **Loaded is not approved.** Approval here covers this basin handover only—not
 > model-input qualification or activation of forecasts. Do not approve a basin
 > when the evidence needed for your review is missing.
 
-## Facilitator: prepare each review session
+## Admin: prepare each review session
 
 1. **Choose the route.** Already have an extraction? Use **Attach an existing
    extraction**. Need to create one? Use **Run automatic extraction**, with the
@@ -70,7 +229,7 @@ Open only the section you need. These sections explain the steps above; they do
 not authorize new infrastructure, a deployment, or a scientific approval.
 
 <details>
-<summary>First setup — facilitator, with the project owner</summary>
+<summary>First setup — admin, with the project owner</summary>
 
 The project owner will support the first run. This is a development tool,
 not a self-installing appliance. A rebuilt appliance handover is still pending.
@@ -92,7 +251,7 @@ not a self-installing appliance. A rebuilt appliance handover is still pending.
 </details>
 
 <details>
-<summary>Recheck after a system change — facilitator</summary>
+<summary>Recheck after a system change — admin</summary>
 
 Repeat the affected setup checks if the computer, operating system,
 Python/container environment, storage paths or access permissions change.
@@ -181,7 +340,7 @@ record the reason. Do not move points merely to match a published area. See
 </details>
 
 <details>
-<summary>Preparation requirements — facilitator</summary>
+<summary>Preparation requirements — admin</summary>
 
 ## Prepare
 
@@ -217,7 +376,7 @@ record the reason. Do not move points merely to match a published area. See
    are `station_code`, `display_name`, `latitude`, `longitude`. Optional columns
    are `published_area_km2` (positive km²) and `source`. Coordinates are WGS84
    decimal degrees. Codes are strings: preserve `001.0`, not `1`. In Excel,
-   use a facilitator-prepared sheet, or set the code column to **Text before
+   use an admin-prepared sheet, or set the code column to **Text before
    entering codes**. When importing CSV into a spreadsheet, import that column as
    text rather than accepting automatic number conversion. Formatting a converted
    number as text does not restore lost zeros: return to the original source.
@@ -228,7 +387,7 @@ record the reason. Do not move points merely to match a published area. See
 </details>
 
 <details>
-<summary>Launch commands — facilitator</summary>
+<summary>Launch commands — admin</summary>
 
 ## Explicit launch
 
@@ -243,7 +402,7 @@ uv run python -m sapphire_flow.cli.basin_operator \
 
 Open `http://127.0.0.1:8765` (not `localhost`). The listener is loopback-only;
 Host and CSRF checks protect local writes. Do not reverse-proxy it, tunnel it to
-colleagues, or bind it publicly. Keep the facilitator's account and workspace
+colleagues, or bind it publicly. Keep the admin's account and workspace
 private. There is no multi-user authentication service. Close with Ctrl-C.
 The launcher stops its direct extraction child; inspect any container/remote
 wrapper separately before retrying interrupted work.
@@ -300,7 +459,7 @@ Do not combine `--package-dir` with `--extractor-command`; launch fails fast.
 A valid attached package shows **Existing extraction loaded** with Start extraction
 disabled. Direct extraction requests in attachment mode are rejected without
 clearing approvals. With neither configuration, the page asks you to configure
-an extractor or attach a package and disables Start extraction. The facilitator
+an extractor or attach a package and disables Start extraction. The admin
 must verify this package was made from the uploaded coordinates and current corrected inputs. Attaching verifies the exact station
 set, each station's display name and the package contract, **not** scientific delineation or input provenance that
 the producer does not expose. A corrected batch cannot reattach a superseded
@@ -354,7 +513,7 @@ restricted data. If no context is supplied, the map explicitly says so.
 6. **Create immutable approved-only handover**. The UI reports its local path
    in an announced message that receives focus and scrolls into view. Network and
    server errors use the same visible feedback. Review/correction errors can be
-   fixed without losing the form values. The saved path is on the facilitator's
+   fixed without losing the form values. The saved path is on the admin's
    computer; ask them to open it. Share only `review.html` for feedback, subject to
    data-use restrictions. That read-only copy still needs internet for map assets
    and backgrounds; it is not an approved training table.
@@ -364,7 +523,7 @@ restricted data. If no context is supplied, the map explicitly says so.
    including across restart and reattachment. Changed package bytes under that
    same ID are rejected repeatedly: obtain a new producer package ID, then review
    again. Inventory-only provenance changes do not alter package content identity,
-   but still require fresh review. Local state is trusted facilitator data, not a
+   but still require fresh review. Local state is trusted admin data, not a
    signed identity or tamper-proof approval ledger. Restarting and attaching the
    same unchanged automatic package retains decisions, fingerprint and its recorded
    source ZIP hash. A different package does not inherit that hash, including
@@ -426,7 +585,7 @@ export stops and the producer must clarify its schema. Unknown optional source
 extras are not copied into approved training inputs.
 
 Send colleagues only the read-only HTML for feedback. It has no write controls,
-CSRF token, remote submission or approval authority. The facilitator records the
+CSRF token, remote submission or approval authority. The admin records the
 resulting decision locally. Review what you share; even geometry/coordinates may
 have data-use restrictions. Gateway registration and SAPPHIRE admission are later,
 separately authorized steps, not actions in this operator.
@@ -467,7 +626,7 @@ reviews remain pre-merge gates.
 
 ## Next: prepare the approved handover in the Gateway
 
-Use the companion [approved-handover procedure](recap-gateway-runbook.md#prepare-an-approved-basin-handover).
+Use the companion [approved-handover procedure](recap-gateway-runbook.md#prepare-an-approved-basin-handover--admin-checklist).
 Keep the exported package and original approval immutable. Gateway admission
 checks identity/checksums/approval applicability and reads feature attributes only;
 it does not repeat geometry review. Its external private workspace is separate
