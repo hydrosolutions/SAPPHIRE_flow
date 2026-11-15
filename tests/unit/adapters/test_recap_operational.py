@@ -48,6 +48,22 @@ def precipitation() -> pd.DataFrame:
 
 
 class TestQualifiedOperationalReduction:
+    def test_missing_numeric_value_does_not_bypass_source_grid_validation(
+        self, precipitation: pd.DataFrame
+    ) -> None:
+        row = precipitation.iloc[:1].copy()
+        row.index = row.index + pd.Timedelta(minutes=30)
+        row.loc[:, "g_225"] = float("nan")
+        with pytest.raises(RecapPayloadIntegrityError, match="numeric/day"):
+            parse_operational_samples(
+                row,
+                polygon="g_225",
+                parameter="precipitation",
+                start=START,
+                end=END,
+                max_response_bytes=LIMIT,
+            )
+
     def test_actual_memberless_payload_all_21_stations_40_days(
         self, precipitation: pd.DataFrame
     ) -> None:
@@ -318,7 +334,7 @@ class TestPinnedSdkRequestContract:
 
 
 class TestOptionalBufferIntegrity:
-    @pytest.mark.parametrize("value", [float("nan"), -1.0])
+    @pytest.mark.parametrize("value", [float("inf"), -1.0])
     @pytest.mark.parametrize("scope", ["required", "optional"])
     def test_numeric_failure_is_confined_to_optional_scope(
         self,
@@ -346,6 +362,36 @@ class TestOptionalBufferIntegrity:
                 sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
             )
             assert result[make_binding().station_id].end == ISSUE
+
+    @pytest.mark.parametrize("scope", ["required", "optional"])
+    def test_missing_sample_preserves_partial_support_as_a_gap(
+        self, scope: str
+    ) -> None:
+        frames = {
+            "tp": pd.read_parquet(FIXTURES / "precipitation.parquet"),
+            "2t": pd.read_parquet(FIXTURES / "temperature.parquet"),
+        }
+        timestamp = ISSUE if scope == "optional" else START
+        frames["tp"].loc[timestamp, "g_225"] = float("nan")
+        adapter = RecapGatewayOperationalAdapter(
+            api=cast("EcmwfApiLike", RecordingApi(frames)),
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+        )
+        result = adapter.fetch_windows(
+            sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
+        )
+        if scope == "optional":
+            assert result[make_binding().station_id].end == ISSUE
+            return
+        missing = next(
+            day
+            for day in result[make_binding().station_id].days
+            if day.day == timestamp
+        )
+        assert missing.precipitation_mm is None
+        assert missing.temperature_c is not None
+        assert missing.samples
 
     def test_invalid_optional_value_does_not_hide_other_leg_identity(self) -> None:
         frames = {

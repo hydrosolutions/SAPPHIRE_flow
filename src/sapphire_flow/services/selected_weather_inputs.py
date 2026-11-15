@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
 
+from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.operational_inputs import build_future_dynamic_frame
 from sapphire_flow.services.operational_weather_projection import (
     project_future_weather,
     project_past_weather,
+)
+from sapphire_flow.services.operational_weather_proof import verify_future_receipt
+from sapphire_flow.services.weather_gap_fill import (
+    fill_daily_weather,
+    stored_weather_donors,
+    weather_fill_parameters,
 )
 from sapphire_flow.types.enums import EnsembleMode, FutureWeatherPolicy, NwpCycleSource
 from sapphire_flow.types.forecast import ForecastProvenance
@@ -18,6 +25,7 @@ from sapphire_flow.types.operational_weather import (
     FutureWeatherUse,
     PastWeatherUse,
     WeatherBlocked,
+    WeatherCoverage,
     WeatherUnused,
     WeatherUse,
 )
@@ -25,9 +33,11 @@ from sapphire_flow.types.operational_weather import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from sapphire_flow.config.weather_gap import WeatherGapConfig
+    from sapphire_flow.protocols.forecast_model import ForecastModel, GroupForecastModel
     from sapphire_flow.protocols.stores import WeatherForecastStore
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.operational_weather import (
         FutureWeatherRequest,
         PastWeatherRequirement,
@@ -58,6 +68,9 @@ def assemble_selected_weather(
     earliest_cycle: UtcDatetime,
     max_past_bytes: int,
     ensemble_mode: EnsembleMode,
+    model: ForecastModel | GroupForecastModel,
+    model_id: ModelId,
+    gap_config: WeatherGapConfig,
 ) -> AssignmentWeatherInputs:
     if expected_attempt is None:
         if past_requirement is not None or future_requirement is not None:
@@ -81,6 +94,7 @@ def assemble_selected_weather(
         expected_attempt=expected_attempt,
         requirement=past_requirement,
         max_past_bytes=max_past_bytes,
+        coverage=WeatherCoverage.ALLOW_GAPS,
     )
     future = project_future_weather(
         entry,
@@ -100,6 +114,11 @@ def assemble_selected_weather(
         )
     past_dynamic = pl.DataFrame()
     if isinstance(past, PastWeatherUse):
+        gap_parameters = weather_fill_parameters(
+            model, model_id=model_id, config=gap_config, time_step=timedelta(days=1)
+        )
+        policy = gap_config.for_model(str(model_id))
+        past_lookbacks = dict(model.data_requirements.declared_lookbacks)
         past_dynamic = pl.DataFrame(
             [
                 {
@@ -114,6 +133,89 @@ def assemble_selected_weather(
                 for day in past.days
             ]
         )
+        donors = {}
+        if gap_parameters and entry is not None and future_requirement is not None:
+            missing_days = {
+                day.day
+                for day in past.days
+                if any(
+                    (
+                        day.precipitation_mm
+                        if parameter == "precipitation"
+                        else day.temperature_c
+                    )
+                    is None
+                    for parameter in gap_parameters
+                )
+            }
+            qualified_records: dict[object, WeatherForecastRecord] = {}
+            for receipt in entry.future_receipts:
+                if (
+                    receipt.scope.station_id != station_id
+                    or receipt.scope.source != future_requirement.source
+                    or receipt.scope.binding_fingerprint
+                    != future_requirement.binding_fingerprint
+                    or receipt.cycle_time > issue_time
+                    or not any(
+                        stamp.replace(hour=0) in missing_days
+                        for req in receipt.scope.requirements
+                        for stamp in req.valid_times
+                    )
+                ):
+                    continue
+                donor_rows = store.fetch_weather_forecasts(
+                    station_id=station_id,
+                    nwp_source=receipt.scope.source,
+                    cycle_time=receipt.cycle_time,
+                    parameters=sorted(
+                        {req.parameter for req in receipt.scope.requirements}
+                    ),
+                )
+                verify_future_receipt(receipt, donor_rows)
+                scope_keys = {
+                    (req.parameter, stamp, member)
+                    for req in receipt.scope.requirements
+                    for stamp in req.valid_times
+                    for member in req.member_ids
+                }
+                qualified_records.update(
+                    {
+                        row.id: row
+                        for row in donor_rows
+                        if (row.parameter, row.valid_time, row.member_id) in scope_keys
+                    }
+                )
+            donors = stored_weather_donors(
+                tuple(qualified_records.values()),
+                station_id=station_id,
+                issue_time=issue_time,
+                parameters=gap_parameters,
+            )
+        prepared = fill_daily_weather(
+            past_dynamic,
+            issue_time=issue_time,
+            lookbacks={
+                parameter: past_lookbacks.get(parameter, len(past.days))
+                for parameter in gap_parameters
+            },
+            max_gap_days=policy.max_gap_days,
+            donors=donors,
+            precipitation_lower_bounds={
+                day.day: sum(
+                    row.value for row in day.samples if row.parameter == "precipitation"
+                )
+                for day in past.days
+            },
+        )
+        past_dynamic = prepared.frame
+        past = replace(past, gap_fills=prepared.fills)
+        if not isinstance(model, ForecastInterfaceAdapter) and any(
+            past_dynamic.get_column(parameter).null_count()
+            for parameter in past.requirement.parameters
+        ):
+            raise ConfigurationError(
+                "required operational past weather is blocked: missing_support"
+            )
     if isinstance(future, WeatherUnused):
         future_use = future
         records: tuple[WeatherForecastRecord, ...] = ()

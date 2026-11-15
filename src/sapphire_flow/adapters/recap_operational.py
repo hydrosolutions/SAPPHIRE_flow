@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from dataclasses import replace
 from datetime import datetime, timedelta
+from numbers import Real
 from typing import TYPE_CHECKING, Literal, cast
 
 import pandas as pd
@@ -29,6 +32,7 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherSample,
     OperationalWeatherSource,
     OperationalWeatherWindow,
+    WeatherCoverage,
     WeatherProductIdentity,
     require_midnight,
 )
@@ -101,12 +105,16 @@ def parse_operational_samples(
     if converter is None:
         raise RecapPayloadIntegrityError("operational variable has no unit contract")
     samples: list[OperationalWeatherSample] = []
+    seen: set[UtcDatetime] = set()
     try:
         for timestamp, series in response.iterrows():
             valid_time = ensure_utc(cast("pd.Timestamp", timestamp).to_pydatetime())
             source = OperationalWeatherSource(series["source"])
             if not start <= valid_time < end:
                 continue
+            if valid_time in seen:
+                raise ValueError("duplicate operational sample timestamp")
+            seen.add(valid_time)
             raw_meta = cast("object", series["source_meta"])
             if isinstance(raw_meta, str):
                 _SourceMetadata.model_validate_json(raw_meta)
@@ -139,29 +147,36 @@ def parse_operational_samples(
                 raise ValueError("invalid IFS cycle identity")
             if mode == "identity":
                 continue
+            raw_value = cast("object", series[polygon])
+            missing_value = (
+                raw_value is None
+                or raw_value is pd.NA
+                or (isinstance(raw_value, Real) and math.isnan(float(raw_value)))
+            )
             try:
+                # Validate missing samples' source grid; never retain the placeholder.
                 value_row = _ProviderSample.model_validate(
-                    {**row.model_dump(), "value": series[polygon]}
+                    {**row.model_dump(), "value": 0.0 if missing_value else raw_value}
                 )
-                samples.append(
-                    OperationalWeatherSample(
-                        parameter=parameter,
-                        source=source,
-                        valid_time=valid_time,
-                        source_run=source_run,
-                        value=converter(value_row.value),
-                        product=(
-                            WeatherProductIdentity.REANALYSIS
-                            if source is OperationalWeatherSource.ERA5_LAND
-                            else WeatherProductIdentity.CONTROL
-                        ),
-                        interval_end=(
-                            ensure_utc(valid_time + timedelta(hours=hours))
-                            if parameter == "precipitation"
-                            else None
-                        ),
-                    )
+                sample = OperationalWeatherSample(
+                    parameter=parameter,
+                    source=source,
+                    valid_time=valid_time,
+                    source_run=source_run,
+                    value=converter(value_row.value),
+                    product=(
+                        WeatherProductIdentity.REANALYSIS
+                        if source is OperationalWeatherSource.ERA5_LAND
+                        else WeatherProductIdentity.CONTROL
+                    ),
+                    interval_end=(
+                        ensure_utc(valid_time + timedelta(hours=hours))
+                        if parameter == "precipitation"
+                        else None
+                    ),
                 )
+                if not missing_value:
+                    samples.append(sample)
             except (ValueError, TypeError) as exc:
                 raise OperationalWeatherSupportError(
                     "invalid operational numeric/day support"
@@ -325,6 +340,7 @@ class RecapGatewayOperationalAdapter:
                 start=start,
                 end=end,
                 samples=samples,
+                coverage=WeatherCoverage.ALLOW_GAPS,
             )
         except OperationalWeatherCoverageError as exc:
             raise RecapDataUnavailableError(
@@ -363,14 +379,15 @@ class RecapGatewayOperationalAdapter:
         except OperationalWeatherSupportError:
             return required
         try:
-            return reduce_daily_window(
+            buffer = reduce_daily_window(
                 station_id=source.station_id,
                 binding_fingerprint=fingerprint,
                 issue_time=issue_time,
-                start=start,
+                start=end,
                 end=buffer_end,
-                samples=samples + optional,
+                samples=optional,
             )
+            return replace(required, end=buffer_end, days=required.days + buffer.days)
         except OperationalWeatherCoverageError:
             # Optional incomplete support cannot invalidate the required past.
             return required

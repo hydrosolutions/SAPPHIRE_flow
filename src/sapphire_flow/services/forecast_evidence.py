@@ -73,8 +73,13 @@ def _plain(value: Any) -> Any:
             for field in fields(value)
             if not (
                 isinstance(value, StationSourceEvidence)
-                and field.name == "weather_use"
-                and value.weather_use is None
+                and (
+                    (field.name == "weather_use" and value.weather_use is None)
+                    or (
+                        field.name == "weather_gap_fills"
+                        and not value.weather_gap_fills
+                    )
+                )
             )
         }
     if isinstance(value, Enum):

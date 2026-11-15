@@ -26,6 +26,7 @@ from sapphire_flow.services.input_quality import (
     assess_input_quality,
     past_forcing_flags,
     selected_weather_quality_flags,
+    source_weather_gap_fills,
 )
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
@@ -40,6 +41,7 @@ from sapphire_flow.services.selected_weather_evidence import (
     selected_weather_issuance_refusal,
 )
 from sapphire_flow.services.training_data import expected_past_buckets
+from sapphire_flow.services.weather_gap_fill import prepare_group_weather
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 from sapphire_flow.types.enums import (
     ArtifactScope,
@@ -871,6 +873,9 @@ def _build_station_result(
         lookback_steps=data_requirements.lookback_steps,
         recent_steps=iq_config.forcing_recent_steps,
         declared_lookbacks=dict(data_requirements.declared_lookbacks),
+        filled=source_weather_gap_fills(
+            dict(group_inputs.source_evidence).get(station_id)
+        ),
     )
     try:
         observation_flags = _provisional_discharge_flags(
@@ -887,7 +892,8 @@ def _build_station_result(
         )
         observation_flags = []
     weather_flags = selected_weather_quality_flags(
-        dict(group_inputs.source_evidence).get(station_id)
+        dict(group_inputs.source_evidence).get(station_id),
+        issue_time=group_inputs.issue_time,
     )
     if forcing_flags or observation_flags or weather_flags:
         input_quality_flags = (
@@ -1001,6 +1007,9 @@ def _group_forcing_gap_details(
             lookback_steps=data_requirements.lookback_steps,
             recent_steps=iq_config.forcing_recent_steps,
             declared_lookbacks=declared,
+            filled=source_weather_gap_fills(
+                dict(group_inputs.source_evidence).get(station_id)
+            ),
         )
         if flags:
             details[str(station_id)] = [flag.detail for flag in flags]
@@ -1039,6 +1048,12 @@ def run_group_forecast(
         and state_policy is not GroupStatePolicy.STATELESS_ONLY
     ):
         raise ConfigurationError("provisional rating group requires STATELESS_ONLY")
+    group_inputs = prepare_group_weather(
+        group_inputs,
+        model=model,
+        model_id=assignment.model_id,
+        config=config.weather_gap_fill,
+    )
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable = list(unavailable_members)
     serviceable_ids: list[StationId] = []

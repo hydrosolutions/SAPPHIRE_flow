@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import UUID
 
+import pandas as pd
 import polars as pl
 import pytest
 from forecast_interface.input.variable import HorizonSemantics
 
 from sapphire_flow.adapters import forecast_interface as fi
+from sapphire_flow.services.forecast_evidence import restore_frame, restore_snapshot
 from sapphire_flow.types.enums import AlertEligibility, ForecastDataUse
 from tests.unit.adapters.test_forecast_interface_adapter_nan_gate import (
     RecordingFIForecastModel,
@@ -16,17 +18,22 @@ from tests.unit.adapters.test_recap_operational import ISSUE
 from tests.unit.flows.test_run_forecast_cycle import (
     _block_real_httpx_network,  # noqa: F401
 )
-from tests.unit.flows.test_selected_weather_cycle import _run_selected_cycle
+from tests.unit.flows.test_selected_weather_cycle import (
+    FixtureOperationalApi,
+    _run_selected_cycle,
+)
 
 
 @pytest.mark.parametrize(
-    "max_nan,expected,data_use,horizon_policy,support_days",
+    "max_nan,expected,data_use,horizon_policy,support_days,gap_age",
     [
-        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None),
-        (0, 0, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None),
-        (1, 1, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None),
-        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, None),
-        (0, 0, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, 3),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, None),
+        (0, 0, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, None),
+        (1, 1, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, None),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, None, None),
+        (0, 0, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, 3, None),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, 5),
+        (1, 1, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, 4),
     ],
 )
 def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
@@ -36,7 +43,23 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     data_use: ForecastDataUse,
     horizon_policy: HorizonSemantics,
     support_days: int | None,
+    gap_age: int | None,
 ) -> None:
+    if gap_age is not None:
+        original_fetch = FixtureOperationalApi.operational
+
+        def missing_day(api: FixtureOperationalApi, **kwargs: object) -> object:
+            response = original_fetch(api, **kwargs)
+            assert isinstance(response, pd.DataFrame)
+            missing = ISSUE - timedelta(days=gap_age)
+            response.loc[
+                (response.index >= missing)
+                & (response.index < missing + timedelta(days=1)),
+                "g_225",
+            ] = float("nan")
+            return response
+
+        monkeypatch.setattr(FixtureOperationalApi, "operational", missing_day)
     step = timedelta(days=1)
     requirement = fi.InputRequirement(
         targets={
@@ -156,3 +179,21 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
         assert delivered.past_known["reanalysis"]["precipitation"].data.height == 30
         assert delivered.future_known["nwp"]["precipitation"].data.height == 10
         assert delivered.future_known["nwp"]["temperature"].data.height == 3
+    if gap_age is not None:
+        forecast = forecasts[0]
+        assert forecast.evidence is not None and forecast.evidence.snapshot is not None
+        snapshot = restore_snapshot(forecast.evidence.snapshot)
+        fills = snapshot["source_records"][0][1]["weather_use"]["past"]["gap_fills"]
+        assert len(fills) == 2
+        actual = restore_frame(snapshot["frames"]["past_dynamic"])
+        for fill in fills:
+            value = actual.filter(
+                pl.col("timestamp") == ISSUE - timedelta(days=gap_age)
+            )[fill["parameter"]].item()
+            assert value == fill["value"]
+        warnings = [
+            flag
+            for flag in forecast.input_quality_flags
+            if "Missing weather data estimated" in flag.detail
+        ]
+        assert bool(warnings) == (gap_age < 5)

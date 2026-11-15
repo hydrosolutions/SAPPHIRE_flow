@@ -866,6 +866,10 @@ class ForecastInterfaceAdapter:
 
         return frozenset(unsupported)
 
+    def past_weather_nan_tolerances(self, time_step: timedelta) -> dict[str, int]:
+        _, spec = self._dynamic_spec_for_time_step(time_step)
+        return self._past_known_nan_tolerances_for_spec(spec)
+
     def max_nan_tolerances(self) -> dict[str, int]:
         tolerances: dict[str, int] = {}
 

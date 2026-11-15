@@ -110,6 +110,24 @@ calendar = "gregorian"                # Nepal v1: "bikram_sambat"
 # (Must follow all scalar fields due to TOML parsing rules)
 # =============================================================================
 
+# --- Short daily past-weather gaps ---
+# Shared station/group preparation; applies per assignment before model validation.
+# strict_models: only declared weather inputs with FI max_nan=0.
+# always: declared supported weather inputs, including native models.
+# disabled: no estimates. Hourly inputs and future horizons are unchanged.
+[weather_gap_fill]
+mode = "strict_models"
+max_gap_days = 1                              # consecutive original missing days; range 1..7
+# Optional per-model fields override global fields independently:
+# [weather_gap_fill.models.cmal_small]
+# mode = "strict_models"
+# max_gap_days = 1
+# Qualified same-day stored IFS is preferred where available. Otherwise interpolate
+# bracketed temperature/global_radiation; precipitation uses adjacent-day mean only
+# for a singleton. No extrapolation or chained fills; longer gaps remain missing.
+# D-5 and older fills retain evidence without a gap warning; D-4..D-1 add a degraded
+# missing-weather-estimated warning. Independent quality warnings remain unchanged.
+
 # --- Input quality assessment (Flow 1 step 1.7) ---
 # Source: types-and-protocols.md § InputQualityConfig
 # NOTE: this is a [table]; it MUST sit below every top-level scalar field, else

@@ -2575,6 +2575,24 @@ Current shared restore/control-plane and registrar preservation blockers remain 
 this pure seam does not implement recovery or clear deployment/Gateway acceptance.
 
 
+### Short daily weather gaps
+
+Policy: `config/weather_gap.py`; shared filling and per-model isolation:
+`services/weather_gap_fill.py`; support evidence: `types/weather_gap.py`.
+Station and group runners apply the policy before existing model admission gates.
+The selected Recap route retains authentic partial samples/null daily values and
+fills in `services/selected_weather_inputs.py`, using verified retained forecast
+receipts for a bounded missing tail. Raw snapshot hashes remain unchanged.
+`PastWeatherUse.gap_fills` and `StationSourceEvidence.weather_gap_fills` record the
+estimates; `services/input_quality.py` adds warnings only for fills newer than D-5.
+Older filled gaps do not suppress independent freshness/observation warnings.
+
+Preserve FI tolerances/horizons, source identity failures, original missing-run
+bounds, partial-rainfall lower bounds and per-assignment inputs. Long gaps remain
+for the model's normal admission decision. No regression/fallback model is added.
+Verify helper, selected-input, adapter, FI-cycle, evidence and station/group tests;
+see `plans/2026-11-14-nepal-weather-gap-filling.md` and the config reference.
+
 ### Network overview read projection
 
 Route/schema: `api/routes/api_network_overview.py`, `api/network_overview_schemas.py`;

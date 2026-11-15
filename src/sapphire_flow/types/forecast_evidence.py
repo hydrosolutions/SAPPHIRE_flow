@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.operational_weather import WeatherUse
     from sapphire_flow.types.weather import WeatherForecastRecord
+    from sapphire_flow.types.weather_gap import WeatherGapFill
 
 
 class EvidenceStatus(Enum):
@@ -25,6 +26,7 @@ class StationSourceEvidence:
     future_weather: tuple[WeatherForecastRecord, ...] = ()
     tail_weather: tuple[WeatherForecastRecord, ...] = ()
     weather_use: WeatherUse | None = None
+    weather_gap_fills: tuple[WeatherGapFill, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

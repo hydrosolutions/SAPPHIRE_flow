@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.weather_gap import WeatherGapFill
 from sapphire_flow.types.enums import (
     InputQualityCategory,
     InputQualityLevel,
@@ -269,6 +270,7 @@ def past_forcing_flags(
     lookback_steps: int,
     recent_steps: int,
     declared_lookbacks: Mapping[str, int] | None = None,
+    filled: Sequence[WeatherGapFill] = (),
 ) -> list[InputQualityFlag]:
     """One flag per declared past-forcing series that has gaps (Plan 239 T1b).
 
@@ -305,7 +307,12 @@ def past_forcing_flags(
         flag = assess_past_forcing_gaps(
             series=series,
             expected=expected,
-            missing=missing_buckets(past_dynamic, series, expected),
+            missing=[
+                stamp
+                for stamp in missing_buckets(past_dynamic, series, expected)
+                if (series, stamp)
+                not in {(fill.parameter, fill.day) for fill in filled}
+            ],
             anchor=anchor,
             time_step=time_step,
             recent_steps=recent_steps,
@@ -317,6 +324,8 @@ def past_forcing_flags(
 
 def selected_weather_quality_flags(
     source: StationSourceEvidence | None,
+    *,
+    issue_time: UtcDatetime | None = None,
 ) -> tuple[InputQualityFlag, ...]:
     from sapphire_flow.types.operational_weather import (
         FutureWeatherUse,
@@ -324,10 +333,43 @@ def selected_weather_quality_flags(
         WeatherFreshness,
     )
 
-    use = None if source is None else source.weather_use
-    if use is None:
-        return ()
     flags: list[InputQualityFlag] = []
+    use = None if source is None else source.weather_use
+    anchor = (
+        issue_time
+        if issue_time is not None
+        else None
+        if use is None
+        else use.issue_time
+    )
+    if anchor is not None:
+        from datetime import timedelta
+
+        cutoff = anchor.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=5
+        )
+        recent = [
+            fill
+            for fill in source_weather_gap_fills(source)
+            if cutoff < fill.day < anchor
+        ]
+        if recent:
+            shown = ", ".join(
+                f"{fill.parameter} {fill.day.date()} ({fill.method.value})"
+                for fill in recent[:5]
+            )
+            flags.append(
+                InputQualityFlag(
+                    category=InputQualityCategory.FORCING,
+                    level=InputQualityLevel.DEGRADED,
+                    detail=(
+                        f"Missing weather data estimated in {len(recent)} "
+                        f"recent daily inputs: {shown}"
+                    ),
+                )
+            )
+    if use is None:
+        return tuple(flags)
     if (
         isinstance(use.past, PastWeatherUse)
         and use.past.freshness is WeatherFreshness.STALE
@@ -357,3 +399,19 @@ def selected_weather_quality_flags(
             )
         )
     return tuple(flags)
+
+
+def source_weather_gap_fills(
+    source: StationSourceEvidence | None,
+) -> tuple[WeatherGapFill, ...]:
+    from sapphire_flow.types.operational_weather import PastWeatherUse
+
+    if source is None:
+        return ()
+    use = source.weather_use
+    selected = (
+        use.past.gap_fills
+        if use is not None and isinstance(use.past, PastWeatherUse)
+        else ()
+    )
+    return (*source.weather_gap_fills, *selected)
