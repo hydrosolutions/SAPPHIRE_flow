@@ -25,7 +25,8 @@ DECLARE
  live jsonb; capture_source jsonb; raw text; curve_raw text; curve_hash text;
  source_raw text; evidence_raw text; ref_raw text; item jsonb;
  source_ids uuid[];
- result jsonb := '[]'; candidates integer; source_count integer;
+ -- Append to an expandable typed array; encode JSON once in the final envelope.
+ result jsonb[] := ARRAY[]::jsonb[]; candidates integer; source_count integer;
  bytes integer:=0; nodes integer:=0; reason text; outcome text;
  assessed boolean; seen_curves text[]:=ARRAY[]::text[];
  validated_refs jsonb := '{}';
@@ -74,7 +75,7 @@ BEGIN
   IF NOT enabled OR o.duplicates>1 THEN
    item:=item||jsonb_build_object('reason',CASE WHEN NOT enabled THEN 'not_configured'
     ELSE 'ambiguous_source' END);
-   result:=result||jsonb_build_array(item); CONTINUE;
+   result:=array_append(result,item); CONTINUE;
   END IF;
   SELECT d.fingerprint,d.rating_curve_id,d.file_id,d.timestamp,d.discharge,
    d.rejection,d.capture_id,d.evidence_version,d.captured_at,
@@ -82,7 +83,7 @@ BEGIN
    FROM public.rating_derived_discharge d
    WHERE d.tenant_id=tenant AND d.station_id=station AND d.observation_id=o.id
    ORDER BY d.stored_order DESC LIMIT 1;
-  IF NOT FOUND THEN result:=result||jsonb_build_array(item); CONTINUE; END IF;
+  IF NOT FOUND THEN result:=array_append(result,item); CONTINUE; END IF;
   IF r.bytes>262144 OR bytes+r.bytes>33554432 THEN
    RAISE EXCEPTION 'station history bounds'; END IF;
   bytes:=bytes+r.bytes;
@@ -247,7 +248,7 @@ BEGIN
    OR (src->>'created_at')::timestamptz IS DISTINCT FROM o.created_at
   THEN reason:='source_changed'; END IF;
   IF reason IS NOT NULL THEN
-   result:=result||jsonb_build_array(item||jsonb_build_object('reason',reason));
+   result:=array_append(result,item||jsonb_build_object('reason',reason));
    CONTINUE;
   END IF;
   outcome:=CASE WHEN r.discharge IS NULL THEN 'rejected' ELSE 'accepted' END;
@@ -263,7 +264,7 @@ BEGIN
    'warnings',body->'warnings','policy',body->>'policy','stored_at',r.captured_at,
    'curve',jsonb_build_object('curve_id',r.rating_curve_id,'content_sha256',curve_hash,
      'version',curve->>'version','valid_from',curve->>'valid_from','valid_to',curve->>'valid_to'));
-  result:=result||jsonb_build_array(item);
+  result:=array_append(result,item);
  END LOOP;
  RETURN jsonb_build_object('tenant_id',tenant,'station_id',station,
   'candidate_count',source_count+candidates,'samples',result);

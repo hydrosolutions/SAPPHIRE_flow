@@ -381,7 +381,9 @@ class TestStationHistoryProjection:
         obs.update(id=uuid4(), timestamp=row["timestamp"] + timedelta(minutes=10))
         db_connection.execute(sa.insert(observations).values(**obs))
         samples = read(db_connection, row)["samples"]
-        assert samples[1]["reason"] == "unreconciled"
+        assert [sample["outcome"] for sample in samples] == ["accepted", "held"]
+        assert [sample["reason"] for sample in samples] == [None, "unreconciled"]
+        assert samples[0]["timestamp"] < samples[1]["timestamp"]
 
     def test_wrong_tenant_is_rejected(self, db_connection: sa.Connection) -> None:
         row = seed(db_connection)

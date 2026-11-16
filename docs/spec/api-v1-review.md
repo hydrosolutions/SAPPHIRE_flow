@@ -527,3 +527,7 @@ seven-day histories above the original 16 MiB draft limit. Other caps and existi
 forecast-input history limits are unchanged. Resource/evidence failures return503
 without truncation. Actual seven-day query-cost and concurrent roster qualification
 remain rollout gates.
+
+The station-history projection accumulates scalar samples in a typed array and
+encodes JSON once, avoiding repeated copying of a growing JSON history. Ordering,
+response content, evidence validation and all resource limits are unchanged.
