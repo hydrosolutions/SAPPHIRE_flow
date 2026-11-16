@@ -19,6 +19,7 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 
 | I want to… | Start here | What it is for |
 |---|---|---|
+| Read station data and forecasts | [API guide](docs/api/README.md) | Read-only requests, authentication, examples and interpreting results. |
 | Run SAPPHIRE Flow locally | [Developer quick start](#developer-quick-start) | Development on your own machine, with public Swiss demo data. |
 | Deploy it on a server | [Deployment quick-start](docs/deployment-quickstart.md) | Setting up a fresh deployment for a new organization (Docker Compose, secrets, schedules). |
 | Onboard new stations | [Onboard stations: the guide](docs/operations/onboarding-start-here.md) | Adding your organization's stations to an existing deployment, step by step. |

@@ -1195,18 +1195,22 @@
               },
               "type": "array"
             },
+            "description": "Values keyed by member identifier or quantile level according to representation; each array aligns with valid_times.",
             "title": "Series",
             "type": "object"
           },
           "time_step_seconds": {
+            "description": "Forecast time step in seconds.",
             "title": "Time Step Seconds",
             "type": "integer"
           },
           "units": {
+            "description": "Unit for every series value, e.g. discharge m\u00b3/s.",
             "title": "Units",
             "type": "string"
           },
           "valid_times": {
+            "description": "Forecast validity times in the same order as every series array.",
             "items": {
               "format": "date-time",
               "type": "string"
@@ -2039,6 +2043,7 @@
             "title": "Combination Strategy"
           },
           "created_at": {
+            "description": "Time this forecast record was created; not the forecast issue time.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -2081,6 +2086,7 @@
                 "type": "null"
               }
             ],
+            "description": "Assessment of model inputs; null means no recorded assessment. Separate from output QC.",
             "title": "Input Quality"
           },
           "input_quality_flags": {
@@ -2096,9 +2102,11 @@
                 "type": "null"
               }
             ],
+            "description": "Recorded input assessments. category distinguishes observation from forcing; detail explains missing observations, estimated weather inputs or other degradation. Null means unknown, unlike an assessed empty list.",
             "title": "Input Quality Flags"
           },
           "issued_at": {
+            "description": "Forecast issue time, distinct from storage time and the weather source run.",
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
@@ -2132,6 +2140,7 @@
                 "type": "null"
               }
             ],
+            "description": "Reference time of the NWP run; may differ from issued_at.",
             "title": "Nwp Cycle Reference Time"
           },
           "nwp_cycle_source": {
@@ -2217,6 +2226,7 @@
             "type": "array"
           },
           "qc_status": {
+            "description": "Quality-control state of the forecast output, separate from input quality.",
             "enum": [
               "raw",
               "qc_passed",
@@ -2293,7 +2303,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Persisted weather-source and freshness facts used for this forecast; null means unknown, not current."
           }
         },
         "required": [
@@ -2616,6 +2627,7 @@
       "ForecastSummary": {
         "properties": {
           "created_at": {
+            "description": "Time this forecast record was created; not the forecast issue time.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -2655,6 +2667,7 @@
                 "type": "null"
               }
             ],
+            "description": "Assessment of model inputs; null means no recorded assessment. Separate from output QC.",
             "title": "Input Quality"
           },
           "input_quality_flags": {
@@ -2670,9 +2683,11 @@
                 "type": "null"
               }
             ],
+            "description": "Recorded input assessments. category distinguishes observation from forcing; detail explains missing observations, estimated weather inputs or other degradation. Null means unknown, unlike an assessed empty list.",
             "title": "Input Quality Flags"
           },
           "issued_at": {
+            "description": "Forecast issue time, distinct from storage time and the weather source run.",
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
@@ -2757,6 +2772,7 @@
             "type": "array"
           },
           "qc_status": {
+            "description": "Quality-control state of the forecast output, separate from input quality.",
             "enum": [
               "raw",
               "qc_passed",
@@ -2995,6 +3011,7 @@
       "LatestObservationsResponse": {
         "properties": {
           "generated_at": {
+            "description": "Response generation time; derive observation age from each sample timestamp.",
             "format": "date-time",
             "title": "Generated At",
             "type": "string"
@@ -3007,10 +3024,12 @@
             "type": "array"
           },
           "limit": {
+            "description": "Maximum records requested for this page.",
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "title": "Offset",
             "type": "integer"
           },
@@ -3026,10 +3045,12 @@
             "$ref": "#/components/schemas/ObservationSource"
           },
           "total": {
+            "description": "Number of matching records across all pages, within the caller's scope.",
             "title": "Total",
             "type": "integer"
           },
           "window_start": {
+            "description": "Inclusive start of the latest-observation search window.",
             "format": "date-time",
             "title": "Window Start",
             "type": "string"
@@ -3073,7 +3094,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Latest visible record in the requested window, or null if none. A record may itself have a null value."
           },
           "station_id": {
             "title": "Station Id",
@@ -3133,6 +3155,7 @@
             "type": "integer"
           },
           "generated_at": {
+            "description": "Generation time of this response body, not source freshness. A 304 retains the earlier body and timestamp.",
             "format": "date-time",
             "title": "Generated At",
             "type": "string"
@@ -3472,9 +3495,11 @@
                 "type": "null"
               }
             ],
+            "description": "Stored QC code-generation marker, not a rule-set version; null when not recorded.",
             "title": "Qc Rule Version"
           },
           "qc_status": {
+            "description": "Quality-control state of this record. raw and qc_unchecked are not a pass.",
             "enum": [
               "raw",
               "qc_passed",
@@ -3495,6 +3520,7 @@
             "type": "string"
           },
           "timestamp": {
+            "description": "Observation time, including UTC offset; not ingestion time.",
             "format": "date-time",
             "title": "Timestamp",
             "type": "string"
@@ -3508,6 +3534,7 @@
                 "type": "null"
               }
             ],
+            "description": "Stored observation value; null is missing, never zero. Discharge uses m\u00b3/s and water level uses m; consult station datum metadata for its reference.",
             "title": "Value"
           }
         },
@@ -3563,6 +3590,7 @@
             "$ref": "#/components/schemas/ObservationAvailability"
           },
           "end": {
+            "description": "UTC window end. Hourly slots select the last eligible reading in (end - 1 hour, end].",
             "format": "date-time",
             "title": "End",
             "type": "string"
@@ -3575,7 +3603,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Eligible reading for this slot, or null; null never means zero discharge."
           }
         },
         "required": [
@@ -3764,6 +3793,7 @@
                 "type": "null"
               }
             ],
+            "description": "Relative URL for this forecast including its data-use category; use unchanged for detail retrieval.",
             "title": "Detail Url"
           },
           "expected_issue": {
@@ -3791,7 +3821,8 @@
           },
           "freshness": {
             "$ref": "#/components/schemas/OverviewFreshness",
-            "default": "freshness_unknown"
+            "default": "freshness_unknown",
+            "description": "Timeliness under the configured issuance policy; unknown means no applicable assessment. Separate from input quality."
           },
           "gaps": {
             "default": [],
@@ -3814,6 +3845,7 @@
           },
           "input_quality_codes": {
             "default": [],
+            "description": "Input-quality category:level pairs; retrieve detail for full flag messages.",
             "items": {
               "type": "string"
             },
@@ -3914,6 +3946,7 @@
           },
           "series": {
             "default": [],
+            "description": "Compact original forecast points, not a resampled or interpolated full ensemble.",
             "items": {
               "$ref": "#/components/schemas/ForecastPointResponse"
             },
@@ -4096,6 +4129,7 @@
         "additionalProperties": false,
         "properties": {
           "hourly": {
+            "description": "72 completed UTC hourly slots, oldest first; values are last eligible readings, not hourly means.",
             "items": {
               "$ref": "#/components/schemas/ObservationSlotResponse"
             },
@@ -4103,7 +4137,8 @@
             "type": "array"
           },
           "latest": {
-            "$ref": "#/components/schemas/ObservationSlotResponse"
+            "$ref": "#/components/schemas/ObservationSlotResponse",
+            "description": "Latest eligible reading within the independent seven-day lookback window."
           },
           "latest_failed_at": {
             "anyOf": [
@@ -4350,14 +4385,17 @@
             "type": "array"
           },
           "limit": {
+            "description": "Maximum records requested for this page.",
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "title": "Offset",
             "type": "integer"
           },
           "total": {
+            "description": "Number of matching records across all pages, within the caller's scope.",
             "title": "Total",
             "type": "integer"
           }
@@ -4381,14 +4419,17 @@
             "type": "array"
           },
           "limit": {
+            "description": "Maximum records requested for this page.",
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "title": "Offset",
             "type": "integer"
           },
           "total": {
+            "description": "Number of matching records across all pages, within the caller's scope.",
             "title": "Total",
             "type": "integer"
           }
@@ -4412,14 +4453,17 @@
             "type": "array"
           },
           "limit": {
+            "description": "Maximum records requested for this page.",
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "title": "Offset",
             "type": "integer"
           },
           "total": {
+            "description": "Number of matching records across all pages, within the caller's scope.",
             "title": "Total",
             "type": "integer"
           }
@@ -4443,14 +4487,17 @@
             "type": "array"
           },
           "limit": {
+            "description": "Maximum records requested for this page.",
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "title": "Offset",
             "type": "integer"
           },
           "total": {
+            "description": "Number of matching records across all pages, within the caller's scope.",
             "title": "Total",
             "type": "integer"
           }
@@ -4483,6 +4530,7 @@
             "title": "Combination Strategy"
           },
           "created_at": {
+            "description": "Time this forecast record was created; not the forecast issue time.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -4530,6 +4578,7 @@
                 "type": "null"
               }
             ],
+            "description": "Assessment of model inputs; null means no recorded assessment. Separate from output QC.",
             "title": "Input Quality"
           },
           "input_quality_flags": {
@@ -4545,9 +4594,11 @@
                 "type": "null"
               }
             ],
+            "description": "Recorded input assessments. category distinguishes observation from forcing; detail explains missing observations, estimated weather inputs or other degradation. Null means unknown, unlike an assessed empty list.",
             "title": "Input Quality Flags"
           },
           "issued_at": {
+            "description": "Forecast issue time, distinct from storage time and the weather source run.",
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
@@ -4581,6 +4632,7 @@
                 "type": "null"
               }
             ],
+            "description": "Reference time of the NWP run; may differ from issued_at.",
             "title": "Nwp Cycle Reference Time"
           },
           "nwp_cycle_source": {
@@ -4608,6 +4660,7 @@
           },
           "publication_applicability": {
             "const": "not_applicable",
+            "description": "Provisional forecasts are outside the ordinary publication workflow.",
             "title": "Publication Applicability",
             "type": "string"
           },
@@ -4632,6 +4685,7 @@
             "type": "array"
           },
           "qc_status": {
+            "description": "Quality-control state of the forecast output, separate from input quality.",
             "enum": [
               "raw",
               "qc_passed",
@@ -4651,6 +4705,7 @@
           },
           "rating_provenance_status": {
             "const": "not_exposed",
+            "description": "Exact curves are not exposed by forecast summary/detail. Use rating-input-history for frozen daily input context.",
             "title": "Rating Provenance Status",
             "type": "string"
           },
@@ -4705,6 +4760,7 @@
             "title": "Warm Up Source"
           },
           "warnings": {
+            "description": "Persisted rating-derived input warnings. These are separate from input_quality_flags.",
             "items": {
               "type": "string"
             },
@@ -4719,7 +4775,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Persisted weather-source and freshness facts used for this forecast; null means unknown, not current."
           }
         },
         "required": [
@@ -4760,6 +4817,7 @@
             "type": "string"
           },
           "created_at": {
+            "description": "Time this forecast record was created; not the forecast issue time.",
             "format": "date-time",
             "title": "Created At",
             "type": "string"
@@ -4804,6 +4862,7 @@
                 "type": "null"
               }
             ],
+            "description": "Assessment of model inputs; null means no recorded assessment. Separate from output QC.",
             "title": "Input Quality"
           },
           "input_quality_flags": {
@@ -4819,9 +4878,11 @@
                 "type": "null"
               }
             ],
+            "description": "Recorded input assessments. category distinguishes observation from forcing; detail explains missing observations, estimated weather inputs or other degradation. Null means unknown, unlike an assessed empty list.",
             "title": "Input Quality Flags"
           },
           "issued_at": {
+            "description": "Forecast issue time, distinct from storage time and the weather source run.",
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
@@ -4848,6 +4909,7 @@
           },
           "publication_applicability": {
             "const": "not_applicable",
+            "description": "Provisional forecasts are outside the ordinary publication workflow.",
             "title": "Publication Applicability",
             "type": "string"
           },
@@ -4872,6 +4934,7 @@
             "type": "array"
           },
           "qc_status": {
+            "description": "Quality-control state of the forecast output, separate from input quality.",
             "enum": [
               "raw",
               "qc_passed",
@@ -4891,6 +4954,7 @@
           },
           "rating_provenance_status": {
             "const": "not_exposed",
+            "description": "Exact curves are not exposed by forecast summary/detail. Use rating-input-history for frozen daily input context.",
             "title": "Rating Provenance Status",
             "type": "string"
           },
@@ -4911,6 +4975,7 @@
             "type": "string"
           },
           "warnings": {
+            "description": "Persisted rating-derived input warnings. These are separate from input_quality_flags.",
             "items": {
               "type": "string"
             },
@@ -6013,6 +6078,7 @@
             "title": "Basin Id"
           },
           "code": {
+            "description": "Provider station code for display and lookup, not an API path identifier.",
             "title": "Code",
             "type": "string"
           },
@@ -6048,9 +6114,11 @@
                 "type": "null"
               }
             ],
+            "description": "Reviewer/admin: whether a non-superseded provisional forecast exists. Consumer: null. Does not indicate freshness or successful detail access.",
             "title": "Has Provisional Forecast"
           },
           "id": {
+            "description": "Station UUID used in API paths; distinct from the provider station code.",
             "title": "Id",
             "type": "string"
           },
@@ -6058,6 +6126,7 @@
             "$ref": "#/components/schemas/GeoCoordResponse"
           },
           "measured_parameters": {
+            "description": "Parameters configured for this station; does not prove recent data availability.",
             "items": {
               "type": "string"
             },
@@ -6103,6 +6172,7 @@
             "type": "string"
           },
           "station_status": {
+            "description": "Configured lifecycle status, not evidence of recent observations or forecasts.",
             "title": "Station Status",
             "type": "string"
           },
@@ -6547,6 +6617,7 @@
       "StationSummary": {
         "properties": {
           "code": {
+            "description": "Provider station code for display and lookup, not an API path identifier.",
             "title": "Code",
             "type": "string"
           },
@@ -6559,9 +6630,11 @@
                 "type": "null"
               }
             ],
+            "description": "Reviewer/admin: whether a non-superseded provisional forecast exists. Consumer: null. Does not indicate freshness or successful detail access.",
             "title": "Has Provisional Forecast"
           },
           "id": {
+            "description": "Station UUID used in API paths; distinct from the provider station code.",
             "title": "Id",
             "type": "string"
           },
@@ -6569,6 +6642,7 @@
             "$ref": "#/components/schemas/GeoCoordResponse"
           },
           "measured_parameters": {
+            "description": "Parameters configured for this station; does not prove recent data availability.",
             "items": {
               "type": "string"
             },
@@ -6592,6 +6666,7 @@
             "type": "string"
           },
           "station_status": {
+            "description": "Configured lifecycle status, not evidence of recent observations or forecasts.",
             "title": "Station Status",
             "type": "string"
           }
@@ -7046,6 +7121,7 @@
       "WeatherLegUseResponse": {
         "properties": {
           "age_at_use_seconds": {
+            "description": "Seconds between retrieval/validation and use by the forecast, not age at this API request.",
             "minimum": 0.0,
             "title": "Age At Use Seconds",
             "type": "number"
@@ -7082,6 +7158,7 @@
             "type": "string"
           },
           "retrieved_at": {
+            "description": "Time the retained weather input was retrieved or validated.",
             "format": "date-time",
             "title": "Retrieved At",
             "type": "string"
@@ -7152,6 +7229,7 @@
             "type": "string"
           },
           "source_run": {
+            "description": "Weather source run/reference time, not forecast issue or retrieval time.",
             "format": "date-time",
             "title": "Source Run",
             "type": "string"
@@ -7202,7 +7280,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.11"
+    "version": "2.12"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7318,18 +7396,19 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Forecast Lab snapshot (forecast-lab-snapshot/v2)",
+        "summary": "Compare archived forecasts",
         "tags": [
-          "forecast-lab"
+          "Forecasts"
         ]
       }
     },
     "/api/v1/forecasts/{forecast_id}": {
       "get": {
-        "description": "Forecast detail, with typed qc_flags. For an activated CHWRR tenant only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
+        "description": "Forecast detail with ensemble, input quality and output QC. Use the same data_use as the list entry, or the overview detail_url. When a tenant publication gate is active, only selected or historical replaced publications expose values; an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 with a metadata-only tombstone. All service roles use the same publication gate. A malformed forecast_id remains unguarded and returns 500, not 400. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
         "operationId": "get_forecast_api_v1_forecasts__forecast_id__get",
         "parameters": [
           {
+            "description": "Forecast UUID returned by a list or overview; preserve its data-use category.",
             "in": "path",
             "name": "forecast_id",
             "required": true,
@@ -7339,6 +7418,7 @@
             }
           },
           {
+            "description": "One category per request; omission selects standard. provisional_rating requires reviewer/admin.",
             "in": "query",
             "name": "data_use",
             "required": false,
@@ -7448,9 +7528,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Forecast",
+        "summary": "Get forecast details",
         "tags": [
-          "api-forecasts"
+          "Forecasts"
         ]
       }
     },
@@ -7460,6 +7540,7 @@
         "operationId": "rating_input_history_api_v1_forecasts__forecast_id__rating_input_history_get",
         "parameters": [
           {
+            "description": "Forecast UUID returned by a list or overview; preserve its data-use category.",
             "in": "path",
             "name": "forecast_id",
             "required": true,
@@ -7547,9 +7628,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Rating Input History",
+        "summary": "Get daily rating-derived forecast inputs",
         "tags": [
-          "forecasts"
+          "Forecasts"
         ]
       }
     },
@@ -7568,6 +7649,7 @@
             }
           },
           {
+            "description": "Omission selects standard. Repeat with standard and provisional_rating for both; provisional requires reviewer/admin.",
             "explode": true,
             "in": "query",
             "name": "data_use",
@@ -7727,9 +7809,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Network Overview",
+        "summary": "Get a network overview",
         "tags": [
-          "network-overview"
+          "Stations"
         ]
       }
     },
@@ -7843,9 +7925,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List Latest Observations",
+        "summary": "Get latest observations",
         "tags": [
-          "api-stations"
+          "Observations"
         ]
       }
     },
@@ -7855,6 +7937,7 @@
         "operationId": "get_qc_rules_api_v1_qc_rules_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "query",
             "name": "station_id",
             "required": false,
@@ -7953,15 +8036,15 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Qc Rules",
+        "summary": "Inspect current quality-control rules",
         "tags": [
-          "api-review"
+          "Quality and evaluation"
         ]
       }
     },
     "/api/v1/stations": {
       "get": {
-        "description": "Lists stations. A consumer, reviewer or admin token may call this; a consumer/reviewer token's result is silently filtered to its scoped stations rather than 404ing. All responses, outer errors, slash redirects and allowed preflights are no-store. Required nullable has_provisional_forecast is scoped existence of a stored non-superseded provisional row for reviewer/admin; consumer gets null without an availability query. False does not hide readable superseded history. No freshness, lineage-health or scientific-acceptance claim.",
+        "description": "List stations within your access scope. Use the returned UUID in station paths; code is the provider identifier. station_status is configured lifecycle status, not live availability. A consumer, reviewer or admin token may call this; a consumer/reviewer token's result is silently filtered to its scoped stations rather than 404ing. All responses, outer errors, slash redirects and allowed preflights are no-store. Required nullable has_provisional_forecast is scoped existence of a stored non-superseded provisional row for reviewer/admin; consumer gets null without an availability query. False does not hide readable superseded history. No freshness, lineage-health or scientific-acceptance claim.",
         "operationId": "list_stations_api_v1_stations_get",
         "parameters": [
           {
@@ -7981,6 +8064,7 @@
             }
           },
           {
+            "description": "Filter configured station lifecycle status, not sensor or forecast freshness.",
             "in": "query",
             "name": "status",
             "required": false,
@@ -8087,9 +8171,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List Stations",
+        "summary": "List stations",
         "tags": [
-          "api-stations"
+          "Stations"
         ]
       }
     },
@@ -8099,6 +8183,7 @@
         "operationId": "get_station_api_v1_stations__station_id__get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8175,9 +8260,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Station",
+        "summary": "Get station details",
         "tags": [
-          "api-stations"
+          "Stations"
         ]
       }
     },
@@ -8187,6 +8272,7 @@
         "operationId": "get_evaluation_forecasts_api_v1_stations__station_id__evaluation_forecasts_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8289,18 +8375,19 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Evaluation Forecasts",
+        "summary": "Get evaluation forecast selections",
         "tags": [
-          "api-evaluation-forecasts"
+          "Quality and evaluation"
         ]
       }
     },
     "/api/v1/stations/{station_id}/forecasts": {
       "get": {
-        "description": "Forecast summaries for a station, with QC status and typed qc_flags. For an activated CHWRR tenant this contains only the current human-selected publication per issue time, including a selected forecast later marked superseded by an automatic retry. Consumer and reviewer scopes are identical; admin is unscoped but sees the same publication gate. An out-of-scope station is 404. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
+        "description": "Forecast summaries for one station and one data-use category, newest first. Omission means standard; request each category separately for both. With no time bounds, the issue-time window is the preceding seven days. Includes QC status and typed qc_flags. When a tenant publication gate is active this contains only the current human-selected publication per issue time, including a selected forecast later marked superseded by an automatic retry. Consumer and reviewer scopes are identical; admin is unscoped but sees the same publication gate. An out-of-scope station is 404. All responses, outer errors, slash redirects and allowed preflights are no-store. The preceding publication rules apply to standard requests. Explicit data_use=provisional_rating requires reviewer/admin and station/tenant scope. Superseded history remains readable; no provisional410. Validated frozen warnings accompany PROVISIONAL; rating_curves=[] with rating_provenance_status=not_exposed means exact versions are not listed, not missing lineage. Publication does not apply; its decision fields are null. No purpose fallback.",
         "operationId": "list_forecasts_api_v1_stations__station_id__forecasts_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8342,6 +8429,7 @@
             }
           },
           {
+            "description": "Inclusive start of the forecast issue-time window. Include Z or a UTC offset.",
             "in": "query",
             "name": "start",
             "required": false,
@@ -8358,6 +8446,7 @@
             }
           },
           {
+            "description": "Exclusive end of the forecast issue-time window. Include Z or a UTC offset.",
             "in": "query",
             "name": "end",
             "required": false,
@@ -8409,6 +8498,7 @@
             }
           },
           {
+            "description": "One category per request; omission selects standard. provisional_rating requires reviewer/admin.",
             "in": "query",
             "name": "data_use",
             "required": false,
@@ -8518,18 +8608,19 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List Forecasts",
+        "summary": "List station forecasts",
         "tags": [
-          "api-stations"
+          "Forecasts"
         ]
       }
     },
     "/api/v1/stations/{station_id}/observations": {
       "get": {
-        "description": "Observations for a station and parameter window, with QC status and typed qc_flags. Any authenticated token role may call this; an out-of-scope or unknown station is 404.",
+        "description": "Observations for a station and parameter window, with QC status and typed qc_flags. start/end are required; start is inclusive and end exclusive. This returns native stored observations, not rating-derived discharge; data_use is not a supported parameter here. Any authenticated token role may call this; an out-of-scope or unknown station is 404.",
         "operationId": "list_observations_api_v1_stations__station_id__observations_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8548,6 +8639,7 @@
             }
           },
           {
+            "description": "Inclusive start of the observation-time window. Include Z or a UTC offset.",
             "in": "query",
             "name": "start",
             "required": true,
@@ -8557,6 +8649,7 @@
             }
           },
           {
+            "description": "Exclusive end of the observation-time window. Include Z or a UTC offset.",
             "in": "query",
             "name": "end",
             "required": true,
@@ -8643,9 +8736,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List Observations",
+        "summary": "Get station observations",
         "tags": [
-          "api-stations"
+          "Observations"
         ]
       }
     },
@@ -8655,6 +8748,7 @@
         "operationId": "get_rejected_forecasts_api_v1_stations__station_id__rejected_forecasts_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8802,9 +8896,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Rejected Forecasts",
+        "summary": "Inspect rejected forecasts",
         "tags": [
-          "api-rejected-forecasts"
+          "Quality and evaluation"
         ]
       }
     },
@@ -8814,6 +8908,7 @@
         "operationId": "get_station_skill_api_v1_stations__station_id__skill_get",
         "parameters": [
           {
+            "description": "Station UUID returned by the station list, not the provider code.",
             "in": "path",
             "name": "station_id",
             "required": true,
@@ -8906,9 +9001,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Station Skill",
+        "summary": "Get station skill scores",
         "tags": [
-          "api-review"
+          "Quality and evaluation"
         ]
       }
     },
@@ -9012,9 +9107,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Swiss Observation History",
+        "summary": "Get configured Swiss discharge history",
         "tags": [
-          "api-swiss-observation-history"
+          "Observations"
         ]
       }
     },
@@ -9079,9 +9174,9 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Get Swiss Overview",
+        "summary": "Get the configured Swiss overview",
         "tags": [
-          "api-swiss-overview"
+          "Stations"
         ]
       }
     }

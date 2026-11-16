@@ -36,9 +36,15 @@ class QcFlagResponse(BaseModel):
 
 class PaginatedResponse(BaseModel, Generic[T]):
     items: list[T]
-    total: int
-    limit: int
-    offset: int
+    total: int = Field(
+        description=(
+            "Number of matching records across all pages, within the caller's scope."
+        )
+    )
+    limit: int = Field(description="Maximum records requested for this page.")
+    offset: int = Field(
+        description="Number of matching records skipped before this page."
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -74,16 +80,41 @@ class WeatherSourceResponse(BaseModel):
 
 
 class StationSummary(BaseModel):
-    id: str
-    code: str
+    id: str = Field(
+        description=(
+            "Station UUID used in API paths; distinct from the provider station code."
+        )
+    )
+    code: str = Field(
+        description=(
+            "Provider station code for display and lookup, not an API path identifier."
+        )
+    )
     name: str
     location: GeoCoordResponse
     station_kind: str
-    station_status: str
+    station_status: str = Field(
+        description=(
+            "Configured lifecycle status, not evidence of "
+            "recent observations or forecasts."
+        )
+    )
     network: str
     ownership: str
-    measured_parameters: list[str]
-    has_provisional_forecast: bool | None
+    measured_parameters: list[str] = Field(
+        description=(
+            "Parameters configured for this station; does not "
+            "prove recent data availability."
+        )
+    )
+    has_provisional_forecast: bool | None = Field(
+        description=(
+            "Reviewer/admin: whether a non-superseded "
+            "provisional forecast exists. Consumer: null. Does "
+            "not indicate freshness or successful detail "
+            "access."
+        )
+    )
 
 
 class StationDetail(StationSummary):
@@ -104,16 +135,35 @@ class StationDetail(StationSummary):
 class ObservationResponse(BaseModel):
     id: str
     station_id: str
-    timestamp: datetime
+    timestamp: datetime = Field(
+        description="Observation time, including UTC offset; not ingestion time."
+    )
     parameter: str
-    value: float | None = None
+    value: float | None = Field(
+        default=None,
+        description=(
+            "Stored observation value; null is missing, never "
+            "zero. Discharge uses m³/s and water level uses m; "
+            "consult station datum metadata for its reference."
+        ),
+    )
     source: str
-    qc_status: _QcStatusLiteral
+    qc_status: _QcStatusLiteral = Field(
+        description=(
+            "Quality-control state of this record. raw and qc_unchecked are not a pass."
+        )
+    )
     qc_flags: list[QcFlagResponse]
     # Plan 402 T3: the stored value (`"1.2"`, `"1.2-datum"`, …) — a code
     # generation marker, not a rule-set version (see Repository facts);
     # `null` when none is stored.
-    qc_rule_version: str | None = None
+    qc_rule_version: str | None = Field(
+        default=None,
+        description=(
+            "Stored QC code-generation marker, not a rule-set "
+            "version; null when not recorded."
+        ),
+    )
 
 
 class LatestStationObservationResponse(BaseModel):
@@ -121,14 +171,27 @@ class LatestStationObservationResponse(BaseModel):
     code: str
     network: str
     measured_parameters: list[str]
-    observation: ObservationResponse | None
+    observation: ObservationResponse | None = Field(
+        description=(
+            "Latest visible record in the requested window, or "
+            "null if none. A record may itself have a null "
+            "value."
+        )
+    )
 
 
 class LatestObservationsResponse(PaginatedResponse[LatestStationObservationResponse]):
     parameter: Literal["discharge", "water_level"]
     source: ObservationSource
-    window_start: datetime
-    generated_at: datetime
+    window_start: datetime = Field(
+        description="Inclusive start of the latest-observation search window."
+    )
+    generated_at: datetime = Field(
+        description=(
+            "Response generation time; derive observation age "
+            "from each sample timestamp."
+        )
+    )
 
 
 class _ForecastSummaryFields(BaseModel):
@@ -136,19 +199,47 @@ class _ForecastSummaryFields(BaseModel):
     station_id: str
     model_id: str
     model_tier: str
-    issued_at: datetime
+    issued_at: datetime = Field(
+        description=(
+            "Forecast issue time, distinct from storage time "
+            "and the weather source run."
+        )
+    )
     parameter: str
     representation: str
     status: str
-    qc_status: _QcStatusLiteral
+    qc_status: _QcStatusLiteral = Field(
+        description=(
+            "Quality-control state of the forecast output, separate from input quality."
+        )
+    )
     nwp_cycle_source: str
-    created_at: datetime
+    created_at: datetime = Field(
+        description=(
+            "Time this forecast record was created; not the forecast issue time."
+        )
+    )
     # Plan 253 T1c / OD-2: visible to every authenticated role, no
     # role-filtering — supersedes 023:128-143 (docs/standards/security.md).
     # null = unknown (no assessment recorded, e.g. a legacy row); this is
     # distinct from an assessed forecast with zero flags ([]).
-    input_quality: str | None = None
-    input_quality_flags: list[dict[str, object]] | None = None
+    input_quality: str | None = Field(
+        default=None,
+        description=(
+            "Assessment of model inputs; null means no recorded "
+            "assessment. Separate from output QC."
+        ),
+    )
+    input_quality_flags: list[dict[str, object]] | None = Field(
+        default=None,
+        description=(
+            "Recorded input assessments. category distinguishes "
+            "observation from forcing; detail explains missing "
+            "observations, estimated weather inputs or other "
+            "degradation. Null means unknown, unlike an "
+            "assessed empty list."
+        ),
+    )
     # Plan 402 T3: [] when none — visible to every authenticated role (D13).
     qc_flags: list[QcFlagResponse] = []
 
@@ -169,18 +260,36 @@ class ForecastSummary(_ForecastSummaryFields):
 class EnsembleResponse(BaseModel):
     representation: str
     parameter: str
-    units: str  # Canonical API unit form, e.g. discharge "m³/s".
+    units: str = Field(description="Unit for every series value, e.g. discharge m³/s.")
     forecast_horizon_steps: int
-    time_step_seconds: int
+    time_step_seconds: int = Field(description="Forecast time step in seconds.")
     member_count: int
-    valid_times: list[datetime]
-    series: dict[str, list[float]]
+    valid_times: list[datetime] = Field(
+        description="Forecast validity times in the same order as every series array."
+    )
+    series: dict[str, list[float]] = Field(
+        description=(
+            "Values keyed by member identifier or quantile "
+            "level according to representation; each array "
+            "aligns with valid_times."
+        )
+    )
 
 
 class _ForecastDetailFields(BaseModel):
-    weather_use: WeatherUseResponse | None = None
+    weather_use: WeatherUseResponse | None = Field(
+        default=None,
+        description=(
+            "Persisted weather-source and freshness facts used "
+            "for this forecast; null means unknown, not "
+            "current."
+        ),
+    )
     model_artifact_id: str | None = None
-    nwp_cycle_reference_time: datetime | None = None
+    nwp_cycle_reference_time: datetime | None = Field(
+        default=None,
+        description="Reference time of the NWP run; may differ from issued_at.",
+    )
     version: int
     warm_up_source: str | None = None
     observation_staleness_hours: float | None = None
@@ -197,10 +306,25 @@ class ForecastDetail(_ForecastDetailFields, ForecastSummary):
 class ProvisionalMetadata(BaseModel):
     data_use: Literal["provisional_rating"]
     badge: Literal["PROVISIONAL"]
-    warnings: list[str]
+    warnings: list[str] = Field(
+        description=(
+            "Persisted rating-derived input warnings. These are "
+            "separate from input_quality_flags."
+        )
+    )
     rating_curves: list[object] = Field(max_length=0)
-    rating_provenance_status: Literal["not_exposed"]
-    publication_applicability: Literal["not_applicable"]
+    rating_provenance_status: Literal["not_exposed"] = Field(
+        description=(
+            "Exact curves are not exposed by forecast "
+            "summary/detail. Use rating-input-history for "
+            "frozen daily input context."
+        )
+    )
+    publication_applicability: Literal["not_applicable"] = Field(
+        description=(
+            "Provisional forecasts are outside the ordinary publication workflow."
+        )
+    )
     publication_state: None
     publication_decision_id: None
     selection_version: None

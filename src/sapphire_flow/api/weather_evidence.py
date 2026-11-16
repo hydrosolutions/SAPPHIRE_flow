@@ -24,7 +24,11 @@ if TYPE_CHECKING:
 
 class WeatherSourceRunResponse(BaseModel):
     source: str
-    source_run: datetime
+    source_run: datetime = Field(
+        description=(
+            "Weather source run/reference time, not forecast issue or retrieval time."
+        )
+    )
 
 
 class WeatherLegUseResponse(BaseModel):
@@ -33,8 +37,16 @@ class WeatherLegUseResponse(BaseModel):
     failure_at: datetime | None
     snapshot_id: str | None
     snapshot_sha256: str
-    retrieved_at: datetime
-    age_at_use_seconds: float = Field(ge=0)
+    retrieved_at: datetime = Field(
+        description="Time the retained weather input was retrieved or validated."
+    )
+    age_at_use_seconds: float = Field(
+        ge=0,
+        description=(
+            "Seconds between retrieval/validation and use by "
+            "the forecast, not age at this API request."
+        ),
+    )
     sources: list[WeatherSourceRunResponse]
 
 

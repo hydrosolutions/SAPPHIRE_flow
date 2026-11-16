@@ -1,0 +1,60 @@
+{
+  "id": "00000000-0000-4000-8000-000000000002",
+  "station_id": "00000000-0000-4000-8000-000000000001",
+  "model_id": "example_model",
+  "model_tier": "skill",
+  "issued_at": "2026-11-16T00:00:00Z",
+  "parameter": "discharge",
+  "representation": "members",
+  "status": "raw",
+  "qc_status": "qc_passed",
+  "nwp_cycle_source": "example_weather",
+  "created_at": "2026-11-16T00:30:00Z",
+  "input_quality": "degraded",
+  "input_quality_flags": [
+    {
+      "category": "observation",
+      "level": "degraded",
+      "detail": "discharge unavailable in 30 of 30 assembly slots"
+    }
+  ],
+  "qc_flags": [],
+  "publication_state": null,
+  "publication_decision_id": null,
+  "selection_version": null,
+  "published_at": null,
+  "preservation_at_publish": null,
+  "forecast_status": null,
+  "forecast_version": null,
+  "weather_use": null,
+  "model_artifact_id": null,
+  "nwp_cycle_reference_time": "2026-11-15T00:00:00Z",
+  "version": 1,
+  "warm_up_source": null,
+  "observation_staleness_hours": null,
+  "combination_strategy": null,
+  "source_model_ids": null,
+  "updated_at": "2026-11-16T00:30:00Z",
+  "ensemble": {
+    "representation": "members",
+    "parameter": "discharge",
+    "units": "m³/s",
+    "forecast_horizon_steps": 2,
+    "time_step_seconds": 86400,
+    "member_count": 2,
+    "valid_times": [
+      "2026-11-16T00:00:00Z",
+      "2026-11-17T00:00:00Z"
+    ],
+    "series": {
+      "0": [
+        10.0,
+        11.0
+      ],
+      "1": [
+        12.0,
+        13.0
+      ]
+    }
+  }
+}

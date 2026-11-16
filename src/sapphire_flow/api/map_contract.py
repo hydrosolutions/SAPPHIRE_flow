@@ -6,7 +6,8 @@ live app (Plan 147 Slice C) — nothing is served; this is a static artefact.
 
 D14: `info.version` is a hand-maintained constant, never the package
 version. Bump the MINOR number for an additive change (new field, route,
-enum member); bump the MAJOR number for anything else, and announce it to
+enum member) or documentation-only metadata; bump the MAJOR number for a
+breaking contract change, and announce it to
 the map session before deploy (`tools/check_map_contract_version.py`, the
 CI gate on this file, enforces "some version increased" mechanically — NOT
 which number moved; that's a review judgement).
@@ -26,7 +27,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.11"
+MAP_CONTRACT_VERSION = "2.12"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -79,7 +80,7 @@ _REVIEW_OR_HUMAN_PATHS: frozenset[str] = frozenset(
 # 400 on failure (`api/routes/api_stations.py::parse_api_datetime/_parse_enum`,
 # `api/routes/api_review.py::_parse_station_id`) — `/stations/{id}` and
 # `/forecasts/{id}` parse their path id UNGUARDED today (500 on malformed,
-# noted on the consumer page, not changed here).
+# noted in the API guide, not changed here).
 _400_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/stations",
@@ -152,7 +153,10 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "All responses are no-store; unavailable scoped evidence returns 503."
     ),
     ("GET", "/api/v1/stations"): (
-        "Lists stations. A consumer, reviewer or admin token may call this; "
+        "List stations within your access scope. Use the returned UUID in station "
+        "paths; code is the provider identifier. station_status is configured "
+        "lifecycle status, not live availability. A consumer, reviewer or admin "
+        "token may call this; "
         "a consumer/reviewer token's result is silently filtered to its "
         "scoped stations rather than 404ing."
     ),
@@ -163,12 +167,18 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
     ),
     ("GET", "/api/v1/stations/{station_id}/observations"): (
         "Observations for a station and parameter window, with QC status "
-        "and typed qc_flags. Any authenticated token role may call this; "
+        "and typed qc_flags. start/end are required; start is inclusive and end "
+        "exclusive. This returns native stored observations, not rating-derived "
+        "discharge; data_use is not a supported parameter here. "
+        "Any authenticated token role may call this; "
         "an out-of-scope or unknown station is 404."
     ),
     ("GET", "/api/v1/stations/{station_id}/forecasts"): (
-        "Forecast summaries for a station, with QC status and typed "
-        "qc_flags. For an activated CHWRR tenant this contains only the "
+        "Forecast summaries for one station and one data-use category, newest first. "
+        "Omission means standard; request each category separately for both. "
+        "With no time bounds, the issue-time window is the preceding seven days. "
+        "Includes QC status and typed "
+        "qc_flags. When a tenant publication gate is active this contains only the "
         "current human-selected publication per issue time, including a "
         "selected forecast later marked superseded by an automatic retry. "
         "Consumer and reviewer scopes are identical; admin is unscoped but "
@@ -184,7 +194,9 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "All responses, outer errors, redirects and supported preflight are no-store."
     ),
     ("GET", "/api/v1/forecasts/{forecast_id}"): (
-        "Forecast detail, with typed qc_flags. For an activated CHWRR tenant "
+        "Forecast detail with ensemble, input quality and output QC. Use the same "
+        "data_use as the list entry, or the overview detail_url. When a tenant "
+        "publication gate is active, "
         "only selected or historical replaced publications expose values; "
         "an unpublished or out-of-scope ID is 404, a withdrawn ID is 410 "
         "with a metadata-only tombstone. All service roles use the same "
@@ -218,6 +230,47 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "out-of-scope or ungranted station is 404 for a reviewer/human, an "
         "unknown one 404 for a reviewer, admin or granted human, a "
         "malformed one 400."
+    ),
+}
+
+
+# Display labels only; operation IDs still come from the unchanged routes.
+_OPERATION_LABELS: dict[str, tuple[str, str]] = {
+    "/api/v1/stations": ("List stations", "Stations"),
+    "/api/v1/stations/{station_id}": ("Get station details", "Stations"),
+    "/api/v1/observations/latest": ("Get latest observations", "Observations"),
+    "/api/v1/stations/{station_id}/observations": (
+        "Get station observations",
+        "Observations",
+    ),
+    "/api/v1/stations/{station_id}/forecasts": ("List station forecasts", "Forecasts"),
+    "/api/v1/forecasts/{forecast_id}": ("Get forecast details", "Forecasts"),
+    "/api/v1/forecasts/{forecast_id}/rating-input-history": (
+        "Get daily rating-derived forecast inputs",
+        "Forecasts",
+    ),
+    "/api/v1/networks/{network}/overview": ("Get a network overview", "Stations"),
+    "/api/v1/swiss/overview": ("Get the configured Swiss overview", "Stations"),
+    "/api/v1/swiss/observation-history": (
+        "Get configured Swiss discharge history",
+        "Observations",
+    ),
+    "/api/v1/forecast-lab/snapshot": ("Compare archived forecasts", "Forecasts"),
+    "/api/v1/qc/rules": (
+        "Inspect current quality-control rules",
+        "Quality and evaluation",
+    ),
+    "/api/v1/stations/{station_id}/skill": (
+        "Get station skill scores",
+        "Quality and evaluation",
+    ),
+    "/api/v1/stations/{station_id}/rejected-forecasts": (
+        "Inspect rejected forecasts",
+        "Quality and evaluation",
+    ),
+    "/api/v1/stations/{station_id}/evaluation-forecasts": (
+        "Get evaluation forecast selections",
+        "Quality and evaluation",
     ),
 }
 
@@ -332,6 +385,9 @@ def build_map_openapi() -> dict[str, Any]:
     for path, path_item in paths.items():
         for method, operation in path_item.items():
             operation["security"] = [{"bearerAuth": []}]
+            summary, tag = _OPERATION_LABELS[path]
+            operation["summary"] = summary
+            operation["tags"] = [tag]
             description = _DESCRIPTIONS.get((method.upper(), path))
             if description is not None:
                 operation["description"] = description
@@ -518,6 +574,51 @@ def build_map_openapi() -> dict[str, Any]:
                         }
                     },
                 }
+
+            for parameter in operation.get("parameters", []):
+                name = parameter["name"]
+                if name == "station_id":
+                    parameter["description"] = (
+                        "Station UUID returned by the station list, not the "
+                        "provider code."
+                    )
+                elif name == "forecast_id":
+                    parameter["description"] = (
+                        "Forecast UUID returned by a list or overview; "
+                        "preserve its data-use category."
+                    )
+                elif name == "data_use":
+                    parameter["description"] = (
+                        (
+                            "Omission selects standard. Repeat with standard "
+                            "and provisional_rating for both; provisional "
+                            "requires reviewer/admin."
+                        )
+                        if path == "/api/v1/networks/{network}/overview"
+                        else (
+                            "One category per request; omission selects "
+                            "standard. provisional_rating requires "
+                            "reviewer/admin."
+                        )
+                    )
+                elif name in {"start", "end"} and path in {
+                    "/api/v1/stations/{station_id}/observations",
+                    "/api/v1/stations/{station_id}/forecasts",
+                }:
+                    bound = "Inclusive start" if name == "start" else "Exclusive end"
+                    axis = (
+                        "observation-time"
+                        if path.endswith("/observations")
+                        else "forecast issue-time"
+                    )
+                    parameter["description"] = (
+                        f"{bound} of the {axis} window. Include Z or a UTC offset."
+                    )
+                elif name == "status" and path == "/api/v1/stations":
+                    parameter["description"] = (
+                        "Filter configured station lifecycle status, not "
+                        "sensor or forecast freshness."
+                    )
 
     from sapphire_flow.api.schemas import PublicationTombstone
 
