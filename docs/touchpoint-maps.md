@@ -2618,6 +2618,8 @@ agreement, frozen curve/capture identity, native timestamps and source separatio
 Keep bootstrap optional ACL handling, no-store middleware/error/CORS predicates,
 map schema/version and [client guide](api/README.md#shared-nativehourly-discharge-history-not-deployed) aligned.
 Tests: unit API/service `test_station_history.py`, integration store
-`test_station_history.py`, integration DB `test_station_history_roles.py`.
+`test_station_history.py`, integration DB `test_station_history_roles.py`, and
+integration API `test_access_token_auth.py` for the real-token route inventory,
+in-scope/out-of-scope reads and ordinary consumer/reviewer parity.
 Overview output, legacy Swiss history and forecast-specific rating history remain
 independent and unchanged; overview integration is a later scoped change.

@@ -745,6 +745,10 @@ _DETAIL_ROUTES: dict[str, str] = {
     "/api/v1/stations/{station_id}/observations": (
         "/api/v1/stations/{sid}/observations?" + _OBS_QUERY
     ),
+    "/api/v1/stations/{station_id}/observation-history": (
+        "/api/v1/stations/{sid}/observation-history?parameter=discharge"
+        "&start=2025-01-01T00:00:00Z&end=2025-01-02T00:00:00Z"
+    ),
     "/api/v1/stations/{station_id}/forecasts": "/api/v1/stations/{sid}/forecasts",
     "/api/v1/forecasts/{forecast_id}": "/api/v1/forecasts/{fid}",
     "/api/v1/forecast-lab/snapshot": (
@@ -802,7 +806,8 @@ def _comparable(resp: object) -> tuple[int, object]:
     """Status plus body, with the snapshot's wall-clock fields dropped."""
     status: int = resp.status_code  # type: ignore[attr-defined]
     body = resp.json()  # type: ignore[attr-defined]
-    if isinstance(body, dict) and body.get("schema_version", "").startswith(
+    schema_version = body.get("schema_version") if isinstance(body, dict) else None
+    if isinstance(schema_version, str) and schema_version.startswith(
         "forecast-lab-snapshot"
     ):
         body = [s["station"]["code"] for s in body["stations"]]
