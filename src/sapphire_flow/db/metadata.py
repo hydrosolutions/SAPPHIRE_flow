@@ -3400,6 +3400,13 @@ sa.Index(
     rating_derived_discharge.c.stored_order,
     unique=True,
 )
+sa.Index(
+    "ix_rating_derived_observation_latest",
+    rating_derived_discharge.c.tenant_id,
+    rating_derived_discharge.c.station_id,
+    rating_derived_discharge.c.observation_id,
+    rating_derived_discharge.c.stored_order.desc(),
+)
 
 native_measurement_captures = sa.Table(
     "native_measurement_captures",

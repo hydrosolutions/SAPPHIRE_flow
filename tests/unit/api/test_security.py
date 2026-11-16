@@ -410,6 +410,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/swiss/observation-history"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/observations"): "PRINCIPAL",
+        ("GET", "/api/v1/stations/{station_id}/observation-history"): "PRINCIPAL",
         ("GET", "/api/v1/stations/{station_id}/forecasts"): "PRINCIPAL",
         (
             "GET",

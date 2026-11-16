@@ -12,7 +12,9 @@ if TYPE_CHECKING:
 def shared_forecast_read_path(path: str) -> bool:
     return bool(
         re.fullmatch(
-            r"/api/v1/(?:stations(?:/[^/]+(?:/forecasts)?)?|forecasts/[^/]+)/?", path
+            r"/api/v1/(?:stations(?:/[^/]+(?:/forecasts|/observation-history)?)?"
+            r"|forecasts/[^/]+)/?",
+            path,
         )
     )
 

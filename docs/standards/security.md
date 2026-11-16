@@ -2361,3 +2361,31 @@ and Accept-Encoding. Errors, redirects and preflights remain no-store. Existing
 consumer origins gain If-None-Match and ETag/Date exposure for this route only,
 without additional credentials, origins or methods. See the
 [network contract](../spec/network-overview.md).
+
+# Shared discharge-history projection
+
+The station observation-history route scopes the principal to tenant/station before
+reading protected candidates. Provisional requests also require reviewer/admin
+permission; ordinary consumer requests exclude protected DHM delivery rows.
+Migration0085 exposes only `station_rating_history(uuid,uuid,timestamptz,timestamptz,boolean)`
+to `sapphire_api` through EXECUTE. PUBLIC and other runtime roles have no EXECUTE;
+raw rating/capture/reference SELECT remains denied. Bootstrap resets and restores
+this optional ACL alongside the existing forecast-history projection.
+
+The bounded STABLE SECURITY DEFINER function uses fixed `pg_catalog,pg_temp` search
+path and UTC, checks parent tenant/station agreement, and emits only safe scalars.
+The route remains responsible for bearer scope: the shared database role cannot
+infer token entitlements. Ordinary results and the derived projection share one
+statement snapshot. Newest stored evidence is chosen before source/QC comparison;
+no older fallback or read-time conversion is permitted. Errors are generic 503
+with no protected values in logs, and success/error/CORS responses are no-store.
+See [the maintainer reference](../spec/api-v1-review.md#shared-station-discharge-history-map-contract-213) for resource limits.
+
+Conversion warnings are retained worker assertions. This projection validates frozen
+evidence identity and current source/QC agreement, but does not independently
+recompute or certify conversion warnings, current rating policy or discharge science.
+
+The new station-history projection permits at most 32 MiB aggregate parsed
+evidence to cover measured valid seven-day histories above the initial 16 MiB
+budget. Per-document, parsing-node, curve-count, response and candidate caps are
+unchanged; existing forecast-input history keeps its separate limits.

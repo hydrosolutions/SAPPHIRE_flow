@@ -155,3 +155,9 @@ from sapphire_flow.api.routes import (  # noqa: E402
 )
 
 app.include_router(_network_overview.router, dependencies=[Depends(require_principal)])
+
+from sapphire_flow.api.routes import (  # noqa: E402
+    api_station_history as _station_history,
+)
+
+app.include_router(_station_history.router, dependencies=[Depends(require_principal)])

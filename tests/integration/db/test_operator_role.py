@@ -1143,7 +1143,7 @@ class TestNoUnexpectedFunctionWritesTheGuardedTables:
             "forecast_rating_input_history, "
             "lock_publication_candidate, lock_publication_grants, "
             "native_rating_curve_guard, native_rating_lineage, "
-            "native_rating_lineage_guard"
+            "native_rating_lineage_guard, station_rating_history"
         )
 
 
@@ -1770,7 +1770,7 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0084"
+        assert before[0] == "0085"
         with pytest.raises(NotImplementedError, match="requires a drained deployment"):
             _alembic("downgrade", "0066")
         assert snapshot() == before

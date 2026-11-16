@@ -507,3 +507,23 @@ The [overview contract](network-overview.md) owns observation/forecast selection
 entitlement, compact series and private conditional polling. Configured thresholds
 are batched; datum metadata retains reviewer/admin-only disclosure. Threshold
 imports and alert activation remain separate deliveries.
+
+## Shared station discharge history (map contract 2.13)
+
+Implementation draft, **not deployed**. The [client guide](../api/README.md#shared-nativehourly-discharge-history-not-deployed)
+owns request/response usage. Preserve separate ordinary/provisional series,
+scoped reviewer/admin access for provisional values, newest-before-match stored
+selection, source/QC agreement and frozen provenance. Warnings are retained worker
+assertions, not independently recomputed or certified by this API.
+Existing overview, observations, Swiss history and forecast input-history contracts
+are unchanged. See the [touchpoint map](../touchpoint-maps.md#shared-discharge-history-boundary)
+for implementation and verification routing.
+
+Initial bounds are seven days, 10,000 scoped candidates including retained versions
+and source levels, 2 MiB response, 32 MiB aggregate parsed evidence, 256 KiB per
+evidence document, 500,000 parsing nodes, 64 frozen curves and a five-second SQL
+timeout. The new endpoint's aggregate evidence limit covers measured valid
+seven-day histories above the original 16 MiB draft limit. Other caps and existing
+forecast-input history limits are unchanged. Resource/evidence failures return503
+without truncation. Actual seven-day query-cost and concurrent roster qualification
+remain rollout gates.

@@ -2608,3 +2608,16 @@ lineage, consumer protected-delivery exclusion, all old routes and frozen eviden
 Run network overview unit/native API/store tests, daily-reader parity, security/CORS
 and map-contract drift tests. Native capacity tests measure21/160/200 admitted
 nonempty shapes; performance receipts do not authorize deployment or live reads.
+# Shared discharge-history boundary
+
+Route `api/routes/api_station_history.py` → `api/station_history.py` → ordinary
+trusted observation selection plus migration0085 `station_rating_history` →
+`types/station_history.py` and `services/station_history.py`. Preserve scope before
+counts, one statement snapshot, newest-before-filter semantics, full source/QC
+agreement, frozen curve/capture identity, native timestamps and source separation.
+Keep bootstrap optional ACL handling, no-store middleware/error/CORS predicates,
+map schema/version and [client guide](api/README.md#shared-nativehourly-discharge-history-not-deployed) aligned.
+Tests: unit API/service `test_station_history.py`, integration store
+`test_station_history.py`, integration DB `test_station_history_roles.py`.
+Overview output, legacy Swiss history and forecast-specific rating history remain
+independent and unchanged; overview integration is a later scoped change.

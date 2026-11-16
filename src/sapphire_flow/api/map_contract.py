@@ -27,7 +27,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.12"
+MAP_CONTRACT_VERSION = "2.13"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -42,6 +42,7 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/stations"),
         ("GET", "/api/v1/stations/{station_id}"),
         ("GET", "/api/v1/stations/{station_id}/observations"),
+        ("GET", "/api/v1/stations/{station_id}/observation-history"),
         ("GET", "/api/v1/stations/{station_id}/forecasts"),
         ("GET", "/api/v1/forecasts/{forecast_id}"),
         ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"),
@@ -165,6 +166,14 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "out-of-scope or unknown station is 404. A malformed station_id is "
         "unguarded today and returns 500, not 400."
     ),
+    ("GET", "/api/v1/stations/{station_id}/observation-history"): (
+        "Scoped discharge history over a maximum seven-day [start,end) window. "
+        "Ordinary and provisional sources remain separate; provisional_rating "
+        "requires reviewer/admin permission. Hourly values are sample means, "
+        "not overview last readings. Stored rating results retain frozen provenance "
+        "and require current source/QC agreement; GET never converts water levels. "
+        "Resource or evidence failures return 503; responses are no-store."
+    ),
     ("GET", "/api/v1/stations/{station_id}/observations"): (
         "Observations for a station and parameter window, with QC status "
         "and typed qc_flags. start/end are required; start is inclusive and end "
@@ -236,6 +245,10 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
 
 # Display labels only; operation IDs still come from the unchanged routes.
 _OPERATION_LABELS: dict[str, tuple[str, str]] = {
+    "/api/v1/stations/{station_id}/observation-history": (
+        "Get native or hourly discharge history",
+        "Observations",
+    ),
     "/api/v1/stations": ("List stations", "Stations"),
     "/api/v1/stations/{station_id}": ("Get station details", "Stations"),
     "/api/v1/observations/latest": ("Get latest observations", "Observations"),
@@ -463,6 +476,13 @@ def build_map_openapi() -> dict[str, Any]:
                 responses["503"] = _error_response(
                     "Frozen rating evidence unavailable."
                 )
+            if path == "/api/v1/stations/{station_id}/observation-history":
+                responses["403"] = _error_response(
+                    "Provisional purpose requires reviewer or admin."
+                )
+                responses["404"] = _error_response("Unknown or out-of-scope station.")
+                responses["500"] = _error_response("Sanitized internal error.")
+                responses["503"] = _error_response("Observation history unavailable.")
             if path == "/api/v1/swiss/observation-history":
                 responses["405"] = {
                     "description": "Method not allowed (framework detail envelope)."
