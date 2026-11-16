@@ -11,6 +11,7 @@ available features. All examples below are read-only.
 | List one station's forecasts | `GET /stations/{station_id}/forecasts` |
 | Download a forecast's complete ensemble | `GET /forecasts/{forecast_id}` |
 | Read a station's observation time series | `GET /stations/{station_id}/observations` |
+| Read native or hourly discharge, including rating-derived values | `GET /stations/{station_id}/observation-history` |
 | Find the latest stored reading at each station | `GET /observations/latest` |
 | Inspect daily rating-derived inputs to a forecast | `GET /forecasts/{forecast_id}/rating-input-history` |
 
@@ -194,12 +195,12 @@ tensor. `no_retained_derived_day` does not prove the model had no input. The
 forecast detail's empty `rating_curves` with `rating_provenance_status: "not_exposed"`
 means that detail does not list curves, not that none were used.
 
-### Shared native/hourly discharge history (NOT DEPLOYED)
+### Shared native/hourly discharge history
 
-**Implementation draft; not deployed.** This documents the proposed endpoint in
-the current patch, not the API presently available on the Nepal test server.
+Available on the Nepal test deployment in **v0.1.1139**, contract **2.13**, as
+verified on **16 November 2026**. Other deployments require their own activation.
 
-The proposed station history route serves agency-provided discharge and provisional
+The station history route serves agency-provided discharge and provisional
 rating-table discharge. The network overview and existing observations routes are
 unchanged.
 
@@ -287,7 +288,7 @@ Request at most seven days at a time. Unavailable evidence or a request exceedin
 resource limits returns `503`; the API never truncates the requested history or
 returns an empty success in its place. Try a shorter window where appropriate.
 See the [maintainer reference](../spec/api-v1-review.md#shared-station-discharge-history-map-contract-213)
-for technical limits and rollout qualification. This route remains **not deployed**.
+for technical limits and deployment requirements.
 
 The separate
 [Swiss observation-history route](../spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build)
@@ -337,10 +338,10 @@ Clients must handle both. Use UUIDs returned by the API instead of guessing them
 
 ## Deployment compatibility
 
-As checked on **16 November 2026**, the Nepal test deployment runs **v0.1.1136**
-with contract **2.11** behavior, including rating-input history and network overview.
-Contract **2.12** added descriptive metadata only. This patch's contract **2.13**
-adds the shared discharge-history route, which is **not deployed** on that server.
-It does not announce a new deployed release. Features requiring configuration remain
-conditional. When sharing instructions, link to a documentation commit or tag that
-matches the recipient's server, not automatically to the latest branch.
+As verified on **16 November 2026**, the Nepal test deployment runs **v0.1.1139**
+with contract **2.13**, including shared native/hourly discharge history,
+rating-input history and network overview. The new history route is enabled;
+the overview's discharge block and existing observations routes are unchanged.
+Features requiring configuration remain conditional on other deployments.
+When sharing instructions, check this dated deployment note against the
+recipient's server; a newer documentation commit alone does not establish deployment.

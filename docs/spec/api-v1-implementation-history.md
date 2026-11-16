@@ -103,3 +103,26 @@ The current rule remains in [Versioning](api-v1-review.md#versioning-d14).
 - 2.11 added network overview. Threshold import and alert activation stayed separate.
 
 These implementation steps do not establish activation in any deployment.
+
+## Nepal discharge-history deployment: 16 November 2026
+
+Nepal MVP release **v0.1.1139** (source `009deaef45f435346ed3fa11869be4e29f1655cc`)
+deployed contract **2.13** and migration **0085**. Exact merged-source CI passed;
+release image checks, private delivery and native server probes passed. The API
+was given read-only access to the workers' existing 17 rating-station bindings;
+without that deployment setting, stored conversions were held as `not_configured`.
+
+Live verification covered 42 sequential requests: native and hourly reads for all
+21 stations over 9–16 November, 18:00 UTC to 18:00 UTC. All succeeded. Hourly
+statistics matched native samples, numeric derived points referenced frozen curves,
+and 14 station histories contained discharge. Stations 447, 620 and 647 had no
+source observations in that window; the four onboarding stations were also empty.
+These are dated observations, not promises of current availability or freshness.
+The slowest request in that pass took 1.185 seconds and the largest response was
+804,907 bytes. This was not a concurrent-load test or live Swiss qualification.
+
+All 17 existing forecasts were unchanged, and worker pools resumed with their
+prior schedules. The next naturally scheduled forecast had not run at verification
+time. Overview integration remains a follow-up; the new route does not populate
+the overview's discharge block. See the [client guide](../api/README.md#shared-nativehourly-discharge-history)
+for the maintained request and interpretation rules.
