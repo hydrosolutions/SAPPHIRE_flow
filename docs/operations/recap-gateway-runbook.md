@@ -21,7 +21,7 @@ Details and rules for every step are in § Technical reference below.
 | Approved handover folder | `$HANDOVER` | Basin review tool, `handovers/approved-…` | `…/handovers/approved-4bb03b…` |
 | Private evidence folder | `$EVIDENCE` | You create it, **outside any Git repo** | `~/sapphire-evidence/trishuli` |
 | Scope file | `$SCOPE` | Hydrologist: model, history years, forecast cycles/leads | `scope.json` |
-| New Gateway name (HRU) | `$NEW_HRU` | Agree with the Gateway admin; must be new | `trishuli_00001` |
+| New Gateway name (HRU) | `$NEW_HRU` | Agree with the Gateway admin; must be new and permanent. Lowercase letters, digits and `_` only; must not start with a digit (our tool refuses anything else) | `trishuli_00001` |
 | Recap config | `$CONFIG` | Ops config with `[adapters.recap_gateway]` and base URL | `config/overlays/nepal-history.toml` |
 | API key file | `$KEY_FILE` | Existing secret file (mode 600); never paste the key | `~/secrets/recap_api_key` |
 | Your name | `$ACTOR` | You; recorded as a label, not authentication | `a.admin` |
@@ -59,6 +59,40 @@ uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --han
 
 The confirm, reconcile and history variants need a revision or reference from the
 previous output; their full commands are in the steps of § Technical reference.
+
+### Step 5 in detail: start the history job
+
+The Gateway fills the weather history with a job you start by hand. The tool never starts
+it; it only prints these steps (`history`) and records the job reference afterwards. You
+need a login to the Gateway's job dashboard (separate from the API key); ask the Gateway
+admin if you do not have one. The Gateway's own technical guide lives in a private
+repository, so everything you need is repeated here.
+
+| # | You do | Done when |
+|---|---|---|
+| 1 | Run `history` (command in the copy-paste block) and note the window, the variables and the name it prints. | You have the three values below. |
+| 2 | Open the Gateway site, `recap.ieasyhydro.org`, and find the job **`era5_land_backfill__targeted`**. | The job is open. |
+| 3 | Start one run with **Trigger DAG w/ config** and fill the fields below. This is a single manual run, not a backfill of other basins. | The run appears in the dashboard. |
+| 4 | Note the run's identifier as the dashboard shows it, then record it: `history --stream era5_history --actor "$ACTOR" --job-reference "<identifier>"`. | The tool lists the job reference. |
+| 5 | Wait until the run shows as finished, then run `resume` (step 6). | `resume` reports coverage or says what is missing. |
+
+Fields for the run (use the values `history` printed; these are examples):
+
+| Field | Value | Note |
+|---|---|---|
+| `shapefile_names` | `trishuli_00001` | Your new Gateway name. Several basins can be listed, one per line, but use only the basins in this scope. |
+| `year_start`, `year_end` | `2022`, `2026` | Whole calendar years. The run fills more than the window; coverage still checks only your agreed window. |
+| `variables` | `2m_temperature`, `total_precipitation` | Select them explicitly, never "all". Use only the variables the model needs. |
+
+Good to know:
+
+- The agreed window ends at least **8 days before today**: the weather history trails the
+  present by 7 to 8 days (measured on the Gateway, Oct to Nov 2026). Fetching dates past
+  that edge fails with "No ERA5 dataset found", so `resume` would hold those days.
+- Do **not** start the shared `ifs__subdaily` job or any automatic refresh here.
+- A job reference only says you started a run. It does not prove the data arrived; `resume`
+  does.
+- Snow history needs a procedure from the Gateway team; there is no snow job described here.
 
 ### Rules that never change
 
