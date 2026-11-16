@@ -91,6 +91,9 @@ keys. Use these to settle the details rather than separate meetings for each:
 - Explain output beyond +144 h, where IFS inputs become 6-hourly; preserve totals
   if redistributing intervals. Identify the source/model version and reanalysis revisions.
 
+## Schedule
+@Joel draft, @Bea  
+
 **Sources:** Bea's v0.3 draft (13 Nov), reporting Joel/Vatro discussions from
 7 Sep–13 Nov; [gateway README](https://github.com/hydrosolutions/recap-dg-client/blob/main/README.md);
 [ECMWF input steps](https://www.ecmwf.int/en/forecasts/datasets/open-data).
