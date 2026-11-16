@@ -351,6 +351,7 @@ DO $$
 DECLARE f text; r text;
 BEGIN
     FOREACH f IN ARRAY ARRAY['forecast_rating_input_history(uuid)',
+        'station_rating_history(uuid,uuid,timestamptz,timestamptz,boolean)',
         'rating_history_json_nodes(text,integer)',
         'rating_history_sample_json_nodes(text,integer,text)'] LOOP
         IF to_regprocedure('public.' || f) IS NOT NULL THEN
@@ -512,6 +513,8 @@ BEGIN
               'public.native_rating_lineage(uuid,boolean)'::regprocedure)
           AND f.oid IS DISTINCT FROM
               to_regprocedure('public.forecast_rating_input_history(uuid)')
+          AND f.oid IS DISTINCT FROM
+              to_regprocedure('public.station_rating_history(uuid,uuid,timestamptz,timestamptz,boolean)')
           AND NOT EXISTS (SELECT 1 FROM pg_depend extension_dependency
               WHERE extension_dependency.classid = 'pg_proc'::regclass
                 AND extension_dependency.objid = f.oid
@@ -682,6 +685,9 @@ GRANT SELECT ON provisional_evaluation_active_grants TO sapphire_api;
 GRANT EXECUTE ON FUNCTION public.native_rating_lineage(uuid,boolean)
     TO sapphire_api, sapphire_worker;
 DO $$ BEGIN
+    IF to_regprocedure('public.station_rating_history(uuid,uuid,timestamptz,timestamptz,boolean)') IS NOT NULL THEN
+        GRANT EXECUTE ON FUNCTION public.station_rating_history(uuid,uuid,timestamptz,timestamptz,boolean) TO sapphire_api;
+    END IF;
     IF to_regprocedure('public.forecast_rating_input_history(uuid)') IS NOT NULL THEN
         GRANT EXECUTE ON FUNCTION public.forecast_rating_input_history(uuid) TO sapphire_api;
     END IF;

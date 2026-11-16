@@ -30,6 +30,7 @@ _EXPECTED_PATHS = {
     "/api/v1/stations",
     "/api/v1/stations/{station_id}",
     "/api/v1/stations/{station_id}/observations",
+    "/api/v1/stations/{station_id}/observation-history",
     "/api/v1/stations/{station_id}/forecasts",
     "/api/v1/forecasts/{forecast_id}",
     "/api/v1/forecasts/{forecast_id}/rating-input-history",

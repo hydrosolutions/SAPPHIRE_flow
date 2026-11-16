@@ -2962,6 +2962,387 @@
         "title": "HistoryCoarseGrid",
         "type": "object"
       },
+      "HistoryCounts": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "held": {
+            "title": "Held",
+            "type": "integer"
+          },
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "rejected_source_qc": {
+            "title": "Rejected Source Qc",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source",
+          "accepted",
+          "rejected",
+          "held",
+          "rejected_source_qc"
+        ],
+        "title": "HistoryCounts",
+        "type": "object"
+      },
+      "HistoryCurve": {
+        "properties": {
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "curve_id": {
+            "title": "Curve Id",
+            "type": "string"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "title": "Valid From",
+            "type": "string"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "curve_id",
+          "content_sha256",
+          "version",
+          "valid_from",
+          "valid_to"
+        ],
+        "title": "HistoryCurve",
+        "type": "object"
+      },
+      "HistoryOutcome": {
+        "enum": [
+          "accepted",
+          "rejected",
+          "held"
+        ],
+        "title": "HistoryOutcome",
+        "type": "string"
+      },
+      "HistoryPoint": {
+        "properties": {
+          "completeness": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Completeness",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/HistoryCounts"
+          },
+          "curve_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Curve Refs",
+            "type": "array"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "interval": {
+            "enum": [
+              "native",
+              "complete_hour",
+              "clipped_hour",
+              "unfinished_hour"
+            ],
+            "title": "Interval",
+            "type": "string"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HistoryOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Policies",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          },
+          "source_assessment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "assessed",
+                  "unassessed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Assessment"
+          },
+          "source_assessment_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Source Assessment Counts",
+            "type": "object"
+          },
+          "source_qc_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Source Qc Counts",
+            "type": "object"
+          },
+          "source_qc_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QcStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stored_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored At"
+          },
+          "stored_at_max": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored At Max"
+          },
+          "stored_at_min": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored At Min"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timestamp",
+          "end",
+          "value",
+          "minimum",
+          "maximum",
+          "sample_count",
+          "outcome",
+          "stored_at",
+          "counts",
+          "completeness",
+          "interval",
+          "source_qc_status",
+          "source_assessment",
+          "source_qc_counts",
+          "source_assessment_counts",
+          "warnings",
+          "reasons",
+          "curve_refs",
+          "policies",
+          "stored_at_min",
+          "stored_at_max"
+        ],
+        "title": "HistoryPoint",
+        "type": "object"
+      },
+      "HistoryResolution": {
+        "enum": [
+          "native",
+          "hourly"
+        ],
+        "title": "HistoryResolution",
+        "type": "string"
+      },
+      "HistorySeries": {
+        "properties": {
+          "availability": {
+            "enum": [
+              "no_source",
+              "no_eligible_result",
+              "available"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "completeness": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Completeness",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/HistoryCounts"
+          },
+          "coverage": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "data_use": {
+            "$ref": "#/components/schemas/ForecastDataUse"
+          },
+          "latest_timestamp": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Timestamp"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "measured",
+              "supplied",
+              "rating_derived"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "data_use",
+          "availability",
+          "completeness",
+          "latest_timestamp",
+          "counts",
+          "points"
+        ],
+        "title": "HistorySeries",
+        "type": "object"
+      },
       "HistoryStation": {
         "additionalProperties": false,
         "properties": {
@@ -6341,6 +6722,90 @@
         "title": "StationEntrySchema",
         "type": "object"
       },
+      "StationHistoryResponse": {
+        "properties": {
+          "aggregation": {
+            "enum": [
+              "native",
+              "sample_mean"
+            ],
+            "title": "Aggregation",
+            "type": "string"
+          },
+          "curves": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/HistoryCurve"
+            },
+            "title": "Curves",
+            "type": "object"
+          },
+          "derived_basis": {
+            "const": "stored_worker_result",
+            "default": "stored_worker_result",
+            "title": "Derived Basis",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "parameter": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/HistoryResolution"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/HistorySeries"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "unit": {
+            "const": "m\u00b3/s",
+            "default": "m\u00b3/s",
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "start",
+          "end",
+          "generated_at",
+          "resolution",
+          "aggregation",
+          "series",
+          "curves"
+        ],
+        "title": "StationHistoryResponse",
+        "type": "object"
+      },
       "StationObservationQcRuleResponse": {
         "properties": {
           "network": {
@@ -7280,7 +7745,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.12"
+    "version": "2.13"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8611,6 +9076,169 @@
         "summary": "List station forecasts",
         "tags": [
           "Forecasts"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/observation-history": {
+      "get": {
+        "description": "Scoped discharge history over a maximum seven-day [start,end) window. Ordinary and provisional sources remain separate; provisional_rating requires reviewer/admin permission. Hourly values are sample means, not overview last readings. Stored rating results retain frozen provenance and require current source/QC agreement; GET never converts water levels. Resource or evidence failures return 503; responses are no-store.",
+        "operationId": "observation_history_api_v1_stations__station_id__observation_history_get",
+        "parameters": [
+          {
+            "description": "Station UUID returned by the station list, not the provider code.",
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parameter",
+            "required": true,
+            "schema": {
+              "const": "discharge",
+              "title": "Parameter",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "End",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resolution",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/HistoryResolution",
+              "default": "native"
+            }
+          },
+          {
+            "description": "One category per request; omission selects standard. provisional_rating requires reviewer/admin.",
+            "in": "query",
+            "name": "data_use",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "standard",
+                      "provisional_rating"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Data Use"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Provisional purpose requires reviewer or admin."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized internal error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Observation history unavailable."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get native or hourly discharge history",
+        "tags": [
+          "Observations"
         ]
       }
     },

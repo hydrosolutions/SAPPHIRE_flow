@@ -194,9 +194,102 @@ tensor. `no_retained_derived_day` does not prove the model had no input. The
 forecast detail's empty `rating_curves` with `rating_provenance_status: "not_exposed"`
 means that detail does not list curves, not that none were used.
 
-**Not yet deployed in the documented Nepal baseline:** a shared station discharge
-history route for native/hourly rating-derived values. Do not infer it exists from
-the daily forecast-input route. The separate
+### Shared native/hourly discharge history (NOT DEPLOYED)
+
+**Implementation draft; not deployed.** This documents the proposed endpoint in
+the current patch, not the API presently available on the Nepal test server.
+
+The proposed station history route serves agency-provided discharge and provisional
+rating-table discharge. The network overview and existing observations routes are
+unchanged.
+
+```sh
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer ${SAPPHIRE_API_KEY}" \
+  "${API_BASE}/stations/${STATION_ID}/observation-history?parameter=discharge&start=2026-11-09T00:00:00Z&end=2026-11-16T00:00:00Z&resolution=hourly&data_use=standard&data_use=provisional_rating"
+```
+
+Omit `data_use` for ordinary data only. Provisional data requires a reviewer or
+administrator key and the station must be in its tenant/station scope. A consumer
+key can request ordinary data. All responses, including errors, are `no-store`.
+
+`parameter=discharge`, `start` and `end` are required. The half-open interval
+`[start,end)` may cover at most seven days and may not end in the future. Aware
+timestamps are normalized to UTC. `resolution` is `native` (default) or `hourly`.
+Unknown or repeated query parameters are rejected, except distinct repeated
+`data_use=standard` and `data_use=provisional_rating` values. Invalid queries return
+422. Out-of-scope stations return 404; unauthorized provisional requests return 403.
+
+The response includes `station_id`, `parameter`, `unit`, `start`, `end`,
+`generated_at`, `resolution`, `aggregation`, `series` and a `curves` dictionary.
+Each series has a `(source, data_use)` identity: `measured`/`standard`,
+`supplied`/`standard`, or `rating_derived`/`provisional_rating`. Never combine these
+series into one statistical series or silently switch sources. All use the same
+point schema; no aggregate has an invented observation UUID.
+
+Native points retain actual source timestamps. `value`, `minimum` and `maximum`
+are equal for an accepted native point; `sample_count` is one. Held/rejected native
+points have null values, zero accepted samples and an explicit `outcome` and
+`reasons`. No source means an empty native array. No value is filled or carried.
+
+Hourly points report arithmetic **sample means**, minima, maxima and accepted
+sample counts. They are not time-weighted means or the overview's last-reading
+slots. Buckets align to UTC hours, with requested boundary buckets clipped.
+`interval` is `complete_hour`, `clipped_hour` or `unfinished_hour`; an unfinished
+hour remains incomplete in time even when every available result is accepted.
+`completeness` separately describes held/rejected source results. Empty hours have
+null statistics and zero samples. Physical sampling `coverage` is always `unknown`.
+
+The following illustrative array contains field excerpts, not a response body:
+
+```json
+[
+  {"source":"measured","data_use":"standard","availability":"available","completeness":"complete","latest_timestamp":"2026-11-15T23:55:00Z"},
+  {"source":"rating_derived","data_use":"provisional_rating","availability":"available","completeness":"partial","counts":{"source":12,"accepted":10,"rejected":1,"held":1,"rejected_source_qc":1}},
+  {"source":"rating_derived","data_use":"provisional_rating","availability":"no_source","latest_timestamp":null,"points":[]},
+  {"timestamp":"2026-11-15T23:55:00Z","value":null,"outcome":"held","reasons":["source_changed"]}
+]
+```
+
+`no_source` means no visible discharge readings for an ordinary series, or no
+visible source water levels for a derived series. `no_eligible_result` means source
+readings exist but none yield a returned number. `available` requires at least one
+number. Counts describe sources after trust/delivery exclusions, accepted numbers,
+rejected results and held sources. Any held/rejected source makes result
+completeness `partial`. `latest_timestamp` is the latest numeric result, not the
+request time. Use it to identify stale stations; a fresh response does not imply
+fresh observations.
+
+Derived results identify `derived_basis=stored_worker_result`. GET performs no
+conversion. Warnings are retained worker assertions; the API does not independently
+recalculate or certify their scientific meaning. The newest persisted conversion is selected before matching its
+frozen measurement and QC to the live source. A source/QC change yields a held gap;
+the API never falls back to an older successful version. Missing configuration or
+conversion is also a hold. Changed rating settings appear after worker
+reconciliation produces a new result, potentially later if ingestion is paused.
+
+Native `source_qc_status`/`source_assessment` and hourly `source_qc_counts`/
+`source_assessment_counts` describe water-level QC for derived Q; they do not
+certify discharge. Ordinary finite raw, unchecked, suspect
+and passed readings are displayed. The converter's stricter rejection of suspect,
+failed or missing water-level QC is preserved. Numeric acceptance is not approval
+for operational warnings or training.
+
+Points carry unions of `warnings`, `curve_refs`, `policies` and support counts.
+Warning codes include `qc_unassessed`, `rating_expired_at_measurement`,
+`owner_assumed_same_zero_unverified`, `extrapolated_below`, `extrapolated_above`.
+Curve references are frozen content SHA-256 keys in `curves`, whose entries give
+curve ID, version and validity. `stored_at` on native points, and hourly
+`stored_at_min`/`stored_at_max`, are initial storage times, **not last validation
+times**. Raw capture, reference documents and provider details are never returned.
+
+Request at most seven days at a time. Unavailable evidence or a request exceeding
+resource limits returns `503`; the API never truncates the requested history or
+returns an empty success in its place. Try a shorter window where appropriate.
+See the [maintainer reference](../spec/api-v1-review.md#shared-station-discharge-history-map-contract-213)
+for technical limits and rollout qualification. This route remains **not deployed**.
+
+The separate
 [Swiss observation-history route](../spec/api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build)
 is configuration-dependent and disabled by default; it is not a Nepal substitute.
 
@@ -246,7 +339,8 @@ Clients must handle both. Use UUIDs returned by the API instead of guessing them
 
 As checked on **16 November 2026**, the Nepal test deployment runs **v0.1.1136**
 with contract **2.11** behavior, including rating-input history and network overview.
-This documentation's contract **2.12** adds descriptive metadata only; it does not
-announce a new deployed release. Features requiring deployment configuration remain
+Contract **2.12** added descriptive metadata only. This patch's contract **2.13**
+adds the shared discharge-history route, which is **not deployed** on that server.
+It does not announce a new deployed release. Features requiring configuration remain
 conditional. When sharing instructions, link to a documentation commit or tag that
 matches the recipient's server, not automatically to the latest branch.
