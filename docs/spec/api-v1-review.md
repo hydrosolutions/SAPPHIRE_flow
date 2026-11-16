@@ -1,64 +1,48 @@
-# The `/api/v1` interface for review dashboards (Plan 402)
+# API contract maintenance and specialist reference
 
-**Consumer page for the SAPPHIRE-flow-map project** (and any other reviewer
-dashboard). The map reads authenticated `/api/v1` routes, including
-`GET /api/v1/forecast-lab/snapshot` for archived BAFU forecasts and ordinary
-SAPPHIRE comparisons. Its `forecast-lab-snapshot/v2` wire format is unchanged;
-see `docs/spec/forecast-lab-snapshot.md`. It does not replace authoritative
-evaluation selection, QC diagnostics or skill routes.
+For requests and everyday interpretation, use the [API guide](../api/README.md).
+Maintain user-facing semantics there and field details at their existing schema
+sources. This reference owns maintainer rules and specialist contracts; dated
+rollout context is in [implementation history](api-v1-implementation-history.md).
 
-The authoritative shape for the dashboard routes is the committed,
-drift-tested contract: `docs/spec/api-v1-map.openapi.json`
-(`api/map_contract.py::build_map_openapi()`, `tests/unit/api/test_map_contract.py`).
-This page explains conventions the schema alone does not — auth, error
-shape, query conventions, and the QC/skill semantics a reviewer needs to
-interpret what is served.
+The [generated OpenAPI contract](api-v1-map.openapi.json) defines request/response
+structure. `src/sapphire_flow/api/map_contract.py` exports it;
+`tests/unit/api/test_map_contract.py` checks drift and synthetic examples. Public
+interactive API docs remain disabled. Source presence is not deployment or
+scientific acceptance.
 
 ## Versioning (D14)
 
 `docs/spec/api-v1-map.openapi.json`'s `info.version` is a **hand-maintained
 constant** (`api/map_contract.py::MAP_CONTRACT_VERSION`), never the package
-version — start `"1.0"`. An additive change (a new field, route or enum
-member) bumps the **minor** number; any other change bumps the **major**
-number and is announced to the map session **before** deploy. Which kind of
+version. An additive change (a new field, route or enum
+member) or documentation-only metadata bumps the **minor** number; a breaking
+contract change bumps the **major** number and is announced to the map session **before** deploy. Which kind of
 change a given diff is stays a **review judgement**, not machine-checked
 (owner, 2026-09-26); `tools/check_map_contract_version.py` (CI, PR-only)
 mechanically fails a pull request that changes the file without SOME greater
 version. Regenerate with `uv run python tools/generate_map_contract.py`
 after editing routes/schemas or bumping the constant.
 
+Metadata-only version increments do not imply changed runtime behavior.
+[API examples](../api/examples/) are synthetic and schema-validated; link to them
+instead of copying full payloads.
+
 ## Bulk latest observations
 
-`GET /api/v1/observations/latest?parameter=discharge` accepts an authenticated
-consumer, reviewer or admin bearer token. It returns `items`, `total`, `limit`,
-`offset`, `parameter`, `source`, `window_start` and `generated_at`. Each item has
-`station_id`, `code`, `network`, `measured_parameters` and nullable `observation`
-(the existing observation DTO with timestamp, value, source and typed QC flags).
-
-- `observation_hours`: default168, range1–720; the window includes both endpoints.
-- `source`: one ObservationSource value, default `measured`.
-- `limit`: default200, maximum200; `offset`>=0. All scoped stations count, sorted
-  by UUID before pagination, including stations without a visible reading.
-- `parameter` accepts `discharge` and `water_level` (contract 2.4). Invalid/missing query values
-  return FastAPI422 (`detail` list), not the ordinary HTTP error envelope.
-- Null means no visible record in this window. It does not reveal hidden history
-  or assert that the station has never measured this parameter. A latest MISSING
-  record retains its timestamp/QC and null value; failed/raw/unchecked QC is not
-  silently replaced by an older passed reading. Clients derive age from the
-  timestamps and must not label stale or unverified readings as current trusted
-  values. No new unit certification or conversion is implied.
-- Trusted-unit holds and consumer/reviewer delivery restrictions are applied
-  before selection. Admin retains existing delivery visibility. Observation reads
-  follow the existing observation route, not the forecast publication gate.
-- Success, validation, authentication and internal-error responses are `no-store`.
-  Nepal monitoring may request one bounded latest-water-level summary (720 hours),
-  then a six-hour history only for the selected station. This does not authorize
-  fleet history downloads. Historical visibility does not prove ingestion is current.
+See [observations in the guide](../api/README.md#get-observations-and-discharge-history).
+Trusted-unit holds and consumer/reviewer delivery restrictions precede selection;
+admins retain existing delivery visibility. This follows observation visibility,
+not the forecast publication gate. All responses are no-store. Historical access
+does not establish current ingestion or authorize unbounded fleet downloads.
+The `source` filter defaults to `measured`; scoped stations are sorted by UUID
+before pagination. Selection keeps the newest visible record even when its QC is
+failed, raw or unchecked, rather than substituting an older passed reading.
 
 ## Snapshot contract export
 
-Contract 2.3 adds the existing snapshot route, including its bounded observation
-window, repeated station-code filter and error responses. All snapshot responses
+The [forecast-lab snapshot](forecast-lab-snapshot.md) has a bounded observation
+window, repeated station-code filter and declared errors. All snapshot responses
 are `no-store`. Unknown/ineligible/out-of-scope requested codes reject the whole
 request; publication-gated stations return 403, and unavailable ordinary forecast
 reads return 503. Omitting codes selects the eligible scoped fleet; frontend fleet
@@ -72,56 +56,30 @@ from this repository; regenerate it with the command above.
 
 ## Auth
 
-Every route below requires a Bearer access token (`security.md` §
-Authentication). `GET /api/v1/qc/rules` and `GET /api/v1/stations/{id}/skill`
-are **REVIEW-gated** (Plan 401): a `reviewer` or `admin` token only — a
-`consumer` token gets `403`. `GET /api/v1/stations/{id}/rejected-forecasts`
-is **REVIEW_OR_HUMAN-gated** (Plan 404 T3): a `reviewer`/`admin` token OR a
-named human with a current station `review` grant (Plan 341) — a `consumer`
-token still gets `403`; the two principal kinds use different verifiers,
-picked from the bearer's shape, with a single shared `401` body on any
-failure. Every route applies the token's **station scope**: an out-of-scope
-or unknown station/forecast is `404` (never `403`
-— existence is not revealed outside scope); the station **list**
-(`GET /api/v1/stations`) is the one exception — it silently filters to the
-token's scoped stations rather than 404ing. **The raw token must stay
-server-side** in the map's own secret store, never in client-side code.
+See [authentication and roles](../api/README.md#connect-and-make-your-first-request)
+and the [security standard](../standards/security.md). Station/tenant scope checks
+precede protected reads. Out-of-scope and unknown identities are indistinguishable;
+station lists filter to authorized stations. Specialist contracts below specify
+additional reviewer or granted-human requirements. QC rules, skill, Swiss overview,
+Swiss observation history and rating-input history require reviewer/admin bearer
+access. Rejected/evaluation forecasts admit reviewer/admin or a named human with
+current station review grants; consumer keys are refused.
 
 ## Error envelope
 
-`400`/`401`/`403`/`404` all share one JSON body: `{"error": <message>,
-"detail": null}` (`api/errors.py`). FastAPI's own request-validation `422`
-is different and NOT normalised: `{"detail": [...]}` — a list of validation
-errors, one per malformed/missing field.
-
-`GET /api/v1/stations`, `GET /api/v1/stations/{id}/observations`,
-`GET /api/v1/stations/{id}/forecasts`, `GET /api/v1/qc/rules`,
-`GET /api/v1/stations/{id}/skill` and `GET /api/v1/stations/{id}/rejected-forecasts`
-return `400` for a malformed query value
-or `station_id`. **`GET /api/v1/stations/{id}` and `GET /api/v1/forecasts/{id}`
-do not** — their path id is parsed unguarded today and a malformed one
-returns `500`, not `400`. `/qc/rules` (the station variant), `/skill`
-(Plan 402) and `/rejected-forecasts` (Plan 404, reusing the same helper)
-were built with a guarded parse; the two pre-existing detail
-routes were left as they are (out of scope for those plans).
-
-`GET /api/v1/qc/rules?station_id=` additionally returns `500` — in the same
-`{"error": "internal_server_error", "detail": null}` shape — when the
-server's own onboarding configuration is invalid (e.g. a duplicate declared
-per-station threshold block); the deployment variant (no `station_id`)
-still answers `200` in that case, since it never reads the onboarding
-config.
+See the [guide error table](../api/README.md#resolve-common-errors) for ordinary and
+framework envelopes and legacy malformed-ID caveats. Do not standardize errors
+as part of a documentation change. `/qc/rules?station_id=...` can return sanitized
+500 for invalid station onboarding configuration; its deployment variant does
+not read that configuration and can still return 200.
 
 ## Query conventions
 
-Timestamps are ISO-8601; a naive (no offset) value means UTC. `end` is
-**exclusive** where a route takes a `start`/`end` window. The forecast
-list's default window (no `start`/`end` given) is the last 7 days up to
-request time. `parameter` values are the deployment's parameter names
-(`discharge`, `water_level`, …), not aliases. Paginated list routes
-(`/stations`, `/stations/{id}/forecasts`) take `limit`/`offset`, capped at
-`limit<=200`; `/stations/{id}/observations` is unpaginated — every matching
-row in the window is returned.
+See the [guide](../api/README.md#get-forecasts) and generated parameter schemas.
+Ordinary station/forecast pages cap at 200, rejected forecasts at 50; station
+observations are unpaginated. Legacy parsing accepts naive dates as UTC; guide
+examples use explicit offsets.
+Use the deployment's parameter names, not aliases.
 
 ## QC rule sets (`GET /api/v1/qc/rules`)
 
@@ -163,18 +121,10 @@ applied** — this includes a declared block ingest has **rejected or not
 applied**: a pending block (waiting on a not-yet-provisioned network/tenant)
 appears only in ingest's own log (`ingest.qc_threshold_pending`); a rejected
 or not-applicable one also in ingest's pipeline-health record
-(`OBSERVATION_QC_THRESHOLD_CONFIG`) — never in this route's response. The
-station view mirrors **scheduled ingest only**: history checked at
-onboarding used the network thresholds; history checked by a delivery
-import (the six DHM stations, once Plan 268 T7 has run) used their declared
-ceilings — the view's current limits are **not** necessarily the ones
-behind that historical data's flags. Scheduled DHM ingest judges **water
-level only** (touchpoint-maps.md) — for the six DHM stations the station
-view shows the network limits (`station_qc: "not_judged"`) until Plan 300's
-activation follow-on promotes them, and even once operational, scheduled
-ingest there judges water level only — discharge ceilings shown after
-promotion apply to **no scheduled reading**; discharge QC on those stations
-comes only from Plan 268's import until a rating-curve path exists.
+(`OBSERVATION_QC_THRESHOLD_CONFIG`) — never in this route's response. The station
+view describes scheduled ingest now; historical imports and
+onboarding may have used different thresholds. The old activation context is in
+[implementation history](api-v1-implementation-history.md#historical-dhm-qc-activation-context).
 
 A `null` threshold value is a non-finite configured value (TOML `nan`/`inf`),
 never a "no limit" sentinel to compute against.
@@ -209,12 +159,9 @@ compares the row's eval window against its artifact's training period as
 **closed intervals**: fully inside -> `"training_period"`; no shared instant
 -> `"outside_training_period"`; anything else, including an eval window
 starting exactly at `training_period_end` -> `"overlaps_training_period"`.
-Today every active artifact's eval window is inside its training period —
-every served score is in-sample; the map shows these as fit scores and
-ranks nothing. `score: null` means the metric is undefined for that
-stratum (a non-finite stored value), not zero. Empty `rows` is normal — it
-is what the two fallback model tiers (`persistence_fallback`,
-`climatology_fallback`) serve today. Combined (pooled/BMA) forecasts have
+`score: null` means the metric is undefined for that
+stratum (a non-finite stored value), not zero. Empty `rows` is normal: fallback
+tiers may have no skill rows. Combined (pooled/BMA) forecasts have
 **no** skill rows here (their scores carry no single artifact, so the
 selection never serves them). Skill is served for **discharge only**.
 
@@ -228,7 +175,7 @@ artifact of it — the forecast uses the group artifact, but this route's
 skill rows come from the station-scoped one (the two can disagree).
 
 `season` is a plain string, not a closed `Literal` — the deployment
-configures its own season names (`architecture-context.md`); do not
+configures its own season names ([architecture context](../architecture-context.md)); do not
 hardcode a fixed set of seasons in the map.
 
 **Metrics** (`metric` values actually emitted, `services/skill/service.py`),
@@ -250,16 +197,14 @@ noted:
 | `far_danger_<level>` | lower is better | false alarm ratio, 0-1 |
 | `csi_danger_<level>` | higher is better | critical success index, 0-1 |
 
-`docs/architecture-context.md` § S.4 carries the full definitions and
+[Architecture context](../architecture-context.md) § S.4 carries the full definitions and
 interpretation-band literature references (Moriasi et al. 2007) — this
 table is the map's quick-reference, not the source of truth.
 
 ## Observations and forecasts (existing routes, D13's two additive fields)
 
-`GET /api/v1/stations/{id}/observations` and the forecast routes are
-unchanged in shape except two **additive** fields, visible to **every**
-authenticated role including `consumer` (D13 — thresholds are not sensitive,
-and a caller looking at a flagged reading/forecast needs to see why):
+These QC fields are visible within existing scope and publication boundaries
+(Plan 402 D13):
 
 - `ObservationResponse.qc_rule_version` (nullable): the stored value —
   `"1.2"`, `"1.2-datum"`, `"1.2-datum-skip"` and (pre-Plan-324 rows)
@@ -325,7 +270,7 @@ is active for the tenant, a **reviewer** service token's items carry
 other field, including `id`, `model_artifact_id`, `group_id` and
 `qc_status`, is still returned. **Admin** tokens and a **granted human**
 always see the full record (`withheld: false`). Where the gate is not
-active (the Swiss deployment today), reviewer and admin tokens both see
+active (deployment-dependent), reviewer and admin tokens both see
 everything.
 
 Query conventions match the rest of this page: `start`/`end` optional,
@@ -365,12 +310,10 @@ resolved by this plan.
 - `/qc/rules` never proves which thresholds produced a *past* flag — only
   the deployment's/station's **current** resolution.
 
-
 ## Swiss live overview (Phase B)
 
 `GET /api/v1/swiss/overview` is a bearer reviewer/admin read. Human sessions and
-consumer tokens are not accepted. The map OpenAPI contract is
-version 2.7, including the unchanged compact series described below. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
+consumer tokens are not accepted. The payload has `schema_version: 1`. Success, errors, and GET-only CORS
 preflights use `Cache-Control: no-store`.
 
 The route defaults to disabled (503). A reviewed deployment overlay must include
@@ -445,7 +388,7 @@ inferred levels/provenance are null. Unknown never means level 1.
 
 Frontend integration must use visible-tab polling, bypass proxy caches, clear
 live numeric fields on HTTP failure, and preserve the station panel's three-read
-budget. No backend scheduler or cache is added. See `swiss-overview.example.json` for a one-station excerpt from the isolated synthetic
+budget. No backend scheduler or cache is added. See [swiss-overview.example.json](swiss-overview.example.json) for a one-station excerpt from the isolated synthetic
 PostgreSQL/archive response, with station_count reduced to match (not production data). See the schema for exact unions:
 
 ```json
@@ -503,77 +446,37 @@ concurrent history plus overview traffic. Fixture-process peak RSS includes setu
 and process lifetime; it is not request memory and must not be extrapolated
 linearly to fleet caps. Single SQL timings are diagnostics, not p95 evidence.
 
-
 ## Selected operational weather facts (map contract 2.8)
 
-Forecast detail adds optional, nullable `weather_use` with station-scoped past and
-future freshness and source-run facts. Legacy absence stays unknown; this does not
-change publication, visibility, rating lineage, QC or prediction acceptance.
-The new `WeatherSourceRunResponse` component describes source/run pairs. Existing
-`WeatherSourceResponse` and `StationDetail.weather_sources` keep their original
-binding schema and reference. Paths and Swiss observation-history contract 2.7
-behavior remain unchanged. This additive contract version is separate from the
-package release target. Notify the map consumer before operational deployment;
-this change does not authorize deployment or activation.
+See [weather facts in the guide](../api/README.md#get-forecasts).
+Preserve `WeatherSourceRunResponse` for source/run pairs and the distinct
+`WeatherSourceResponse` used by `StationDetail.weather_sources`. Documentation
+metadata must not change component identity. The original additive-change handoff
+is in [history](api-v1-implementation-history.md#operational-weather-contract-28).
 
 ## Provisional forecast reads (map contract 2.9)
 
-The existing station forecast list and forecast detail accept explicit
-`data_use=provisional_rating`; omission/`standard` retain standard bodies and
-publication behavior. This branch requires a REVIEWER or ADMIN service token,
-with existing station/tenant scope. Consumers receive403 before forecast reads.
-A scoped header is authorized before protected lineage/values/weather. Missing,
-out-of-scope or wrong-purpose detail gives the same404; bad required evidence503.
-Superseded records remain200 with their stored status. Provisional publication
-never applies: `publication_applicability=not_applicable`, publication decision
-fields null, no provisional410 or invented withdrawal/replacement relation.
+See [category usage](../api/README.md#get-forecasts). Scoped-header authorization
+precedes protected lineage, values and weather. GET never converts/reconciles or
+falls back to another purpose. Frozen lineage still validates when summary/detail
+do not expose exact curves. Superseded provisional history remains readable.
+All four shared paths, outer errors, redirects and allowed preflights are no-store;
+CORS is unchanged and no raw derived-table grants are implied.
 
-The shared ensemble/quality/QC layouts are unchanged. Provisional records add
-`badge=PROVISIONAL`, persisted rating warnings, `rating_curves=[]` and required
-`rating_provenance_status=not_exposed`. Empty curves means exact versions are not
-listed yet, NOT no curves used or missing lineage; required frozen lineage still
-validates. Exact curve projection and derived-Q observation reads are deferred.
-No conversion/reconciliation occurs in GET; measured WL/Q remain distinct.
-
-Station summary and detail now require nullable `has_provisional_forecast`.
-Reviewer/admin true/false denotes scoped existence of a non-superseded stored
-provisional row; consumer null means not authorized to inspect availability.
-Only authorized page IDs enter one batched query. It is not freshness, quality,
-publication, detail-read health or scientific acceptance. Superseded-only history
-returnsfalse but remains readable. All four paths, errors (including outer500),
-slash redirects and allowed preflights are no-store. CORS policy is unchanged.
-The frontend Worker holds the existing scoped REVIEWER key server-side; the browser
-never receives it. No ADMIN replacement, public response cache or new token is
-required. Canonical deployment and frontend acceptance remain separate gates.
-
-Provisional SQL/decode/fetch failures are translated only at their boundary.
-Unexpected TypeError/KeyError programming faults remain sanitized500. A fixed
-structured diagnostic records only operation/category/whitelisted exception class
-and validated SQLSTATE when available; no raw exception, SQL, IDs or evidence.
-Existing positional Python route callers retain their dependency order; the new
-purpose and reader parameters are keyword-only.
-
-Real bearer-token regression tests assert consumer null and reviewer false for
-standard-only station fixtures, then compare every remaining response field.
-Other principal routes retain their existing whole-response equality checks.
+SQL/decode/fetch failures are translated only at the provisional boundary.
+Unexpected TypeError/KeyError faults remain sanitized 500. Structured diagnostics
+contain only operation/category/whitelisted exception class and validated SQLSTATE,
+never raw exceptions, SQL, IDs or evidence. Regression and compatibility evidence
+is [retained separately](api-v1-implementation-history.md#provisional-read-regression-and-compatibility-evidence).
 
 ## Forecast-specific rating-derived input context (contract2.10)
 
-`GET /api/v1/forecasts/{forecast_id}/rating-input-history` admits only existing
-reviewer/admin principals within their ordinary tenant/station scope. It requires a
-provisional forecast ID; there is no range or purpose query switch. Seven completed
-UTC days are anchored to that forecast's persisted issue date. The response shows
-rating-derived daily discharge used in SAP input assembly, not a final model tensor
-or a reconstruction of measured-discharge days. A missing derived day is labelled
-`no_retained_derived_day`, never “the model had no input”.
-
-Available slots include Q in m3/s, daily support and frozen curve identities/validity.
-Sparse support, unassessed QC, reference assumptions, expiry and actual provisional
-endpoint extrapolation remain visible. The new route does not alter the existing
-provisional summary/detail `rating_provenance_status=not_exposed` fields. Evidence
-failures/limits return503 rather than a current-curve recomputation. All responses,
-outer errors, slash redirects and supported preflight are no-store. This backend
-contract still needs reviewed deployment before any frontend reader can use it.
+See [daily input history](../api/README.md#get-observations-and-discharge-history).
+Preserve frozen-evidence validation, exact curve identity/validity, scoped
+reviewer/admin authorization and seven completed issue-anchored UTC days. Evidence
+failures/limits return 503 rather than current-curve recomputation. Responses,
+outer errors, redirects and preflights are no-store. Existing summary/detail
+`rating_provenance_status` does not change.
 
 History validation reuses an exact frozen curve/reference text pair only within
 one request. The first occurrence is fully traversed; later samples still check
@@ -587,6 +490,9 @@ Existing byte, depth, sample and output limits remain; large unique evidence
 still returns503. Migration0084 adds this optimization;
 it does not change evidence, API authorization, output or public error handling.
 
+Current routing and verification remain in the
+[touchpoint map](../touchpoint-maps.md#forecast-specific-frozen-rating-history).
+
 Known first-cut availability limit: valid owner-assumed reference JSON can contain
 high-precision decimal spellings that the producer rounds to float64. PostgreSQL's
 exact numeric comparison can reject that representation even when the producer
@@ -595,13 +501,9 @@ compatibility limit, not corrupt input. Follow-up must align this narrow compari
 without weakening primary frozen-curve byte identity or parse budgets. Qualified
 fixtures do not establish full21-station or all-history availability.
 
-
 ## Network overview
 
-Map contract2.11 adds `GET /api/v1/networks/{network}/overview` without changing
-older endpoint defaults. The complete observation/forecast, entitlement, compact
-series and private conditional-polling contract is maintained in
-[network-overview.md](network-overview.md). Existing configured thresholds are
-batched into each station; datum metadata retains reviewer/admin-only disclosure.
-Reported-threshold imports remain a separate delivery; this route neither imports
-thresholds nor activates alerts.
+The [overview contract](network-overview.md) owns observation/forecast selection,
+entitlement, compact series and private conditional polling. Configured thresholds
+are batched; datum metadata retains reviewer/admin-only disclosure. Threshold
+imports and alert activation remain separate deliveries.

@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "code": "DEMO-1",
+      "name": "Example River",
+      "location": {
+        "lon": 0.0,
+        "lat": 0.0,
+        "altitude_masl": null
+      },
+      "station_kind": "river",
+      "station_status": "operational",
+      "network": "example",
+      "ownership": "own",
+      "measured_parameters": [
+        "water_level"
+      ],
+      "has_provisional_forecast": true
+    }
+  ],
+  "total": 1,
+  "limit": 200,
+  "offset": 0
+}

@@ -49,6 +49,31 @@ def _load_committed() -> dict[str, Any]:
     return json.loads(_CONTRACT_PATH.read_text())
 
 
+class TestApiGuideExamples:
+    @pytest.mark.parametrize(
+        ("filename", "path"),
+        [
+            ("stations.json", "/api/v1/stations"),
+            ("forecast-standard.json", "/api/v1/forecasts/{forecast_id}"),
+            ("forecast-provisional.json", "/api/v1/forecasts/{forecast_id}"),
+            ("observations.json", "/api/v1/stations/{station_id}/observations"),
+        ],
+    )
+    def test_complete_example_matches_response_contract(
+        self, filename: str, path: str
+    ) -> None:
+        document = _load_committed()
+        schema = document["paths"][path]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+        example = json.loads((_REPO_ROOT / "docs/api/examples" / filename).read_text())
+        jsonschema.validate(
+            instance=example,
+            schema={**schema, "components": document["components"]},
+            format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+        )
+
+
 class TestCommittedContractMatchesGenerated:
     def test_committed_file_equals_generated_document(self) -> None:
         committed = _load_committed()

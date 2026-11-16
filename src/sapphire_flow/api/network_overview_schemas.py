@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, FiniteFloat
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from sapphire_flow.api.schemas import ThresholdResponse
 from sapphire_flow.types.enums import ForecastDataUse, QcStatus
@@ -29,18 +29,37 @@ class ObservationSampleResponse(OverviewSchema):
 
 
 class ObservationSlotResponse(OverviewSchema):
-    end: datetime
+    end: datetime = Field(
+        description=(
+            "UTC window end. Hourly slots select the last "
+            "eligible reading in (end - 1 hour, end]."
+        )
+    )
     availability: ObservationAvailability
-    sample: ObservationSampleResponse | None
+    sample: ObservationSampleResponse | None = Field(
+        description=(
+            "Eligible reading for this slot, or null; null never means zero discharge."
+        )
+    )
 
 
 class OverviewObservationResponse(OverviewSchema):
     parameter: Literal["water_level", "discharge"]
     unit: Literal["m", "m³/s"]
-    latest: ObservationSlotResponse
+    latest: ObservationSlotResponse = Field(
+        description=(
+            "Latest eligible reading within the independent seven-day lookback window."
+        )
+    )
     latest_failed_at: datetime | None
     newer_failed: bool | None
-    hourly: tuple[ObservationSlotResponse, ...]
+    hourly: tuple[ObservationSlotResponse, ...] = Field(
+        description=(
+            "72 completed UTC hourly slots, oldest first; "
+            "values are last eligible readings, not hourly "
+            "means."
+        )
+    )
 
 
 class ForecastPointResponse(OverviewSchema):
@@ -62,7 +81,14 @@ class OverviewForecastResponse(OverviewSchema):
     availability: (
         Literal["no_forecast", "withheld_or_ineligible"] | OverviewAvailability
     )
-    freshness: OverviewFreshness = OverviewFreshness.UNKNOWN
+    freshness: OverviewFreshness = Field(
+        default=OverviewFreshness.UNKNOWN,
+        description=(
+            "Timeliness under the configured issuance policy; "
+            "unknown means no applicable assessment. Separate "
+            "from input quality."
+        ),
+    )
     forecast_id: str | None = None
     unit: str | None = None
     issued_at: datetime | None = None
@@ -72,12 +98,24 @@ class OverviewForecastResponse(OverviewSchema):
     delivery_deadline: datetime | None = None
     qc_status: QcStatus | None = None
     input_quality: str | None = None
-    input_quality_codes: tuple[str, ...] = ()
+    input_quality_codes: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Input-quality category:level pairs; retrieve "
+            "detail for full flag messages."
+        ),
+    )
     provisional: Literal["provisional", "standard"]
     peak: ForecastPointResponse | None = None
     support_start: datetime | None = None
     support_end: datetime | None = None
-    series: tuple[ForecastPointResponse, ...] = ()
+    series: tuple[ForecastPointResponse, ...] = Field(
+        default=(),
+        description=(
+            "Compact original forecast points, not a resampled "
+            "or interpolated full ensemble."
+        ),
+    )
     gaps: tuple[ForecastGapResponse, ...] = ()
     original_point_count: int = 0
     returned_point_count: int = 0
@@ -86,7 +124,14 @@ class OverviewForecastResponse(OverviewSchema):
     )
     quartile_method: QuartileMethod | None = None
     band_availability: Literal["available", "unavailable"] | None = None
-    detail_url: str | None = None
+    detail_url: str | None = Field(
+        default=None,
+        description=(
+            "Relative URL for this forecast including its "
+            "data-use category; use unchanged for detail "
+            "retrieval."
+        ),
+    )
 
 
 class DisclosedWaterLevelDatumResponse(OverviewSchema):
@@ -118,7 +163,13 @@ class OverviewStationResponse(OverviewSchema):
 
 class NetworkOverviewResponse(OverviewSchema):
     schema_version: Literal["1.0"] = "1.0"
-    generated_at: datetime
+    generated_at: datetime = Field(
+        description=(
+            "Generation time of this response body, not source "
+            "freshness. A 304 retains the earlier body and "
+            "timestamp."
+        )
+    )
     latest_lookback_seconds: Literal[604800] = 604800
     forecast_lookback_seconds: Literal[604800] = 604800
     hourly_end: datetime
