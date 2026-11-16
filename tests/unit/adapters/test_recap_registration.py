@@ -252,6 +252,41 @@ def test_encoded_secret_echoes_redacted_before_truncation() -> None:
         assert form not in receipt.message + receipt.detail + str(receipt.warnings)
 
 
+def _upload_with_warnings(warnings: object) -> str | None:
+    def transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"message": "Uploaded", "detail": "Stored", "warnings": warnings}
+        )
+
+    adapter = RecapRegistration(
+        config(), api_key=KEY, transport=httpx.MockTransport(transport)
+    )
+    try:
+        return adapter.upload(hru_code="new_synthetic", content=b"x").warnings
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("warnings", [[], "", None])
+def test_empty_warnings_become_none(warnings: object) -> None:
+    assert _upload_with_warnings(warnings) is None
+
+
+def test_warnings_list_is_joined() -> None:
+    assert _upload_with_warnings(["first", "second"]) == "first; second"
+
+
+def test_warnings_string_still_accepted() -> None:
+    assert _upload_with_warnings("just one") == "just one"
+
+
+def test_warnings_list_echoing_key_is_redacted() -> None:
+    joined = _upload_with_warnings(["ok", f"bad key {KEY}"])
+    assert joined is not None
+    assert KEY not in joined
+    assert joined.startswith("ok; bad key ")
+
+
 @pytest.mark.parametrize("method", ["POST", "PUT"])
 @pytest.mark.parametrize(
     "status,reason",

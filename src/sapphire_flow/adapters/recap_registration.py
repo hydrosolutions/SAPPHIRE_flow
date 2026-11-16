@@ -82,7 +82,7 @@ def safe_gateway_failure(exc: Exception) -> GatewayAccessError:
 class _UploadResponse(BaseModel):
     message: StrictStr
     detail: StrictStr
-    warnings: StrictStr | None = None
+    warnings: list[StrictStr] | StrictStr | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -163,12 +163,15 @@ class RecapRegistration:
                     failure = GatewayFailure.UNCERTAIN
                 else:
                     body = _UploadResponse.model_validate_json(response.content)
+                    warnings = (
+                        "; ".join(body.warnings)
+                        if isinstance(body.warnings, list)
+                        else body.warnings
+                    )
                     receipt = UploadReceipt(
                         message=_safe_text(body.message, self._key),
                         detail=_safe_text(body.detail, self._key),
-                        warnings=_safe_text(body.warnings, self._key)
-                        if body.warnings
-                        else None,
+                        warnings=_safe_text(warnings, self._key) if warnings else None,
                     )
             except (ValidationError, ValueError):
                 failure = GatewayFailure.MALFORMED
