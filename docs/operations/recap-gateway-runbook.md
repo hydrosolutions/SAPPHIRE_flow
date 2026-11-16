@@ -74,7 +74,8 @@ repository, so everything you need is repeated here.
 | 2 | Open the Gateway site, `recap.ieasyhydro.org`, and find the job **`era5_land_backfill__targeted`**. | The job is open. |
 | 3 | Start one run with **Trigger DAG w/ config** and fill the fields below. This is a single manual run, not a backfill of other basins. | The run appears in the dashboard. |
 | 4 | Note the run's identifier as the dashboard shows it, then record it: `history --stream era5_history --actor "$ACTOR" --job-reference "<identifier>"`. | The tool lists the job reference. |
-| 5 | Wait until the run shows as finished, then run `resume` (step 6). | `resume` reports coverage or says what is missing. |
+| 5 | **Backfill the last 7 days of IFS forecasts** (see "IFS backfill" below). Without it the new basin has no forecast data for about a week. | The forecast job has re-processed the last 7 days. |
+| 6 | Wait until both runs show as finished, then run `resume` (step 6 of the checklist). | `resume` reports coverage or says what is missing. |
 
 Fields for the run (use the values `history` printed; these are examples):
 
@@ -84,12 +85,30 @@ Fields for the run (use the values `history` printed; these are examples):
 | `year_start`, `year_end` | `2022`, `2026` | Whole calendar years. The run fills more than the window; coverage still checks only your agreed window. |
 | `variables` | `2m_temperature`, `total_precipitation` | Select them explicitly, never "all". Use only the variables the model needs. |
 
+**IFS backfill.** Forecast runs that finished before your basin existed do not include it. To
+get forecasts for the new basin now, the last 7 days of the forecast job must be
+re-processed:
+
+1. In the Gateway dashboard open the job **`ifs__subdaily`** (the ECMWF IFS forecast; it covers
+   all four daily cycles, 00, 06, 12 and 18 UTC).
+2. Click **Trigger**, switch to the **Backfill** tab, set the date range to the **last 7
+   days**, choose to **re-process existing runs**, and start it.
+3. One backfill covers every subscribed variable and basin. Do not run it once per variable.
+   The Gateway guide says repeating it is safe: it overwrites the same outputs.
+
+This is the only **shared** action in this checklist: it re-processes runs for every basin
+subscribed to `ifs__subdaily`, not just yours. So the **owner or the Gateway admin** starts
+it, not the station admin alone. Before starting, check which basins are subscribed, ask the
+Gateway admin which outputs in the 7-day window will be overwritten, and agree a time with
+the owners of any other deployment that uses the Gateway. If that is not confirmed, stop.
+The narrowest range that covers the forecast cycle named in your scope is enough.
+
 Good to know:
 
 - The agreed window ends at least **8 days before today**: the weather history trails the
   present by 7 to 8 days (measured on the Gateway, Oct to Nov 2026). Fetching dates past
   that edge fails with "No ERA5 dataset found", so `resume` would hold those days.
-- Do **not** start the shared `ifs__subdaily` job or any automatic refresh here.
+- Do not start any other shared refresh, and do not start the IFS backfill without the owner's or the Gateway admin's go-ahead (see above).
 - A job reference only says you started a run. It does not prove the data arrived; `resume`
   does.
 - Snow history needs a procedure from the Gateway team; there is no snow job described here.
@@ -100,7 +119,7 @@ Good to know:
 - On a timeout or unclear response: stop. Do not rename or retry the upload.
 - The API key goes only in the key file, never on the command line.
 - Use one workspace on one host; never copy it or start a second one to get past a hold.
-- Do not start shared IFS refreshes here.
+- The IFS backfill is the only shared action; the owner or Gateway admin starts it (see Step 5 in detail). No other shared refresh here.
 - Eligible means Gateway coverage only. It does not authorize training or activation.
 
 ### If it stops
@@ -124,8 +143,9 @@ holds; fixtures do not establish live coverage or Vatro approval.
 including upload outcome/identity evidence, write/flag semantics, native temporal
 support and snow procedure where needed. The owner already authorized the new
 Trishuli upload and data fetches. Do not request repeat authority for those actions.
-Subscription scope still needs exact operator confirmation. Shared IFS refreshes,
-existing registrations and deployment remain outside this route.
+Subscription scope still needs exact operator confirmation. The 7-day IFS backfill needs
+the owner's or Gateway admin's go-ahead (Step 5 in detail). Existing registrations and
+deployment remain outside this route.
 
 Use the approved **research** Trishuli handover, text code `00001`, not the pending
 automatic extraction. A fresh HRU name is a proposal until supported evidence ties
@@ -215,8 +235,10 @@ Gateway coverage passes. Exit `0` means this Gateway scope passed, not model rea
    uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" history --stream era5_history --actor "$ACTOR" --job-reference "$JOB_REFERENCE"
    ```
 
-   Do not start shared `ifs__subdaily` here. Missing IFS remains held unless it
-   arrives normally; shared refresh/backfill needs separate owner coordination.
+   The shared `ifs__subdaily` 7-day backfill is the one way to get forecasts for a
+   basin that did not exist when the recent runs were produced. It needs the owner's or
+   Gateway admin's go-ahead (see "Step 5 in detail" above). Any other shared refresh stays
+   outside this route. Missing IFS remains held until it arrives or is backfilled.
 6. Resume actual retrieval over the **whole agreed scope**. Historical requests
    use at most 31 days, reuse only complete unchanged chunks, and retry incomplete
    chunks. Forecast evidence refreshes on each resume. Each requested member and
