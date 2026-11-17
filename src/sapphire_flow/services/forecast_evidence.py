@@ -29,6 +29,7 @@ from sapphire_flow.config.operational_weather import (
 )
 from sapphire_flow.exceptions import ConfigurationError, WeatherEvidenceCaptureError
 from sapphire_flow.services.ensemble_fanout import prediction_member_inputs
+from sapphire_flow.store.weather_period_wire import period_use_wire
 from sapphire_flow.types.forecast_evidence import (
     EvidenceStatus,
     ForecastEvidence,
@@ -36,6 +37,12 @@ from sapphire_flow.types.forecast_evidence import (
     incomplete_evidence,
 )
 from sapphire_flow.types.operational_weather import FutureWeatherUse, WeatherUse
+from sapphire_flow.types.operational_weather_v2 import (
+    ContributingWeatherUseV2,
+    DerivedWeatherUseV2,
+    FutureWeatherUseV2,
+    WeatherUseV2,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.config.deployment import DeploymentConfig
@@ -63,6 +70,8 @@ def _dependency_versions() -> dict[str, str]:
 
 
 def _plain(value: Any) -> Any:
+    if isinstance(value, (WeatherUseV2, DerivedWeatherUseV2)):
+        return period_use_wire(value)
     if isinstance(value, pl.DataFrame):
         return {"polars_ipc_base64": _frame_bytes(value)}
     if isinstance(value, BaseModel):
@@ -128,7 +137,7 @@ def _evidence(
     *,
     artifact_bytes: bytes | None,
     missing_reason: str | None = None,
-    weather_evidence_version: Literal[1] | None = None,
+    weather_evidence_version: Literal[1, 2] | None = None,
     max_snapshot_bytes: int | None = None,
 ) -> ForecastEvidence:
     if max_snapshot_bytes is None:
@@ -207,7 +216,7 @@ def _evidence(
 def _require_selected_source(
     source: StationSourceEvidence | None, station_id: StationId, issue_time: UtcDatetime
 ) -> None:
-    if source is None or not isinstance(source.weather_use, WeatherUse):
+    if source is None or not isinstance(source.weather_use, (WeatherUse, WeatherUseV2)):
         raise WeatherEvidenceCaptureError(
             "selected forecast requires complete as-used weather evidence"
         )
@@ -219,7 +228,7 @@ def _require_selected_source(
             "selected weather cannot claim historical or tail-fill lineage"
         )
     ids = tuple(row.id for row in source.future_weather)
-    if isinstance(use.future, FutureWeatherUse):
+    if isinstance(use.future, (FutureWeatherUse, FutureWeatherUseV2)):
         if ids != use.future.consumed_record_ids:
             raise WeatherEvidenceCaptureError(
                 "selected future evidence does not match consumed archive records"
@@ -228,6 +237,18 @@ def _require_selected_source(
         raise WeatherEvidenceCaptureError(
             "unused future weather cannot carry archive records"
         )
+
+
+def _weather_marker(sources: list[StationSourceEvidence | None]) -> Literal[1, 2]:
+    uses = [source.weather_use for source in sources if source is not None]
+    versions = {2 if isinstance(use, WeatherUseV2) else 1 for use in uses}
+    if len(versions) != 1:
+        raise WeatherEvidenceCaptureError("selected weather evidence versions differ")
+    if versions == {2}:
+        if len({use.grid for use in uses if isinstance(use, WeatherUseV2)}) != 1:
+            raise WeatherEvidenceCaptureError("selected group weather grids differ")
+        return 2
+    return 1
 
 
 def capture_station_evidence(
@@ -328,7 +349,9 @@ def capture_station_evidence(
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,
-            weather_evidence_version=1 if selected else None,
+            weather_evidence_version=_weather_marker([inputs.source_evidence])
+            if selected
+            else None,
             max_snapshot_bytes=config.operational_weather.max_evidence_bytes
             if selected
             else None,
@@ -425,7 +448,11 @@ def capture_group_evidence(
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,
-            weather_evidence_version=1 if selected else None,
+            weather_evidence_version=_weather_marker(
+                [source for _, source in inputs.source_evidence]
+            )
+            if selected
+            else None,
             max_snapshot_bytes=config.operational_weather.max_evidence_bytes
             if selected
             else None,
@@ -452,7 +479,12 @@ def capture_combined_evidence(
     water_level_datum_masl: float | None,
     bma_sampling_counts: dict[ModelId, int] | None = None,
 ) -> ForecastEvidence:
-    selected = any(fc.weather_evidence_version == 1 for fc in contributors)
+    selected = any(fc.weather_evidence_version in (1, 2) for fc in contributors)
+    versions = {fc.weather_evidence_version for fc in contributors}
+    if 2 in versions and versions != {2}:
+        raise ConfigurationError(
+            "v2 combined weather requires uniform contributor versions"
+        )
     derived = None
     if selected:
         from sapphire_flow.services.selected_weather_evidence import (
@@ -463,10 +495,10 @@ def capture_combined_evidence(
             DerivedWeatherUse,
         )
 
-        facts: list[ContributingWeatherUse] = []
+        facts: list[ContributingWeatherUse | ContributingWeatherUseV2] = []
         for fc in contributors:
             use = None
-            if fc.weather_evidence_version == 1:
+            if fc.weather_evidence_version in (1, 2):
                 if fc.evidence is None:
                     raise ConfigurationError("selected contributor evidence missing")
                 use = restore_selected_weather(
@@ -474,12 +506,20 @@ def capture_combined_evidence(
                     model_id=fc.model_id,
                     issue_time=fc.issued_at,
                 ).get(fc.station_id)
-                if not isinstance(use, WeatherUse):
+                if not isinstance(use, (WeatherUse, WeatherUseV2)):
                     raise ConfigurationError(
                         "selected contributor weather fact unavailable"
                     )
             facts.append(
-                ContributingWeatherUse(
+                ContributingWeatherUseV2(
+                    forecast_id=fc.id,
+                    evidence_sha256=fc.evidence.snapshot_sha256
+                    if fc.evidence
+                    else None,
+                    weather_use=use,
+                )
+                if isinstance(use, WeatherUseV2)
+                else ContributingWeatherUse(
                     forecast_id=fc.id,
                     evidence_sha256=fc.evidence.snapshot_sha256
                     if fc.evidence
@@ -489,11 +529,22 @@ def capture_combined_evidence(
             )
         if len({(fc.station_id, fc.issued_at) for fc in contributors}) != 1:
             raise ConfigurationError("combined weather contributor scope mismatch")
-        derived = DerivedWeatherUse(
-            station_id=contributors[0].station_id,
-            issue_time=contributors[0].issued_at,
-            contributors=tuple(facts),
-        )
+        if versions == {2}:
+            period_facts = cast("tuple[ContributingWeatherUseV2, ...]", tuple(facts))
+            first_use = period_facts[0].weather_use
+            assert first_use is not None
+            derived = DerivedWeatherUseV2(
+                grid=first_use.grid,
+                station_id=contributors[0].station_id,
+                issue_time=contributors[0].issued_at,
+                contributors=period_facts,
+            )
+        else:
+            derived = DerivedWeatherUse(
+                station_id=contributors[0].station_id,
+                issue_time=contributors[0].issued_at,
+                contributors=cast("tuple[ContributingWeatherUse, ...]", tuple(facts)),
+            )
     try:
         payload: dict[str, object] = {
             "schema_version": 1,
@@ -551,7 +602,9 @@ def capture_combined_evidence(
             payload,
             artifact_bytes=None,
             missing_reason="contributor_evidence_incomplete" if missing else None,
-            weather_evidence_version=1 if selected else None,
+            weather_evidence_version=(2 if versions == {2} else 1)
+            if selected
+            else None,
             max_snapshot_bytes=MAX_SELECTED_WEATHER_EVIDENCE_BYTES
             if selected
             else None,

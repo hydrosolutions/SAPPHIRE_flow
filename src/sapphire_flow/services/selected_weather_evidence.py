@@ -12,7 +12,8 @@ import structlog
 from pydantic import TypeAdapter
 
 from sapphire_flow.config.operational_weather import MAX_SELECTED_WEATHER_EVIDENCE_BYTES
-from sapphire_flow.exceptions import WeatherEvidenceCaptureError
+from sapphire_flow.exceptions import ConfigurationError, WeatherEvidenceCaptureError
+from sapphire_flow.store.weather_period_wire import DERIVED_V2, USE_V2, load_period_wire
 from sapphire_flow.types.datetime import UtcDatetime
 from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.ids import ForecastId, StationId
@@ -21,9 +22,14 @@ from sapphire_flow.types.operational_weather import (
     FutureWeatherUse,
     WeatherUse,
 )
+from sapphire_flow.types.operational_weather_v2 import (
+    DerivedWeatherUseV2,
+    FutureWeatherUseV2,
+    WeatherUseV2,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from zoneinfo import ZoneInfo
 
     from sapphire_flow.types.forecast import OperationalForecast
@@ -71,14 +77,14 @@ def selected_weather_issuance_refusal(
     max_age_hours: float,
     automatic_issue_timezone: ZoneInfo | None = None,
 ) -> SelectedWeatherIssuanceRefusal | None:
-    if source is None or not isinstance(source.weather_use, WeatherUse):
+    if source is None or not isinstance(source.weather_use, (WeatherUse, WeatherUseV2)):
         raise WeatherEvidenceCaptureError("selected weather assembly facts missing")
     use = source.weather_use
     if use.issue_time != issue_time:
         raise WeatherEvidenceCaptureError("selected weather issue mismatch")
     cycle = (
         use.future.receipt.cycle_time
-        if isinstance(use.future, FutureWeatherUse)
+        if isinstance(use.future, (FutureWeatherUse, FutureWeatherUseV2))
         else None
     )
     refusal = None
@@ -88,7 +94,13 @@ def selected_weather_issuance_refusal(
     ):
         refusal = SelectedWeatherIssuanceRefusal.ISSUE_DAY_MISMATCH
     elif cycle is not None and (
-        cycle > min(at, issue_time) or at - cycle > timedelta(hours=max_age_hours)
+        cycle
+        > min(
+            at,
+            issue_time,
+            use.eligibility_cutoff if isinstance(use, WeatherUseV2) else issue_time,
+        )
+        or at - cycle > timedelta(hours=max_age_hours)
     ):
         refusal = SelectedWeatherIssuanceRefusal.WEATHER_EXPIRED
     if refusal is not None:
@@ -105,6 +117,20 @@ def selected_weather_issuance_refusal(
             reason=refusal.value,
         )
     return refusal
+
+
+def require_common_weather_cycle(
+    uses: Iterable[WeatherUse | WeatherUseV2 | None],
+) -> UtcDatetime | None:
+    cycles = {
+        use.future.receipt.cycle_time
+        for use in uses
+        if use is not None
+        and isinstance(use.future, (FutureWeatherUse, FutureWeatherUseV2))
+    }
+    if len(cycles) > 1:
+        raise ConfigurationError("selected group weather cannot mix source cycles")
+    return next(iter(cycles), None)
 
 
 def _object(raw: object) -> dict[str, object]:
@@ -140,8 +166,10 @@ def restore_selected_weather(
     model_id: ModelId,
     issue_time: UtcDatetime,
     max_bytes: int = MAX_WEATHER_EVIDENCE_BYTES,
-    expected: Mapping[StationId, WeatherUse] | None = None,
-) -> dict[StationId, WeatherUse | DerivedWeatherUse]:
+    expected: Mapping[StationId, WeatherUse | WeatherUseV2] | None = None,
+) -> dict[
+    StationId, WeatherUse | DerivedWeatherUse | WeatherUseV2 | DerivedWeatherUseV2
+]:
     try:
         snapshot = evidence.snapshot
         if (
@@ -152,11 +180,15 @@ def restore_selected_weather(
         manifest = _object(json.loads(evidence.manifest_json))
         if (
             type(manifest.get("weather_evidence_version")) is not int
-            or manifest["weather_evidence_version"] != 1
+            or manifest["weather_evidence_version"] not in (1, 2)
             or manifest.get("model_id") != str(model_id)
             or manifest.get("snapshot_sha256") != evidence.snapshot_sha256
         ):
             raise ValueError("selected weather manifest mismatch")
+        version = manifest["weather_evidence_version"]
+        marker = getattr(evidence, "weather_evidence_version", version)
+        if marker != version:
+            raise ValueError("selected weather evidence marker mismatch")
         payload = restore_bounded_weather_snapshot(snapshot, max_bytes=max_bytes)
         if payload.get("model_id") != str(model_id) or payload.get(
             "kind"
@@ -165,10 +197,14 @@ def restore_selected_weather(
         if payload.get("issue_time") != issue_time.isoformat():
             raise ValueError("selected weather issue time mismatch")
         if payload["kind"] == "combined":
-            derived = _DERIVED.validate_json(
-                json.dumps(payload.get("weather_use"), allow_nan=False),
-                strict=True,
-                extra="forbid",
+            derived = (
+                load_period_wire(DERIVED_V2, payload.get("weather_use"))
+                if version == 2
+                else _DERIVED.validate_json(
+                    json.dumps(payload.get("weather_use"), allow_nan=False),
+                    strict=True,
+                    extra="forbid",
+                )
             )
             if (
                 derived.issue_time != issue_time
@@ -208,13 +244,17 @@ def restore_selected_weather(
             raise ValueError("selected weather station scope mismatch")
         if manifest.get("weather_station_ids") != sorted(sources):
             raise ValueError("selected weather manifest station scope mismatch")
-        uses: dict[StationId, WeatherUse] = {}
+        uses: dict[StationId, WeatherUse | WeatherUseV2] = {}
         for sid, raw_source in sources.items():
             source = _object(raw_source)
-            use = _WEATHER_USE.validate_json(
-                json.dumps(source.get("weather_use"), allow_nan=False),
-                strict=True,
-                extra="forbid",
+            use = (
+                load_period_wire(USE_V2, source.get("weather_use"))
+                if version == 2
+                else _WEATHER_USE.validate_json(
+                    json.dumps(source.get("weather_use"), allow_nan=False),
+                    strict=True,
+                    extra="forbid",
+                )
             )
             if str(use.station_id) != sid or use.issue_time != issue_time:
                 raise ValueError("selected weather use identity mismatch")
@@ -227,7 +267,7 @@ def restore_selected_weather(
             record_ids = tuple(_object(row).get("id") for row in future)
             expected_ids = (
                 tuple(str(value) for value in use.future.consumed_record_ids)
-                if isinstance(use.future, FutureWeatherUse)
+                if isinstance(use.future, (FutureWeatherUse, FutureWeatherUseV2))
                 else ()
             )
             if record_ids != expected_ids:
@@ -235,6 +275,14 @@ def restore_selected_weather(
                     "selected weather consumed archive identities mismatch"
                 )
             uses[use.station_id] = use
+        if (
+            version == 2
+            and len(
+                {use.grid for use in uses.values() if isinstance(use, WeatherUseV2)}
+            )
+            != 1
+        ):
+            raise ValueError("selected group weather grids differ")
         if expected is not None and uses != dict(expected):
             raise ValueError("selected weather differs from immutable assembly facts")
         return dict(uses)
@@ -252,12 +300,15 @@ def validate_selected_capture(
     issue_time: UtcDatetime,
     max_bytes: int,
 ) -> None:
-    expected: dict[StationId, WeatherUse] = {}
+    expected: dict[StationId, WeatherUse | WeatherUseV2] = {}
     for station_id, source in sources.items():
-        if source is None or not isinstance(source.weather_use, WeatherUse):
+        if source is None or not isinstance(
+            source.weather_use, (WeatherUse, WeatherUseV2)
+        ):
             raise WeatherEvidenceCaptureError("selected weather assembly facts missing")
         expected[station_id] = source.weather_use
-    if evidence.weather_evidence_version != 1:
+    versions = {2 if isinstance(use, WeatherUseV2) else 1 for use in expected.values()}
+    if len(versions) != 1 or evidence.weather_evidence_version not in versions:
         raise WeatherEvidenceCaptureError("selected weather evidence marker missing")
     restore_selected_weather(
         evidence,
@@ -270,8 +321,11 @@ def validate_selected_capture(
 
 def validate_selected_forecast(forecast: OperationalForecast) -> None:
     evidence = forecast.evidence
-    if forecast.weather_evidence_version == 1:
-        if evidence is None or evidence.weather_evidence_version != 1:
+    if forecast.weather_evidence_version in (1, 2):
+        if (
+            evidence is None
+            or evidence.weather_evidence_version != forecast.weather_evidence_version
+        ):
             raise WeatherEvidenceCaptureError(
                 "selected forecast requires matching weather evidence"
             )

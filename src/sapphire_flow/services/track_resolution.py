@@ -58,6 +58,11 @@ if TYPE_CHECKING:
         FutureWeatherReceipt,
         FutureWeatherScope,
     )
+    from sapphire_flow.types.operational_weather_v2 import (
+        FutureWeatherReceiptV2,
+        FutureWeatherScopeV2,
+    )
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import WeatherForecastRecord, WeatherForecastResult
 
 log = structlog.get_logger(__name__)
@@ -99,6 +104,9 @@ def _station_complete(
     expected_member_ids: frozenset[int],
     issue_time: UtcDatetime,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    grid: TimeGrid | None = None,
+    first_period_start: UtcDatetime | None = None,
+    eligibility_cutoff: UtcDatetime | None = None,
 ) -> bool:
     """D8.1: per-station raw completeness. For every feature in the track,
     this station's series must reach ``fetch_horizons[f]`` steps (counted in
@@ -131,7 +139,26 @@ def _station_complete(
     """
     for feature, horizon in track_request.fetch_horizons.items():
         feature_records = [r for r in records if r.parameter == feature]
-        if weather_policy is FutureWeatherPolicy.RECAP_COMPLETE_DAILY:
+        if grid is not None:
+            from sapphire_flow.services.recap_daily_weather import (
+                recap_complete_period_records,
+            )
+
+            assert first_period_start is not None and eligibility_cutoff is not None
+            if (
+                frozenset(record.member_id for record in feature_records)
+                != expected_member_ids
+            ):
+                return False
+            feature_records = recap_complete_period_records(
+                feature_records,
+                first_period_start=first_period_start,
+                cycle_ceiling=eligibility_cutoff,
+                grid=grid,
+                feature_horizons={str(feature): horizon.value},
+                ensemble_mode=track_request.key.ensemble_mode,
+            )
+        elif weather_policy is FutureWeatherPolicy.RECAP_COMPLETE_DAILY:
             from sapphire_flow.services.recap_daily_weather import (
                 recap_complete_daily_records,
             )
@@ -161,11 +188,21 @@ def _station_complete(
                 feature_horizons={str(feature): horizon.value},
                 ensemble_mode=track_request.key.ensemble_mode,
             )
-        times_by_key = reduced_daily_step_times(
-            feature_records,
-            time_step=track_request.key.time_step,
-            issue_time=issue_time,
-        )
+        if grid is None:
+            times_by_key = reduced_daily_step_times(
+                feature_records,
+                time_step=track_request.key.time_step,
+                issue_time=issue_time,
+            )
+        else:
+            times_by_key = {
+                (str(feature), member): frozenset(
+                    grid.floor(row.valid_time)
+                    for row in feature_records
+                    if row.member_id == member
+                )
+                for member in expected_member_ids
+            }
         # A fetched track's member axis is never `None` -- `member_id=None`
         # belongs to the separate deterministic snow channel
         # (`SnowForecastSource`), which never flows through
@@ -224,6 +261,9 @@ def resolve_candidate(
     id_gen: Callable[[], UUID],
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
     earliest_cycle: UtcDatetime | None = None,
+    grid: TimeGrid | None = None,
+    first_period_start: UtcDatetime | None = None,
+    eligibility_cutoff: UtcDatetime | None = None,
 ) -> AcceptedCandidate | None:
     """Pure fetch/validate half — NO store I/O (D7). Walks back from the
     cadence-floored ``nominal_now``, calling ``fetch_candidate`` per
@@ -255,6 +295,26 @@ def resolve_candidate(
             "expected_member_ids must be non-empty (source-derived member "
             f"identity) for track {sorted(track_request.key.features)}"
         )
+    if grid is not None:
+        from sapphire_flow.types.operational_weather import require_daily_grid_boundary
+        from sapphire_flow.types.operational_weather_v2 import require_context
+
+        if first_period_start is None or eligibility_cutoff is None:
+            raise ValueError(
+                "period candidate selection requires explicit start and cutoff"
+            )
+        require_context(grid, issue_time, eligibility_cutoff)
+        require_daily_grid_boundary(first_period_start, grid)
+        if (
+            weather_policy is not FutureWeatherPolicy.RECAP_COMPLETE_DAILY
+            or track_request.key.time_step != grid.step
+        ):
+            raise ValueError(
+                "period candidate selection requires qualified Recap support"
+            )
+        nominal_now = min(nominal_now, eligibility_cutoff)
+    elif first_period_start is not None or eligibility_cutoff is not None:
+        raise ValueError("period bounds require an explicit grid")
     candidate_cycle = _floor_to_cadence(nominal_now, cycle_cadence_hours)
     nominal_candidate = candidate_cycle
     steps = int(max_cycle_age_hours // cycle_cadence_hours) + 1
@@ -289,6 +349,9 @@ def resolve_candidate(
                     expected_member_ids=expected_member_ids,
                     issue_time=issue_time,
                     weather_policy=weather_policy,
+                    grid=grid,
+                    first_period_start=first_period_start,
+                    eligibility_cutoff=eligibility_cutoff,
                 ):
                     complete[station_id] = records
                 else:
@@ -344,7 +407,10 @@ def commit_track(
     weather_forecast_store: WeatherForecastStore,
     nwp_source: str,
     track_features: frozenset[str],
-    receipt_scopes: Mapping[StationId, tuple[FutureWeatherScope, ...]] | None = None,
+    receipt_scopes: Mapping[
+        StationId, tuple[FutureWeatherScope | FutureWeatherScopeV2, ...]
+    ]
+    | None = None,
     receipt_validated_at: UtcDatetime | None = None,
 ) -> TrackFetchResult:
     """Serial convergence half (D7): persist ONLY complete stations' rows,
@@ -373,7 +439,7 @@ def commit_track(
         raise WeatherProofError(
             "selected track requires explicit proof scopes and time"
         )
-    receipts: list[FutureWeatherReceipt] = []
+    receipts: list[FutureWeatherReceipt | FutureWeatherReceiptV2] = []
     all_records = [
         record
         for records in accepted.complete_station_records.values()

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
     fetch_combined_operational_windows,
+    fetch_combined_period_windows,
 )
+from sapphire_flow.protocols.adapters import OperationalWeatherPeriodSource
+from sapphire_flow.protocols.stores import OperationalWeatherPeriodCacheStore
 from sapphire_flow.store.operational_weather_codec import (
     WeatherSnapshotSizeError,
     make_past_snapshot,
@@ -23,6 +26,17 @@ from sapphire_flow.types.operational_weather import (
     WeatherLegOutcome,
     WeatherLegState,
     WeatherPastSnapshot,
+)
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherAttemptV2,
+    FutureWeatherReceiptV2,
+    FutureWeatherRequestV2,
+    PastWeatherRequirementV2,
+    WeatherCacheAttemptV2,
+    WeatherCacheCompletionV2,
+    WeatherCacheEntryV2,
+    WeatherPastSnapshotV2,
+    require_context,
 )
 
 if TYPE_CHECKING:
@@ -49,7 +63,9 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.operational_weather import FutureWeatherScope
+    from sapphire_flow.types.operational_weather_v2 import FutureWeatherScopeV2
     from sapphire_flow.types.station import StationWeatherSource
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
@@ -92,8 +108,8 @@ def _fatal_weather_reason(exc: Exception) -> WeatherFailureReason:
 class StationWeatherRefresh:
     key: WeatherCacheKey
     source: StationWeatherSource
-    past_requirement: PastWeatherRequirement | None
-    future_requests: tuple[FutureWeatherRequest, ...]
+    past_requirement: PastWeatherRequirement | PastWeatherRequirementV2 | None
+    future_requests: tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...]
 
     def __post_init__(self) -> None:
         if self.source.station_id != self.key.station_id or any(
@@ -107,8 +123,8 @@ class StationWeatherRefresh:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CompletedStationWeather:
-    attempt: WeatherCacheAttempt
-    entry: WeatherCacheEntry
+    attempt: WeatherCacheAttempt | WeatherCacheAttemptV2
+    entry: WeatherCacheEntry | WeatherCacheEntryV2
 
 
 class OperationalWeatherRefresh:
@@ -118,15 +134,51 @@ class OperationalWeatherRefresh:
         self,
         *,
         specs: tuple[StationWeatherRefresh, ...],
-        cache: OperationalWeatherCacheStore,
+        cache: OperationalWeatherCacheStore | OperationalWeatherPeriodCacheStore,
         principal: WritePrincipal,
         issue_time: UtcDatetime,
         clock: Callable[[], UtcDatetime],
         id_gen: Callable[[], UUID],
         max_past_bytes: int,
+        grid: TimeGrid | None = None,
+        eligibility_cutoff: UtcDatetime | None = None,
     ) -> None:
         if len({spec.key.station_id for spec in specs}) != len(specs):
             raise ValueError("weather refresh repeats a station")
+        if grid is not None:
+            if eligibility_cutoff is None or not isinstance(
+                cache, OperationalWeatherPeriodCacheStore
+            ):
+                raise ValueError(
+                    "period refresh requires period cache and explicit cutoff"
+                )
+            require_context(grid, issue_time, eligibility_cutoff)
+            for spec in specs:
+                if spec.past_requirement is not None and (
+                    not isinstance(spec.past_requirement, PastWeatherRequirementV2)
+                    or spec.past_requirement.grid != grid
+                    or spec.past_requirement.end > eligibility_cutoff
+                ):
+                    raise ValueError("past refresh period context mismatch")
+                if any(
+                    not isinstance(request, FutureWeatherRequestV2)
+                    or request.grid != grid
+                    or request.issue_time != issue_time
+                    or request.eligibility_cutoff != eligibility_cutoff
+                    for request in spec.future_requests
+                ):
+                    raise ValueError("future refresh period context mismatch")
+        elif eligibility_cutoff is not None or any(
+            isinstance(spec.past_requirement, PastWeatherRequirementV2)
+            or any(
+                isinstance(request, FutureWeatherRequestV2)
+                for request in spec.future_requests
+            )
+            for spec in specs
+        ):
+            raise ValueError("period refresh requires an explicit grid")
+        self._grid = grid
+        self._cutoff = eligibility_cutoff
         self._specs = {spec.key.station_id: spec for spec in specs}
         self._cache = cache
         self._principal = principal
@@ -134,35 +186,68 @@ class OperationalWeatherRefresh:
         self._clock = clock
         self._id_gen = id_gen
         self._max_past_bytes = max_past_bytes
-        self._attempts: dict[StationId, WeatherCacheAttempt] = {}
-        self._snapshots: dict[StationId, WeatherPastSnapshot] = {}
+        self._attempts: dict[
+            StationId, WeatherCacheAttempt | WeatherCacheAttemptV2
+        ] = {}
+        self._snapshots: dict[
+            StationId, WeatherPastSnapshot | WeatherPastSnapshotV2
+        ] = {}
         self._past: dict[StationId, WeatherLegOutcome] = {
             sid: WeatherLegOutcome(state=WeatherLegState.UNUSED)
             for sid, spec in self._specs.items()
             if spec.past_requirement is None
         }
-        self._future: dict[FutureWeatherRequest, FutureWeatherAttempt] = {}
-        self._receipts: dict[FutureWeatherRequest, FutureWeatherReceipt] = {}
-        self._completions: dict[StationId, WeatherCacheCompletion] = {}
+        self._future: dict[
+            FutureWeatherRequest | FutureWeatherRequestV2,
+            FutureWeatherAttempt | FutureWeatherAttemptV2,
+        ] = {}
+        self._receipts: dict[
+            FutureWeatherRequest | FutureWeatherRequestV2,
+            FutureWeatherReceipt | FutureWeatherReceiptV2,
+        ] = {}
+        self._completions: dict[
+            StationId, WeatherCacheCompletion | WeatherCacheCompletionV2
+        ] = {}
         self._completed: dict[StationId, CompletedStationWeather] = {}
 
     def begin(self) -> None:
         if self._attempts:
             raise ValueError("weather refresh was already begun")
         for sid, spec in self._specs.items():
-            self._attempts[sid] = self._cache.begin(
-                key=spec.key,
-                principal=self._principal,
-                attempt_id=self._id_gen(),
-                issue_time=self._issue_time,
-                started_at=self._clock(),
-                future_scopes=spec.future_requests,
-            )
+            if self._grid is not None:
+                assert self._cutoff is not None
+                self._attempts[sid] = cast(
+                    "OperationalWeatherPeriodCacheStore", self._cache
+                ).begin_period(
+                    key=spec.key,
+                    principal=self._principal,
+                    attempt_id=self._id_gen(),
+                    issue_time=self._issue_time,
+                    started_at=self._clock(),
+                    grid=self._grid,
+                    eligibility_cutoff=self._cutoff,
+                    future_scopes=cast(
+                        "tuple[FutureWeatherRequestV2, ...]", spec.future_requests
+                    ),
+                )
+            else:
+                self._attempts[sid] = cast(
+                    "OperationalWeatherCacheStore", self._cache
+                ).begin(
+                    key=spec.key,
+                    principal=self._principal,
+                    attempt_id=self._id_gen(),
+                    issue_time=self._issue_time,
+                    started_at=self._clock(),
+                    future_scopes=cast(
+                        "tuple[FutureWeatherRequest, ...]", spec.future_requests
+                    ),
+                )
 
     def fetch_past(
         self,
         *,
-        adapter: OperationalWeatherSource,
+        adapter: OperationalWeatherSource | OperationalWeatherPeriodSource,
         station_store: StationStore,
         audit_log_store: AuditLogStore | None,
         start: UtcDatetime,
@@ -182,17 +267,44 @@ class OperationalWeatherRefresh:
         )
 
         try:
-            windows = fetch_combined_operational_windows(
-                adapter=adapter,
-                sources=sources,
-                station_store=station_store,
-                principal=self._principal,
-                audit_log_store=audit_log_store,
-                issue_time=self._issue_time,
-                start=start,
-                end=self._issue_time,
-                now=self._clock(),
-            )
+            if self._grid is None:
+                windows = fetch_combined_operational_windows(
+                    adapter=cast("OperationalWeatherSource", adapter),
+                    sources=sources,
+                    station_store=station_store,
+                    principal=self._principal,
+                    audit_log_store=audit_log_store,
+                    issue_time=self._issue_time,
+                    start=start,
+                    end=self._issue_time,
+                    now=self._clock(),
+                )
+            else:
+                if not isinstance(adapter, OperationalWeatherPeriodSource):
+                    raise ValueError("period refresh requires a period-aware source")
+                assert self._cutoff is not None
+                pasts = [
+                    spec.past_requirement
+                    for spec in self._specs.values()
+                    if spec.past_requirement is not None
+                ]
+                if start > min(past.start for past in pasts):
+                    raise ValueError(
+                        "period refresh start omits requested past support"
+                    )
+                windows = fetch_combined_period_windows(
+                    adapter=adapter,
+                    sources=sources,
+                    station_store=station_store,
+                    principal=self._principal,
+                    audit_log_store=audit_log_store,
+                    issue_time=self._issue_time,
+                    start=start,
+                    end=max(past.end for past in pasts),
+                    now=self._clock(),
+                    grid=self._grid,
+                    eligibility_cutoff=self._cutoff,
+                )
             if set(windows) != {source.station_id for source in sources}:
                 raise ValueError("combined weather response station set mismatch")
             snapshots = {
@@ -229,16 +341,16 @@ class OperationalWeatherRefresh:
 
     def future_requests_for(
         self, station_id: StationId
-    ) -> tuple[FutureWeatherRequest, ...]:
+    ) -> tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...]:
         spec = self._specs.get(station_id)
         return () if spec is None else spec.future_requests
 
     def record_future(
         self,
         *,
-        request: FutureWeatherRequest,
+        request: FutureWeatherRequest | FutureWeatherRequestV2,
         outcome: WeatherLegOutcome,
-        receipt: FutureWeatherReceipt | None = None,
+        receipt: FutureWeatherReceipt | FutureWeatherReceiptV2 | None = None,
     ) -> None:
         spec = self._specs.get(request.station_id)
         if spec is None or request not in spec.future_requests:
@@ -247,10 +359,13 @@ class OperationalWeatherRefresh:
             raise ValueError("successful future result requires a receipt")
         if receipt is not None and receipt.scope.request != request:
             raise ValueError("future receipt does not match its request")
-        result = FutureWeatherAttempt(
-            scope=request,
-            outcome=outcome,
-            resolved_cycle=None if receipt is None else receipt.cycle_time,
+        cycle = None if receipt is None else receipt.cycle_time
+        result = (
+            FutureWeatherAttemptV2(scope=request, outcome=outcome, resolved_cycle=cycle)
+            if isinstance(request, FutureWeatherRequestV2)
+            else FutureWeatherAttempt(
+                scope=request, outcome=outcome, resolved_cycle=cycle
+            )
         )
         previous = self._future.get(request)
         if previous is not None and previous != result:
@@ -271,7 +386,7 @@ class OperationalWeatherRefresh:
 
     def fail_future(
         self,
-        requests: tuple[FutureWeatherRequest, ...],
+        requests: tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...],
         *,
         reason: WeatherFailureReason,
     ) -> None:
@@ -295,7 +410,12 @@ class OperationalWeatherRefresh:
             self._past.setdefault(sid, outcome)
             for request in spec.future_requests:
                 self._future.setdefault(
-                    request, FutureWeatherAttempt(scope=request, outcome=outcome)
+                    request,
+                    (
+                        FutureWeatherAttemptV2(scope=request, outcome=outcome)
+                        if isinstance(request, FutureWeatherRequestV2)
+                        else FutureWeatherAttempt(scope=request, outcome=outcome)
+                    ),
                 )
 
     def _finish_station(
@@ -306,23 +426,49 @@ class OperationalWeatherRefresh:
         attempt = self._attempts[sid]
         if sid not in self._completions:
             requests = self._specs[sid].future_requests
-            self._completions[sid] = WeatherCacheCompletion(
-                finished_at=self._clock(),
-                past_outcome=self._past[sid],
-                past_snapshot=self._snapshots.get(sid),
-                future_attempts=tuple(self._future[request] for request in requests),
-                future_receipts=tuple(
-                    self._receipts[request]
-                    for request in requests
-                    if request in self._receipts
-                ),
+            snapshot = self._snapshots.get(sid)
+            attempts = tuple(self._future[request] for request in requests)
+            receipts = tuple(
+                self._receipts[request]
+                for request in requests
+                if request in self._receipts
             )
-        entry = self._cache.finish(
-            attempt=attempt,
-            principal=self._principal,
-            earliest_cycle=earliest_cycle,
-            completion=self._completions[sid],
-        )
+            if isinstance(attempt, WeatherCacheAttemptV2):
+                self._completions[sid] = WeatherCacheCompletionV2(
+                    finished_at=self._clock(),
+                    past_outcome=self._past[sid],
+                    past_snapshot=cast("WeatherPastSnapshotV2 | None", snapshot),
+                    future_attempts=cast(
+                        "tuple[FutureWeatherAttemptV2, ...]", attempts
+                    ),
+                    future_receipts=cast(
+                        "tuple[FutureWeatherReceiptV2, ...]", receipts
+                    ),
+                )
+            else:
+                self._completions[sid] = WeatherCacheCompletion(
+                    finished_at=self._clock(),
+                    past_outcome=self._past[sid],
+                    past_snapshot=cast("WeatherPastSnapshot | None", snapshot),
+                    future_attempts=cast("tuple[FutureWeatherAttempt, ...]", attempts),
+                    future_receipts=cast("tuple[FutureWeatherReceipt, ...]", receipts),
+                )
+        if isinstance(attempt, WeatherCacheAttemptV2):
+            entry = cast(
+                "OperationalWeatherPeriodCacheStore", self._cache
+            ).finish_period(
+                attempt=attempt,
+                principal=self._principal,
+                earliest_cycle=earliest_cycle,
+                completion=cast("WeatherCacheCompletionV2", self._completions[sid]),
+            )
+        else:
+            entry = cast("OperationalWeatherCacheStore", self._cache).finish(
+                attempt=attempt,
+                principal=self._principal,
+                earliest_cycle=earliest_cycle,
+                completion=cast("WeatherCacheCompletion", self._completions[sid]),
+            )
         completed = CompletedStationWeather(attempt=attempt, entry=entry)
         self._completed[sid] = completed
         return completed
@@ -406,6 +552,27 @@ def resolve_selected_weather_tracks(
             for sid in station_ids
         }
 
+        period_requests = [
+            request
+            for requests in declared.values()
+            for request in requests
+            if isinstance(request, FutureWeatherRequestV2)
+        ]
+        context = period_requests[0] if period_requests else None
+        if context is not None and (
+            len(period_requests) != sum(len(requests) for requests in declared.values())
+            or any(
+                (request.grid, request.first_period_start, request.eligibility_cutoff)
+                != (
+                    context.grid,
+                    context.first_period_start,
+                    context.eligibility_cutoff,
+                )
+                for request in period_requests
+            )
+        ):
+            raise ValueError("selected track period contexts differ")
+
         def fetch(
             cycle: UtcDatetime,
             *,
@@ -432,10 +599,19 @@ def resolve_selected_weather_tracks(
                 id_gen=id_gen,
                 weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
                 earliest_cycle=earliest_cycle,
+                grid=None if context is None else context.grid,
+                first_period_start=None
+                if context is None
+                else context.first_period_start,
+                eligibility_cutoff=None
+                if context is None
+                else context.eligibility_cutoff,
             )
             result = None
             if accepted is not None:
-                scopes: dict[StationId, tuple[FutureWeatherScope, ...]] = {}
+                scopes: dict[
+                    StationId, tuple[FutureWeatherScope | FutureWeatherScopeV2, ...]
+                ] = {}
                 for sid in accepted.complete_station_records:
                     station_scopes = tuple(
                         future_receipt_scope(

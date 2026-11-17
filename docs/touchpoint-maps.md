@@ -2650,3 +2650,22 @@ integration API `test_access_token_auth.py` for the real-token route inventory,
 in-scope/out-of-scope reads and ordinary consumer/reviewer parity.
 Overview output, legacy Swiss history and forecast-specific rating history remain
 independent and unchanged; overview integration is a later scoped change.
+
+
+### Declared-grid weather evidence (M2a3)
+
+When changing selected-weather temporal identity, trace both persisted versions:
+`types/operational_weather{,_v2}` → `store/weather_period_wire` and
+`operational_weather_codec` → cache/refresh → proof/projection →
+`selected_weather_inputs` → capture/restore → forecast store/API summary. Include
+`weather_gap_fill`, `input_quality`, candidate walk-back and future-frame bucketing.
+The v1 dataclasses (including nested attempt/key fields) are hashed recursively;
+adding a default field changes old bytes. Keep v2 decoding at the boundary and
+reuse shared algorithms. Do not activate a nonzero grid in model preparation.
+
+Verify `test_weather_v1_compatibility`, `test_weather_period_wire`,
+`test_period_weather_evidence` and the PostgreSQL `test_weather_period_pipeline`,
+alongside existing selected-weather regressions. Candidate acceptance must cover
+the entire declared period/member/feature scope before persistence. Retained gap
+donors must still verify their original receipts; longer snapshots may project
+exact subwindows but future issue/cutoff evidence must not leak backward.

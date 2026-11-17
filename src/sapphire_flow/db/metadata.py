@@ -1170,7 +1170,7 @@ forecasts = sa.Table(
     metadata,
     sa.Column("weather_evidence_version", sa.SmallInteger, nullable=True),
     sa.CheckConstraint(
-        "weather_evidence_version IS NULL OR weather_evidence_version = 1",
+        "weather_evidence_version IS NULL OR weather_evidence_version IN (1,2)",
         name="ck_forecasts_weather_evidence_version",
     ),
     sa.CheckConstraint(
@@ -3581,6 +3581,7 @@ operational_weather_cache = sa.Table(
     ),
     sa.Column("binding_fingerprint", sa.Text, nullable=False),
     sa.Column("payload_version", sa.SmallInteger, nullable=False, server_default="1"),
+    sa.Column("temporal_context", JSONB(none_as_null=True)),
     sa.Column("attempt_generation", sa.BigInteger, nullable=False),
     sa.Column("attempt_id", UUID(as_uuid=True), nullable=False),
     sa.Column("issue_time", sa.DateTime(timezone=True), nullable=False),
@@ -3597,8 +3598,14 @@ operational_weather_cache = sa.Table(
         "binding_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_operational_weather_key"
     ),
     sa.CheckConstraint(
-        "payload_version = 1 AND attempt_generation > 0",
+        "payload_version IN (1,2) AND attempt_generation > 0",
         name="ck_operational_weather_version",
+    ),
+    sa.CheckConstraint(
+        "(payload_version = 1 AND temporal_context IS NULL) OR "
+        "(payload_version = 2 AND temporal_context IS NOT NULL "
+        "AND jsonb_typeof(temporal_context) = 'object')",
+        name="ck_operational_weather_context",
     ),
     sa.CheckConstraint(
         "outcome IN ('pending', 'complete', 'failed')",

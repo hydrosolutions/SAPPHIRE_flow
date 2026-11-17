@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.adapters import (
+        OperationalWeatherPeriodSource,
         OperationalWeatherSource,
         WeatherReanalysisSource,
     )
@@ -42,7 +43,9 @@ if TYPE_CHECKING:
         OperationalWeatherScope,
     )
     from sapphire_flow.types.operational_weather import OperationalWeatherWindow
+    from sapphire_flow.types.operational_weather_v2 import OperationalWeatherWindowV2
     from sapphire_flow.types.station import StationWeatherSource
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
@@ -237,6 +240,29 @@ def fetch_combined_operational_windows(
     end: UtcDatetime,
     now: UtcDatetime,
 ) -> dict[StationId, OperationalWeatherWindow]:
+    _authorize_operational_sources(
+        sources=sources,
+        station_store=station_store,
+        principal=principal,
+        audit_log_store=audit_log_store,
+        now=now,
+    )
+    return adapter.fetch_windows(
+        sources=sources,
+        issue_time=issue_time,
+        start=start,
+        end=end,
+    )
+
+
+def _authorize_operational_sources(
+    *,
+    sources: list[StationWeatherSource],
+    station_store: StationStore,
+    principal: WritePrincipal,
+    audit_log_store: AuditLogStore | None,
+    now: UtcDatetime,
+) -> None:
     if principal is None:  # pyright: ignore[reportUnnecessaryComparison]
         raise ConfigurationError("combined weather requires an explicit run principal")
     for source in sources:
@@ -253,9 +279,34 @@ def fetch_combined_operational_windows(
             detail=None,
             now=now,
         )
-    return adapter.fetch_windows(
+
+
+def fetch_combined_period_windows(
+    *,
+    adapter: OperationalWeatherPeriodSource,
+    sources: list[StationWeatherSource],
+    station_store: StationStore,
+    principal: WritePrincipal,
+    audit_log_store: AuditLogStore | None,
+    issue_time: UtcDatetime,
+    start: UtcDatetime,
+    end: UtcDatetime,
+    now: UtcDatetime,
+    grid: TimeGrid,
+    eligibility_cutoff: UtcDatetime,
+) -> dict[StationId, OperationalWeatherWindowV2]:
+    _authorize_operational_sources(
+        sources=sources,
+        station_store=station_store,
+        principal=principal,
+        audit_log_store=audit_log_store,
+        now=now,
+    )
+    return adapter.fetch_period_windows(
         sources=sources,
         issue_time=issue_time,
         start=start,
         end=end,
+        grid=grid,
+        eligibility_cutoff=eligibility_cutoff,
     )
