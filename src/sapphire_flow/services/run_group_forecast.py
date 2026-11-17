@@ -62,7 +62,6 @@ from sapphire_flow.types.group_input import (
 )
 from sapphire_flow.types.ids import ForecastId
 from sapphire_flow.types.model import GroupModelInputs
-from sapphire_flow.types.operational_weather import FutureWeatherUse, WeatherUse
 from sapphire_flow.types.rejected_forecast import (
     RejectedAssignmentPayload,
     RejectedParameterPayload,
@@ -948,7 +947,7 @@ def _build_station_result(
                 input_quality=input_quality,
                 input_quality_flags=input_quality_flags,
                 weather_evidence_version=(
-                    1
+                    evidence.weather_evidence_version
                     if config.operational_weather.route
                     is OperationalPastWeatherRoute.RECAP_COMBINED
                     else None
@@ -1232,6 +1231,7 @@ def run_group_forecast(
     )
 
     from sapphire_flow.services.selected_weather_evidence import (
+        require_common_weather_cycle,
         validate_selected_capture,
     )
 
@@ -1246,14 +1246,9 @@ def run_group_forecast(
             issue_time=group_inputs.issue_time,
             max_bytes=config.operational_weather.max_evidence_bytes,
         )
-        cycles = {
-            source.weather_use.future.receipt.cycle_time
-            for source in selected_sources.values()
-            if isinstance(source.weather_use, WeatherUse)
-            and isinstance(source.weather_use.future, FutureWeatherUse)
-        }
-        if len(cycles) > 1:
-            raise ConfigurationError("selected group weather cannot mix source cycles")
+        require_common_weather_cycle(
+            source.weather_use for source in selected_sources.values()
+        )
 
     try:
         artifact = model.deserialize_artifact(artifact_bytes)

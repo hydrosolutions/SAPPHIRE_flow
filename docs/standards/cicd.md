@@ -2159,3 +2159,14 @@ readiness does not prove live provider identity, real-model readiness or scienti
 acceptance. Deployment and activation need their existing authority; this note
 grants none. See [configured operational daily weather](../spec/types-and-protocols.md#configured-operational-daily-weather)
 and the [storage privilege boundary](security.md#selected-operational-weather-storage-boundary).
+
+
+### Weather evidence version 2 (time MVP M2a3)
+
+Migration 0086 widens the selected cache/forecast version constraints and adds
+nullable JSONB attempt context to the existing cache table. Existing v1 rows keep
+NULL context and unchanged payloads/hashes. It grants no privileges and changes
+no primary key. Downgrade refuses while any v2 cache or forecast parent remains;
+never delete retained evidence to force a downgrade. Normal preparation still
+writes v1. This migration is a prerequisite for later qualified-grid activation,
+not authorization to switch Nepal models or deploy this branch.

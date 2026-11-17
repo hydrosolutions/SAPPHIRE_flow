@@ -10,6 +10,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleMode, SpatialRepresentation
 from sapphire_flow.types.operational_weather import (
     UTC_DAILY_WEATHER_GRID,
+    qualified_ifs_daily_support,
     require_daily_grid_boundary,
     require_utc,
 )
@@ -28,33 +29,10 @@ def recap_daily_support(
 ) -> tuple[UtcDatetime, ...]:
     require_utc(cycle_time)
     require_daily_grid_boundary(day, grid)
-    if cycle_time.hour not in (0, 6, 12, 18) or any(
-        (cycle_time.minute, cycle_time.second, cycle_time.microsecond)
-    ):
-        raise WeatherProofError("unsupported Recap forecast cycle")
-    maximum = 360 if cycle_time.hour == 0 else 72
-    if day < cycle_time or day + timedelta(days=1) > cycle_time + timedelta(
-        hours=maximum
-    ):
-        return ()
-    leads = (
-        tuple(range(0, 145, 3)) + tuple(range(150, 361, 6))
-        if maximum == 360
-        else tuple(range(0, 73, 3))
-    )
-    support = tuple(
-        ensure_utc(cycle_time + timedelta(hours=lead))
-        for lead in leads
-        if day <= cycle_time + timedelta(hours=lead) < day + timedelta(days=1)
-    )
-    if not support or support[0] != day:
-        return ()
-    final_step = timedelta(
-        hours=3 if support[-1] - cycle_time < timedelta(hours=144) else 6
-    )
-    if support[-1] + final_step != day + timedelta(days=1):
-        return ()
-    return support
+    try:
+        return qualified_ifs_daily_support(cycle_time, day, grid=grid)
+    except ValueError as exc:
+        raise WeatherProofError(str(exc)) from exc
 
 
 def recap_complete_daily_records(
@@ -65,8 +43,27 @@ def recap_complete_daily_records(
     ensemble_mode: EnsembleMode,
     grid: TimeGrid = UTC_DAILY_WEATHER_GRID,
 ) -> list[WeatherForecastRecord]:
-    """Select native support; issue_time denotes the first period boundary."""
-    require_daily_grid_boundary(issue_time, grid)
+    return recap_complete_period_records(
+        records,
+        first_period_start=issue_time,
+        cycle_ceiling=issue_time,
+        feature_horizons=feature_horizons,
+        ensemble_mode=ensemble_mode,
+        grid=grid,
+    )
+
+
+def recap_complete_period_records(
+    records: list[WeatherForecastRecord],
+    *,
+    first_period_start: UtcDatetime,
+    cycle_ceiling: UtcDatetime,
+    feature_horizons: dict[str, int],
+    ensemble_mode: EnsembleMode,
+    grid: TimeGrid = UTC_DAILY_WEATHER_GRID,
+) -> list[WeatherForecastRecord]:
+    require_utc(cycle_ceiling)
+    require_daily_grid_boundary(first_period_start, grid)
     if not feature_horizons or any(
         feature not in ("precipitation", "temperature") for feature in feature_horizons
     ):
@@ -85,7 +82,7 @@ def recap_complete_daily_records(
             "selected Recap weather must use one qualified source/cycle"
         )
     cycle = next(iter(cycles))
-    if cycle > issue_time:
+    if cycle > cycle_ceiling:
         raise WeatherProofError("selected Recap cycle follows issue time")
     if any(
         type(record.member_id) is not int or record.member_id < 0 for record in selected
@@ -101,7 +98,9 @@ def recap_complete_daily_records(
     for feature, horizon in feature_horizons.items():
         for offset in range(horizon):
             support = recap_daily_support(
-                cycle, ensure_utc(issue_time + timedelta(days=offset)), grid=grid
+                cycle,
+                ensure_utc(first_period_start + timedelta(days=offset)),
+                grid=grid,
             )
             if not support:
                 break
@@ -126,7 +125,7 @@ def recap_complete_daily_records(
                 raise WeatherProofError(
                     "selected Recap weather has invalid required samples"
                 )
-            day_start = issue_time + timedelta(days=offset)
+            day_start = first_period_start + timedelta(days=offset)
             if any(
                 record.parameter == feature
                 and day_start <= record.valid_time < day_start + timedelta(days=1)

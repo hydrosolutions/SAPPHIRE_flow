@@ -80,14 +80,14 @@ class OperationalForecast:
     Set at forecast-storage time by Task 4; Task 2 only plumbs the column.
     """
     evidence: ForecastEvidence | None = None
-    weather_evidence_version: Literal[1] | None = None
+    weather_evidence_version: Literal[1, 2] | None = None
     data_use: ForecastDataUse = ForecastDataUse.STANDARD
     input_lineage: ForecastInputLineage | None = None
 
     def __post_init__(self) -> None:
         if self.weather_evidence_version is not None and (
             type(self.weather_evidence_version) is not int
-            or self.weather_evidence_version != 1
+            or self.weather_evidence_version not in (1, 2)
         ):
             raise ValueError("unsupported weather evidence version")
         if not isinstance(cast("object", self.data_use), ForecastDataUse):

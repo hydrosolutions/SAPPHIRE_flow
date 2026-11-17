@@ -567,7 +567,7 @@ before merge. PR #539 subsequently passed full CI and the owner merged it as `d7
 Release intent advances once to 0.1.1143. Full review reports remain
 local. M2a is still incomplete; no live grid switch or server deployment occurred.
 
-#### M2a3 — period identity through selected-weather evidence (READY)
+#### M2a3 — period identity through selected-weather evidence (IMPLEMENTED)
 
 Base: merged M2a2 PR #539, `d777d8b2ed4cf68b171b7c7a7b6e86d9067fbc0c`.
 This is the integration step, not another stand-alone reduction helper. The
@@ -758,6 +758,34 @@ the proposal and acceptance examples; do not duplicate a local FI API here.
 Track the resolving version and adoption step before model-driven grid activation.
 Current UTC operation and evidence-format work do not depend on its resolution.
 
+M2a3 implementation review notes: the isolated PostgreSQL path now exercises
+refresh, candidate walk-back, receipt readback, gap fill, forecast capture/store and
+API read with phase 18:00 UTC. V1 golden window/completion/captured-source and full
+snapshot digests are measured from pre-change main, not regenerated from v2 code.
+Shared model-side `past_forcing_flags` still enumerates UTC buckets; M2b/M2c must
+thread the declared grid there before model activation. Updating selected-evidence
+warning intervals alone does not complete model input quality anchoring. M2b/M2c
+must also update the v1-only selected-weather consumption in `track_assembly`, the
+rating input path in `operational_inputs`, and the live outcome classification in
+`run_forecast_cycle`. M2a3's standalone group source-cycle guard supports both
+versions and rejects mixed cycles before prediction.
+
+#### M2a3 implementation result
+
+Implemented v2 period DTOs/codecs and grid-bound cache identities without changing
+v1 bytes; migration 0086 preserves v1 rows and refuses rollback with retained v2.
+Shared refresh/candidate selection, proof, projection, short-gap filling, capture,
+restore, forecast storage and API readers now accept explicit period context.
+Existing preparation still writes v1; no deployment or model-grid switch occurred.
+
+Independent Codex and Claude patch reviews approved after the v2 group-cycle guard
+was corrected. A suspected marker downgrade was rejected after both reviewers
+verified the existing pre-predict capture validation and selected-capture refusal
+paths. Later-issue/cutoff stale snapshots now return the typed missing-support
+result. Full reports remain local. Focused evidence: 39 PostgreSQL/API tests and
+23 independent compatibility/period tests passed; repository type ratchet passed.
+Full final-suite CI remains a merge gate. Release target advanced once to 0.1.1144.
+
 ### M2b — shared training and operational assembly
 
 **Owner:** one implementer. **Depends:** M2a. **Status:** DRAFT.
@@ -906,7 +934,7 @@ protected backup commissioning and email warnings. Existing security/provenance
 rules remain in force; deferring hardening does not authorize removing them.
 
 ```json
-{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a3":{"status":"READY","depends_on":["M2a2"]},"M2a":{"status":"DRAFT","depends_on":["M2a3"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
+{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a3":{"status":"IMPLEMENTED","depends_on":["M2a2"]},"M2a":{"status":"DRAFT","depends_on":["M2a3"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
 ```
 
 ## Review state

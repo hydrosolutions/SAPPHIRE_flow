@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast, overload
 
 from sapphire_flow.services.operational_weather_proof import verify_future_receipt
 from sapphire_flow.services.recap_daily_weather import recap_daily_support
@@ -12,14 +12,26 @@ from sapphire_flow.types.operational_weather import (
     FutureWeatherScope,
     FutureWeatherUse,
     OperationalWeatherDay,
+    OperationalWeatherPeriod,
     PastWeatherUse,
     WeatherAttemptState,
     WeatherBlocked,
+    WeatherCacheAttempt,
+    WeatherCacheEntry,
     WeatherCoverage,
     WeatherFreshness,
     WeatherLegState,
     WeatherUnused,
     WeatherUseBlockReason,
+)
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherRequestV2,
+    FutureWeatherScopeV2,
+    FutureWeatherUseV2,
+    PastWeatherRequirementV2,
+    PastWeatherUseV2,
+    WeatherCacheAttemptV2,
+    WeatherCacheEntryV2,
 )
 
 if TYPE_CHECKING:
@@ -27,12 +39,11 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.operational_weather import (
         PastWeatherRequirement,
-        WeatherCacheAttempt,
-        WeatherCacheEntry,
     )
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 
+@overload
 def project_past_weather(
     entry: WeatherCacheEntry | None,
     *,
@@ -40,10 +51,52 @@ def project_past_weather(
     requirement: PastWeatherRequirement | None,
     max_past_bytes: int,
     coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
-) -> PastWeatherUse | WeatherBlocked | WeatherUnused:
+) -> PastWeatherUse | WeatherBlocked | WeatherUnused: ...
+
+
+@overload
+def project_past_weather(
+    entry: WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttemptV2,
+    requirement: PastWeatherRequirementV2 | None,
+    max_past_bytes: int,
+    coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
+) -> PastWeatherUseV2 | WeatherBlocked | WeatherUnused: ...
+
+
+@overload
+def project_past_weather(
+    entry: WeatherCacheEntry | WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttempt | WeatherCacheAttemptV2,
+    requirement: PastWeatherRequirement | PastWeatherRequirementV2 | None,
+    max_past_bytes: int,
+    coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
+) -> PastWeatherUse | PastWeatherUseV2 | WeatherBlocked | WeatherUnused: ...
+
+
+def project_past_weather(
+    entry: WeatherCacheEntry | WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttempt | WeatherCacheAttemptV2,
+    requirement: PastWeatherRequirement | PastWeatherRequirementV2 | None,
+    max_past_bytes: int,
+    coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
+) -> PastWeatherUse | PastWeatherUseV2 | WeatherBlocked | WeatherUnused:
     if requirement is None:
         return WeatherUnused()
-    if requirement.end != expected_attempt.issue_time:
+    if isinstance(requirement, PastWeatherRequirementV2):
+        if (
+            not isinstance(expected_attempt, WeatherCacheAttemptV2)
+            or requirement.grid != expected_attempt.grid
+            or requirement.end > expected_attempt.eligibility_cutoff
+        ):
+            raise ValueError("past period requirement differs from attempt context")
+    elif (
+        not isinstance(expected_attempt, WeatherCacheAttempt)
+        or requirement.end != expected_attempt.issue_time
+    ):
         raise ValueError("past weather requirement must end at the issue boundary")
     if (
         entry is None
@@ -65,19 +118,51 @@ def project_past_weather(
         or snapshot.window.end < requirement.end
     ):
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
-    available = {day.day: day for day in snapshot.window.days}
-    days = tuple(
-        available.get(
-            requirement.start + timedelta(days=offset),
-            OperationalWeatherDay(
-                day=requirement.start + timedelta(days=offset),
-                precipitation_mm=None,
-                temperature_c=None,
-                samples=(),
-            ),
+    if isinstance(requirement, PastWeatherRequirementV2):
+        if not isinstance(entry, WeatherCacheEntryV2):
+            raise ValueError("past weather versions differ")
+        period_snapshot = entry.past_snapshot
+        assert period_snapshot is not None
+        if period_snapshot.window.grid != requirement.grid:
+            raise ValueError("past snapshot grid differs from requested periods")
+        if (
+            period_snapshot.window.issue_time > expected_attempt.issue_time
+            or period_snapshot.window.eligibility_cutoff
+            > entry.attempt.eligibility_cutoff
+        ):
+            return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
+        available_periods = {p.start: p for p in period_snapshot.window.periods}
+        days: tuple[OperationalWeatherDay | OperationalWeatherPeriod, ...] = tuple(
+            available_periods.get(
+                requirement.start + timedelta(days=i),
+                OperationalWeatherPeriod(
+                    grid=requirement.grid,
+                    start=requirement.start + timedelta(days=i),
+                    precipitation_mm=None,
+                    temperature_c=None,
+                    samples=(),
+                ),
+            )
+            for i in range((requirement.end - requirement.start).days)
         )
-        for offset in range((requirement.end - requirement.start).days)
-    )
+    else:
+        if not isinstance(entry, WeatherCacheEntry):
+            raise ValueError("past weather versions differ")
+        old_snapshot = entry.past_snapshot
+        assert old_snapshot is not None
+        available = {day.day: day for day in old_snapshot.window.days}
+        days = tuple(
+            available.get(
+                requirement.start + timedelta(days=i),
+                OperationalWeatherDay(
+                    day=requirement.start + timedelta(days=i),
+                    precipitation_mm=None,
+                    temperature_c=None,
+                    samples=(),
+                ),
+            )
+            for i in range((requirement.end - requirement.start).days)
+        )
     if not any(day.samples for day in days):
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
     if coverage is WeatherCoverage.COMPLETE and any(
@@ -87,6 +172,24 @@ def project_past_weather(
         for parameter in requirement.parameters
     ):
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
+    if isinstance(requirement, PastWeatherRequirementV2):
+        assert (
+            isinstance(entry, WeatherCacheEntryV2) and entry.past_snapshot is not None
+        )
+        return PastWeatherUseV2(
+            refresh_outcome=entry.past_outcome,
+            retrieved_at=snapshot.retrieved_at,
+            freshness=WeatherFreshness.CURRENT
+            if state is WeatherLegState.SUCCESS
+            else WeatherFreshness.STALE,
+            requirement=requirement,
+            snapshot_id=snapshot.id,
+            snapshot_sha256=snapshot.payload_sha256,
+            snapshot_issue_time=snapshot.window.issue_time,
+            snapshot_cutoff=entry.past_snapshot.window.eligibility_cutoff,
+            binding_fingerprint=snapshot.window.binding_fingerprint,
+            periods=cast("tuple[OperationalWeatherPeriod, ...]", days),
+        )
     return PastWeatherUse(
         refresh_outcome=entry.past_outcome,
         retrieved_at=snapshot.retrieved_at,
@@ -98,19 +201,40 @@ def project_past_weather(
         snapshot_sha256=snapshot.payload_sha256,
         snapshot_issue_time=snapshot.window.issue_time,
         binding_fingerprint=snapshot.window.binding_fingerprint,
-        days=days,
+        days=cast("tuple[OperationalWeatherDay, ...]", days),
     )
 
 
+@overload
 def future_receipt_scope(
-    request: FutureWeatherRequest,
+    request: FutureWeatherRequest, *, cycle_time: UtcDatetime
+) -> FutureWeatherScope | None: ...
+
+
+@overload
+def future_receipt_scope(
+    request: FutureWeatherRequestV2, *, cycle_time: UtcDatetime
+) -> FutureWeatherScopeV2 | None: ...
+
+
+@overload
+def future_receipt_scope(
+    request: FutureWeatherRequest | FutureWeatherRequestV2, *, cycle_time: UtcDatetime
+) -> FutureWeatherScope | FutureWeatherScopeV2 | None: ...
+
+
+def future_receipt_scope(
+    request: FutureWeatherRequest | FutureWeatherRequestV2,
     *,
     cycle_time: UtcDatetime,
-) -> FutureWeatherScope | None:
+) -> FutureWeatherScope | FutureWeatherScopeV2 | None:
     requirements: list[FutureWeatherRequirement] = []
     for requirement in request.requirements:
         days = tuple(
-            recap_daily_support(cycle_time, day) for day in requirement.valid_times
+            recap_daily_support(cycle_time, day, grid=request.grid)
+            if isinstance(request, FutureWeatherRequestV2)
+            else recap_daily_support(cycle_time, day)
+            for day in requirement.valid_times
         )
         if any(not day for day in days):
             return None
@@ -121,6 +245,8 @@ def future_receipt_scope(
                 valid_times=tuple(stamp for day in days for stamp in day),
             )
         )
+    if isinstance(request, FutureWeatherRequestV2):
+        return FutureWeatherScopeV2(request=request, requirements=tuple(requirements))
     return FutureWeatherScope(
         station_id=request.station_id,
         binding_fingerprint=request.binding_fingerprint,
@@ -130,6 +256,7 @@ def future_receipt_scope(
     )
 
 
+@overload
 def project_future_weather(
     entry: WeatherCacheEntry | None,
     *,
@@ -141,9 +268,62 @@ def project_future_weather(
     tuple[FutureWeatherUse, tuple[WeatherForecastRecord, ...]]
     | WeatherBlocked
     | WeatherUnused
+): ...
+
+
+@overload
+def project_future_weather(
+    entry: WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttemptV2,
+    requirement: FutureWeatherRequestV2 | None,
+    store: WeatherForecastStore,
+    earliest_cycle: UtcDatetime,
+) -> (
+    tuple[FutureWeatherUseV2, tuple[WeatherForecastRecord, ...]]
+    | WeatherBlocked
+    | WeatherUnused
+): ...
+
+
+@overload
+def project_future_weather(
+    entry: WeatherCacheEntry | WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttempt | WeatherCacheAttemptV2,
+    requirement: FutureWeatherRequest | FutureWeatherRequestV2 | None,
+    store: WeatherForecastStore,
+    earliest_cycle: UtcDatetime,
+) -> (
+    tuple[FutureWeatherUse | FutureWeatherUseV2, tuple[WeatherForecastRecord, ...]]
+    | WeatherBlocked
+    | WeatherUnused
+): ...
+
+
+def project_future_weather(
+    entry: WeatherCacheEntry | WeatherCacheEntryV2 | None,
+    *,
+    expected_attempt: WeatherCacheAttempt | WeatherCacheAttemptV2,
+    requirement: FutureWeatherRequest | FutureWeatherRequestV2 | None,
+    store: WeatherForecastStore,
+    earliest_cycle: UtcDatetime,
+) -> (
+    tuple[FutureWeatherUse | FutureWeatherUseV2, tuple[WeatherForecastRecord, ...]]
+    | WeatherBlocked
+    | WeatherUnused
 ):
     if requirement is None:
         return WeatherUnused()
+    if isinstance(requirement, FutureWeatherRequestV2):
+        if (
+            not isinstance(expected_attempt, WeatherCacheAttemptV2)
+            or requirement.grid != expected_attempt.grid
+            or requirement.eligibility_cutoff != expected_attempt.eligibility_cutoff
+        ):
+            raise ValueError("future period request differs from attempt context")
+    elif not isinstance(expected_attempt, WeatherCacheAttempt):
+        raise ValueError("future weather versions differ")
     if requirement.issue_time != expected_attempt.issue_time:
         raise ValueError("future weather request issue mismatch")
     if (
@@ -182,6 +362,17 @@ def project_future_weather(
             or receipt.scope.issue_time > requirement.issue_time
         ):
             continue
+        if isinstance(requirement, FutureWeatherRequestV2):
+            if (
+                not isinstance(receipt.scope, FutureWeatherScopeV2)
+                or receipt.scope.request.grid != requirement.grid
+                or receipt.scope.request.eligibility_cutoff
+                > requirement.eligibility_cutoff
+                or receipt.cycle_time > requirement.eligibility_cutoff
+            ):
+                continue
+        elif not isinstance(receipt.scope, FutureWeatherScope):
+            raise ValueError("future receipt versions differ")
         scope = future_receipt_scope(requirement, cycle_time=receipt.cycle_time)
         if scope is None:
             continue
@@ -215,6 +406,34 @@ def project_future_weather(
             outcome.outcome.state is WeatherLegState.SUCCESS
             and outcome.resolved_cycle == receipt.cycle_time
         )
+        if isinstance(requirement, FutureWeatherRequestV2):
+            from sapphire_flow.types.operational_weather_v2 import (
+                FutureWeatherAttemptV2,
+                FutureWeatherReceiptV2,
+            )
+
+            if not isinstance(outcome, FutureWeatherAttemptV2) or not isinstance(
+                receipt, FutureWeatherReceiptV2
+            ):
+                raise ValueError("future receipt versions differ")
+            return FutureWeatherUseV2(
+                refresh_attempt=outcome,
+                freshness=WeatherFreshness.CURRENT
+                if current
+                else WeatherFreshness.STALE,
+                requirement=requirement,
+                receipt=receipt,
+                consumed_record_ids=tuple(row.id for row in consumed),
+            ), consumed
+        from sapphire_flow.types.operational_weather import (
+            FutureWeatherAttempt,
+            FutureWeatherReceipt,
+        )
+
+        if not isinstance(outcome, FutureWeatherAttempt) or not isinstance(
+            receipt, FutureWeatherReceipt
+        ):
+            raise ValueError("future receipt versions differ")
         return FutureWeatherUse(
             refresh_attempt=outcome,
             freshness=WeatherFreshness.CURRENT if current else WeatherFreshness.STALE,
@@ -223,3 +442,23 @@ def project_future_weather(
             consumed_record_ids=tuple(row.id for row in consumed),
         ), consumed
     return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
+
+
+def weather_use_periods(
+    past: PastWeatherUse | PastWeatherUseV2,
+) -> tuple[OperationalWeatherPeriod, ...]:
+    """Read-only common view; v1 identities and hashed payloads stay unchanged."""
+    if isinstance(past, PastWeatherUseV2):
+        return past.periods
+    from sapphire_flow.types.operational_weather import UTC_DAILY_WEATHER_GRID
+
+    return tuple(
+        OperationalWeatherPeriod(
+            grid=UTC_DAILY_WEATHER_GRID,
+            start=day.day,
+            precipitation_mm=day.precipitation_mm,
+            temperature_c=day.temperature_c,
+            samples=day.samples,
+        )
+        for day in past.days
+    )
