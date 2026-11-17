@@ -3,11 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from sapphire_flow.exceptions import StoreError
 from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.operational_weather import FutureWeatherReceipt, require_utc
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherReceiptV2,
+    FutureWeatherScopeV2,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -24,7 +28,7 @@ class WeatherProofError(StoreError):
 def _scope_digest(
     records: Sequence[WeatherForecastRecord],
     *,
-    scope: FutureWeatherScope,
+    scope: FutureWeatherScope | FutureWeatherScopeV2,
     cycle_time: UtcDatetime,
 ) -> tuple[str, int]:
     require_utc(cycle_time)
@@ -79,6 +83,7 @@ def _scope_digest(
     return hashlib.sha256(encoded).hexdigest(), len(rows)
 
 
+@overload
 def prove_future_receipt(
     *,
     scope: FutureWeatherScope,
@@ -86,11 +91,40 @@ def prove_future_receipt(
     validated_at: UtcDatetime,
     fetched: Sequence[WeatherForecastRecord],
     readback: Sequence[WeatherForecastRecord],
-) -> FutureWeatherReceipt:
+) -> FutureWeatherReceipt: ...
+
+
+@overload
+def prove_future_receipt(
+    *,
+    scope: FutureWeatherScopeV2,
+    cycle_time: UtcDatetime,
+    validated_at: UtcDatetime,
+    fetched: Sequence[WeatherForecastRecord],
+    readback: Sequence[WeatherForecastRecord],
+) -> FutureWeatherReceiptV2: ...
+
+
+def prove_future_receipt(
+    *,
+    scope: FutureWeatherScope | FutureWeatherScopeV2,
+    cycle_time: UtcDatetime,
+    validated_at: UtcDatetime,
+    fetched: Sequence[WeatherForecastRecord],
+    readback: Sequence[WeatherForecastRecord],
+) -> FutureWeatherReceipt | FutureWeatherReceiptV2:
     expected = _scope_digest(fetched, scope=scope, cycle_time=cycle_time)
     actual = _scope_digest(readback, scope=scope, cycle_time=cycle_time)
     if actual != expected:
         raise WeatherProofError("future archive readback differs from fetched values")
+    if isinstance(scope, FutureWeatherScopeV2):
+        return FutureWeatherReceiptV2(
+            scope=scope,
+            cycle_time=cycle_time,
+            validated_at=validated_at,
+            row_sha256=actual[0],
+            row_count=actual[1],
+        )
     return FutureWeatherReceipt(
         scope=scope,
         cycle_time=cycle_time,
@@ -101,7 +135,7 @@ def prove_future_receipt(
 
 
 def verify_future_receipt(
-    receipt: FutureWeatherReceipt,
+    receipt: FutureWeatherReceipt | FutureWeatherReceiptV2,
     records: Sequence[WeatherForecastRecord],
 ) -> None:
     actual = _scope_digest(records, scope=receipt.scope, cycle_time=receipt.cycle_time)

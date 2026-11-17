@@ -528,7 +528,7 @@ def _persist_forecast(
         evidence_reason=None if persisted is None else persisted.reason,
     )
     if persisted is None:
-        if retained.weather_evidence_version == 1:
+        if retained.weather_evidence_version in (1, 2):
             raise StoreError("persisted selected weather evidence is unavailable")
         return replace(retained, evidence=None)
     return replace(

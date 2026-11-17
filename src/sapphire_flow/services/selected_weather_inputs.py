@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
@@ -12,8 +12,12 @@ from sapphire_flow.services.operational_inputs import build_future_dynamic_frame
 from sapphire_flow.services.operational_weather_projection import (
     project_future_weather,
     project_past_weather,
+    weather_use_periods,
 )
 from sapphire_flow.services.operational_weather_proof import verify_future_receipt
+from sapphire_flow.services.selected_weather_evidence import (
+    require_common_weather_cycle,
+)
 from sapphire_flow.services.weather_gap_fill import (
     fill_daily_weather,
     stored_weather_donors,
@@ -28,6 +32,15 @@ from sapphire_flow.types.operational_weather import (
     WeatherCoverage,
     WeatherUnused,
     WeatherUse,
+)
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherRequestV2,
+    FutureWeatherUseV2,
+    PastWeatherRequirementV2,
+    PastWeatherUseV2,
+    WeatherCacheAttemptV2,
+    WeatherCacheEntryV2,
+    WeatherUseV2,
 )
 
 if TYPE_CHECKING:
@@ -45,13 +58,15 @@ if TYPE_CHECKING:
         WeatherCacheEntry,
     )
     from sapphire_flow.types.weather import WeatherForecastRecord
+    from sapphire_flow.types.weather_gap import WeatherGapFill
+    from sapphire_flow.types.weather_gap_v2 import WeatherGapFillV2
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AssignmentWeatherInputs:
     past_dynamic: pl.DataFrame
     future_dynamic: pl.DataFrame
-    use: WeatherUse
+    use: WeatherUse | WeatherUseV2
     future_records: tuple[WeatherForecastRecord, ...]
 
 
@@ -60,10 +75,10 @@ def assemble_selected_weather(
     station_id: StationId,
     issue_time: UtcDatetime,
     used_at: UtcDatetime,
-    entry: WeatherCacheEntry | None,
-    expected_attempt: WeatherCacheAttempt | None,
-    past_requirement: PastWeatherRequirement | None,
-    future_requirement: FutureWeatherRequest | None,
+    entry: WeatherCacheEntry | WeatherCacheEntryV2 | None,
+    expected_attempt: WeatherCacheAttempt | WeatherCacheAttemptV2 | None,
+    past_requirement: PastWeatherRequirement | PastWeatherRequirementV2 | None,
+    future_requirement: FutureWeatherRequest | FutureWeatherRequestV2 | None,
     store: WeatherForecastStore,
     earliest_cycle: UtcDatetime,
     max_past_bytes: int,
@@ -89,6 +104,16 @@ def assemble_selected_weather(
             ),
             future_records=(),
         )
+    grid = (
+        expected_attempt.grid
+        if isinstance(expected_attempt, WeatherCacheAttemptV2)
+        else None
+    )
+    ceiling = (
+        expected_attempt.eligibility_cutoff
+        if isinstance(expected_attempt, WeatherCacheAttemptV2)
+        else issue_time
+    )
     past = project_past_weather(
         entry,
         expected_attempt=expected_attempt,
@@ -113,7 +138,8 @@ def assemble_selected_weather(
             f"{future.reason.value}"
         )
     past_dynamic = pl.DataFrame()
-    if isinstance(past, PastWeatherUse):
+    if isinstance(past, (PastWeatherUse, PastWeatherUseV2)):
+        periods = weather_use_periods(past)
         gap_parameters = weather_fill_parameters(
             model, model_id=model_id, config=gap_config, time_step=timedelta(days=1)
         )
@@ -122,7 +148,7 @@ def assemble_selected_weather(
         past_dynamic = pl.DataFrame(
             [
                 {
-                    "timestamp": day.day,
+                    "timestamp": day.start,
                     **{
                         parameter: day.precipitation_mm
                         if parameter == "precipitation"
@@ -130,14 +156,14 @@ def assemble_selected_weather(
                         for parameter in past.requirement.parameters
                     },
                 }
-                for day in past.days
+                for day in periods
             ]
         )
-        donors = {}
+        donors: Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2] = {}
         if gap_parameters and entry is not None and future_requirement is not None:
             missing_days = {
-                day.day
-                for day in past.days
+                day.start
+                for day in periods
                 if any(
                     (
                         day.precipitation_mm
@@ -155,9 +181,20 @@ def assemble_selected_weather(
                     or receipt.scope.source != future_requirement.source
                     or receipt.scope.binding_fingerprint
                     != future_requirement.binding_fingerprint
-                    or receipt.cycle_time > issue_time
+                    or receipt.cycle_time > ceiling
+                    or isinstance(receipt.scope.request, FutureWeatherRequestV2)
+                    != (grid is not None)
+                    or (
+                        isinstance(receipt.scope.request, FutureWeatherRequestV2)
+                        and receipt.scope.request.grid != grid
+                    )
                     or not any(
-                        stamp.replace(hour=0) in missing_days
+                        (
+                            grid.floor(stamp)
+                            if grid is not None
+                            else stamp.replace(hour=0)
+                        )
+                        in missing_days
                         for req in receipt.scope.requirements
                         for stamp in req.valid_times
                     )
@@ -188,27 +225,39 @@ def assemble_selected_weather(
             donors = stored_weather_donors(
                 tuple(qualified_records.values()),
                 station_id=station_id,
-                issue_time=issue_time,
+                issue_time=ceiling,
                 parameters=gap_parameters,
+                grid=grid,
+                past_end=past.requirement.end if grid is not None else None,
             )
         prepared = fill_daily_weather(
             past_dynamic,
-            issue_time=issue_time,
+            issue_time=ceiling,
+            grid=grid,
+            past_end=past.requirement.end if grid is not None else None,
             lookbacks={
-                parameter: past_lookbacks.get(parameter, len(past.days))
+                parameter: past_lookbacks.get(parameter, len(periods))
                 for parameter in gap_parameters
             },
             max_gap_days=policy.max_gap_days,
             donors=donors,
             precipitation_lower_bounds={
-                day.day: sum(
+                day.start: sum(
                     row.value for row in day.samples if row.parameter == "precipitation"
                 )
-                for day in past.days
+                for day in periods
             },
         )
         past_dynamic = prepared.frame
-        past = replace(past, gap_fills=prepared.fills)
+        past = (
+            replace(
+                past, gap_fills=cast("tuple[WeatherGapFillV2, ...]", prepared.fills)
+            )
+            if isinstance(past, PastWeatherUseV2)
+            else replace(
+                past, gap_fills=cast("tuple[WeatherGapFill, ...]", prepared.fills)
+            )
+        )
         if not isinstance(model, ForecastInterfaceAdapter) and any(
             past_dynamic.get_column(parameter).null_count()
             for parameter in past.requirement.parameters
@@ -235,15 +284,22 @@ def assemble_selected_weather(
             ensemble_mode=ensemble_mode,
             feature_horizons=horizons,
             weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
+            grid=grid,
+            first_period_start=future_use.requirement.first_period_start
+            if isinstance(future_use, FutureWeatherUseV2)
+            else None,
+            eligibility_cutoff=ceiling if grid is not None else None,
         )
         if future_dynamic.height != max(horizons.values()):
             raise ConfigurationError(
                 "verified operational weather cannot form the required daily frame"
             )
-    return AssignmentWeatherInputs(
-        past_dynamic=past_dynamic,
-        future_dynamic=future_dynamic,
-        use=WeatherUse(
+    if isinstance(expected_attempt, WeatherCacheAttemptV2):
+        assert isinstance(past, (PastWeatherUseV2, WeatherUnused))
+        assert isinstance(future_use, (FutureWeatherUseV2, WeatherUnused))
+        use = WeatherUseV2(
+            grid=expected_attempt.grid,
+            eligibility_cutoff=expected_attempt.eligibility_cutoff,
             station_id=station_id,
             issue_time=issue_time,
             used_at=used_at,
@@ -251,7 +307,23 @@ def assemble_selected_weather(
             refresh_finished_at=entry.finished_at if entry is not None else None,
             past=past,
             future=future_use,
-        ),
+        )
+    else:
+        assert isinstance(past, (PastWeatherUse, WeatherUnused))
+        assert isinstance(future_use, (FutureWeatherUse, WeatherUnused))
+        use = WeatherUse(
+            station_id=station_id,
+            issue_time=issue_time,
+            used_at=used_at,
+            attempt=expected_attempt,
+            refresh_finished_at=entry.finished_at if entry is not None else None,
+            past=past,
+            future=future_use,
+        )
+    return AssignmentWeatherInputs(
+        past_dynamic=past_dynamic,
+        future_dynamic=future_dynamic,
+        use=use,
         future_records=records,
     )
 
@@ -261,14 +333,7 @@ def selected_group_weather_provenance(
     *,
     issue_time: UtcDatetime,
 ) -> ForecastProvenance:
-    cycles = {
-        item.use.future.receipt.cycle_time
-        for item in inputs.values()
-        if isinstance(item.use.future, FutureWeatherUse)
-    }
-    if len(cycles) > 1:
-        raise ConfigurationError("selected group weather cannot mix source cycles")
-    cycle = next(iter(cycles), None)
+    cycle = require_common_weather_cycle(item.use for item in inputs.values())
     return ForecastProvenance(
         nwp_cycle_reference_time=cycle,
         nwp_cycle_source=NwpCycleSource.RUNOFF_ONLY
