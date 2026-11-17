@@ -6580,6 +6580,22 @@ legacy score phases remain separate until their coordinated M2d migration.
 
 ## Configured operational daily weather
 
+The daily reducer and native IFS support helpers accept an explicit daily
+`TimeGrid`; omitted arguments retain UTC midnight. They can qualify an 18:00–18:00
+period without changing native source timestamps. Input samples must already belong
+to the requested period; out-of-period samples are rejected, not silently discarded.
+Support must tile both period edges and stay within the source horizon, including
+for temperature-only reductions. A terminal temperature point does not imply
+coverage beyond the forecast horizon. A boundary cutting through a rainfall interval
+cannot be satisfied by shifting or splitting that interval.
+
+Temperature remains an equal-weight snapshot mean. A period spanning the IFS
+3h/6h transition has uneven temporal sampling; this is not a duration-weighted
+mean and must be considered during replacement-model qualification. These helper
+capabilities do not enable a new live grid: v1 days/windows, requests, receipts,
+cache snapshots and gap evidence retain their existing UTC-only contract. M2a1
+does not complete the receipt/gap integration needed by M2a.
+
 `types/operational_weather.py` defines immutable contributing samples, complete
 UTC days and contiguous paired P/T windows for the explicit combined-feed route.
 The qualified contract uses START-labelled incremental precipitation (mm, SUM)

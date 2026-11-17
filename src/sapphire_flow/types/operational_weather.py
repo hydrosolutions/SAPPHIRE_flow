@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.time_grid import TimeGrid
 from sapphire_flow.types.weather_gap import WeatherGapFill, WeatherGapMethod
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 OPERATIONAL_WEATHER_POLICY = "recap-start-utc-daily-v1"
 QUALIFIED_SOURCE_REVISION = "ceff18d099b277d6e237c2cb81fe2068a85d06e5"
+UTC_DAILY_WEATHER_GRID = TimeGrid(step=timedelta(days=1), phase=timedelta(0))
 
 
 class OperationalWeatherCoverageError(ValueError):
@@ -54,6 +56,16 @@ def require_midnight(value: UtcDatetime) -> None:
     require_utc(value)
     if any((value.hour, value.minute, value.second, value.microsecond)):
         raise ValueError("operational daily weather requires UTC midnight")
+
+
+def require_daily_grid_boundary(value: UtcDatetime, grid: TimeGrid) -> None:
+    require_utc(value)
+    if grid.step != timedelta(days=1):
+        raise ValueError("daily weather requires a 24-hour time grid")
+    if grid.phase == timedelta(0):
+        require_midnight(value)
+    elif grid.floor(value) != value:
+        raise ValueError("daily weather start does not match the declared grid")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -166,7 +178,10 @@ def daily_weather_value(
     day: UtcDatetime,
     samples: tuple[OperationalWeatherSample, ...],
     parameter: str,
+    *,
+    grid: TimeGrid = UTC_DAILY_WEATHER_GRID,
 ) -> float | None:
+    require_daily_grid_boundary(day, grid)
     rows = sorted(
         (row for row in samples if row.parameter == parameter),
         key=lambda row: row.valid_time,
@@ -175,13 +190,19 @@ def daily_weather_value(
     cursor = day
     missing = False
     for row in rows:
+        if not day <= row.valid_time < end:
+            raise ValueError("daily weather sample lies outside the requested period")
         if row.valid_time > cursor:
             missing = True
         if row.valid_time < cursor:
             raise ValueError("daily weather has an overlap or duplicate")
         cursor = row.valid_time + row.sample_step()
         if cursor > end:
-            raise ValueError("daily weather sample crosses a UTC day boundary")
+            raise ValueError("daily weather sample crosses the period boundary")
+        if row.source is OperationalWeatherSource.IFS and cursor > (
+            row.source_run + timedelta(hours=360 if row.source_run.hour == 0 else 72)
+        ):
+            missing = True
     if missing or cursor < end:
         return None
     value = math.fsum(row.value for row in rows)

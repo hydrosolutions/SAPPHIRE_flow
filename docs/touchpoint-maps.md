@@ -1088,6 +1088,14 @@ M2e owns replacing the activation restriction with artifact qualification.
 Do not wire one live consumer to a nonzero grid independently, round legacy skill
 phases, or derive a hydrological boundary from `default_display_timezone`.
 
+**Weather period helpers (M2a1):** `daily_weather_value` and the helpers in
+`services/recap_daily_weather.py` accept an explicit daily grid, preserving the
+midnight default. Check native interval edges and horizon limits, mixed-cadence
+snapshot means, original source-cycle identity and strict supplied-sample membership.
+No live caller opts into a nonzero grid yet. Keep v1 snapshots/receipts/gap evidence
+unchanged until their own reviewed migration; the canonical v1 window fixture
+in `tests/unit/store/test_operational_weather_codec.py` pins byte compatibility.
+
 **Hindcast FI station-code wiring:** after resolving its deployment-scoped station
 store and model, the hindcast flow uses the shared
 `model_registry.with_group_station_code_resolvers` helper before artifact loading.
