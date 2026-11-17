@@ -3064,8 +3064,8 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig: ...
 ```
 
 `load_recap_api_key` reads the `sapphire_dg_api_key` Docker secret file (default
-`/run/secrets/sapphire_dg_api_key`), falling back to the `RECAP_API_KEY` env var for
-local dev — never logged. `[adapters.recap_gateway]` TOML section is validated
+`/run/secrets/sapphire_dg_api_key`), then the file named by `RECAP_API_KEY_FILE`, then the
+`RECAP_API_KEY` env var for local dev — never logged. `[adapters.recap_gateway]` TOML section is validated
 independently of `[adapters.weather_forecast]`'s MeteoSwiss-only fields (Task 2C's
 `type` selector branches on this).
 
