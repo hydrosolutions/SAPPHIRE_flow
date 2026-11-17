@@ -76,10 +76,13 @@ def _parse_entry(code: str, entry: object) -> DeclaredTenant:
 
 
 def load_declared_tenants(
-    config_path: Path, overlay_paths: list[Path]
+    config_path: Path,
+    overlay_paths: list[Path],
+    *,
+    name_origins: dict[str, int] | None = None,
 ) -> tuple[DeclaredTenant, ...]:
     merged: dict[str, object] = {}
-    for path in (config_path, *overlay_paths):
+    for document, path in enumerate((config_path, *overlay_paths)):
         tenants = _read_tenants_table(path)
         if tenants is None:
             continue
@@ -94,6 +97,10 @@ def load_declared_tenants(
                 }
             else:
                 merged[code] = entry
+            if name_origins is not None and (
+                not isinstance(entry, dict) or "name" in entry
+            ):
+                name_origins[code] = document
     return parse_declared_tenants(merged)
 
 

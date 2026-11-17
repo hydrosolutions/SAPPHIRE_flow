@@ -87,6 +87,11 @@ stay in scope because they protect existing gates, not because they are hardenin
 1. **Profile.** `deploy/profiles/<name>.toml`, minimal schema: host, compose file list, build mode
    (`host-build` only in the MVP), health URL, profile-specific checks (e.g. overlay path
    resolved, backup-worker memory), required PR checks, allowed tracks.
+   These future host profiles must reference the separate agency manifests in
+   `deploy/profiles/agency/` rather than reuse their schema or copy scientific
+   settings. Agency selection currently describes desired configuration only;
+   it does not implement this plan's deployment command. See
+   [agency profiles](../deployment/profiles.md).
 2. **Command.** `tools/deploy.py <profile> --ref <sha|tag> --track test|release|hotfix`. Phases,
    each timed: lock -> preflight -> anchor -> update -> build -> up -> verify -> receipt. An
    interrupted run aborts and prints the manual recovery steps (resume is deferred).

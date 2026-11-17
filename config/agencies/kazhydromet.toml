@@ -1,0 +1,5 @@
+# INCOMPLETE: this is not a runnable agency configuration.
+# Supply agency choices listed in deploy/profiles/agency/kazhydromet.toml.
+# Do not use config.toml as an implicit base: its defaults are Swiss-specific.
+# Generic tuning may use existing neutral typed defaults only after validation.
+# No data sources, stations, models, display timezone or hydrological day assumed.

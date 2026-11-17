@@ -1,0 +1,30 @@
+# Synthetic desired-state example. Copy outside git and edit all local paths.
+# The resolver reads references only; this file does not configure the host.
+schema_version = 1
+agency_profile = "nepal"
+project_name = "agency-example"
+project_directory = "/srv/sapphire-example"
+# Complete list, not additions to the agency recipe. Keep every installed overlay.
+compose_files = [
+  "/srv/sapphire-example/docker-compose.yml",
+  "/srv/sapphire-example/docker-compose.nepal-cloud.yml",
+]
+
+[environment]
+# Obtain the intended release version and full source revision from the reviewed
+# release/build record; VERSION is its matching image tag. These are placeholders,
+# not working defaults. See docs/deployment/actions-staging-release.md.
+# VERSION = "<reviewed image tag>"
+# SAPPHIRE_RELEASE_VERSION = "<reviewed release version>"
+# SAPPHIRE_SOURCE_REVISION = "<full 40-character lowercase source SHA>"
+SAPPHIRE_DOMAIN = "forecast.example.invalid"
+
+[secret_bindings]
+db_password = "/srv/sapphire-example/secrets/db_password"
+sapphire_api_db_password = "/srv/sapphire-example/secrets/sapphire_api_db_password"
+sapphire_worker_db_password = "/srv/sapphire-example/secrets/sapphire_worker_db_password"
+sapphire_backup_db_password = "/srv/sapphire-example/secrets/sapphire_backup_db_password"
+access_token_pepper = "/srv/sapphire-example/secrets/access_token_pepper"
+# These are runtime file references, never secret values or manager locators.
+# Build tokens retain the existing BuildKit environment-name requirements;
+# no file binding here supplies or validates them.

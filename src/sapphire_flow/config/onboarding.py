@@ -262,7 +262,11 @@ def load_onboarding_config(
     path = Path(config_path)
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
-    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
+    return parse_onboarding_config(load_merged_toml(path, _resolve_overlay_paths()))
+
+
+def parse_onboarding_config(raw: dict[str, object]) -> OnboardingConfig | None:
+    data = cast("dict[str, Any]", raw)
 
     section = data.get("onboarding")
     if section is None:

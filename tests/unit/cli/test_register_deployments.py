@@ -1027,3 +1027,17 @@ class TestBackupDeploymentRegistration:
         defaults = backup_database_flow.parameters.properties
         assert defaults["backup_dir"]["default"] == "/data/backups"
         assert defaults["keep_count"]["default"] == 7
+
+
+def test_explicit_spec_environment_ignores_ambient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sapphire_flow.cli.register_deployments import build_deployment_specs
+
+    baseline = build_deployment_specs({})
+    monkeypatch.setenv("SCHEDULE_FORECAST_CYCLE", "7 * * * *")
+    monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "collect-bafu-forecasts")
+    assert build_deployment_specs({}) == baseline
+    runtime = {spec.deployment_name: spec for spec in _build_specs()}
+    assert runtime["forecast-cycle"].cron == "7 * * * *"
+    assert "collect-bafu-forecasts" not in runtime

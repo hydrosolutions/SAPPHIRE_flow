@@ -1,0 +1,21 @@
+schema_version = 1
+name = "kazhydromet"
+state = "incomplete"
+base_config = "../../../config/agencies/kazhydromet.toml"
+overlays = []
+# No host recipe, stations, sources, models or time convention is assumed.
+compose_files = []
+required_inputs = [
+  "tenant_identity", "observation_source", "forecast_weather_source",
+  "historical_weather_source", "stations_and_identifiers", "rating_units_datums",
+  "qc_danger_season_policy", "models_and_artifacts", "training_time_conventions",
+  "display_timezone_calendar", "hydrological_day_grid", "schedules",
+  "hosting_paths_domain_ports", "secret_requirements_and_bindings",
+]
+
+# Leave parser/file references unset until the agency's delivery format is known.
+# Example shape only (not an invented station or rating file):
+# [[inputs]]
+# purpose = "stations"
+# parser = "stations_toml"
+# path = "/private/agency/stations.toml"
