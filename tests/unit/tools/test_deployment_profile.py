@@ -4,7 +4,6 @@ import copy
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -55,10 +54,6 @@ def installation(
 
 @pytest.fixture
 def compose_render(tmp_path: Path) -> tuple[Any, Any, dict[str, Any]]:
-    if not shutil.which("docker-compose") and not shutil.which("docker"):
-        if os.environ.get("CI"):
-            pytest.fail("Compose is required in CI")
-        pytest.skip("Compose is unavailable locally")
     selected = select_deployment_profile(
         name="swiss", installation_file=installation(tmp_path), ambient_environment={}
     )
@@ -765,3 +760,59 @@ class TestComposeWiring:
             item.code == "INPUT_REQUIRED" and item.field == "agency_inputs"
             for item in evaluated.diagnostics
         )
+
+    @pytest.mark.parametrize(
+        "path_candidate", ["missing", "broken", "old", "generic_help"]
+    )
+    def test_system_compose_plugin_fallback_preserves_isolation(
+        self,
+        compose_render: tuple[Any, Any, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+        path_candidate: str,
+    ) -> None:
+        selected, _, rendered = compose_render
+        system = "/usr/libexec/docker/cli-plugins/docker-compose"
+        commands: list[list[str]] = []
+
+        def which(name: str, *, path: str | None = None) -> str | None:
+            assert name == "docker-compose"
+            if path is None:
+                return (
+                    None if path_candidate == "missing" else "/synthetic/docker-compose"
+                )
+            assert path in {
+                "/usr/local/lib/docker/cli-plugins",
+                "/usr/local/libexec/docker/cli-plugins",
+                "/usr/lib/docker/cli-plugins",
+                "/usr/libexec/docker/cli-plugins",
+            }
+            return system if path == "/usr/libexec/docker/cli-plugins" else None
+
+        def capture(
+            command: list[str], environment: dict[str, str], directory: Path
+        ) -> bytes:
+            commands.append(command)
+            assert environment["HOME"] == "/dev/null"
+            assert environment["DOCKER_CONFIG"] == "/dev/null"
+            if command[0] == "/synthetic/docker-compose":
+                assert command[1:] == ["config", "--help"]
+                if path_candidate == "broken":
+                    raise tool.ProfileError(
+                        "COMPOSE_RENDER_FAILED", "synthetic failure"
+                    )
+                return (
+                    b"Usage: docker [OPTIONS] COMMAND"
+                    if path_candidate == "generic_help"
+                    else b"config without required option"
+                )
+            assert command[0] == system
+            if command[1:] == ["config", "--help"]:
+                return b"Usage: docker compose config; --no-env-resolution"
+            assert command[-4:] == ["config", "--format", "json", "--no-env-resolution"]
+            assert command[command.index("--env-file") + 1] == "/dev/null"
+            return json.dumps(rendered).encode()
+
+        monkeypatch.setattr(tool.shutil, "which", which)
+        monkeypatch.setattr(tool, "_capture", capture)
+        assert tool.render_compose(selected) == rendered
+        assert commands[-1][0] == system

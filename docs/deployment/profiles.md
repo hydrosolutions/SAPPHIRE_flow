@@ -20,13 +20,17 @@ returns 1 for invalid/inconsistent inputs, 2 for pending evidence, and 0 only fo
 fully evidenced `PASS_OFFLINE`. None of these checks proves live host state.
 `show` does not run Compose. `check` requires a complete explicit installation and
 consistent release identity before rendering. It uses the installed Compose CLI
-(`docker-compose`, otherwise `docker compose`) with a clean environment, no project
+(`docker-compose` on `PATH` or in Docker’s standard system plugin directories) with a clean environment, no project
 `.env`, no service `env_file` resolution, isolated Docker configuration, and bounded
 in-memory output. All Compose profiles are included **for inspection only**.
 Includes/extends remain unsupported evidence; no services are started.
-Compose must be discoverable as a trusted standalone `docker-compose` on `PATH`,
-or as a system-discoverable `docker compose` plugin under the isolated environment.
-User Docker configuration/plugin directories are not inspected. A plugin available
+Compose must be discoverable as a trusted `docker-compose` on `PATH` or in a
+[standard system plugin directory](https://github.com/docker/cli/blob/master/cli-plugins/manager/manager_unix.go): `/usr/local/lib/docker/cli-plugins`,
+`/usr/local/libexec/docker/cli-plugins`, `/usr/lib/docker/cli-plugins`, or
+`/usr/libexec/docker/cli-plugins`. The checker invokes that binary directly, avoiding
+Docker CLI discovery under an isolated configuration path. An unavailable or older
+PATH candidate does not mask a compatible system plugin. User Docker
+configuration/plugin directories are not inspected. A plugin available
 only through the user's Docker configuration may need a standalone executable on
 `PATH`. Capability detection requires `config --no-env-resolution`; the checker
 reports missing discovery separately from missing capability and render failure.

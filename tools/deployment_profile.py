@@ -237,28 +237,44 @@ def render_compose(selection: ProfileSelection) -> dict[str, Any]:
         raise ProfileError(
             "COMPOSE_INPUT_INVALID", "An explicit Compose input cannot be parsed."
         ) from None
-    executable = shutil.which("docker-compose")
-    command = (
-        [executable] if executable else [shutil.which("docker") or "docker", "compose"]
-    )
     environment = {
         "PATH": os.defpath,
         "HOME": "/dev/null",
         "DOCKER_CONFIG": "/dev/null",
         **dict(installation.environment),
     }
-    try:
-        capability = _capture(
-            [*command, "config", "--help"], environment, installation.project_directory
+    # Docker CLI can stop discovery on ENOTDIR beneath /dev/null. Invoke only
+    # Compose itself: PATH or Docker's fixed system plugin locations, never ~/.docker.
+    candidates = [shutil.which("docker-compose")]
+    candidates.extend(
+        shutil.which("docker-compose", path=directory)
+        for directory in (
+            "/usr/local/lib/docker/cli-plugins",
+            "/usr/local/libexec/docker/cli-plugins",
+            "/usr/lib/docker/cli-plugins",
+            "/usr/libexec/docker/cli-plugins",
         )
-    except ProfileError:
+    )
+    command: list[str] = []
+    failure_code = "COMPOSE_UNAVAILABLE"
+    for executable in dict.fromkeys(path for path in candidates if path is not None):
+        try:
+            capability = _capture(
+                [executable, "config", "--help"],
+                environment,
+                installation.project_directory,
+            )
+        except ProfileError:
+            continue
+        if b"--no-env-resolution" in capability:
+            command = [executable]
+            break
+        failure_code = "COMPOSE_CAPABILITY_MISSING"
+    if not command:
         raise ProfileError(
-            "COMPOSE_UNAVAILABLE", "Expose a standalone Compose executable on PATH."
-        ) from None
-    if b"--no-env-resolution" not in capability:
-        raise ProfileError(
-            "COMPOSE_CAPABILITY_MISSING",
-            "Compose must support config --no-env-resolution.",
+            failure_code,
+            "A trusted Compose executable supporting config --no-env-resolution "
+            "must be installed on PATH or in a standard system plugin directory.",
         )
     command += [
         "--profile",
