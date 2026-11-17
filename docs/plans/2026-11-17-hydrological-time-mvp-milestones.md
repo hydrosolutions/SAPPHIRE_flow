@@ -563,8 +563,200 @@ Recap fixture, cache/proof/evidence, gap filling and forecast flows. Codex separ
 ran the 14 new tests successfully. The mixed-window canonical hash measured before
 implementation on `e5fa58ee` matches exactly. Changed-file Ruff lint/format,
 changed-module Pyright and whitespace checks passed. Full-suite CI remains required
-before merge. Release intent advances once to 0.1.1143. Full review reports remain
+before merge. PR #539 subsequently passed full CI and the owner merged it as `d777d8b2` on 17 Nov.
+Release intent advances once to 0.1.1143. Full review reports remain
 local. M2a is still incomplete; no live grid switch or server deployment occurred.
+
+#### M2a3 — period identity through selected-weather evidence (READY)
+
+Base: merged M2a2 PR #539, `d777d8b2ed4cf68b171b7c7a7b6e86d9067fbc0c`.
+This is the integration step, not another stand-alone reduction helper. The
+representation and integration decisions below were settled through independent
+review before this bounded implementation was marked READY.
+
+**Grid authority.** Deployment/station configuration declares the requested
+hydrological grid; the model and its trained artifact declare which input/target
+grid they support. One cannot silently override the other. Resolve one compatible
+grid per model assignment and pass that value through training, live forecasting,
+hindcasting and verification. A different deployment origin requires a compatible
+replacement/retrained artifact, not relabelling its timestamps. Group assignments
+require a common compatible grid. This preserves M0's owner-confirmed UTC basis for
+current aquacast and the agreed future Nepal 18:00 UTC day.
+
+The pinned FI v0.1.20 (`ad19597e`) declares `dynamic` time steps, input aggregation
+and output cadence/offset, but no model training-day origin. Its opaque training
+config is not a portable declaration SAP3 may interpret as a new FI field. Do not
+add a SAP3-only model timezone key or infer the training origin from display zone,
+observed timestamp phase, model name or artifact creation time. Co-design the
+missing model/artifact declaration upstream. This blocks model-driven nonzero-grid
+activation, not the independent evidence-format design or current UTC operation.
+
+**Distinct times.** The v2 design must represent the chosen grid and physical
+period starts/ends separately from the forecast's existing issue identity,
+weather eligibility cutoff, source cycle and refresh/publication instants. Preserve
+all source timestamps in UTC. A model period boundary must not replace an issue
+instant to satisfy an existing midnight validator. M2b/M2c own the concrete mapping
+from a forecast request to model periods; M2a3 accepts explicit bounds/cutoffs.
+Cycle eligibility and the 60-hour elapsed-age check use their existing actual-time
+meaning, never a rounded period label. Period end labels are publication work in
+M2d, not a second shift applied during weather reduction.
+
+Concrete boundary fixture: the Nepal day named 17 Nov is `[16 Nov 18:00,
+17 Nov 18:00)` even with an unchanged 17 Nov 00:00 issue identity. A 17 Nov 00:00
+IFS run cannot cover its first six hours; a 16 Nov 00:00 run can, subject to the
+actual elapsed-age limit and full native support. Rejecting all native stamps
+before issue time, or resetting the issue to 16 Nov 18:00, is not a resolution.
+This fixture specifies support semantics, not a change to scheduling/cycle policy.
+
+**Versioned persistence contract.** Keep existing v1 DTOs and
+canonical byte generation unchanged, including sample order. Add an explicitly
+versioned v2 representation carrying the grid and physical period identity. Verify
+old bytes/hashes through the v1 reader before any conversion into a common runtime
+view; never regenerate an old digest from the new representation. Unknown versions
+and changed grid/bounds must fail verification. Avoid parallel implementations of
+rainfall reduction, gap methods or weather eligibility: version-specific parsing
+ends at a shared typed projection boundary.
+
+The audit found two real schema gates: cache payload version is constrained to 1
+in migration 0081 and the forecast weather-evidence marker to 1 in 0082. A v2 writer
+therefore needs a coordinated additive migration, SQLAlchemy metadata, store,
+codec, forecast capture/restore and API reader update. Do not merely relax the
+constraints before readers exist. Old forecast evidence remains immutable; no
+historical rewrite, destructive cache cleanup, privilege expansion or live database
+migration is part of plan preparation.
+
+Use grid-specific cache projections with the existing station/binding SQL key.
+The current binding descriptors already hash policy and source-contract revision;
+v2 adds explicit daily step/phase to its versioned descriptor. Preserve the exact
+v1 descriptor and key fields. Distinct grids therefore have distinct cache rows
+without a new key column or a native-support cache redesign. Receipt membership,
+retention and request matching must additionally validate the explicit v2 grid;
+the digest is not a substitute for those checks. Native forecast archive rows
+remain shared and retain their existing IDs/source cycles.
+
+**Coherent runtime path.** Thread physical periods through source refresh,
+`FutureWeatherScope.request` and receipt reconstruction, past/future projection,
+selected input assembly and captured as-used evidence. Reuse M2a2 to aggregate
+native samples across provider UTC dates. Keep NWP cycles and native record IDs
+unchanged. Retained donors must match station, binding, parameter, source cycle,
+grid and complete physical support, with the current verification/eligibility
+rules. A missing target period is a gap only after native support is projected;
+a complete 18:00 window spanning UTC dates must produce zero artificial fills.
+
+Gap fills/endpoints and the five-day warning cutoff use the same declared daily
+grid and period identities. Preserve the existing isolated-gap methods and limits:
+linear temperature/radiation, qualified stored rainfall donor or isolated-day
+linear fallback; long gaps remain gaps. A fill exactly five days old is not a
+recent-gap warning. Old-v1 UTC forecasts must retain their existing messages and
+quality classification. Preserve incomplete/fatal refresh refusal and stale reuse
+rules; a new grid is not permission to loosen them.
+
+**Work units after design review:** (1) versioned representation/read compatibility
+and migration, (2) refresh/projection/receipt integration, (3) gap evidence and
+quality cutoff, (4) one integrated fixture through capture/restore/API. One owner
+implements these sequentially on one branch; do not land a writable v2 path with
+incomplete readers or a nonzero-grid input path that lacks its gap/evidence checks.
+Live config activation remains blocked until M2b–M2e and model qualification.
+
+**Acceptance:** old v1 golden bytes and restored evidence unchanged; v2 grid/bounds
+and source identities survive store/read/capture/restore; mismatched grids cannot
+reuse each other's cache/receipts; 18:00 ERA5/IFS windows cross UTC dates without
+false gaps; isolated/multiple gaps and exactly-five-day warning boundary; donor
+eligibility and 60-hour age unaffected; station/group paths agree; current UTC
+end-to-end behavior preserved. Full tests/CI and independent patch review before
+owner merge. No deployment or scientific adoption is included.
+
+**Resolved representation and time seam.**
+- V2 wire grid: required integer `step_seconds = 86400` and
+  `phase_offset_seconds` (whole minutes, `0 <= phase < step`), parsed into the
+  existing `TimeGrid`. No default origin for an incomplete v2 payload.
+- V2 past evidence: UTC physical `start`/`end`, ordered existing
+  `OperationalWeatherPeriod` values and original samples. Every period must match
+  the root grid and tile the requested window. No second runtime period hierarchy.
+- V2 future requests: explicit ordered contiguous target-period starts for each
+  feature/member; receipts carry both that period scope and the corresponding
+  native support/row proof. Different feature horizons remain independent.
+- Temporal context: unchanged `issue_time`; separately named weather eligibility
+  cutoff; explicit past bounds and future starts; existing actual refresh/use
+  instants. Past end equals the first future-period start for a contiguous model
+  request, not necessarily issue time. Past end must not follow eligibility cutoff.
+  The cutoff cannot exceed issue time. Require source runs/cycles not to exceed
+  that cutoff, and at actual use require `cycle <= min(cutoff, used_at)` and
+  `used_at - cycle <= 60 hours`. This also preserves the existing final
+  `min(issue_time, used_at)` ceiling; an earlier cutoff cannot admit a later cycle.
+- Gap recency: `fill.start > past_end - 5 days` is recent (within the requested past
+  window); equality is old. This retains v1 behavior where past end equals issue.
+- Keep all existing v1 classes/fields, fingerprints and serializers unchanged,
+  including nested cache keys/attempts: forecast capture serializes these too.
+  V2 gets explicit version-specific wire/domain representations only where those
+  shapes change. Share reduction, native proof, gap calculations and typed period
+  projection; do not duplicate a complete runtime service graph.
+- V1 verification uses the original representation before read-only grid-zero
+  projection. V2 snapshot/completion/capture hashes cover version, grid, bounds and
+  temporal context. Native-record `row_sha256` stays unchanged; validate target
+  support separately and bind its scope in completion/captured-evidence hashes.
+- Keep current phase-zero callers on the v1 writer. The v2 reader/writer path is
+  exercised by isolated tests only until the model/activation gates are met.
+  Unknown versions fail; a v2 payload cannot enter a v1 decoder or writer.
+
+**Integration decisions from final review.**
+- Keep v1 gap fill/endpoint types and serializers unchanged. V2 fills carry
+  explicit physical bounds checked against the root grid/past window. Share the
+  calculation and support-validation core; v1 entry points keep their defaults and
+  outputs. A donor's 00:00 UTC source cycle remains a source-cycle rule, not the
+  hydrological origin. Require complete single-cycle native support, cycle at or
+  before the target start and eligibility cutoff, and existing QC/proof checks.
+- Use evidence marker 2 exactly for v2 weather-use payloads; group/derived payloads
+  must use one compatible version/grid. Update capture, strict restore, validation,
+  final issuance checks and API consumers together. Unknown/mixed versions cannot
+  bypass checks. Use a shared cycle accessor so v2 still gets the final freshness
+  check. V1 gap parsing/validation remains exactly as it is today.
+- Separate the selector's first period start from its cycle ceiling. Preserve its
+  existing entry point as a UTC wrapper passing issue time for both; v2 passes the
+  declared period start and eligibility cutoff explicitly. Reuse the existing
+  grid-aware native support calculation.
+- Preserve the configured candidate order, cycle cadence and bounded walk-back
+  policy in `track_resolution.py`; Nepal continues selecting 00:00 UTC cycles.
+  Accept a candidate only when it covers the complete requested periods for every
+  required feature/member/station in the track, within cutoff and actual age limits.
+  A structurally non-covering candidate may advance through the existing bounded
+  candidate walk, but fatal authorization/configuration/integrity outcomes still
+  stop it. Do not substitute past-weather gap filling for incomplete future support.
+- V2 quality flags use the explicit consumed past end regardless of a caller's
+  issue label. Until M2d supplies human day labels, describe the filled UTC interval
+  explicitly rather than printing the UTC start date as a Nepal calendar day.
+  V1 message text and recency remain unchanged.
+- Stale reuse requires the same grid/binding and a snapshot issue/cutoff no later
+  than the consumer issue/cutoff, plus existing terminal/proof/coverage rules.
+  Project only the requested physical bounds. Do not require the entire retained
+  snapshot's end to precede the requested end: a larger valid snapshot may cover a
+  requested subwindow. A later source context cannot masquerade as older evidence.
+- Match decoded cache version/grid to the requested v1/v2 descriptor. Keep strict
+  version dispatch and add a migration downgrade refusal when v2 rows exist.
+
+Review disposition: Codex and Claude initially held implementation readiness for
+concrete schema/time-seam decisions. Codex's repository review resolved the choices
+above and confirmed the FI issue is appropriate. Reject two stale/narrow Claude
+claims: `recap_daily_support` already accepts a grid, and adding fields to an
+existing cache key changes captured forecast evidence. The versioned fingerprint
+avoids that change and the proposed new PK column. Codex's final condition (apply
+the explicit cutoff to cycles) is included. Claude approved representation/read
+work and conditioned the remaining units on the five integration decisions now
+stated above. Its suggested stale snapshot-end comparison is replaced by the
+source-context comparison and exact subwindow projection, preserving reuse of
+larger valid snapshots. No new owner policy decision is required. The orchestrator
+sets this bounded M2a3 implementation READY; FI/model activation remains blocked.
+Full review reports remain local.
+
+#### Upstream FI handoff — model training grid
+
+Filed after independent repository review as
+[ForecastInterface #12](https://github.com/hydrosolutions/ForecastInterface/issues/12).
+It asks for a portable model/artifact training-grid declaration, related to #7
+(target temporal meaning) and #9 (cadence/UTC validation). The upstream issue owns
+the proposal and acceptance examples; do not duplicate a local FI API here.
+Track the resolving version and adoption step before model-driven grid activation.
+Current UTC operation and evidence-format work do not depend on its resolution.
 
 ### M2b — shared training and operational assembly
 
@@ -714,7 +906,7 @@ protected backup commissioning and email warnings. Existing security/provenance
 rules remain in force; deferring hardening does not authorize removing them.
 
 ```json
-{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a":{"status":"DRAFT","depends_on":["M2a2"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
+{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a3":{"status":"READY","depends_on":["M2a2"]},"M2a":{"status":"DRAFT","depends_on":["M2a3"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
 ```
 
 ## Review state
