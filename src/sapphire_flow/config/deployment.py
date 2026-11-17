@@ -4,10 +4,17 @@ import os
 import re
 from datetime import date, timedelta  # noqa: TC003
 from pathlib import Path  # noqa: TC003
-from typing import Any, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self, cast
 from uuid import UUID  # noqa: TC003 - Pydantic resolves this field at runtime.
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
 
 from sapphire_flow.config.daily_evaluation import DailyEvaluationConfig  # noqa: TC001
 from sapphire_flow.config.evaluation_forecasts import (
@@ -38,11 +45,13 @@ from sapphire_flow.types.ids import (
     FALLBACK_MODEL_IDS,
     FALLBACK_PRIORITY_THRESHOLD,
     ModelId,
+    StationId,
 )
 from sapphire_flow.types.model_onboarding import (
     SUPPORTED_SKILL_METRICS,
     SkillGateMetric,
 )
+from sapphire_flow.types.time_grid import TimeGrid
 
 # Priority assigned to a model that has no entry in [model_priorities]. Sits
 # between skill models (lower) and fallbacks (higher), so an unlisted new model
@@ -96,7 +105,67 @@ class InputQualityConfig(BaseModel):
     forcing_recent_steps: int = Field(default=2, ge=0)
 
 
+def _parse_daily_grid_origin(value: object) -> timedelta:
+    if isinstance(value, timedelta):
+        phase = value
+    elif isinstance(value, str) and re.fullmatch(
+        r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value
+    ):
+        hours, minutes = value.split(":")
+        phase = timedelta(hours=int(hours), minutes=int(minutes))
+    else:
+        raise ValueError("daily grid origin must be a UTC HH:MM value")
+    return TimeGrid(step=timedelta(days=1), phase=phase).phase
+
+
+def _format_daily_grid_origin(value: timedelta) -> str:
+    minutes = value // timedelta(minutes=1)
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+DailyGridOrigin = Annotated[
+    timedelta,
+    BeforeValidator(_parse_daily_grid_origin),
+    PlainSerializer(_format_daily_grid_origin, return_type=str),
+]
+
+
 class DeploymentConfig(BaseModel):
+    # None preserves legacy config loading without declaring an implicit UTC grid.
+    daily_grid_origin: DailyGridOrigin | None = None
+    daily_grid_origin_overrides: dict[StationId, DailyGridOrigin] = Field(
+        default_factory=lambda: dict[StationId, timedelta]()
+    )
+
+    @model_validator(mode="after")
+    def _validate_daily_grid_activation(self) -> Self:
+        if self.daily_grid_origin is None and self.daily_grid_origin_overrides:
+            raise ValueError(
+                "daily grid overrides require an explicit daily_grid_origin"
+            )
+        origins = [self.daily_grid_origin, *self.daily_grid_origin_overrides.values()]
+        if any(origin is not None and origin != timedelta(0) for origin in origins):
+            raise ValueError(
+                "Nonzero daily grid origins cannot be activated before the coordinated "
+                "time-grid/model cutover; current deployments must declare 00:00"
+            )
+        return self
+
+    def time_grid(
+        self, *, time_step: timedelta, station_id: StationId | None = None
+    ) -> TimeGrid:
+        if self.daily_grid_origin is None:
+            raise ValueError(
+                "An explicit daily_grid_origin is required to resolve a time grid"
+            )
+        phase = self.daily_grid_origin
+        if station_id is not None:
+            phase = self.daily_grid_origin_overrides.get(station_id, phase)
+        return TimeGrid(
+            step=time_step,
+            phase=phase if time_step == timedelta(days=1) else timedelta(0),
+        )
+
     operational_weather: OperationalWeatherConfig = Field(
         default_factory=OperationalWeatherConfig
     )

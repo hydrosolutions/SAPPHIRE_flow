@@ -8,6 +8,9 @@
 # has no write authority (below), and the BAFU collectors are not registered
 # (SAPPHIRE_SKIP_DEPLOYMENTS, set on `init` in the compose overlay).
 
+# Current UTC-trained models; the target 18:00 grid is not activated here.
+daily_grid_origin = "00:00"
+
 # Nepal display timezone (base: Europe/Zurich).
 default_display_timezone = "Asia/Kathmandu"
 

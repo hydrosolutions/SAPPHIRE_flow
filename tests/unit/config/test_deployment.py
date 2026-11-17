@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pydantic
 import pytest
@@ -10,6 +11,7 @@ from sapphire_flow.config.deployment import (
     DeploymentConfig,
     _resolve_env_vars,
     load_config,
+    parse_deployment_config,
 )
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.domain import DangerLevelDefinition, SeasonDefinition
@@ -17,8 +19,103 @@ from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirecti
 from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     NWP_RAINFALL_RUNOFF_MODEL_ID,
+    StationId,
 )
+from sapphire_flow.types.time_grid import TimeGrid
 from tests.conftest import make_deployment_config
+
+
+class TestDeclaredTimeGrid:
+    def test_declared_origins_round_trip_through_evidence_json(self) -> None:
+        station = "00000000-0000-0000-0000-000000000447"
+        config = make_deployment_config(
+            daily_grid_origin="00:00", daily_grid_origin_overrides={station: "00:00"}
+        )
+        snapshot = config.model_dump(mode="json")
+        assert snapshot["daily_grid_origin"] == "00:00"
+        assert snapshot["daily_grid_origin_overrides"] == {station: "00:00"}
+        assert DeploymentConfig.model_validate(snapshot) == config
+        assert DeploymentConfig.model_validate_json(config.model_dump_json()) == config
+
+    def test_legacy_config_loads_but_cannot_resolve_an_undeclared_grid(self) -> None:
+        config = make_deployment_config()
+        assert config.daily_grid_origin is None
+        with pytest.raises(ValueError, match="explicit daily_grid_origin"):
+            config.time_grid(time_step=timedelta(days=1))
+
+    @pytest.mark.parametrize("value", ["0:00", "24:00", "18:60", "00:00:00", " UTC", 0])
+    def test_rejects_invalid_origin(self, value: object) -> None:
+        with pytest.raises(pydantic.ValidationError, match="UTC HH:MM"):
+            make_deployment_config(daily_grid_origin=value)
+
+    @pytest.mark.parametrize("value", ["18:00", "18:15", "06:00", "00:01"])
+    def test_nonzero_activation_remains_blocked(self, value: str) -> None:
+        with pytest.raises(pydantic.ValidationError, match="cannot be activated"):
+            make_deployment_config(daily_grid_origin=value)
+
+    def test_parses_uuid_override_and_resolves_declared_grids(self) -> None:
+        station = StationId(UUID("00000000-0000-0000-0000-000000000447"))
+        config = make_deployment_config(
+            daily_grid_origin="00:00",
+            daily_grid_origin_overrides={str(station): "00:00"},
+        )
+        assert config.daily_grid_origin_overrides == {station: timedelta(0)}
+        for step in (timedelta(days=1), timedelta(hours=3)):
+            assert config.time_grid(time_step=step, station_id=station) == TimeGrid(
+                step=step, phase=timedelta(0)
+            )
+
+    @pytest.mark.parametrize(
+        ("origin", "overrides", "message"),
+        [
+            (
+                None,
+                {"00000000-0000-0000-0000-000000000447": "00:00"},
+                "explicit daily_grid_origin",
+            ),
+            ("00:00", {"447": "00:00"}, "valid UUID"),
+            (
+                "00:00",
+                {"00000000-0000-0000-0000-000000000447": "18:00"},
+                "cannot be activated",
+            ),
+        ],
+    )
+    def test_rejects_invalid_override(
+        self, origin: str | None, overrides: dict[str, str], message: str
+    ) -> None:
+        with pytest.raises(pydantic.ValidationError, match=message):
+            make_deployment_config(
+                daily_grid_origin=origin, daily_grid_origin_overrides=overrides
+            )
+
+    def test_resolver_rejects_unsupported_step(self) -> None:
+        config = make_deployment_config(daily_grid_origin="00:00")
+        with pytest.raises(ValueError, match="divide 24 hours"):
+            config.time_grid(time_step=timedelta(hours=7))
+
+    @pytest.mark.parametrize(
+        "overlays",
+        [
+            [],
+            ["mac-mini.toml"],
+            ["staging-5-stations.toml"],
+            ["nepal-cloud.toml", "nepal-daily-weather.toml"],
+        ],
+    )
+    def test_shipped_deployments_explicitly_retain_utc(
+        self, overlays: list[str]
+    ) -> None:
+        from sapphire_flow.config._overlay import load_merged_toml
+
+        root = Path(__file__).resolve().parents[3]
+        raw = load_merged_toml(
+            root / "config.toml", [root / "config/overlays" / p for p in overlays]
+        )
+        config = parse_deployment_config(raw)
+        assert config.time_grid(time_step=timedelta(days=1)) == TimeGrid(
+            step=timedelta(days=1), phase=timedelta(0)
+        )
 
 
 class TestModelCombinationStrategyConfig:

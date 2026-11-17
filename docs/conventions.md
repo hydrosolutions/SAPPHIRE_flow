@@ -12,6 +12,29 @@ belong to the globally installed skills; project safeguards are in `AGENTS.md`.
 
 ## Python implementation and tests
 
+### Declared time grids
+
+`TimeGrid(step, phase)` describes fixed boundaries in UTC. Phase is explicitly
+declared in whole minutes from UTC midnight; it is not derived from a display
+time zone. Steps are positive divisors of 24 hours. For example, the target Nepal
+grid is `(24h, 18h)`, while civil midnight is `(24h, 18h15m)`. Their 15-minute
+displacement is accepted for the documented preliminary comparison.
+
+Grid bounds describe physical `[start, end)` periods, independently of whether a
+value labels the period's start or end (Plans 258/267). Point observations retain
+their actual instants. Nesting requires both divisible steps and compatible phases;
+it does not authorize interpolation or splitting rainfall totals. Use the declared
+parameter aggregation when the later assembly path coarsens compatible input.
+
+M1 adds pure helpers and configuration declarations only. Existing assembly and
+skill execution remain unchanged. `daily_grid_origin` is explicit in shipped
+configs; legacy configs may omit it, but cannot use the new grid resolver until
+they declare it. Nonzero deployment origins are rejected until the coordinated
+model/input/output cutover. Existing observed skill phases are separate legacy
+diagnostics, not values to round into the declared-grid type.
+
+### Python rules
+
 - Annotate function parameters and returns; use built-in generics and `|` unions.
 - Parse raw inputs into domain types at boundaries. Prefer frozen, keyword-only,
   slotted dataclasses for internal values; enforce invariants at construction.

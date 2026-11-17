@@ -1,4 +1,5 @@
 # Opt-in forecast-worker policy. This does not enable weather or a schedule.
+daily_grid_origin = "00:00"
 nwp_max_fallback_age_hours = 60.0
 nwp_grid_retention_days = 4
 
