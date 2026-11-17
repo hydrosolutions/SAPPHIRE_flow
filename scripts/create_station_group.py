@@ -26,18 +26,27 @@ forecasting — so a tool that "helpfully" promoted a station to make a group
 valid would cost observations permanently. A station that is not eligible is
 reported, never fixed.
 
+**Tenant and network are required, with no default.** ``--tenant`` names the
+tenant whose group is created or extended (it must be in the host's
+``[deployment] writable_tenants`` unless the host is ``global_admin``);
+``--network`` is the network the station codes belong to. Joining an existing
+group is the same command with the same ``--name`` and the new station code(s).
+
 Usage:
     # dry run (default) — prints what would change, writes nothing
     uv run python scripts/create_station_group.py \
+        --tenant sapphire --network bafu \
         --name swiss-cmal-small-pilot --station-code 2009 --station-code 2091
 
     # the real write
     uv run python scripts/create_station_group.py \
+        --tenant sapphire --network bafu \
         --name swiss-cmal-small-pilot --station-code 2009 --station-code 2091 --apply
 
     # inside the runtime image, the ENTRYPOINT must be explicit:
     #   docker compose exec -T prefect-worker /entrypoint.sh \
-    #       python /app/scripts/create_station_group.py --name ... --station-code ...
+    #       python /app/scripts/create_station_group.py --tenant ... --network ... \
+    #       --name ... --station-code ...
 
 Environment:
     DATABASE_URL   PostgreSQL connection string (required)
@@ -67,18 +76,17 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType
 from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import StationConfig, StationGroup
-from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    import sqlalchemy as sa
 
     from sapphire_flow.protocols.stores import AuditLogStore
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
-
-_DEFAULT_NETWORK = "bafu"
 
 
 class _StationLookup(Protocol):
@@ -256,6 +264,21 @@ def _render(plan: GroupPlan, *, applied: bool) -> str:
     return "\n".join(lines)
 
 
+def _known_networks(conn: sa.Connection, tenant_id: TenantId) -> list[str]:
+    """Networks that have stations in this tenant, for the unknown-code hint."""
+    import sqlalchemy as sa
+
+    from sapphire_flow.db.metadata import stations
+
+    rows = conn.execute(
+        sa.select(stations.c.network)
+        .where(stations.c.tenant_id == tenant_id)
+        .distinct()
+        .order_by(stations.c.network)
+    )
+    return [str(network) for (network,) in rows]
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Create a station group from station codes (Plan 262 T3a).",
@@ -271,7 +294,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="station code; repeat for each member",
     )
     parser.add_argument(
-        "--network", default=_DEFAULT_NETWORK, help=f"default: {_DEFAULT_NETWORK}"
+        "--tenant",
+        required=True,
+        metavar="CODE",
+        help="tenant code to write the group in, e.g. a sandbox tenant or chwrr",
+    )
+    parser.add_argument(
+        "--network",
+        required=True,
+        help="network of the station codes, e.g. bafu or research",
     )
     parser.add_argument("--description", default=None)
     parser.add_argument("--operator", default=None, help="recorded in the audit entry")
@@ -315,11 +346,16 @@ def main(argv: list[str] | None = None) -> int:
         with engine.connect() as conn:
             read_conn = conn.execution_options(isolation_level="AUTOCOMMIT")
             principal = resolve_run_principal(
-                PgTenantStore(read_conn), identity_config, operator=args.operator
+                PgTenantStore(read_conn),
+                identity_config,
+                tenant_code=args.tenant,
+                operator=args.operator,
             )
+            target_tenant_id = principal.tenant_id
+            assert target_tenant_id is not None  # explicit code always scopes
             enforce_tenant_isolation(
                 principal=principal,
-                target_tenant_id=DEFAULT_TENANT_ID,
+                target_tenant_id=target_tenant_id,
                 audit_log_store=PgAuditLogStore(read_conn) if args.apply else None,
                 event_type=AuditEventType.STATION_GROUP_CREATED,
                 target_type="station_group",
@@ -331,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                 name=args.name,
                 station_codes=args.station_codes,
                 network=args.network,
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=target_tenant_id,
                 station_store=PgStationStore(read_conn),
                 group_store=PgStationGroupStore(read_conn),
             )
@@ -342,6 +378,14 @@ def main(argv: list[str] | None = None) -> int:
                     "\nERROR: unusable station codes — nothing written.",
                     file=sys.stderr,
                 )
+                if plan.unresolved_codes:
+                    known = _known_networks(read_conn, target_tenant_id)
+                    print(
+                        f"Hint: no such station in network {args.network!r}; "
+                        "check --network. Networks with stations in tenant "
+                        f"{args.tenant!r}: {', '.join(known) or '(none)'}",
+                        file=sys.stderr,
+                    )
                 return 1
 
             if not args.apply:

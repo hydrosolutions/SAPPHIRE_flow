@@ -142,30 +142,18 @@ This one has a tool: `uv run python -m sapphire_flow.cli.import_basin_package --
 
 ## Step 5: group, weather scope, weather history
 
-**5a. Create a group (no tool for a non-Swiss tenant yet).** `scripts/create_station_group.py`
-writes only to the Swiss default tenant. A group can also be reused: to add a new station to an
-existing group, add its station id with `add_station_to_group` and list **all** members in the
-scope below (the scope must match the group exactly).
+**5a. Create a group, or add the station to an existing one.** One command, any tenant your
+host may write (`--tenant` and `--network` are required, there is no default). Dry run is the
+default; add `--apply` to write. Re-running with an existing group name adds only the missing
+members. Keep listing **all** members in the scope below (the scope must match the group exactly).
 
 ```bash
-uv run python - <<'EOF'
-import os
-from datetime import UTC, datetime
-from uuid import uuid4
-import sqlalchemy as sa
-from sapphire_flow.store.station_group_store import PgStationGroupStore
-from sapphire_flow.types.station import StationGroup
-from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
-CODE, NAME = "00001", "my-group"
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    tid, sid = c.execute(sa.text("select tenant_id,id from stations where code=:c"), {"c": CODE}).one()
-    g = StationGroupId(uuid4()); st = PgStationGroupStore(c)
-    st.store_group(StationGroup(id=g, name=NAME, station_ids=frozenset(), description="onboarding",
-        created_at=datetime.now(UTC), tenant_id=TenantId(tid)))
-    st.add_station_to_group(g, StationId(sid))
-    print("GROUP", g, "STATION", sid)
-EOF
+SAPPHIRE_CONFIG=sandbox-config.toml uv run python scripts/create_station_group.py \
+    --tenant chwrr --network research --name my-group --station-code 00001 --apply
 ```
+
+It prints the group id and the station codes it added; look up the station id in the database
+for 5b. An unknown code prints the networks that have stations in the tenant.
 
 **5b. Weather scope.** Add to the config file (ids from 5a):
 

@@ -128,6 +128,8 @@ class _FakeEngine:
         return _FakeConn()
 
 
+_REQ = ["--tenant", "sapphire", "--network", "bafu"]
+
 _PLAN = GroupPlan(
     name="g",
     tenant_id=DEFAULT_TENANT_ID,
@@ -416,13 +418,16 @@ class TestTheDryRunGuard:
 
         applied: list[object] = []
         monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+        monkeypatch.setattr(
+            "sapphire_flow.store.tenant_store.PgTenantStore", _FakeTenantStore
+        )
         monkeypatch.setattr(mod, "plan_station_group", lambda **_: _PLAN)
         monkeypatch.setattr(
             mod, "apply_station_group", lambda *a, **k: applied.append(a)
         )
         monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **k: _FakeEngine())
 
-        exit_code = mod.main(["--name", "g", "--station-code", "2009"])
+        exit_code = mod.main([*_REQ, "--name", "g", "--station-code", "2009"])
 
         assert exit_code == 0
         assert applied == [], "a dry run must not reach the write path"
@@ -437,13 +442,18 @@ class TestTheDryRunGuard:
 
         applied: list[object] = []
         monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u@h/db")
+        monkeypatch.setattr(
+            "sapphire_flow.store.tenant_store.PgTenantStore", _FakeTenantStore
+        )
         monkeypatch.setattr(mod, "plan_station_group", lambda **_: _PLAN)
         monkeypatch.setattr(
             mod, "apply_station_group", lambda *a, **k: applied.append(a)
         )
         monkeypatch.setattr("sqlalchemy.create_engine", lambda *a, **k: _FakeEngine())
 
-        exit_code = mod.main(["--name", "g", "--station-code", "2009", "--apply"])
+        exit_code = mod.main(
+            [*_REQ, "--name", "g", "--station-code", "2009", "--apply"]
+        )
 
         assert exit_code == 0
         assert len(applied) == 1
@@ -507,7 +517,7 @@ class TestCliWriteAuthorization:
             f'[deployment]\n{identity}\noperator = "configured"\n'
         )
         groups, audit, stations = cli_stores
-        args = ["--name", "g", "--station-code", "2009"]
+        args = [*_REQ, "--name", "g", "--station-code", "2009"]
         assert main(args + (["--apply"] if apply else [])) == 0
         assert len(groups.stored) == int(apply)
         assert len(groups.added) == int(apply)
@@ -529,24 +539,16 @@ class TestCliWriteAuthorization:
 
         deployment_config.write_text('[deployment]\nwritable_tenants = ["foreign"]\n')
         groups, audit, stations = cli_stores
-        args = ["--name", "g", "--station-code", "2009", "--operator", "override"]
+        args = [*_REQ, "--name", "g", "--station-code", "2009", "--operator", "x"]
         assert main(args + (["--apply"] if apply else [])) == 1
-        assert "not authorized" in capsys.readouterr().err
-        assert groups.stored == groups.added == []
+        assert "writable_tenants" in capsys.readouterr().err
+        assert groups.stored == groups.added == audit.entries == []
         assert stations.status_writes == 0
-        assert len(audit.entries) == int(apply)
-        if apply:
-            assert audit.entries[0].detail["outcome"] == "rejected_tenant_mismatch"
-            assert audit.entries[0].detail["operator"] == "override"
-            assert audit.entries[0].detail["principal_tenant_id"] == str(
-                _FOREIGN_TENANT_ID
-            )
 
     @pytest.mark.parametrize(
         ("identity", "message"),
         [
             ("", "must declare either"),
-            ('writable_tenants = ["sapphire", "foreign"]', "explicit tenant code"),
             ('writable_tenants = ["unknown"]', "unknown"),
             (
                 'writable_tenants = ["sapphire"]\nglobal_admin = true',
@@ -566,7 +568,7 @@ class TestCliWriteAuthorization:
 
         deployment_config.write_text(f"[deployment]\n{identity}\n")
         groups, audit, stations = cli_stores
-        assert main(["--name", "g", "--station-code", "2009", "--apply"]) == 1
+        assert main([*_REQ, "--name", "g", "--station-code", "2009", "--apply"]) == 1
         assert message in capsys.readouterr().err
         assert groups.stored == groups.added == audit.entries == []
         assert stations.status_writes == 0
@@ -585,7 +587,7 @@ class TestCliWriteAuthorization:
             pytest.fail("missing authority must fail before connecting")
 
         monkeypatch.setattr("sqlalchemy.create_engine", unexpected_connection)
-        assert main(["--name", "g", "--station-code", "2009", "--apply"]) == 1
+        assert main([*_REQ, "--name", "g", "--station-code", "2009", "--apply"]) == 1
         assert "SAPPHIRE_CONFIG" in capsys.readouterr().err
 
     def test_apply_defensively_rejects_a_foreign_principal(self) -> None:
@@ -601,3 +603,155 @@ class TestCliWriteAuthorization:
                 audit_log_store=audit,
             )
         assert groups.stored == groups.added == audit.entries == []
+
+
+def _run(
+    capsys: pytest.CaptureFixture[str], *extra: str, tenant: str = "foreign"
+) -> tuple[int, str, str]:
+    from scripts.create_station_group import main
+
+    args = [
+        "--tenant", tenant, "--network", "research",
+        "--name", "g", "--station-code", "A1", *extra,
+    ]  # fmt: skip
+    code = main(args)
+    out = capsys.readouterr()
+    return code, out.out, out.err
+
+
+class TestCliTenantOption:
+    def test_tenant_option_targets_that_tenant(
+        self,
+        deployment_config: Path,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        deployment_config.write_text('[deployment]\nwritable_tenants = ["foreign"]\n')
+        groups, audit, stations = cli_stores
+        stations._by_code["A1"] = StationId(uuid4())
+        stations._tenants["A1"] = _FOREIGN_TENANT_ID
+
+        code, _, _ = _run(capsys, "--apply")
+
+        assert code == 0
+        assert [g.tenant_id for g in groups.stored] == [_FOREIGN_TENANT_ID]
+        assert audit.entries[0].detail["tenant_id"] == str(_FOREIGN_TENANT_ID)
+
+    def test_tenant_option_outside_writable_tenants_is_refused(
+        self,
+        deployment_config: Path,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        deployment_config.write_text('[deployment]\nwritable_tenants = ["sapphire"]\n')
+        groups, audit, _ = cli_stores
+
+        code, _, err = _run(capsys, "--apply")
+
+        assert code == 1
+        assert "writable_tenants" in err
+        assert groups.stored == groups.added == audit.entries == []
+
+    def test_unknown_tenant_code_is_refused(
+        self,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        groups, audit, _ = cli_stores
+
+        code, _, err = _run(capsys, "--apply", tenant="nope")
+
+        assert code == 1
+        assert "unknown tenant code" in err
+        assert groups.stored == groups.added == audit.entries == []
+
+    def test_global_admin_can_target_a_named_tenant(
+        self,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        groups, _, stations = cli_stores
+        stations._by_code["A1"] = StationId(uuid4())
+        stations._tenants["A1"] = _FOREIGN_TENANT_ID
+
+        code, _, _ = _run(capsys, "--apply")
+
+        assert code == 0
+        assert groups.stored[0].tenant_id == _FOREIGN_TENANT_ID
+
+    def test_station_of_another_tenant_is_reported_with_tenant_option(
+        self,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        groups, audit, stations = cli_stores
+        stations._by_code["A1"] = StationId(uuid4())  # a default-tenant station
+
+        code, out, _ = _run(capsys, "--apply")
+
+        assert code == 1
+        assert "OTHER TENANT: A1" in out
+        assert groups.stored == groups.added == audit.entries == []
+
+    def test_joining_an_existing_group_in_the_named_tenant(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _, audit, stations = cli_stores
+        existing = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="g",
+            station_ids=frozenset(),
+            created_at=_NOW,
+            tenant_id=_FOREIGN_TENANT_ID,
+        )
+        groups = _FakeGroupStore(existing)
+        monkeypatch.setattr(
+            "sapphire_flow.store.station_group_store.PgStationGroupStore",
+            lambda *a, **k: groups,
+        )
+        station_id = StationId(uuid4())
+        stations._by_code["A1"] = station_id
+        stations._tenants["A1"] = _FOREIGN_TENANT_ID
+
+        code, out, _ = _run(capsys, "--apply")
+
+        assert code == 0
+        assert "reusing" in out
+        assert groups.stored == []
+        assert groups.added == [(existing.id, station_id)]
+        assert audit.entries[0].detail["created"] is False
+
+    def test_unknown_station_prints_a_hint_with_known_networks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_stores: tuple[_FakeGroupStore, _FakeAuditLog, _FakeStationLookup],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import scripts.create_station_group as mod
+
+        monkeypatch.setattr(mod, "_known_networks", lambda conn, tenant: ["research"])
+
+        code, _, err = _run(capsys)
+
+        assert code == 1
+        assert "--network" in err
+        assert "research" in err
+
+    @pytest.mark.parametrize("omitted", ["--tenant", "--network"])
+    def test_omitting_tenant_or_network_fails_with_a_clear_message(
+        self, omitted: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from scripts.create_station_group import main
+
+        args = ["--tenant", "t", "--network", "n", "--name", "g", "--station-code", "1"]
+        index = args.index(omitted)
+        del args[index : index + 2]
+
+        with pytest.raises(SystemExit) as exc:
+            main(args)
+
+        assert exc.value.code == 2
+        assert omitted in capsys.readouterr().err

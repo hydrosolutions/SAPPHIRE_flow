@@ -847,15 +847,17 @@ bind-mounted into a one-off container — see
 recipe (it is not satisfied by this plan alone).
 
 `create_station_group.py` also requires `SAPPHIRE_CONFIG`, respecting
-`SAPPHIRE_CONFIG_OVERLAY`. Its fixed pilot target remains the default tenant;
-the merged `[deployment]` must authorize that tenant (a sole
-`writable_tenants = ["sapphire"]`) or declare `global_admin = true`.
-A foreign-only or ambiguous tenant configuration cannot create the group,
-even when all supplied stations belong to the default tenant. `--operator`
+`SAPPHIRE_CONFIG_OVERLAY`. `--tenant CODE` and `--network NETWORK` are both
+required (no default tenant or network); the merged `[deployment]` must list
+the tenant in `writable_tenants` or declare `global_admin = true`, otherwise the
+run is refused before any write. Re-running with an existing group name in that
+tenant joins it (adds only missing members). A station of another tenant is
+reported as `OTHER TENANT` and nothing is written; an unknown code prints a hint
+listing the tenant's known networks. `--operator`
 overrides only the audit label, never authority. Missing/invalid configuration
-fails closed. Dry runs write nothing, including no audit rows; a tenant-mismatch
-rejection under `--apply` records a durable event before any group/member
-write. Successful group/member changes and their audit entry commit together.
+fails closed. Dry runs write nothing, including no audit rows. A `--tenant` outside
+the host's `writable_tenants`, or an unknown tenant code, is refused before any
+write (error on stderr, exit 1, no audit row). Successful group/member changes and their audit entry commit together.
 
 ## Upgrade procedure
 
