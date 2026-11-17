@@ -2669,3 +2669,7 @@ alongside existing selected-weather regressions. Candidate acceptance must cover
 the entire declared period/member/feature scope before persistence. Retained gap
 donors must still verify their original receipts; longer snapshots may project
 exact subwindows but future issue/cutoff evidence must not leak backward.
+Explicit-grid gap filling validates every supplied timestamp before its no-fill
+return; empty frames remain empty, while off-grid rows are rejected, never shifted.
+The PostgreSQL route fixture covers complete and short-gap 18:00 windows, including
+zero artificial fills and persisted/restored quality flags for complete input.

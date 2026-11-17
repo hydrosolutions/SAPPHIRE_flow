@@ -368,7 +368,7 @@ switch has occurred.
 
 ### M2a — selected-weather and gap-evidence path
 
-**Owner:** one implementer. **Depends:** M1. **Status:** DRAFT.
+**Owner:** one implementer. **Depends:** M1. **Status:** IMPLEMENTED.
 
 Own `types/operational_weather.py`, `services/recap_daily_weather.py`,
 `types/weather_gap.py`, `services/weather_gap_fill.py` and their selected-weather
@@ -787,6 +787,73 @@ result. Full reports remain local. Focused evidence: 39 PostgreSQL/API tests and
 Full final-suite CI remains a merge gate. Release target advanced once to 0.1.1144.
 Current-head assertions in the unit, operator downgrade and Nepal readiness
 isolation tests track migration 0086; their protection checks are unchanged.
+PR #540 passed full final-commit CI (`26f0e219`) and the owner merged it as
+`7b1ebb6f` on 17 Nov.
+
+#### M2a4 — close the selected-weather exit criteria (IMPLEMENTED)
+
+Base: merged M2a3, `7b1ebb6f`. One implementer; no FI or model-consumer changes.
+M2a's remaining audit found that `fill_daily_weather` validates the explicit
+`past_end` but not the supplied frame's timestamp grid. The versioned snapshot
+path supplies aligned rows, but the shared helper can silently pass through a
+frame on a different phase. The existing PostgreSQL route test covers a filled
+gap, not an explicit complete-window/no-artificial-fill case.
+
+1. In explicit-grid filling only, validate each supplied timestamp using the
+   existing UTC/daily-grid boundary validator before the no-lookbacks return.
+   Check all supplied rows, including those outside a feature lookback. Preserve
+   empty/columnless frames; nonempty frames require datetime timestamps. Keep
+   duplicate rejection in its existing active-fill path (no new disabled-fill rule).
+   Preserve missing-row handling, duplicate rejection, all interpolation/donor
+   rules and v1 behavior; do not reindex or silently shift an off-grid frame.
+2. Test wrong-phase rejection with and without requested filling, plus aligned
+   missing-row interpolation. Extend the existing PostgreSQL refresh-to-API test
+   to cover both its gap case and a complete 18:00 window; assert the complete
+   input produces zero fills and zero gap-quality flags before and after restore.
+3. Reconcile M2a's parent status and dependency graph only after independent
+   reviews and validation. Record the closure evidence in this existing plan.
+
+Verification: focused gap/period/v1-compatibility and PostgreSQL route tests,
+changed-file lint/format/types, and full final-suite CI before owner merge.
+Independent Codex and Claude review this bounded scope before implementation and
+the resulting patch before PR readiness. Reports remain local.
+
+Both independent plan reviews approved. Their edge-frame, all-row and explicit
+zero-fill assertions are included above. Do not normalize non-UTC inputs: the
+existing validator accepts any zero-offset UTC tzinfo, including Polars' UTC
+representation, and deliberately refuses non-UTC/naive values. The stored-donor
+constructor already calls `qualified_ifs_daily_support`, which refuses cycles
+after the target start. No additional donor algorithm is needed. Release intent
+advances once under the current PR policy. The orchestrator sets only M2a4 READY.
+
+M2b/M2c retain model-side quality buckets, rating daily assembly, `track_assembly`,
+live outcome classification and model-period anchoring. M2d retains output labels
+and skill joins; M2e retains artifact activation. FI #12 is handled separately by
+the owner. Closing M2a means its explicit-grid selected-weather path is complete,
+not that live forecasting has switched grids.
+
+#### M2a closure evidence
+
+The M2a4 guard rejects misaligned/non-UTC rows before filling or the no-lookbacks
+return. Empty frames and v1 behavior remain unchanged. The existing PostgreSQL
+fixture now exercises both complete and short-gap windows without another harness.
+
+| M2a exit criterion | Verification |
+|---|---|
+| Declared periods and native UTC identity | M2a1/M2a2 native-support/window tests; `test_weather_period_pipeline` walks back from the incomplete issue-day cycle without changing its identity. |
+| Snapshot/receipt/store compatibility | `test_weather_v1_compatibility` pins pre-change v1 hashes; `test_weather_period_wire` and the PostgreSQL migration/pipeline tests cover v2 round trips and grid separation. |
+| Complete nonzero-phase frame has zero artificial fills | Pipeline `complete` case checks all seven 18:00 periods, preserved values, empty fills/flags and capture/store/restore; the same route serves its API summary. |
+| Short gaps, long gaps and physical warning cutoff | `test_period_weather_evidence` checks retained donors, changed-archive refusal, long gaps and exact five-day recency; `test_weather_gap_fill` covers aligned missing rows and off-grid rejection. |
+| Actual elapsed 60-hour weather limit | `test_cross_midnight_inputs_capture_restore_and_actual_age` accepts the exact boundary and refuses one microsecond later. |
+
+Both independent patch reviews approved the bounded source change. Their test
+conditions are satisfied: 71 focused unit/compatibility tests and both PostgreSQL
+pipeline cases pass; changed-module Pyright reports zero errors. The fixture sets
+the overall input-quality level with its flags, matching production persistence.
+Ruff and full final-suite CI remain PR gates. Reports remain local.
+
+M2a's selected-weather scope is implemented; M2b–M2e remain DRAFT. No model consumer,
+FI declaration, live preparation, deployment or scientific adoption changed here.
 
 ### M2b — shared training and operational assembly
 
@@ -936,7 +1003,7 @@ protected backup commissioning and email warnings. Existing security/provenance
 rules remain in force; deferring hardening does not authorize removing them.
 
 ```json
-{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a3":{"status":"IMPLEMENTED","depends_on":["M2a2"]},"M2a":{"status":"DRAFT","depends_on":["M2a3"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
+{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a3":{"status":"IMPLEMENTED","depends_on":["M2a2"]},"M2a4":{"status":"IMPLEMENTED","depends_on":["M2a3"]},"M2a":{"status":"IMPLEMENTED","depends_on":["M2a4"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
 ```
 
 ## Review state

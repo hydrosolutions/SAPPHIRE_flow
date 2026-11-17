@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast, overload
 
 import polars as pl
@@ -227,6 +227,15 @@ def fill_daily_weather(
         require_daily_grid_boundary(past_end, grid)
         if past_end > issue_time:
             raise ValueError("past period end follows eligibility cutoff")
+        if frame.height:
+            if "timestamp" not in frame.columns:
+                raise ValueError("period weather frame requires a timestamp column")
+            for stamp in frame.get_column("timestamp"):
+                if not isinstance(stamp, datetime):
+                    raise ValueError(
+                        "period weather frame requires datetime timestamps"
+                    )
+                require_daily_grid_boundary(UtcDatetime(stamp), grid)
     if not lookbacks:
         return (
             FilledWeather(frame=frame, fills=())
