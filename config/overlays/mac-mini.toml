@@ -1,3 +1,4 @@
+daily_grid_origin = "00:00"
 enable_observation_alerts = true
 
 # Plan 026 multi-model combination, enabled on this deployment 2026-08-27.

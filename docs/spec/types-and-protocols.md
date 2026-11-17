@@ -6558,6 +6558,26 @@ trace evidence. Snapshot parsing and latest-observation defaults are unchanged.
 
 `services/observation_history.py` deduplicates identical current timestamp keys, refuses conflicting values, and summarizes finite eligible cohorts with `statistics.mean` (exact rational mean rounded once to binary64). Min/max/native preserve input precision; no tolerance or clamp is used. Coverage remains unknown at the HTTP boundary. See [API contract 2.7](api-v1-review.md#swiss-observation-history-map-contract-27-disabled-build) for wire fields and provisional safeguards.
 
+## Declared fixed time grids
+
+`types.time_grid.TimeGrid` is a frozen value with explicit timedelta `step` and
+`phase`. Step must be positive and divide 24 hours exactly; phase must be whole
+minutes in `[0, step)`, measured from UTC midnight. `alignable` requires equal
+step and phase. `fine.nests_into(coarse)` requires a divisible step and a phase
+difference divisible by the fine step. `require_common_time_grid` rejects empty
+or incompatible groups.
+
+`floor` returns the last grid boundary at/before an aware instant.
+`lookback_bounds` returns complete past physical periods, excluding the bucket in
+progress; `future_bounds` starts at the anchor only when it is a boundary, otherwise
+at the next boundary. Both return half-open UTC bounds, accept nonnegative integer
+counts and return empty intervals for zero. They do not decide timestamp labels,
+source support, observation tolerance or parameter aggregation.
+
+The initial M1 delivery does not change assembly or scoring. Current deployments
+explicitly declare midnight UTC; nonzero live configuration is rejected. Observed
+legacy score phases remain separate until their coordinated M2d migration.
+
 ## Configured operational daily weather
 
 `types/operational_weather.py` defines immutable contributing samples, complete

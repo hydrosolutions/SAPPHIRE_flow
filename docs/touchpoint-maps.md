@@ -1079,6 +1079,15 @@ When this map applies, name: which touch trigger (Prefect-layer, image/compose-l
 
 ### Touchpoint map: Training / hindcast / skill
 
+**Declared grids (time MVP M1):** `types/time_grid.py` owns fixed step/phase
+validation, nesting, physical bounds and the common-grid contract. Deployment
+configuration parses UTC HH:MM origins and station UUID overrides; undeclared
+legacy configs remain readable, but cannot resolve a grid. Nonzero activation is
+rejected. M2a–M2c own consumer wiring; M2d owns historical skill-phase handling;
+M2e owns replacing the activation restriction with artifact qualification.
+Do not wire one live consumer to a nonzero grid independently, round legacy skill
+phases, or derive a hydrological boundary from `default_display_timezone`.
+
 **Hindcast FI station-code wiring:** after resolving its deployment-scoped station
 store and model, the hindcast flow uses the shared
 `model_registry.with_group_station_code_resolvers` helper before artifact loading.

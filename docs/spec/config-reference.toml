@@ -100,6 +100,16 @@ enable_skill_generations = false
 # Source: types-and-protocols.md § DeploymentConfig
 default_display_timezone = "Europe/Zurich"
 
+# Fixed daily boundary in UTC, strict HH:MM; independent of display timezone.
+# Shipped configurations explicitly declare today's UTC execution. Nonzero values
+# are rejected until the coordinated time-grid/model cutover (M2e activation gate).
+# Omission remains readable for legacy configs but the new time_grid resolver
+# refuses it; omission never declares a default grid. Subdaily grids remain phase 0.
+daily_grid_origin = "00:00"
+# Optional station UUID -> UTC HH:MM overrides; station codes are not accepted.
+# Overrides require a deployment origin and are currently also restricted to 00:00.
+daily_grid_origin_overrides = {}
+
 # --- Calendar ---
 # Source: types-and-protocols.md § DeploymentConfig
 calendar = "gregorian"                # Nepal v1: "bikram_sambat"
