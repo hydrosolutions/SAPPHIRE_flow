@@ -21,9 +21,13 @@ fully evidenced `PASS_OFFLINE`. None of these checks proves live host state.
 `show` does not run Compose. `check` requires a complete explicit installation and
 consistent release identity before rendering. It uses the installed Compose CLI
 (`docker-compose` on `PATH` or in Docker’s standard system plugin directories) with a clean environment, no project
-`.env`, no service `env_file` resolution, isolated Docker configuration, and bounded
+`.env`, isolated Docker configuration, and bounded
 in-memory output. All Compose profiles are included **for inspection only**.
 Includes/extends remain unsupported evidence; no services are started.
+Any service `env_file` declaration stops at preflight with `ENV_FILES_UNCHECKED`:
+no Compose command is invoked and file contents are not read. Some Compose versions
+read these files despite advertising `--no-env-resolution`, so the checker defers
+them consistently across versions and retains unchecked Compose evidence.
 Compose must be discoverable as a trusted `docker-compose` on `PATH` or in a
 [standard system plugin directory](https://github.com/docker/cli/blob/master/cli-plugins/manager/manager_unix.go): `/usr/local/lib/docker/cli-plugins`,
 `/usr/local/libexec/docker/cli-plugins`, `/usr/lib/docker/cli-plugins`, or
@@ -203,7 +207,7 @@ STANDARD worker prefix, provider bind and forecast-only registration suffix. Its
 provider-file semantics and ingest-provider comparison remain pending. Installed
 config paths mapped to another checkout must have identical nonsecret config
 contents; absent/different content remains pending. Extra Compose recipes and
-unread service env files retain explicit review gaps.
+service env-file declarations retain explicit review gaps before rendering.
 
 Job selection is shown as enabled/skipped; skipping does not remove previously
 registered live jobs. Registrar-owned cron defaults can be shown when no schedule

@@ -233,6 +233,16 @@ def render_compose(selection: ProfileSelection) -> dict[str, Any]:
                     "COMPOSE_INPUT_UNSUPPORTED",
                     "Compose extends is not supported by the offline checker.",
                 )
+            if any(
+                "env_file" in service
+                for service in cast("dict[str, Any]", services).values()
+            ):
+                # Older Compose reads env_file even with --no-env-resolution.
+                raise ProfileError(
+                    "ENV_FILES_UNCHECKED",
+                    "Service env_file evidence is deferred without reading files "
+                    "or invoking Compose.",
+                )
     except (OSError, UnicodeError, yaml.YAMLError):
         raise ProfileError(
             "COMPOSE_INPUT_INVALID", "An explicit Compose input cannot be parsed."
@@ -289,10 +299,9 @@ def render_compose(selection: ProfileSelection) -> dict[str, Any]:
     for path in selection.compose_files:
         command += ["-f", str(path)]
     command += ["config", "--format", "json", "--no-env-resolution"]
+    captured = _capture(command, environment, installation.project_directory)
     try:
-        rendered = json.loads(
-            _capture(command, environment, installation.project_directory)
-        )
+        rendered = json.loads(captured)
     except (ValueError, UnicodeError):
         raise ProfileError(
             "COMPOSE_OUTPUT_INVALID", "Compose did not return a supported document."
@@ -550,7 +559,7 @@ def _check_forecast_scope(
         and mount is not None
         and mount.get("type") == "bind"
         and mount.get("read_only") is True
-        and mount.get("bind", {}).get("create_host_path") is False
+        and mount.get("bind", {}).get("create_host_path", False) is False
         and same_path(mount.get("source"), env.get("NHS_PROVIDER_CONFIG_SOURCE"))
     )
     valid = valid and not any(
@@ -840,6 +849,24 @@ def check_profile(
         rendered = render_compose(selection)
         return check_wiring(selection, evaluation, rendered)
     except ProfileError as exc:
+        if exc.code == "ENV_FILES_UNCHECKED":
+            return result(
+                evaluation,
+                [],
+                [
+                    *evaluation.pending_checks,
+                    diagnostic(
+                        "ENV_FILES_UNCHECKED",
+                        "services",
+                        "A service declares env_file; Compose rendering was not "
+                        "attempted.",
+                        "Ask deployment support to provide non-secret environment "
+                        "evidence separately. Do not share file contents; offline "
+                        "wiring remains unchecked.",
+                    ),
+                ],
+                [],
+            )
         if exc.code == "COMPOSE_INPUT_INVALID":
             return result(
                 evaluation,

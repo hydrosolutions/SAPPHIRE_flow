@@ -395,17 +395,38 @@ class TestComposeWiring:
             "FORECAST_SCOPE_INVALID",
         } <= codes
 
+    @pytest.mark.parametrize("existing", [False, True])
     def test_service_env_file_is_not_read(
-        self, compose_render: tuple[Any, Any, dict[str, Any]], tmp_path: Path
+        self,
+        compose_render: tuple[Any, Any, dict[str, Any]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        existing: bool,
     ) -> None:
         selected, evaluated, _ = compose_render
+        delivery = tmp_path / "private.env"
+        if existing:
+            delivery.write_text("TOKEN=credential-canary\n")
         extra = tmp_path / "env.yml"
-        extra.write_text(
-            "services:\n  api:\n    env_file: /nonexistent/credential-canary\n"
-        )
+        extra.write_text(f"services:\n  api:\n    env_file: {delivery}\n")
         selected = replace(selected, compose_files=(*selected.compose_files, extra))
-        checked = tool.check_wiring(selected, evaluated, tool.render_compose(selected))
-        assert "ENV_FILES_UNCHECKED" in {item.code for item in checked.pending_checks}
+        original = Path.read_text
+
+        def guarded(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == delivery:
+                pytest.fail("env_file contents read")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded)
+        monkeypatch.setattr(
+            tool,
+            "_capture",
+            lambda *args: pytest.fail("Compose invoked for env_file recipe"),
+        )
+        checked = tool.check_profile(selected, evaluated)
+        codes = {item.code for item in checked.pending_checks}
+        assert {"ENV_FILES_UNCHECKED", "COMPOSE_EVIDENCE_PENDING"} <= codes
+        assert checked.summary == EvaluationSummary.PENDING
         assert "credential-canary" not in repr(checked)
 
     def test_capture_errors_never_return_output(self, tmp_path: Path) -> None:
@@ -816,3 +837,64 @@ class TestComposeWiring:
         monkeypatch.setattr(tool, "_capture", capture)
         assert tool.render_compose(selected) == rendered
         assert commands[-1][0] == system
+
+    @pytest.mark.parametrize(
+        "bind_options", [{}, {"create_host_path": False}, {"create_host_path": True}]
+    )
+    def test_normalized_nhs_bind_false_omission(
+        self,
+        compose_render: tuple[Any, Any, dict[str, Any]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        bind_options: dict[str, bool],
+    ) -> None:
+        monkeypatch.syspath_prepend(str(ROOT / "tools"))
+        selected, evaluated, rendered = compose_render
+        provider = tmp_path / "provider.toml"
+        scope_file = ROOT / "docker-compose.nhs-forecast.yml"
+        selected = replace(
+            selected,
+            compose_files=(*selected.compose_files, scope_file),
+            installation=replace(
+                selected.installation,
+                environment=(
+                    *selected.installation.environment,
+                    ("NHS_PROVIDER_CONFIG_SOURCE", str(provider)),
+                ),
+            ),
+        )
+        rendered = copy.deepcopy(rendered)
+        rendered["services"]["prefect-worker"]["volumes"].append(
+            {
+                "type": "bind",
+                "source": str(provider),
+                "target": "/app/config/overlays/nhs-provider.toml",
+                "read_only": True,
+                "bind": bind_options,
+            }
+        )
+        codes = {
+            item.code
+            for item in tool.check_wiring(selected, evaluated, rendered).diagnostics
+        }
+        assert ("FORECAST_SCOPE_INVALID" in codes) == bind_options.get(
+            "create_host_path", False
+        )
+
+    def test_render_process_error_is_not_json_error(
+        self,
+        compose_render: tuple[Any, Any, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        selected, _, _ = compose_render
+
+        def capture(command: list[str], *args: Any) -> bytes:
+            if command[-1] == "--help":
+                return b"--no-env-resolution"
+            raise tool.ProfileError(
+                "COMPOSE_RENDER_FAILED", "synthetic private failure"
+            )
+
+        monkeypatch.setattr(tool, "_capture", capture)
+        with pytest.raises(tool.ProfileError, match="COMPOSE_RENDER_FAILED"):
+            tool.render_compose(selected)
