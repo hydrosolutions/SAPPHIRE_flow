@@ -510,7 +510,7 @@ imports and alert activation remain separate deliveries.
 
 ## Shared station discharge history (map contract 2.13)
 
-Implementation draft, **not deployed**. The [client guide](../api/README.md#shared-nativehourly-discharge-history-not-deployed)
+The [client guide](../api/README.md#shared-nativehourly-discharge-history)
 owns request/response usage. Preserve separate ordinary/provisional series,
 scoped reviewer/admin access for provisional values, newest-before-match stored
 selection, source/QC agreement and frozen provenance. Warnings are retained worker
@@ -525,8 +525,14 @@ evidence document, 500,000 parsing nodes, 64 frozen curves and a five-second SQL
 timeout. The new endpoint's aggregate evidence limit covers measured valid
 seven-day histories above the original 16 MiB draft limit. Other caps and existing
 forecast-input history limits are unchanged. Resource/evidence failures return503
-without truncation. Actual seven-day query-cost and concurrent roster qualification
-remain rollout gates.
+without truncation. Sequential seven-day Nepal reads were verified during the
+[16 November deployment](api-v1-implementation-history.md#nepal-discharge-history-deployment-16-november-2026).
+Concurrent roster load and live Swiss data remain unqualified.
+
+The API must load the deployment's existing `provisional_ratings` bindings as
+well as the workers. An absent station binding yields held `not_configured`
+results even when stored conversions exist. The Nepal API uses the same
+read-only rating configuration as its workers; GET still performs no conversion.
 
 The station-history projection accumulates scalar samples in a typed array and
 encodes JSON once, avoiding repeated copying of a growing JSON history. Ordering,
