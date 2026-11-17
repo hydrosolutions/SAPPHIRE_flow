@@ -4,13 +4,14 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, overload
 
 import polars as pl
 
 from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.forecast_evidence import StationSourceEvidence
+from sapphire_flow.types.operational_weather import require_daily_grid_boundary
 from sapphire_flow.types.weather_gap import (
     GAP_WEATHER_PARAMETERS,
     GapWeatherParameter,
@@ -19,6 +20,7 @@ from sapphire_flow.types.weather_gap import (
     WeatherGapMethod,
     WeatherGapMode,
 )
+from sapphire_flow.types.weather_gap_v2 import WeatherGapEndpointV2, WeatherGapFillV2
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.forecast_model import ForecastModel, GroupForecastModel
     from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.model import GroupModelInputs, StationModelInputs
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 
@@ -34,6 +37,12 @@ if TYPE_CHECKING:
 class FilledWeather:
     frame: pl.DataFrame
     fills: tuple[WeatherGapFill, ...]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FilledPeriodWeather:
+    frame: pl.DataFrame
+    fills: tuple[WeatherGapFillV2, ...]
 
 
 def weather_fill_parameters(
@@ -55,13 +64,57 @@ def weather_fill_parameters(
     return frozenset(name for name in declared if tolerances.get(name) == 0)
 
 
+@overload
 def stored_weather_donors(
     records: Sequence[WeatherForecastRecord],
     *,
     station_id: StationId,
     issue_time: UtcDatetime,
     parameters: frozenset[str],
-) -> dict[tuple[str, UtcDatetime], WeatherGapFill]:
+    grid: None = None,
+    past_end: None = None,
+) -> dict[tuple[str, UtcDatetime], WeatherGapFill]: ...
+
+
+@overload
+def stored_weather_donors(
+    records: Sequence[WeatherForecastRecord],
+    *,
+    station_id: StationId,
+    issue_time: UtcDatetime,
+    parameters: frozenset[str],
+    grid: TimeGrid,
+    past_end: UtcDatetime,
+) -> dict[tuple[str, UtcDatetime], WeatherGapFillV2]: ...
+
+
+@overload
+def stored_weather_donors(
+    records: Sequence[WeatherForecastRecord],
+    *,
+    station_id: StationId,
+    issue_time: UtcDatetime,
+    parameters: frozenset[str],
+    grid: TimeGrid | None = None,
+    past_end: UtcDatetime | None = None,
+) -> Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2]: ...
+
+
+def stored_weather_donors(
+    records: Sequence[WeatherForecastRecord],
+    *,
+    station_id: StationId,
+    issue_time: UtcDatetime,
+    parameters: frozenset[str],
+    grid: TimeGrid | None = None,
+    past_end: UtcDatetime | None = None,
+) -> Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2]:
+    if grid is not None:
+        if past_end is None:
+            raise ValueError("period donors require explicit past end")
+        require_daily_grid_boundary(past_end, grid)
+        if past_end > issue_time:
+            raise ValueError("past donor window follows eligibility cutoff")
     grouped: dict[tuple[str, UtcDatetime, UtcDatetime], list[WeatherForecastRecord]] = (
         defaultdict(list)
     )
@@ -71,14 +124,17 @@ def stored_weather_donors(
             and row.parameter in parameters
             and row.nwp_source == "ifs_ecmwf"
             and row.cycle_time <= issue_time
-            and row.valid_time < issue_time
+            and row.valid_time
+            < (past_end if grid is not None and past_end is not None else issue_time)
             and row.member_id == 0
         ):
             day = ensure_utc(
                 row.valid_time.replace(hour=0, minute=0, second=0, microsecond=0)
             )
+            if grid is not None:
+                day = grid.floor(row.valid_time)
             grouped[(row.parameter, day, row.cycle_time)].append(row)
-    result: dict[tuple[str, UtcDatetime], WeatherGapFill] = {}
+    result: dict[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2] = {}
     for (parameter, day, _cycle), rows in sorted(
         grouped.items(), key=lambda item: item[0][2]
     ):
@@ -86,12 +142,23 @@ def stored_weather_donors(
             value = math.fsum(row.value for row in rows)
             if parameter == "temperature":
                 value /= len(rows)
-            fill = WeatherGapFill(
-                parameter=cast("GapWeatherParameter", parameter),
-                day=day,
-                value=value,
-                method=WeatherGapMethod.STORED_FORECAST,
-                donor_records=tuple(sorted(rows, key=lambda row: row.valid_time)),
+            fill: WeatherGapFill | WeatherGapFillV2 = (
+                WeatherGapFill(
+                    parameter=cast("GapWeatherParameter", parameter),
+                    day=day,
+                    value=value,
+                    method=WeatherGapMethod.STORED_FORECAST,
+                    donor_records=tuple(sorted(rows, key=lambda row: row.valid_time)),
+                )
+                if grid is None
+                else WeatherGapFillV2(
+                    grid=grid,
+                    parameter=cast("GapWeatherParameter", parameter),
+                    start=day,
+                    value=value,
+                    method=WeatherGapMethod.STORED_FORECAST,
+                    donor_records=tuple(sorted(rows, key=lambda row: row.valid_time)),
+                )
             )
         except ValueError:
             continue
@@ -99,6 +166,7 @@ def stored_weather_donors(
     return result
 
 
+@overload
 def fill_daily_weather(
     frame: pl.DataFrame,
     *,
@@ -107,16 +175,74 @@ def fill_daily_weather(
     max_gap_days: int,
     donors: Mapping[tuple[str, UtcDatetime], WeatherGapFill] | None = None,
     precipitation_lower_bounds: Mapping[UtcDatetime, float] | None = None,
-) -> FilledWeather:
+    grid: None = None,
+    past_end: None = None,
+) -> FilledWeather: ...
+
+
+@overload
+def fill_daily_weather(
+    frame: pl.DataFrame,
+    *,
+    issue_time: UtcDatetime,
+    lookbacks: Mapping[str, int],
+    max_gap_days: int,
+    donors: Mapping[tuple[str, UtcDatetime], WeatherGapFillV2] | None = None,
+    precipitation_lower_bounds: Mapping[UtcDatetime, float] | None = None,
+    grid: TimeGrid,
+    past_end: UtcDatetime,
+) -> FilledPeriodWeather: ...
+
+
+@overload
+def fill_daily_weather(
+    frame: pl.DataFrame,
+    *,
+    issue_time: UtcDatetime,
+    lookbacks: Mapping[str, int],
+    max_gap_days: int,
+    donors: Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2]
+    | None = None,
+    precipitation_lower_bounds: Mapping[UtcDatetime, float] | None = None,
+    grid: TimeGrid | None = None,
+    past_end: UtcDatetime | None = None,
+) -> FilledWeather | FilledPeriodWeather: ...
+
+
+def fill_daily_weather(
+    frame: pl.DataFrame,
+    *,
+    issue_time: UtcDatetime,
+    lookbacks: Mapping[str, int],
+    max_gap_days: int,
+    donors: Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2]
+    | None = None,
+    precipitation_lower_bounds: Mapping[UtcDatetime, float] | None = None,
+    grid: TimeGrid | None = None,
+    past_end: UtcDatetime | None = None,
+) -> FilledWeather | FilledPeriodWeather:
+    if grid is not None:
+        if past_end is None:
+            raise ValueError("period filling requires explicit past end")
+        require_daily_grid_boundary(past_end, grid)
+        if past_end > issue_time:
+            raise ValueError("past period end follows eligibility cutoff")
     if not lookbacks:
-        return FilledWeather(frame=frame, fills=())
+        return (
+            FilledWeather(frame=frame, fills=())
+            if grid is None
+            else FilledPeriodWeather(frame=frame, fills=())
+        )
     if not 1 <= max_gap_days <= 7:
         raise ValueError("weather gap limit must be between one and seven days")
     anchor = ensure_utc(issue_time.replace(hour=0, minute=0, second=0, microsecond=0))
+    if grid is not None:
+        assert past_end is not None
+        anchor = past_end
     rows = {row["timestamp"]: dict(row) for row in frame.iter_rows(named=True)}
     if len(rows) != frame.height:
         raise ValueError("weather filling refuses duplicate daily timestamps")
-    fills: list[WeatherGapFill] = []
+    fills: list[WeatherGapFill | WeatherGapFillV2] = []
     for parameter, lookback in sorted(lookbacks.items()):
         if parameter not in GAP_WEATHER_PARAMETERS:
             raise ValueError("unsupported weather fill parameter")
@@ -143,6 +269,23 @@ def fill_daily_weather(
             for offset in range(start, stop):
                 day = days[offset]
                 fill = (donors or {}).get((parameter, day))
+                if fill is not None:
+                    if grid is not None:
+                        if (
+                            not isinstance(fill, WeatherGapFillV2)
+                            or fill.grid != grid
+                            or fill.start != day
+                            or fill.parameter != parameter
+                            or any(
+                                row.cycle_time > issue_time
+                                for row in fill.donor_records
+                            )
+                        ):
+                            raise ValueError(
+                                "period donor differs from requested context"
+                            )
+                    elif not isinstance(fill, WeatherGapFill):
+                        raise ValueError("v1 filling cannot consume v2 donors")
                 if fill is None and start > 0 and stop < len(days):
                     if parameter == "precipitation" and stop - start != 1:
                         continue
@@ -156,15 +299,37 @@ def fill_daily_weather(
                     )
                     if parameter != "temperature" and min(left, right, value) < 0:
                         continue
-                    fill = WeatherGapFill(
-                        parameter=cast("GapWeatherParameter", parameter),
-                        day=day,
-                        value=value,
-                        method=WeatherGapMethod.LINEAR,
-                        endpoints=(
-                            WeatherGapEndpoint(day=days[start - 1], value=left),
-                            WeatherGapEndpoint(day=days[stop], value=right),
-                        ),
+                    fill = (
+                        WeatherGapFill(
+                            parameter=cast("GapWeatherParameter", parameter),
+                            day=day,
+                            value=value,
+                            method=WeatherGapMethod.LINEAR,
+                            endpoints=(
+                                WeatherGapEndpoint(day=days[start - 1], value=left),
+                                WeatherGapEndpoint(day=days[stop], value=right),
+                            ),
+                        )
+                        if grid is None
+                        else WeatherGapFillV2(
+                            grid=grid,
+                            parameter=cast("GapWeatherParameter", parameter),
+                            start=day,
+                            value=value,
+                            method=WeatherGapMethod.LINEAR,
+                            endpoints=(
+                                WeatherGapEndpointV2(
+                                    start=days[start - 1],
+                                    end=days[start - 1] + grid.step,
+                                    value=left,
+                                ),
+                                WeatherGapEndpointV2(
+                                    start=days[stop],
+                                    end=days[stop] + grid.step,
+                                    value=right,
+                                ),
+                            ),
+                        )
                     )
                 if fill is None:
                     continue
@@ -174,13 +339,17 @@ def fill_daily_weather(
                     continue
                 rows.setdefault(day, {"timestamp": day})[parameter] = fill.value
                 fills.append(fill)
-    if not fills:
-        return FilledWeather(frame=frame, fills=())
+    result_frame = (
+        frame
+        if not fills
+        else pl.DataFrame([rows[key] for key in sorted(rows)], infer_schema_length=None)
+    )
+    if grid is not None:
+        return FilledPeriodWeather(
+            frame=result_frame, fills=cast("tuple[WeatherGapFillV2, ...]", tuple(fills))
+        )
     return FilledWeather(
-        frame=pl.DataFrame(
-            [rows[key] for key in sorted(rows)], infer_schema_length=None
-        ),
-        fills=tuple(fills),
+        frame=result_frame, fills=cast("tuple[WeatherGapFill, ...]", tuple(fills))
     )
 
 

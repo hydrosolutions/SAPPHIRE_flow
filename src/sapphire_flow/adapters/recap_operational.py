@@ -18,7 +18,10 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapPayloadIntegrityError,
     guarded_recap_fetch,
 )
-from sapphire_flow.preprocessing.recap_operational_weather import reduce_daily_window
+from sapphire_flow.preprocessing.recap_operational_weather import (
+    reduce_daily_window,
+    reduce_weather_periods,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
@@ -34,7 +37,12 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherWindow,
     WeatherCoverage,
     WeatherProductIdentity,
+    require_daily_grid_boundary,
     require_midnight,
+)
+from sapphire_flow.types.operational_weather_v2 import (
+    OperationalWeatherWindowV2,
+    require_context,
 )
 
 if TYPE_CHECKING:
@@ -50,6 +58,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.operational_weather import WeatherParameter
     from sapphire_flow.types.station import StationWeatherSource
+    from sapphire_flow.types.time_grid import TimeGrid
 
 
 class _SourceMetadata(BaseModel):
@@ -228,6 +237,41 @@ def future_binding_fingerprint(
     ).hexdigest()
 
 
+def _period_binding_fingerprint(source_digest: str, grid: TimeGrid) -> str:
+    if grid.step != timedelta(days=1):
+        raise ValueError("period weather binding requires a daily grid")
+    descriptor = {
+        "source_binding_sha256": source_digest,
+        "policy": "recap-start-declared-daily-v2",
+        "grid": {
+            "step_seconds": 86400,
+            "phase_offset_seconds": int(grid.phase.total_seconds()),
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def operational_binding_fingerprint_v2(
+    source: StationWeatherSource, ref: GatewayPolygonRef, grid: TimeGrid
+) -> str:
+    return _period_binding_fingerprint(
+        operational_binding_fingerprint(source, ref), grid
+    )
+
+
+def future_binding_fingerprint_v2(
+    source: StationWeatherSource,
+    ref: GatewayPolygonRef,
+    member_ids: tuple[int, ...],
+    grid: TimeGrid,
+) -> str:
+    return _period_binding_fingerprint(
+        future_binding_fingerprint(source, ref, member_ids), grid
+    )
+
+
 class RecapGatewayOperationalAdapter:
     def __init__(
         self,
@@ -248,9 +292,62 @@ class RecapGatewayOperationalAdapter:
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> dict[StationId, OperationalWeatherWindow]:
-        for bound in (issue_time, start, end):
-            require_midnight(bound)
-        if start >= end or end > issue_time:
+        windows = self._fetch_windows(
+            sources=sources, issue_time=issue_time, start=start, end=end
+        )
+        assert all(
+            isinstance(window, OperationalWeatherWindow) for window in windows.values()
+        )
+        return cast("dict[StationId, OperationalWeatherWindow]", windows)
+
+    def fetch_period_windows(
+        self,
+        *,
+        sources: list[StationWeatherSource],
+        issue_time: UtcDatetime,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        grid: TimeGrid,
+        eligibility_cutoff: UtcDatetime,
+    ) -> dict[StationId, OperationalWeatherWindowV2]:
+        windows = self._fetch_windows(
+            sources=sources,
+            issue_time=issue_time,
+            start=start,
+            end=end,
+            grid=grid,
+            eligibility_cutoff=eligibility_cutoff,
+        )
+        assert all(
+            isinstance(window, OperationalWeatherWindowV2)
+            for window in windows.values()
+        )
+        return cast("dict[StationId, OperationalWeatherWindowV2]", windows)
+
+    def _fetch_windows(
+        self,
+        *,
+        sources: list[StationWeatherSource],
+        issue_time: UtcDatetime,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        grid: TimeGrid | None = None,
+        eligibility_cutoff: UtcDatetime | None = None,
+    ) -> dict[StationId, OperationalWeatherWindow | OperationalWeatherWindowV2]:
+        if grid is None:
+            for bound in (issue_time, start, end):
+                require_midnight(bound)
+            ceiling = issue_time
+        else:
+            if eligibility_cutoff is None:
+                raise RecapConfigurationError(
+                    "period weather requires an explicit cutoff"
+                )
+            require_context(grid, issue_time, eligibility_cutoff)
+            for bound in (start, end):
+                require_daily_grid_boundary(bound, grid)
+            ceiling = eligibility_cutoff
+        if start >= end or end > ceiling:
             raise RecapConfigurationError("combined past bounds must end by issue time")
         request_start = min(
             start,
@@ -258,7 +355,12 @@ class RecapGatewayOperationalAdapter:
                 issue_time - timedelta(days=self._config.provider_min_history_days)
             ),
         )
-        if (issue_time - request_start).days > self._config.provider_max_history_days:
+        request_start = ensure_utc(
+            request_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        if issue_time - request_start > timedelta(
+            days=self._config.provider_max_history_days
+        ):
             raise RecapConfigurationError(
                 "combined history exceeds provider request bound"
             )
@@ -288,7 +390,9 @@ class RecapGatewayOperationalAdapter:
             seen_stations.add(source.station_id)
             seen_polygons.add((ref.hru_name, ref.polygon_name))
             grouped.setdefault(ref.hru_name, []).append((source, ref))
-        windows: dict[StationId, OperationalWeatherWindow] = {}
+        windows: dict[
+            StationId, OperationalWeatherWindow | OperationalWeatherWindowV2
+        ] = {}
         for hru, bindings in grouped.items():
             responses = {
                 parameter: guarded_recap_fetch(
@@ -304,7 +408,14 @@ class RecapGatewayOperationalAdapter:
             }
             for source, ref in bindings:
                 windows[source.station_id] = self._reduce_pair(
-                    source, ref, responses, issue_time=issue_time, start=start, end=end
+                    source,
+                    ref,
+                    responses,
+                    issue_time=issue_time,
+                    start=start,
+                    end=end,
+                    grid=grid,
+                    eligibility_cutoff=eligibility_cutoff,
                 )
         return windows
 
@@ -317,7 +428,9 @@ class RecapGatewayOperationalAdapter:
         issue_time: UtcDatetime,
         start: UtcDatetime,
         end: UtcDatetime,
-    ) -> OperationalWeatherWindow:
+        grid: TimeGrid | None = None,
+        eligibility_cutoff: UtcDatetime | None = None,
+    ) -> OperationalWeatherWindow | OperationalWeatherWindowV2:
         buffer_end = ensure_utc(end + timedelta(days=self._config.rollover_buffer_days))
         samples = tuple(
             sample
@@ -331,6 +444,26 @@ class RecapGatewayOperationalAdapter:
                 max_response_bytes=self._config.max_response_bytes,
             )
         )
+        if grid is not None:
+            assert eligibility_cutoff is not None
+            return OperationalWeatherWindowV2(
+                station_id=source.station_id,
+                binding_fingerprint=operational_binding_fingerprint_v2(
+                    source, ref, grid
+                ),
+                grid=grid,
+                issue_time=issue_time,
+                eligibility_cutoff=eligibility_cutoff,
+                start=start,
+                end=end,
+                periods=reduce_weather_periods(
+                    start=start,
+                    end=end,
+                    samples=samples,
+                    grid=grid,
+                    coverage=WeatherCoverage.ALLOW_GAPS,
+                ),
+            )
         fingerprint = operational_binding_fingerprint(source, ref)
         try:
             required = reduce_daily_window(

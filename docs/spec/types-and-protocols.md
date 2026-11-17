@@ -7019,3 +7019,36 @@ switch exists. Consumer403; absent/out-of-scope404; malformed/unavailable/bounde
 frozen evidence503. Missing linked evidence never becomes empty200. Existing
 provisional summary/detail provenance fields remain `not_exposed`; this is a separate
 explicit projection contract. See security.md for the shared-role scope boundary.
+
+
+### Declared-grid selected-weather evidence (time MVP M2a3)
+
+V1 cache/evidence objects, fingerprints and encodings retain their original UTC-day
+contract. `operational_weather_v2` defines the separate period schema. Its wire grid
+is `{step_seconds: 86400, phase_offset_seconds: <whole-minute seconds>}`. V2 carries
+actual issue time, eligibility cutoff, explicit past `[start, end)` periods and
+future period starts independently. Native ERA5/IFS timestamps and receipt row
+hashes remain source identities; they are never shifted to model labels.
+
+The grid and v2 policy are part of operational/future binding fingerprints. The
+cache keeps its existing station/binding key; migration 0086 adds nullable attempt
+context and accepts payload/evidence versions 1 and 2. V2 readers validate context,
+physical support and hashes before reuse. Same-grid snapshots may serve exact
+subwindows; their issue/cutoff must not follow the consuming request. Forecast
+capture, restore, storage, retries, combinations and API summaries dispatch by the
+persisted evidence marker. V2 groups/combinations require a uniform version/grid.
+Missing or mismatched selected evidence remains a refusal, including on API reads.
+
+Refresh, proof, projection, gap algorithms and future frame assembly are shared.
+V2 entry points require explicit grid/bounds/cutoff; the normal preparation path
+still writes v1. An isolated test covers source refresh through PostgreSQL and API
+read. This does not enable a deployment/model grid: FI training-grid declarations
+and artifact compatibility are tracked in ForecastInterface #12 and later time
+milestones. API output-period labels remain M2d work.
+
+Gap fills retain explicit physical intervals. Linear temperature/radiation and
+single-day rainfall fallback, verified native rainfall donors, partial-rainfall
+lower bounds and configured gap-length limits are unchanged. In v2, a fill is recent
+only when its start is strictly later than `past_end - 5 days`; warnings name the UTC
+interval rather than presenting its start date as a Nepal civil-day label. Actual
+60-hour cycle freshness is still checked at issuance, separately from eligibility.

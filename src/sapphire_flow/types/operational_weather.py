@@ -68,6 +68,43 @@ def require_daily_grid_boundary(value: UtcDatetime, grid: TimeGrid) -> None:
         raise ValueError("daily weather start does not match the declared grid")
 
 
+def qualified_ifs_daily_support(
+    cycle_time: UtcDatetime,
+    day: UtcDatetime,
+    *,
+    grid: TimeGrid = UTC_DAILY_WEATHER_GRID,
+) -> tuple[UtcDatetime, ...]:
+    require_utc(cycle_time)
+    require_daily_grid_boundary(day, grid)
+    if cycle_time.hour not in (0, 6, 12, 18) or any(
+        (cycle_time.minute, cycle_time.second, cycle_time.microsecond)
+    ):
+        raise ValueError("unsupported Recap forecast cycle")
+    maximum = 360 if cycle_time.hour == 0 else 72
+    if day < cycle_time or day + timedelta(days=1) > cycle_time + timedelta(
+        hours=maximum
+    ):
+        return ()
+    leads = (
+        tuple(range(0, 145, 3)) + tuple(range(150, 361, 6))
+        if maximum == 360
+        else tuple(range(0, 73, 3))
+    )
+    support = tuple(
+        ensure_utc(cycle_time + timedelta(hours=lead))
+        for lead in leads
+        if day <= cycle_time + timedelta(hours=lead) < day + timedelta(days=1)
+    )
+    if not support or support[0] != day:
+        return ()
+    final_step = timedelta(
+        hours=3 if support[-1] - cycle_time < timedelta(hours=144) else 6
+    )
+    if support[-1] + final_step != day + timedelta(days=1):
+        return ()
+    return support
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class OperationalWeatherSample:
     parameter: WeatherParameter

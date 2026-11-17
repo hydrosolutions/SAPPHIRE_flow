@@ -826,7 +826,7 @@ def _run_single_model(
             input_quality=input_quality,
             input_quality_flags=input_quality_flags,
             weather_evidence_version=(
-                1
+                evidence.weather_evidence_version
                 if config.operational_weather.route
                 is OperationalPastWeatherRoute.RECAP_COMBINED
                 else None
