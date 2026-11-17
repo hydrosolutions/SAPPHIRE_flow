@@ -785,6 +785,8 @@ paths. Later-issue/cutoff stale snapshots now return the typed missing-support
 result. Full reports remain local. Focused evidence: 39 PostgreSQL/API tests and
 23 independent compatibility/period tests passed; repository type ratchet passed.
 Full final-suite CI remains a merge gate. Release target advanced once to 0.1.1144.
+Current-head assertions in the unit, operator downgrade and Nepal readiness
+isolation tests track migration 0086; their protection checks are unchanged.
 
 ### M2b — shared training and operational assembly
 
