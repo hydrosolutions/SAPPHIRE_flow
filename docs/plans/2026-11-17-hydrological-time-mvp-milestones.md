@@ -476,7 +476,8 @@ all seven passed with their temporary local Prefect server available. In total,
 219 targeted tests passed across daily reduction/selection, codecs, projection,
 proof, selected inputs/evidence, gap filling, refresh/forecast flows and deployment
 configuration. Changed-file Ruff lint/format, changed-module Pyright and whitespace
-checks passed. Full-suite CI for this patch remains required before merge.
+checks passed. PR #537 subsequently passed full CI and was merged by the owner
+as `e5fa58ee` on 17 Nov.
 
 Non-blocking review suggestions did not require additional implementation: wrong
 step/phase validation uses one shared tested validator; cut-through tests already
@@ -484,6 +485,86 @@ exercise final-edge refusal; no repository consumer matches the old boundary-err
 text. The pinned window digest is a regression guard, not a claim to test every
 persisted receipt. Full reports remain local. Release intent advances once from
 0.1.1141 to 0.1.1142; no release or deployment is authorized by this patch.
+
+#### M2a2 — explicit period-window reduction (IMPLEMENTED)
+
+Base: merged M2a1 PR #537, `e5fa58eebd421bec5f5d3b9a38fa1cb99a85669e`.
+The remaining M2a audit found that both cache and forecast evidence serialize the
+v1 domain dataclasses, and historical snapshot verification reserializes them.
+Adding a default grid field to those classes would change existing canonical bytes.
+Do not widen their validators or reinterpret stored UTC days as Nepal days.
+
+The smallest next slice is the shared in-memory period-window reduction needed by
+source refresh and later training/operational assembly. It provides real cross-day
+source aggregation without prematurely changing persistence or issuance semantics:
+
+1. Add one frozen `OperationalWeatherPeriod` value with explicit daily `TimeGrid`,
+   UTC `start`, precipitation/temperature values and original native samples. Its
+   `end` is `start + grid.step`. Validate grid/boundary and values against M2a1's
+   reducer. Missing native support remains missing; no fill or rainfall splitting.
+2. Add `reduce_weather_periods(start, end, samples, grid, coverage)` in the existing
+   preprocessing module. The grid is required, bounds must be aligned and nonempty,
+   using `require_daily_grid_boundary` for both bounds (therefore exact whole daily
+   steps), and the result is an ordered tuple of contiguous periods, including empty periods
+   when gaps are allowed. Bucket native stamps with `grid.floor`, not UTC dates.
+   Select only samples inside the requested half-open window, preserving the current
+   window selector's behavior. Preserve input sample order within each period, because
+   that order contributes to canonical v1 bytes. Within each period, retain strict overlap, duplicate,
+   cut-through and source-horizon checks from M2a1. Sample source runs never change.
+3. Make the existing UTC-only `reduce_daily_window` delegate reduction to this
+   function, then construct its unchanged v1 `OperationalWeatherDay/Window` result.
+   Leave both v1 constructors and their validation unchanged. The wrapper retains
+   its existing issue/start/end midnight guards and nonempty check before delegation;
+   preserve existing exception types and ordering. One reduction algorithm serves
+   the old and new paths; the new type is an in-memory projection, not another cache.
+4. Do not pass the new period type into existing cache/evidence codecs, stores or
+   model inputs. It has no station, issue or source-as-of identity: those remain
+   separate concerns, owned by the later integration. No new codec, DB migration,
+   policy version, adapter fetch behavior, gap policy or live grid switch in M2a2.
+
+Tests: a two-day 18:00 window spanning three ERA5 source dates; exact rainfall
+conservation and distinct temperature means; boundary sample assigned once;
+window-end exclusion; missing/empty periods under COMPLETE versus ALLOW_GAPS;
+duplicate/native-interval cut-through refusal; wrong grid/bounds/value rejection;
+source identity and native objects preserved. Exercise the existing UTC wrapper
+and retain the pre-M2a1 canonical v1 window hash. Also pin bytes measured before
+this patch on base `e5fa58ee` for reversed input order, multiple source runs, an
+empty gap day and a horizon-truncated day. Run adapter/cache/projection/proof/
+selected-input regressions because the UTC wrapper is used by source refresh.
+
+Review disposition: Codex recommends READY. Claude's initial findings were folded
+in: leave v1 constructors untouched, preserve input order, pin a pre-change mixed
+window hash, preserve wrapper/per-period failure ordering and enforce daily bounds.
+Its targeted confirmation returned READY. The orchestrator sets only M2a2 READY.
+Reports remain local; full M2a stays DRAFT.
+
+Exit: one shared window reducer produces explicit hydrological periods and leaves
+v1 serialization and live results unchanged. Independent plan and patch review,
+focused checks and full-suite CI before merge. M2a remains incomplete.
+
+Next integration slice must first specify a versioned persisted representation for
+these periods and its old-evidence reader. Keep v1 byte generation intact; do not
+silently extend v1 fields or infer a model grid from source dates. Then thread the
+same declared grid through refresh, receipt scope/request identity, projection,
+gap endpoints/donors and warning cutoff as one coherent tested path. The difference
+between model boundary and issuance/source-as-of instant remains explicit M2b/M2c
+work. No activation until that complete path and model qualification are done.
+
+#### M2a2 implementation result
+
+Added the in-memory period value and shared explicit-grid window reducer; the UTC
+wrapper delegates to it while retaining its guards and persisted v1 result shape.
+V1 day/window validation and serialization are untouched. Native sample order,
+source identity, physical bounds and per-period failure ordering are preserved.
+
+Independent Codex and Claude patch reviews approved without material findings.
+All 177 targeted regressions passed, including the qualified 21-station/40-day
+Recap fixture, cache/proof/evidence, gap filling and forecast flows. Codex separately
+ran the 14 new tests successfully. The mixed-window canonical hash measured before
+implementation on `e5fa58ee` matches exactly. Changed-file Ruff lint/format,
+changed-module Pyright and whitespace checks passed. Full-suite CI remains required
+before merge. Release intent advances once to 0.1.1143. Full review reports remain
+local. M2a is still incomplete; no live grid switch or server deployment occurred.
 
 ### M2b — shared training and operational assembly
 
@@ -633,7 +714,7 @@ protected backup commissioning and email warnings. Existing security/provenance
 rules remain in force; deferring hardening does not authorize removing them.
 
 ```json
-{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a":{"status":"DRAFT","depends_on":["M2a1"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
+{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a2":{"status":"IMPLEMENTED","depends_on":["M2a1"]},"M2a":{"status":"DRAFT","depends_on":["M2a2"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
 ```
 
 ## Review state

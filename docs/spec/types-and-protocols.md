@@ -6596,6 +6596,16 @@ capabilities do not enable a new live grid: v1 days/windows, requests, receipts,
 cache snapshots and gap evidence retain their existing UTC-only contract. M2a1
 does not complete the receipt/gap integration needed by M2a.
 
+`OperationalWeatherPeriod` is an in-memory daily result with an explicit grid,
+physical `[start, end)` bounds and unchanged contributing samples. The shared
+`reduce_weather_periods` selects a half-open window, buckets with the declared
+grid and preserves input sample order within each period. COMPLETE refuses a
+missing value; ALLOW_GAPS retains partial and empty periods without filling them.
+`reduce_daily_window` delegates to it using the UTC grid and returns the unchanged
+v1 day/window structures. The new period type is not a cache or forecast-evidence
+payload. V1 constructors, serialized fields, sample order and hashes stay intact;
+receipt/gap integration and live activation remain separate work.
+
 `types/operational_weather.py` defines immutable contributing samples, complete
 UTC days and contiguous paired P/T windows for the explicit combined-feed route.
 The qualified contract uses START-labelled incremental precipitation (mm, SUM)

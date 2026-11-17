@@ -1096,6 +1096,16 @@ No live caller opts into a nonzero grid yet. Keep v1 snapshots/receipts/gap evid
 unchanged until their own reviewed migration; the canonical v1 window fixture
 in `tests/unit/store/test_operational_weather_codec.py` pins byte compatibility.
 
+**Period windows (time MVP M2a2):**
+`preprocessing/recap_operational_weather.py::reduce_weather_periods` groups native
+samples on an explicit daily grid and returns in-memory `OperationalWeatherPeriod`
+values. The existing UTC wrapper delegates to it. Preserve sample order, half-open
+window selection and per-period failure ordering. V1 day/window constructors and
+codecs stay unchanged. Check `tests/unit/preprocessing/test_recap_operational_weather.py`
+for cross-date rain conservation and the pre-change mixed-window byte hash, plus
+the Recap adapter, cache, projection and proof regressions. Do not pass the new
+period type into v1 persistence or live model assembly.
+
 **Hindcast FI station-code wiring:** after resolving its deployment-scoped station
 store and model, the hindcast flow uses the shared
 `model_registry.with_group_station_code_resolvers` helper before artifact loading.

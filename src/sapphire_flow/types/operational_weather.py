@@ -151,6 +151,37 @@ class OperationalWeatherSample:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class OperationalWeatherPeriod:
+    grid: TimeGrid
+    start: UtcDatetime
+    precipitation_mm: float | None
+    temperature_c: float | None
+    samples: tuple[OperationalWeatherSample, ...]
+
+    def __post_init__(self) -> None:
+        require_daily_grid_boundary(self.start, self.grid)
+        for parameter in ("precipitation", "temperature"):
+            reduced = daily_weather_value(
+                self.start, self.samples, parameter, grid=self.grid
+            )
+            actual = (
+                self.precipitation_mm
+                if parameter == "precipitation"
+                else self.temperature_c
+            )
+            if reduced is None and actual is not None:
+                raise OperationalWeatherCoverageError("daily weather has a gap")
+            if actual != reduced or (actual is not None and not math.isfinite(actual)):
+                raise ValueError(
+                    "daily weather value differs from contributing samples"
+                )
+
+    @property
+    def end(self) -> UtcDatetime:
+        return ensure_utc(self.start + self.grid.step)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class OperationalWeatherDay:
     day: UtcDatetime
     precipitation_mm: float | None
