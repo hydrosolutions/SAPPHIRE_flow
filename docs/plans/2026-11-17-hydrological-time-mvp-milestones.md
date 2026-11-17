@@ -270,7 +270,7 @@ broader prior owner restriction is found, rather than assuming a waiver.
 
 ### M1 — small shared grid/support contract, with existing behavior preserved
 
-**Owner:** root implementer. **Depends:** M0. **Status:** IMPLEMENTED; independent patch reviews passed. Full-suite merge gate remains pending.
+**Owner:** root implementer. **Depends:** M0. **Status:** IMPLEMENTED; independent patch reviews and PR #536 CI passed. Merged in PR #536 on 17 Nov.
 
 Use Plan 252's step-and-phase design and existing phase metadata; implement only
 the config/domain pieces needed for the resolved Nepal case. Declare the currently
@@ -361,9 +361,10 @@ flow tests. All 72 release-target tests also passed: 69 in the initial run and
 three cache-access-blocked cases after rerunning with the required cache access.
 The repository tool advanced release intent from 0.1.1140 to 0.1.1141; no release
 was published. Changed-file Ruff lint/format, changed-module Pyright and diff
-whitespace checks passed. This is focused regression evidence, not a full-suite claim. Full
-suite success is still required locally or in CI before merge. M2 milestones remain
-DRAFT; no server deployment or live origin switch has occurred.
+whitespace checks passed. PR #536 subsequently passed the full CI suite at commit
+`ddaa495e1281840ccf45540193f70e1e0b9c0dbc`. The owner merged PR #536 as `ba844583` on 17 Nov. Later
+milestones require their own reviewed scope; no server deployment or live origin
+switch has occurred.
 
 ### M2a — selected-weather and gap-evidence path
 
@@ -382,6 +383,107 @@ Preserve the agreed isolated-gap methods without authorizing time realignment.
 **Exit:** actual selected-weather route fixture covers snapshot/receipt compatibility,
 complete target coverage and a complete nonzero-phase frame producing zero fills.
 Preserve UTC NWP cycle identity and elapsed 60-hour age checks. No live grid switch.
+
+#### M2a1 — daily reduction and native support (IMPLEMENTED)
+
+Reviewed base: M1 commit `ddaa495e1281840ccf45540193f70e1e0b9c0dbc`. The owner
+merged M1 PR #536 as `ba8445830ad3cd63810dc514be22f04baaf5ab82` after CI passed.
+M2a1 was rebased onto that identical source tree; its reviewed code is unchanged.
+This slice requires its own PR, full CI and owner merge.
+
+The source audit found midnight assumptions throughout cache identity, receipts,
+snapshot hashes, proof reconstruction and gap evidence. Split M2a rather than
+relaxing those persisted contracts in a reducer-only patch:
+
+1. Add an explicit keyword-only daily `TimeGrid` argument to the existing
+   `daily_weather_value`, `recap_daily_support` and `recap_complete_daily_records`.
+   Existing callers retain a named immutable UTC-daily default. Validate that the
+   supplied grid is daily and the supplied period start is a UTC boundary on it.
+   A shared weather-boundary validator avoids duplicating that rule.
+2. Reuse the existing sum/snapshot-mean reducer on `[start, start + 24h)`; retain
+   duplicate/overlap/gap checks. Native ERA5 source runs stay at their original UTC
+   dates, even when one target period contains samples from two source dates.
+   No rainfall splitting, interpolation, timestamp shift or new reduction algorithm.
+   The caller selects period members; the reducer continues to reject supplied
+   out-of-period samples, including samples exactly at the excluded end. Do not
+   weaken v1 validation by silently filtering those samples inside the reducer.
+   Preserve the qualified equal-weight snapshot temperature MEAN even when an
+   18:00 period straddles the 3h/6h transition; test distinct values so this is not
+   confused with a duration-weighted mean. This produces uneven temporal sampling,
+   now explicit in the contract and subject to M3 qualification. Weighting snapshots
+   by interval duration would introduce a new scientific assumption; it is not M2a1.
+3. IFS support must tile the entire requested period. Verify first interval start
+   and final interval end, including the lead-144 transition and lead-360 limit.
+   A valid target grid such as 18:15 that cuts through native intervals returns no
+   complete support. Merely collecting the native timestamps inside a window is
+   insufficient. Keep source-cycle cadence, identity and existing cycle eligibility.
+   Enforce the same horizon limit in the direct sample reducer: a temperature point
+   at lead360 remains a valid point but cannot complete the period [lead342,366).
+   The selector handles Gateway START-labelled incremental rainfall, consistent
+   with the qualified Recap contract, not raw ECMWF END-labelled fields.
+4. Thread the explicit grid within the complete-record selector, retaining
+   per-feature/per-member completeness, duplicate rejection and source/QC checks.
+   Its existing `issue_time` still denotes the requested first period boundary;
+   do not reinterpret actual issuance/publication or weather-as-of instants here.
+
+Changed implementation paths are limited to `types/operational_weather.py` and
+`services/recap_daily_weather.py`, their existing unit tests and concise contract/
+touchpoint documentation. No model, flow, adapter, store or live caller selects a
+new grid. `OperationalWeatherDay/Window`, requests, receipts and v1 codecs remain
+UTC-only, byte-compatible contracts. Configuration continues rejecting nonzero
+origins. This slice cannot by itself supply nonzero-grid inputs to a model.
+
+Tests: cross-UTC-date ERA5 sum and snapshot mean; conserved unique hourly rainfall
+totals; excluded boundary samples; missing and duplicate sample rejection;
+18:00 IFS periods before/across/after lead144; cut-through native intervals at
+18:15 and a three-hour-aligned boundary crossing/after the six-hour transition;
+direct hourly ERA5 cut-through refusal and terminal temperature-only refusal; terminal
+partial-day refusal; actual complete-record selection with independent feature
+horizons; default phase-zero behavior; rejection of wrong step/phase; existing
+v1 day/window/codec and receipt tests unchanged. Full-suite CI before merge.
+
+M2a remains incomplete after M2a1. Its next reviewed slice must handle physical
+period identity through source refresh, projection, receipt reconstruction, gap
+endpoints/donors, five-day warning cutoff, serialization and old-evidence reads.
+In particular, `FutureWeatherScope.request` currently re-buckets native stamps at
+UTC midnight; `WeatherUse` equates past-window end with its issue boundary; cache
+hashes are computed from serialized dataclasses. Adding default fields can change
+those hashes. Resolve the representation/compatibility contract explicitly before
+editing these types. Preserve UTC source-run meaning and the elapsed 60-hour check;
+model-period anchoring versus issuance is coupled with M2b/M2c, not silently chosen
+by this helper slice. No generic source registry or broad provenance migration.
+
+Plan-review disposition: Codex requested strict supplied-sample membership and a
+direct terminal-temperature check; both are included. Claude requested explicit
+mixed-cadence behavior, sample-edge semantics and START-label evidence. These are
+now stated. Its suggested duration weighting/refusal would change the already
+qualified equal-weight snapshot policy; preserve that policy and qualify the new
+sampling pattern before activation. This slice has no live nonzero-grid caller.
+Claude's targeted disposition check returned READY; Codex's two conditions are incorporated. The orchestrator sets
+only M2a1 READY for this bounded implementation. Full M2a remains DRAFT.
+
+
+#### M2a1 implementation result
+
+Implemented the explicit grid in the two daily weather helpers and the native
+record selector, with strict period membership and complete native horizon support.
+No live caller opts into a new grid. Persisted v1 structures and their UTC constraints
+are unchanged; the codec regression pins bytes measured before this patch on M1.
+
+Independent Codex and Claude patch reviews approved without material findings.
+Claude's condition that the seven sandbox-blocked flow tests pass is satisfied:
+all seven passed with their temporary local Prefect server available. In total,
+219 targeted tests passed across daily reduction/selection, codecs, projection,
+proof, selected inputs/evidence, gap filling, refresh/forecast flows and deployment
+configuration. Changed-file Ruff lint/format, changed-module Pyright and whitespace
+checks passed. Full-suite CI for this patch remains required before merge.
+
+Non-blocking review suggestions did not require additional implementation: wrong
+step/phase validation uses one shared tested validator; cut-through tests already
+exercise final-edge refusal; no repository consumer matches the old boundary-error
+text. The pinned window digest is a regression guard, not a claim to test every
+persisted receipt. Full reports remain local. Release intent advances once from
+0.1.1141 to 0.1.1142; no release or deployment is authorized by this patch.
 
 ### M2b — shared training and operational assembly
 
@@ -531,7 +633,7 @@ protected backup commissioning and email warnings. Existing security/provenance
 rules remain in force; deferring hardening does not authorize removing them.
 
 ```json
-{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a":{"status":"DRAFT","depends_on":["M1"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
+{"M0":{"status":"COMPLETE","depends_on":[]},"M1":{"status":"IMPLEMENTED","depends_on":["M0"]},"M2a1":{"status":"IMPLEMENTED","depends_on":["M1"]},"M2a":{"status":"DRAFT","depends_on":["M2a1"]},"M2b":{"status":"DRAFT","depends_on":["M2a"]},"M2c":{"status":"DRAFT","depends_on":["M2b"]},"M2d":{"status":"DRAFT","depends_on":["M2c"]},"M2e":{"status":"DRAFT","depends_on":["M2d"]},"M3a":{"status":"DRAFT","depends_on":["M2e"]},"M3b":{"status":"DRAFT","depends_on":["M3a"]},"M4":{"status":"DRAFT","depends_on":["M3a"]},"M5":{"status":"DRAFT","depends_on":["M4","M3b"]}}
 ```
 
 ## Review state
@@ -540,7 +642,8 @@ Independent Codex repository review and Claude bounded-public-text review comple
 17 Nov. Both permit M0 after tightening scope/outcomes; neither approves implementation
 yet. The orchestrator initially authorized only M0 investigation, subsequently
 completed after resolving the source/model questions. M1 has separate plan and
-patch review records below; M2 onward remain DRAFT. The source/model table and owner's
+patch review records above; M2a1 has its own bounded reviewed scope, while the
+remaining M2 work and later milestones remain DRAFT. The source/model table and owner's
 UTC-training correction are investigation results, not independently approved code
 or an approval to change the model time basis.
 

@@ -7,6 +7,10 @@ import pytest
 
 from sapphire_flow.services.operational_inputs import build_future_dynamic_frame
 from sapphire_flow.services.operational_weather_proof import WeatherProofError
+from sapphire_flow.services.recap_daily_weather import (
+    recap_complete_daily_records,
+    recap_daily_support,
+)
 from sapphire_flow.services.track_resolution import resolve_candidate
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
@@ -24,8 +28,110 @@ from sapphire_flow.types.forcing_track import (
     ResolvedTrackRequest,
 )
 from sapphire_flow.types.ids import StationId
+from sapphire_flow.types.time_grid import TimeGrid
 from sapphire_flow.types.weather import BasinAverageForecast, WeatherForecastRecord
 from tests.fakes.operational_weather import ISSUE
+
+
+class TestRecapDailySupport:
+    @pytest.mark.parametrize(
+        ("lead", "expected"),
+        [
+            (18, tuple(range(18, 42, 3))),
+            (138, (138, 141, 144, 150, 156)),
+            (162, (162, 168, 174, 180)),
+        ],
+    )
+    def test_nepal_periods_tile_native_intervals(
+        self, lead: int, expected: tuple[int, ...]
+    ) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        result = recap_daily_support(
+            ISSUE, ensure_utc(ISSUE + timedelta(hours=lead)), grid=grid
+        )
+        assert result == tuple(ISSUE + timedelta(hours=value) for value in expected)
+
+    @pytest.mark.parametrize("hours", [18.25, 141, 147, 354])
+    def test_partial_native_intervals_are_not_complete_support(
+        self, hours: float
+    ) -> None:
+        phase = timedelta(hours=hours % 24)
+        grid = TimeGrid(step=timedelta(days=1), phase=phase)
+        assert (
+            recap_daily_support(
+                ISSUE, ensure_utc(ISSUE + timedelta(hours=hours)), grid=grid
+            )
+            == ()
+        )
+
+    @pytest.mark.parametrize("cycle_hour", [0, 6, 12, 18])
+    def test_period_ending_at_source_horizon_is_complete(self, cycle_hour: int) -> None:
+        cycle = ensure_utc(ISSUE + timedelta(hours=cycle_hour))
+        maximum = 360 if cycle_hour == 0 else 72
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=cycle_hour))
+        support = recap_daily_support(
+            cycle, ensure_utc(cycle + timedelta(hours=maximum - 24)), grid=grid
+        )
+        assert len(support) == (4 if cycle_hour == 0 else 8)
+        assert support[-1] + timedelta(
+            hours=6 if cycle_hour == 0 else 3
+        ) == cycle + timedelta(hours=maximum)
+
+    def test_period_before_cycle_has_no_support(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        assert (
+            recap_daily_support(
+                ISSUE, ensure_utc(ISSUE - timedelta(hours=6)), grid=grid
+            )
+            == ()
+        )
+
+    @pytest.mark.parametrize(
+        ("grid", "message"),
+        [
+            (TimeGrid(step=timedelta(hours=6), phase=timedelta(0)), "24-hour"),
+            (
+                TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+                "declared grid",
+            ),
+        ],
+    )
+    def test_grid_must_match_daily_period(self, grid: TimeGrid, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            recap_daily_support(ISSUE, ISSUE, grid=grid)
+
+
+class TestRecapCompleteDailyRecords:
+    def test_explicit_period_selects_start_labels_with_independent_horizons(
+        self,
+    ) -> None:
+        rows = qualified_rows()
+        start = ensure_utc(ISSUE + timedelta(hours=18))
+        selected = recap_complete_daily_records(
+            rows,
+            issue_time=start,
+            feature_horizons={"precipitation": 1, "temperature": 2},
+            ensemble_mode=EnsembleMode.SINGLE,
+            grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+        )
+        rain = [row for row in selected if row.parameter == "precipitation"]
+        temperature = [row for row in selected if row.parameter == "temperature"]
+        assert [row.valid_time for row in rain] == [
+            start + timedelta(hours=h) for h in range(0, 24, 3)
+        ]
+        assert len(temperature) == 16
+        assert sum(row.value for row in rain) == 8.0
+        assert {row.cycle_time for row in selected} == {ISSUE}
+        assert all(row in rows for row in selected)
+
+    def test_default_grid_does_not_accept_nonzero_start(self) -> None:
+        with pytest.raises(ValueError, match="UTC midnight"):
+            recap_complete_daily_records(
+                qualified_rows(),
+                issue_time=ensure_utc(ISSUE + timedelta(hours=18)),
+                feature_horizons={"precipitation": 1},
+                ensemble_mode=EnsembleMode.SINGLE,
+            )
 
 
 def qualified_rows(cycle: UtcDatetime = ISSUE) -> list[WeatherForecastRecord]:

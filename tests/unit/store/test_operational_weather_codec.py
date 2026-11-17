@@ -1,5 +1,6 @@
+import hashlib
 from dataclasses import replace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +9,7 @@ from sapphire_flow.store.operational_weather_codec import (
     decode_cache_entry,
     encode_cache_entry,
     make_past_snapshot,
+    window_bytes,
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.operational_weather import (
@@ -44,6 +46,14 @@ def pending_entry() -> WeatherCacheEntry:
 
 
 class TestOperationalWeatherCodec:
+    def test_v1_window_bytes_remain_unchanged_after_grid_helpers(self) -> None:
+        payload = window_bytes(
+            make_operational_window(StationId(UUID(int=1))), max_bytes=2 * 1024 * 1024
+        )
+        assert hashlib.sha256(payload).hexdigest() == (
+            "157310a6a6654d3b822f7d30422101c160e91f6672d9cdcc3f2f4f6d5f8a18e6"
+        )
+
     def test_strict_json_round_trip_keeps_domain_invariants(self) -> None:
         entry = pending_entry()
         raw = encode_cache_entry(entry, max_past_bytes=2 * 1024 * 1024)

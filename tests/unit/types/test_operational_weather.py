@@ -12,9 +12,134 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherSource,
     OperationalWeatherWindow,
     WeatherProductIdentity,
+    daily_weather_value,
 )
+from sapphire_flow.types.time_grid import TimeGrid
 
 ISSUE = ensure_utc(datetime(2026, 11, 6, tzinfo=UTC))
+
+
+def era5_period_samples() -> tuple[OperationalWeatherSample, ...]:
+    start = ISSUE + timedelta(hours=18)
+    return tuple(
+        OperationalWeatherSample(
+            parameter=parameter,
+            source=OperationalWeatherSource.ERA5_LAND,
+            valid_time=ensure_utc(start + timedelta(hours=hour)),
+            source_run=ensure_utc((start + timedelta(hours=hour)).replace(hour=0)),
+            value=float(hour + 1),
+            product=WeatherProductIdentity.REANALYSIS,
+            interval_end=ensure_utc(start + timedelta(hours=hour + 1))
+            if parameter == "precipitation"
+            else None,
+        )
+        for parameter in ("precipitation", "temperature")
+        for hour in range(24)
+    )
+
+
+class TestDailyWeatherValue:
+    def test_nepal_period_preserves_two_era5_source_days(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        start = ensure_utc(ISSUE + grid.phase)
+        samples = era5_period_samples()
+        assert daily_weather_value(start, samples, "precipitation", grid=grid) == 300
+        assert daily_weather_value(start, samples, "temperature", grid=grid) == 12.5
+        assert {sample.source_run for sample in samples} == {
+            ISSUE,
+            ISSUE + timedelta(days=1),
+        }
+
+    def test_missing_hour_is_not_filled(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        samples = era5_period_samples()[1:]
+        assert (
+            daily_weather_value(
+                ensure_utc(ISSUE + grid.phase), samples, "precipitation", grid=grid
+            )
+            is None
+        )
+
+    def test_duplicate_hour_is_rejected(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        samples = era5_period_samples()
+        with pytest.raises(ValueError, match="overlap or duplicate"):
+            daily_weather_value(
+                ensure_utc(ISSUE + grid.phase),
+                (*samples, samples[0]),
+                "precipitation",
+                grid=grid,
+            )
+
+    def test_supplied_end_boundary_sample_is_not_silently_filtered(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        samples = era5_period_samples()
+        extra = replace(
+            samples[0],
+            valid_time=ensure_utc(ISSUE + timedelta(hours=42)),
+            source_run=ensure_utc(ISSUE + timedelta(days=1)),
+            interval_end=ensure_utc(ISSUE + timedelta(hours=43)),
+        )
+        with pytest.raises(ValueError, match="outside the requested period"):
+            daily_weather_value(
+                ensure_utc(ISSUE + grid.phase),
+                (*samples, extra),
+                "precipitation",
+                grid=grid,
+            )
+
+    def test_civil_midnight_cannot_split_hourly_era5(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18, minutes=15))
+        with pytest.raises(ValueError, match="outside the requested period"):
+            daily_weather_value(
+                ensure_utc(ISSUE + grid.phase),
+                era5_period_samples(),
+                "precipitation",
+                grid=grid,
+            )
+
+    def test_mixed_ifs_cadence_keeps_snapshot_mean(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+        start = ensure_utc(ISSUE + timedelta(hours=138))
+        samples = tuple(
+            replace(sample, value=(sample.valid_time - start).total_seconds() / 3600)
+            for sample in (*ifs_day(5).samples, *ifs_day(6).samples)
+            if sample.parameter == "temperature"
+            and start <= sample.valid_time < start + grid.step
+        )
+        assert daily_weather_value(start, samples, "temperature", grid=grid) == 7.8
+
+    def test_terminal_temperature_point_does_not_extend_source_horizon(self) -> None:
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=6))
+        samples = tuple(
+            OperationalWeatherSample(
+                parameter="temperature",
+                source=OperationalWeatherSource.IFS,
+                valid_time=ensure_utc(ISSUE + timedelta(hours=lead)),
+                source_run=ISSUE,
+                value=10.0,
+                product=WeatherProductIdentity.CONTROL,
+            )
+            for lead in (342, 348, 354, 360)
+        )
+        assert (
+            daily_weather_value(
+                ensure_utc(ISSUE + timedelta(hours=342)),
+                samples,
+                "temperature",
+                grid=grid,
+            )
+            is None
+        )
+
+    def test_v1_day_still_rejects_nonmidnight_period(self) -> None:
+        with pytest.raises(ValueError, match="UTC midnight"):
+            OperationalWeatherDay(
+                day=ensure_utc(ISSUE + timedelta(hours=18)),
+                precipitation_mm=300,
+                temperature_c=12.5,
+                samples=era5_period_samples(),
+            )
 
 
 def ifs_day(offset: int = 0) -> OperationalWeatherDay:
