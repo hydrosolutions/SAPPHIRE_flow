@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -11,7 +11,9 @@ from sapphire_flow.adapters.recap_operational import (
 )
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.operational_weather_refresh import StationWeatherRefresh
+from sapphire_flow.services.retained_operational_weather import RetainedPastRequirement
 from sapphire_flow.services.run_group_forecast import discover_group_runs
+from sapphire_flow.services.weather_gap_fill import weather_fill_parameters
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
@@ -41,6 +43,7 @@ if TYPE_CHECKING:
         GatewayPolygonRef,
         GatewayPolygonResolver,
     )
+    from sapphire_flow.config.weather_gap import WeatherGapConfig
     from sapphire_flow.protocols.adapters import CandidateAwareForecastSource
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import StationGroupStore, StationStore
@@ -83,6 +86,7 @@ def prepare_weather_refresh(
     adapter: CandidateAwareForecastSource | None,
     issue_time: UtcDatetime,
     eligible_group_pairs: frozenset[tuple[StationId, ModelId]] | None = None,
+    gap_config: WeatherGapConfig | None = None,
 ) -> PreparedWeatherRefresh:
     from types import MappingProxyType
 
@@ -266,9 +270,50 @@ def prepare_weather_refresh(
             source=source,
             past_requirement=combined_past,
             future_requests=requests,
+            retained_past_requirements=(
+                () if prior is None else prior.retained_past_requirements
+            )
+            + (
+                ()
+                if past is None or future is None or gap_config is None
+                else (
+                    RetainedPastRequirement(
+                        past=past,
+                        fill_parameters=weather_fill_parameters(
+                            model, model_id=mid, config=gap_config, time_step=step
+                        ),
+                        max_gap_days=gap_config.for_model(str(mid)).max_gap_days,
+                    ),
+                )
+            ),
+            retained_future_bindings=(
+                frozenset() if prior is None else prior.retained_future_bindings
+            )
+            | (
+                frozenset({future.binding_fingerprint})
+                if past is not None
+                and future is not None
+                and all(req.member_ids == (0,) for req in future.requirements)
+                and future.binding_fingerprint
+                == future_binding_fingerprint(forecast_bindings[sid], ref, (0,))
+                else frozenset()
+            ),
         )
     return PreparedWeatherRefresh(
-        specs=tuple(specs.values()),
+        specs=tuple(
+            spec
+            if spec.future_requests
+            and all(
+                request.binding_fingerprint in spec.retained_future_bindings
+                for request in spec.future_requests
+            )
+            else replace(
+                spec,
+                retained_past_requirements=(),
+                retained_future_bindings=frozenset(),
+            )
+            for spec in specs.values()
+        ),
         assignments=MappingProxyType(assignments),
         resolver=FrozenWeatherResolver(bindings=tuple(mappings.items())),
         projections=tuple(projections),

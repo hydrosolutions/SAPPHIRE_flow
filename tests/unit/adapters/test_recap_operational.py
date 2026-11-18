@@ -192,6 +192,52 @@ def make_binding() -> StationWeatherSource:
 
 
 class TestRecapGatewayOperationalAdapter:
+    def test_retains_complete_prefix_when_later_tail_day_is_incomplete(self) -> None:
+        temperature = pd.read_parquet(FIXTURES / "temperature.parquet")
+        temperature.loc[ISSUE + timedelta(days=2, hours=6), "g_225"] = float("nan")
+        adapter = RecapGatewayOperationalAdapter(
+            api=RecordingApi(
+                {
+                    "tp": pd.read_parquet(FIXTURES / "precipitation.parquet"),
+                    "2t": temperature,
+                }
+            ),
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+        )
+        source = make_binding()
+        window = adapter.fetch_windows(
+            sources=[source], issue_time=ISSUE, start=START, end=ISSUE
+        )[source.station_id]
+        assert window.end == ISSUE + timedelta(days=2)
+        assert all(
+            day.precipitation_mm is not None and day.temperature_c is not None
+            for day in window.days
+        )
+
+    @pytest.mark.parametrize("metadata", ["{}", '{"grid_resolution":0.25}'])
+    def test_unknown_or_contradictory_tail_grid_is_not_a_recoverable_gap(
+        self, metadata: str
+    ) -> None:
+        temperature = pd.read_parquet(FIXTURES / "temperature.parquet")
+        temperature.loc[ISSUE, "source_meta"] = metadata
+        adapter = RecapGatewayOperationalAdapter(
+            api=RecordingApi(
+                {
+                    "tp": pd.read_parquet(FIXTURES / "precipitation.parquet"),
+                    "2t": temperature,
+                }
+            ),
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+        )
+        with pytest.raises(
+            RecapPayloadIntegrityError, match="invalid operational weather sample"
+        ):
+            adapter.fetch_windows(
+                sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
+            )
+
     def test_short_model_window_uses_minimum_provider_history_and_buffer(self) -> None:
         api = RecordingApi(
             {
@@ -220,7 +266,7 @@ class TestRecapGatewayOperationalAdapter:
             for call in api.calls
         )
         assert result[source.station_id].start == start
-        assert result[source.station_id].end == ISSUE + timedelta(days=1)
+        assert result[source.station_id].end == ISSUE + timedelta(days=15)
 
     def test_incomplete_optional_buffer_does_not_invalidate_required_past(self) -> None:
         frames = {

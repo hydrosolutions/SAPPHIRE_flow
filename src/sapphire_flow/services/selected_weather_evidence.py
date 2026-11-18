@@ -342,3 +342,83 @@ def validate_selected_forecast(forecast: OperationalForecast) -> None:
         raise WeatherEvidenceCaptureError(
             "unselected forecast cannot carry selected weather evidence"
         )
+
+
+def selected_weather_retry_key(
+    evidence: ForecastEvidence | PersistedForecastEvidence | None,
+    *,
+    forecast: OperationalForecast,
+) -> str | None:
+    if evidence is None:
+        raise WeatherEvidenceCaptureError(
+            "selected retry requires retained weather evidence"
+        )
+    uses = restore_selected_weather(
+        evidence, model_id=forecast.model_id, issue_time=forecast.issued_at
+    )
+    use = uses.get(forecast.station_id)
+    if not isinstance(use, WeatherUse):
+        return None  # Combined forecasts and dormant v2 retain their existing policy.
+    assert evidence.snapshot is not None
+    payload = restore_bounded_weather_snapshot(
+        evidence.snapshot, max_bytes=MAX_WEATHER_EVIDENCE_BYTES
+    )
+    source = (
+        _object(payload["source_records"])
+        if payload["kind"] == "station"
+        else _object(
+            next(
+                _array(pair)[1]
+                for pair in _array(payload["source_records"])
+                if _array(pair)[0] == str(forecast.station_id)
+            )
+        )
+    )
+    raw_use = _object(_WEATHER_USE.dump_python(use, mode="json"))
+    past = _object(raw_use["past"])
+    future = _object(raw_use["future"])
+    scientific = {
+        "policy": use.policy_version,
+        "past": {
+            key: past[key]
+            for key in (
+                "freshness",
+                "requirement",
+                "binding_fingerprint",
+                "days",
+                "gap_fills",
+            )
+            if key in past
+        },
+        "future": {
+            key: future[key] for key in ("freshness", "requirement") if key in future
+        },
+        "future_rows": source["future_weather"],
+    }
+
+    # Only source-row identities/clocks are incidental here. Source runs, native
+    # supports, gap-fill endpoints and quality states remain in the comparison.
+    def scientific_fields(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: scientific_fields(item)
+                for key, item in cast("dict[str, object]", value).items()
+                if key not in {"id", "created_at"}
+            }
+        if isinstance(value, list):
+            items = [scientific_fields(item) for item in cast("list[object]", value)]
+            return (
+                sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+                if all(isinstance(item, dict) for item in items)
+                else items
+            )
+        return value
+
+    return hashlib.sha256(
+        json.dumps(
+            scientific_fields(scientific),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()

@@ -493,7 +493,7 @@ def test_transient_http_status_allows_native_complete_cache_stale_fallback(
     assert forecasts is not None and len(forecasts) == 1
 
 
-def test_valid_snapshot_over_configured_cap_preserves_typed_configuration_failure(
+def test_valid_snapshot_over_configured_cap_without_retained_product_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sapphire_flow.store.operational_weather_codec import WeatherSnapshotSizeError
@@ -526,18 +526,22 @@ def test_valid_snapshot_over_configured_cap_preserves_typed_configuration_failur
             "config": config.model_copy(update={"operational_weather": small}),
         }
 
-    with pytest.raises(WeatherSnapshotSizeError, match="cache byte limit") as raised:
-        _run_selected_cycle(
-            monkeypatch, group_run=True, capture_fault="none", configure_cycle=configure
-        )
-    assert observed == [raised.value]
+    forecasts = _run_selected_cycle(
+        monkeypatch,
+        group_run=True,
+        capture_fault="none",
+        configure_cycle=configure,
+        expected_forecasts=0,
+    )
+    assert forecasts == []
+    assert len(observed) == 1 and "cache byte limit" in str(observed[0])
     entry = next(iter(caches[0].entries.values()))
-    assert entry.past_outcome.state is WeatherLegState.FATAL
-    assert entry.past_outcome.reason is WeatherFailureReason.CONFIGURATION
+    assert entry.past_snapshot is None
+    assert entry.past_outcome.state is WeatherLegState.UNAVAILABLE
+    assert entry.past_outcome.reason is WeatherFailureReason.NO_USABLE_PRODUCT
+    assert entry.future_attempts
     assert all(
-        a.outcome.state is WeatherLegState.NOT_ATTEMPTED
-        and a.outcome.reason is WeatherFailureReason.PARENT_FAILURE
-        for a in entry.future_attempts
+        a.outcome.state is WeatherLegState.SUCCESS for a in entry.future_attempts
     )
 
 

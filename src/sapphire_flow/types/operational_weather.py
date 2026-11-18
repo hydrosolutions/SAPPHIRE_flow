@@ -331,6 +331,7 @@ class WeatherFailureReason(StrEnum):
     TRANSPORT = "transport"
     MISSING_SUPPORT = "missing_support"
     NO_ELIGIBLE_CYCLE = "no_eligible_cycle"
+    NO_USABLE_PRODUCT = "no_usable_product"
     AUTHORIZATION = "authorization"
     CONFIGURATION = "configuration"
     INTEGRITY = "integrity"
@@ -361,6 +362,7 @@ class WeatherLegOutcome:
             WeatherFailureReason.TRANSPORT,
             WeatherFailureReason.MISSING_SUPPORT,
             WeatherFailureReason.NO_ELIGIBLE_CYCLE,
+            WeatherFailureReason.NO_USABLE_PRODUCT,
             WeatherFailureReason.RECEIPT_CAPACITY,
         ):
             raise ValueError("fatal weather reason cannot authorize stale fallback")
@@ -578,6 +580,7 @@ class WeatherCacheCompletion:
     future_attempts: tuple[FutureWeatherAttempt, ...]
     past_snapshot: WeatherPastSnapshot | None = None
     future_receipts: tuple[FutureWeatherReceipt, ...] = ()
+    retained_future_receipts: tuple[FutureWeatherReceipt, ...] = ()
 
     def __post_init__(self) -> None:
         require_utc(self.finished_at)
@@ -595,6 +598,21 @@ class WeatherCacheCompletion:
         scopes = tuple(attempt.scope for attempt in self.future_attempts)
         if len(set(scopes)) != len(scopes):
             raise ValueError("weather completion repeats a future scope")
+        retained_scopes = tuple(
+            receipt.scope.request for receipt in self.retained_future_receipts
+        )
+        unavailable = {
+            attempt.scope
+            for attempt in self.future_attempts
+            if attempt.outcome.state is WeatherLegState.UNAVAILABLE
+        }
+        if (
+            len(set(retained_scopes)) != len(retained_scopes)
+            or not set(retained_scopes) <= unavailable
+        ):
+            raise ValueError(
+                "retained support receipts require unique unavailable future scopes"
+            )
         receipt_keys = tuple(
             (receipt.scope.request, receipt.cycle_time)
             for receipt in self.future_receipts

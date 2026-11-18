@@ -13,6 +13,19 @@ source: 2026-09-25 — the owner, after the midnight scaffold's second same-day 
 
 # Plan 327 — a forecast cycle cannot be re-run
 
+## Selected-weather amendment (18 November 2026)
+
+The approved [retained-weather MVP plan](2026-11-18-retained-operational-weather.md)
+adds row 7, `WEATHER_INPUT_DIFFERS`, to superseding rows. After the existing
+value/artifact/QC/lineage/evidence-version checks, an otherwise identical v1
+selected forecast compares validated consumed weather: native values, source
+cycles/support, gap-fill provenance, binding and freshness. Changed weather
+supersedes even if runoff values are equal. Snapshot/attempt/row IDs, retrieval
+and creation clocks, RNG state and unused retained tails do not discriminate.
+QC and evidence-version refusal rules remain unchanged. Replacement and prior-row
+supersession share one transaction; old IDs and evidence remain readable.
+Legacy, combined and dormant v2 retry policies are unchanged.
+
 ## Forecast data-use amendment (2026-10-01)
 
 The natural key is now `(station_id, model_id, issued_at, parameter, data_use)`.

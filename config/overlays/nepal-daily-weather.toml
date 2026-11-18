@@ -8,3 +8,5 @@ max_cycle_age_hours = 60.0
 
 [operational_weather]
 automatic_issue_timezone = "Asia/Kathmandu"
+rollover_buffer_days = 15
+max_retained_past_lead_hours = 72
