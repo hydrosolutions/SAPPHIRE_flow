@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from sapphire_flow.config.deployment import DeploymentConfig
 
 _REPOSITORY = Path(__file__).resolve().parents[3]
-_BUILTINS = frozenset({"swiss", "nepal", "kazhydromet"})
 _ENVIRONMENT_NAMES = frozenset(
     {
         "VERSION",
@@ -72,7 +71,6 @@ class ProfileError(ValueError):
 
 
 class ProfileState(StrEnum):
-    LEGACY = "legacy"
     INCOMPLETE = "incomplete"
     CONFIGURED = "configured"
 
@@ -178,6 +176,7 @@ class EffectiveSetting:
     value: str | int | float | bool | None
     visibility: Literal["value", "redacted", "absent"]
     environment: tuple[EnvironmentReference, ...] = ()
+    default_status: Literal["explicit", "neutral", "review"] = "explicit"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -254,8 +253,8 @@ class _SecretInput(_Boundary):
 
 class _ProfileInput(_Boundary):
     schema_version: Literal[1]
-    name: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
-    state: Literal["legacy", "incomplete", "configured"]
+    name: str = Field(min_length=1)
+    state: Literal["incomplete", "configured"]
     base_config: str
     overlays: list[str] = Field(default_factory=list)
     compose_files: list[str]
@@ -313,12 +312,6 @@ def _read_toml(path: Path) -> dict[str, object]:
         raise ProfileError(
             "PROFILE_READ_ERROR", "Cannot read a valid TOML document"
         ) from None
-
-
-def _manifest_path(selector: str, directory: Path, repository_root: Path) -> Path:
-    if selector in _BUILTINS:
-        return repository_root / "deploy/profiles/agency" / f"{selector}.toml"
-    return _file_path(selector, directory)
 
 
 def _scope(raw: _ScopeInput, directory: Path, repository_root: Path) -> ConfigScope:
@@ -409,7 +402,7 @@ def load_agency_profile(
     if raw.state != "incomplete" and not raw.compose_files:
         raise ProfileError(
             "PROFILE_COMPOSE_REQUIRED",
-            "A configured or legacy profile needs Compose files",
+            "A configured profile needs Compose files",
         )
     if raw.state == "incomplete" and not raw.required_inputs:
         raise ProfileError(
@@ -455,10 +448,7 @@ def _installation(
         raise ProfileError(
             "INSTALLATION_SCHEMA_INVALID", "Invalid installation fields"
         ) from None
-    if (
-        _manifest_path(raw.agency_profile, path.parent, repository_root).resolve()
-        != profile.manifest_path
-    ):
+    if _file_path(raw.agency_profile, path.parent) != profile.manifest_path:
         raise ProfileError(
             "PROFILE_SELECTION_CONFLICT",
             "Installation and explicit selector must reference the same manifest",
@@ -490,29 +480,17 @@ def _installation(
 
 def select_deployment_profile(
     *,
-    name: str | None = None,
     profile_file: Path | None = None,
     installation_file: Path | None = None,
     repository_root: Path = _REPOSITORY,
     ambient_environment: Mapping[str, str] | None = None,
 ) -> ProfileSelection:
-    if (name is None) == (profile_file is None):
+    if profile_file is None:
         raise ProfileError(
-            "PROFILE_SELECTOR_REQUIRED",
-            "Select exactly one named profile or profile file",
+            "PROFILE_SELECTOR_REQUIRED", "Select an explicit profile file"
         )
     repository_root = repository_root.resolve()
-    if name is not None and name not in _BUILTINS:
-        raise ProfileError(
-            "PROFILE_NAME_UNKNOWN", "Use a shipped name or an explicit profile file"
-        )
-    if name is not None:
-        path = repository_root / "deploy/profiles/agency" / f"{name}.toml"
-    elif profile_file is not None:
-        path = profile_file
-    else:
-        raise ProfileError("PROFILE_SELECTOR_REQUIRED", "Select a profile")
-    profile = load_agency_profile(path, repository_root=repository_root)
+    profile = load_agency_profile(profile_file, repository_root=repository_root)
     installation = (
         _installation(installation_file, profile, repository_root)
         if installation_file is not None
@@ -604,6 +582,16 @@ def _check_ambient(
             )
 
 
+NEUTRAL_DEFAULT_FIELDS = frozenset(
+    {
+        "default_display_timezone",
+        "calendar",
+        "enable_forecast_alerts",
+        "enable_observation_alerts",
+        "enable_pipeline_alerts",
+    }
+)
+
 _PREVIEW_FIELDS = (
     "daily_grid_origin",
     "daily_grid_origin_overrides",
@@ -617,6 +605,10 @@ _PREVIEW_FIELDS = (
     "seasons",
     "enable_forecast_alerts",
     "enable_observation_alerts",
+    "enable_pipeline_alerts",
+    "available_nwp_parameters",
+    "available_past_only_nwp_parameters",
+    "nwp_cycle_min_age_minutes",
     "threshold_check_mode",
     "operational_weather.route",
     "operational_weather.automatic_issue_timezone",
@@ -645,7 +637,6 @@ REQUIRED_INPUTS: dict[
         "agency_specialist",
         "model training-time conventions",
     ),
-    "display_timezone_calendar": ("agency_specialist", "display timezone and calendar"),
     "hydrological_day_grid": ("agency_specialist", "hydrological day and time grid"),
     "schedules": ("administrator", "job schedules and exclusions"),
     "hosting_paths_domain_ports": ("administrator", "hosting paths, domain and ports"),
@@ -657,9 +648,8 @@ REQUIRED_INPUTS: dict[
 
 
 _EXPLICIT_AGENCY_FIELDS = (
+    "max_retention_days",
     "daily_grid_origin",
-    "default_display_timezone",
-    "calendar",
     "reanalysis_source",
     "danger_levels",
     "seasons",
@@ -674,6 +664,8 @@ _EXPLICIT_AGENCY_FIELDS = (
     "adapters.weather_forecast.enabled",
     "adapters.weather_reanalysis.type",
     "adapters.weather_stations.type",
+    "available_nwp_parameters",
+    "available_past_only_nwp_parameters",
 )
 
 
@@ -690,6 +682,7 @@ def _diagnostic(
         if code
         in {
             "DEVELOPER_WORK_REQUIRED",
+            "DEFAULT_REVIEW_PENDING",
             "ADAPTER_POLICY_PENDING",
             "UNCHECKED_SECTIONS",
             "ROSTER_PENDING",
@@ -807,6 +800,11 @@ def _setting(
         if value is None and not variables
         else "redacted",
         environment=_environment_references(variables, supplied),
+        default_status="explicit"
+        if operation != "default"
+        else "neutral"
+        if field in NEUTRAL_DEFAULT_FIELDS
+        else "review",
     )
 
 
@@ -1031,10 +1029,6 @@ def evaluate_deployment_profile(
                 )
             )
 
-    shipped_legacy = profile.state is ProfileState.LEGACY and profile.manifest_path in {
-        _REPOSITORY / "deploy/profiles/agency/swiss.toml",
-        _REPOSITORY / "deploy/profiles/agency/nepal.toml",
-    }
     if profile.state is ProfileState.INCOMPLETE and not profile.required_inputs:
         diagnostics.append(
             _diagnostic(
@@ -1067,34 +1061,54 @@ def evaluate_deployment_profile(
             )
         )
     if raw is not None:
-        if not shipped_legacy:
-            for field in _EXPLICIT_AGENCY_FIELDS:
-                if _lookup(raw, field) is None or _lookup(raw, field) == "":
-                    diagnostics.append(
-                        _diagnostic(
-                            "INPUT_REQUIRED",
-                            field,
-                            "A new agency must explicitly choose this setting.",
-                            "Supply the agency choice; do not inherit Swiss defaults.",
-                        )
-                    )
-            if _lookup(
-                raw, "adapters.weather_forecast.enabled"
-            ) is True and not _lookup(raw, "adapters.weather_forecast.type"):
+        for field in _EXPLICIT_AGENCY_FIELDS:
+            if _lookup(raw, field) is None or _lookup(raw, field) == "":
                 diagnostics.append(
                     _diagnostic(
                         "INPUT_REQUIRED",
-                        "adapters.weather_forecast.type",
-                        "An enabled forecast source needs an explicit choice.",
-                        "Select a supported source with the agency's data owner.",
+                        field,
+                        "Choose the deployment's data retention period."
+                        if field == "max_retention_days"
+                        else "A new agency must explicitly choose this setting.",
+                        "Set max_retention_days in the application base using the "
+                        "retention constraints in the config reference."
+                        if field == "max_retention_days"
+                        else "Supply the deployment choice; do not inherit another "
+                        "deployment's scientific settings.",
                     )
                 )
-            pending.append(
+        if _lookup(raw, "adapters.weather_forecast.enabled") is True and not _lookup(
+            raw, "adapters.weather_forecast.type"
+        ):
+            diagnostics.append(
                 _diagnostic(
-                    "AGENCY_EVIDENCE_PENDING",
-                    "agency_inputs",
-                    "Station, model and training-time evidence has not been checked.",
-                    "Complete the separate agency data/model handoff.",
+                    "INPUT_REQUIRED",
+                    "adapters.weather_forecast.type",
+                    "An enabled forecast source needs an explicit choice.",
+                    "Select a supported source with the agency's data owner.",
+                )
+            )
+        pending.append(
+            _diagnostic(
+                "AGENCY_EVIDENCE_PENDING",
+                "agency_inputs",
+                "Station, model and training-time evidence has not been checked.",
+                "Complete the separate agency data/model handoff.",
+            )
+        )
+        if (
+            _lookup(raw, "adapters.weather_forecast.enabled") is True
+            and _lookup(raw, "adapters.weather_forecast.type") == "meteoswiss_nwp"
+            and _lookup(raw, "nwp_cycle_min_age_minutes") is None
+        ):
+            diagnostics.append(
+                _diagnostic(
+                    "INPUT_REQUIRED",
+                    "nwp_cycle_min_age_minutes",
+                    "The enabled forecast provider requires an explicit "
+                    "publication-delay choice.",
+                    "Supply the provider's publication delay; the historical "
+                    "typed default is not a neutral deployment choice.",
                 )
             )
         config = _validate_runtime_readers(raw, diagnostics)
@@ -1113,6 +1127,19 @@ def evaluate_deployment_profile(
                         "Validate the selected roster digest/cardinality separately.",
                     )
                 )
+        else:
+            # Only omitted neutral literal defaults are safe to preview when
+            # the complete model cannot parse. Never validate fabricated inputs.
+            provenance.extend(
+                _setting(
+                    field,
+                    DeploymentConfig.model_fields[field].default,
+                    trace,
+                    supplied_names,
+                )
+                for field in _PREVIEW_FIELDS
+                if field in NEUTRAL_DEFAULT_FIELDS and field not in raw
+            )
         try:
             identity = parse_deployment_identity_config(raw)
             if raw_tenants is not None and identity.writable_tenants - {
@@ -1252,6 +1279,17 @@ def evaluate_deployment_profile(
                     "Validate applicable references and service wiring.",
                 )
             )
+    if any(item.default_status == "review" for item in provenance):
+        pending.append(
+            _diagnostic(
+                "DEFAULT_REVIEW_PENDING",
+                "defaults",
+                "Inherited non-neutral defaults require deployment review.",
+                "Deployment support must audit applicable scientific/operational "
+                "defaults and supply explicit choices; displayed inherited "
+                "values are not endorsed.",
+            )
+        )
     pending.append(
         _diagnostic(
             "BAFU_REGISTRY_PENDING",

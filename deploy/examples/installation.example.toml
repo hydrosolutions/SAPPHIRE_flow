@@ -1,13 +1,12 @@
 # Synthetic desired-state example. Copy outside git and edit all local paths.
 # The resolver reads references only; this file does not configure the host.
 schema_version = 1
-agency_profile = "nepal"
+agency_profile = "profile.example.toml"
 project_name = "agency-example"
 project_directory = "/srv/sapphire-example"
 # Complete list, not additions to the agency recipe. Keep every installed overlay.
 compose_files = [
-  "/srv/sapphire-example/docker-compose.yml",
-  "/srv/sapphire-example/docker-compose.nepal-cloud.yml",
+  "/absolute/path/to/reviewed-compose.yml",
 ]
 
 [environment]

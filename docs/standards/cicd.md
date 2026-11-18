@@ -12,13 +12,14 @@ patch from the tested base. Dependabot does not update these repository-specific
 metadata fields. Run the workflow-inventory and release-target tests before
 pushing the correction; do not disable either check.
 
-## Agency configuration preparation
+## Private configuration preparation
 
 Start with the [administrator quick-start](../deployment-quickstart.md) and
 [profile reference](../deployment/profiles.md). The offline tool checks explicitly
 selected desired configuration; it does not launch, migrate, inspect a live host,
-retrieve credentials or replace host `.env`/Compose settings. Existing Swiss/Nepal
-recipes retain pending policy/reference evidence. Preserve their complete ordered
+retrieve credentials or replace host `.env`/Compose settings. Actual deployment manifests live outside the public repository. Generic examples
+reuse neutral typed defaults; scientific inputs remain explicit and uncovered
+policies remain pending. Preserve the complete ordered
 file lists and follow the applicable host runbook for actual deployment.
 
 ## Docker Compose service topology

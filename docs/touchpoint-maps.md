@@ -102,9 +102,11 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: Observation QC threshold configuration
 
-- Agency deployment entry: `docs/deployment-quickstart.md` and
+- Generic private-deployment entry: `docs/deployment-quickstart.md` and
   `docs/deployment/profiles.md`. `tools/deployment_profile.py` consumes the shared
-  typed evaluation and adds bounded render-only Compose evidence; it must not
+  typed evaluation and adds bounded render-only Compose evidence. There is no
+  built-in manifest catalogue or path-based validation exemption; neutral defaults
+  are name-allowlisted and values come from existing typed readers. It must not
   start services, read credential files or silently drop pending checks. Test
   exact CLI forms and safe failures in `tests/unit/tools/test_deployment_profile.py`.
   `cli/register_deployments.py::build_deployment_specs(environment)` is the pure

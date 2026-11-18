@@ -19,6 +19,7 @@ from sapphire_flow.config.deployment_profile import (
     load_agency_profile,
     select_deployment_profile,
 )
+from tests.unit.config.profile_support import incomplete_profile, recipe_profile
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -53,7 +54,7 @@ class TestSelectDeploymentProfile:
             ("nepal", "nepal-cloud.toml", "nepal-cloud"),
         ],
     )
-    def test_named_profiles_reference_existing_chains(
+    def test_private_profiles_reference_existing_recipe_chains(
         self,
         name: str,
         overlay: str,
@@ -63,14 +64,19 @@ class TestSelectDeploymentProfile:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text("SAPPHIRE_CONFIG=other-country.toml\n")
-        selected = select_deployment_profile(name=name, ambient_environment={})
+        selected = select_deployment_profile(
+            profile_file=recipe_profile(
+                tmp_path, "macmini" if name == "swiss" else "nepal-cloud"
+            ),
+            ambient_environment={},
+        )
         assert selected.profile.base_config == REPO / "config.toml"
         assert selected.profile.overlays == (REPO / "config/overlays" / overlay,)
         assert selected.compose_files == (
             REPO / "docker-compose.yml",
             REPO / f"docker-compose.{compose}.yml",
         )
-        assert selected.profile.state is ProfileState.LEGACY
+        assert selected.profile.state is ProfileState.CONFIGURED
         assert all(path.is_file() for path in selected.compose_files)
         assert REPO / "docker-compose.nepal-forcing.yml" not in selected.compose_files
 
@@ -110,19 +116,11 @@ class TestSelectDeploymentProfile:
                 ambient_environment={},
             )
 
-    @pytest.mark.parametrize(
-        "selectors",
-        [
-            {},
-            {"name": "swiss", "profile_file": Path("unused.toml")},
-            {"name": "unknown"},
-        ],
-    )
-    def test_invalid_selectors_fail(self, selectors: dict[str, object]) -> None:
-        with pytest.raises(
-            ProfileError, match="PROFILE_SELECTOR_REQUIRED|PROFILE_NAME_UNKNOWN"
-        ):
-            select_deployment_profile(**selectors)  # type: ignore[arg-type]
+    def test_only_explicit_file_selection_exists(self) -> None:
+        with pytest.raises(ProfileError, match="PROFILE_SELECTOR_REQUIRED"):
+            select_deployment_profile(ambient_environment={})
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            select_deployment_profile(name="removed")  # type: ignore[call-arg]
 
     @pytest.mark.parametrize(
         "key",
@@ -133,10 +131,13 @@ class TestSelectDeploymentProfile:
             "NHS_PROVIDER_CONFIG_SOURCE",
         ],
     )
-    def test_conflicting_ambient_input_is_rejected_without_echo(self, key: str) -> None:
+    def test_conflicting_ambient_input_is_rejected_without_echo(
+        self, tmp_path: Path, key: str
+    ) -> None:
         with pytest.raises(ProfileError, match="PROFILE_AMBIENT_CONFLICT") as error:
             select_deployment_profile(
-                name="swiss", ambient_environment={key: "secret-canary"}
+                profile_file=recipe_profile(tmp_path, "macmini"),
+                ambient_environment={key: "secret-canary"},
             )
         assert "secret-canary" not in str(error.value)
 
@@ -176,10 +177,14 @@ class TestSelectDeploymentProfile:
         )
         assert selected.profile.manifest_path == profile
 
-    def test_kazhydromet_has_no_invented_agency_or_grid_choices(self) -> None:
-        selected = select_deployment_profile(name="kazhydromet", ambient_environment={})
+    def test_generic_example_has_no_invented_scientific_choices(
+        self, tmp_path: Path
+    ) -> None:
+        selected = select_deployment_profile(
+            profile_file=incomplete_profile(tmp_path), ambient_environment={}
+        )
         assert selected.profile.state is ProfileState.INCOMPLETE
-        assert selected.profile.base_config == REPO / "config/agencies/kazhydromet.toml"
+        assert selected.profile.base_config == tmp_path / "application.example.toml"
         assert selected.compose_files == ()
         assert selected.profile.overlays == ()
         assert "hydrological_day_grid" in selected.profile.required_inputs
@@ -229,8 +234,10 @@ class TestLoadAgencyProfile:
         with pytest.raises(ProfileError, match="PROFILE_PATH_INVALID"):
             load_agency_profile(path)
 
-    def test_existing_operator_and_forecast_exceptions_stay_distinct(self) -> None:
-        profile = load_agency_profile(REPO / "deploy/profiles/agency/nepal.toml")
+    def test_existing_operator_and_forecast_exceptions_stay_distinct(
+        self, tmp_path: Path
+    ) -> None:
+        profile = load_agency_profile(recipe_profile(tmp_path, "nepal-cloud"))
         operator, forecast = profile.scopes
         assert operator.kind is ScopeKind.CHWRR_IMPORT
         assert operator.base_config == REPO / "config.toml"
@@ -286,7 +293,7 @@ class TestLoadAgencyProfile:
 
 
 class TestSecretBindings:
-    def test_secret_environment_values_are_not_accessed(self) -> None:
+    def test_secret_environment_values_are_not_accessed(self, tmp_path: Path) -> None:
         class GuardedEnvironment(dict[str, str]):
             def __getitem__(self, key: str) -> str:
                 if key == "RECAP_DG_CLIENT_TOKEN":
@@ -294,13 +301,17 @@ class TestSecretBindings:
                 return super().__getitem__(key)
 
         selected = select_deployment_profile(
-            name="swiss",
+            profile_file=recipe_profile(tmp_path, "macmini"),
             ambient_environment=GuardedEnvironment(RECAP_DG_CLIENT_TOKEN="canary"),
         )
         assert "recap_dg_client_token" in selected.unverified_build_inputs
 
-    def test_runtime_bindings_are_missing_without_an_installation(self) -> None:
-        selected = select_deployment_profile(name="nepal", ambient_environment={})
+    def test_runtime_bindings_are_missing_without_an_installation(
+        self, tmp_path: Path
+    ) -> None:
+        selected = select_deployment_profile(
+            profile_file=recipe_profile(tmp_path, "nepal-cloud"), ambient_environment={}
+        )
         assert set(selected.missing_secret_bindings) == {
             "db_password",
             "sapphire_api_db_password",
@@ -387,7 +398,8 @@ class TestSecretBindings:
     ) -> None:
         installation = tmp_path / "installation.toml"
         installation.write_text(
-            'schema_version = 1\nagency_profile = "nepal"\n'
+            "schema_version = 1\n"
+            f'agency_profile = "{recipe_profile(tmp_path, "nepal-cloud")}"\n'
             'project_name = "nepal-example"\nproject_directory = "/srv/example"\n'
             'compose_files = ["/srv/example/docker-compose.yml", '
             '"/srv/example/docker-compose.nepal-cloud.yml", '
@@ -395,7 +407,9 @@ class TestSecretBindings:
             '"/srv/example/docker-compose.recap.yml"]\n'
         )
         selected = select_deployment_profile(
-            name="nepal", installation_file=installation, ambient_environment={}
+            profile_file=recipe_profile(tmp_path, "nepal-cloud"),
+            installation_file=installation,
+            ambient_environment={},
         )
         assert "sapphire_operator_db_password" in selected.missing_secret_bindings
         assert "sapphire_dg_api_key" in selected.missing_secret_bindings
@@ -446,12 +460,20 @@ def evaluation_selection(
 
 class TestEvaluateDeploymentProfile:
     @pytest.mark.parametrize("name", ["swiss", "nepal"])
-    def test_legacy_config_is_valid_but_compose_is_pending(self, name: str) -> None:
+    def test_existing_recipes_have_no_missing_input_exemption(
+        self, tmp_path: Path, name: str
+    ) -> None:
         result = evaluate_deployment_profile(
-            select_deployment_profile(name=name, ambient_environment={})
+            select_deployment_profile(
+                profile_file=recipe_profile(
+                    tmp_path, "macmini" if name == "swiss" else "nepal-cloud"
+                ),
+                ambient_environment={},
+            )
         )
-        assert result.summary is EvaluationSummary.PENDING
-        assert result.diagnostics == ()
+        assert result.summary is EvaluationSummary.FAIL
+        assert result.diagnostics
+        assert all(item.code == "INPUT_REQUIRED" for item in result.diagnostics)
         assert "COMPOSE_EVIDENCE_PENDING" in {
             item.code for item in result.pending_checks
         }
@@ -482,7 +504,7 @@ class TestEvaluateDeploymentProfile:
             for item in result.provenance
         )
 
-    def test_configured_label_cannot_turn_empty_new_agency_into_swiss(
+    def test_configured_label_cannot_waive_required_choices(
         self, tmp_path: Path
     ) -> None:
         result = evaluate_deployment_profile(
@@ -494,14 +516,16 @@ class TestEvaluateDeploymentProfile:
         assert result.summary is EvaluationSummary.FAIL
         assert {
             "daily_grid_origin",
-            "default_display_timezone",
+            "available_nwp_parameters",
             "adapters.river_stations.type",
             "qc_rules",
         } <= missing
 
-    def test_kazhydromet_stays_unresolved(self) -> None:
+    def test_generic_example_stays_unresolved(self, tmp_path: Path) -> None:
         result = evaluate_deployment_profile(
-            select_deployment_profile(name="kazhydromet", ambient_environment={})
+            select_deployment_profile(
+                profile_file=incomplete_profile(tmp_path), ambient_environment={}
+            )
         )
         assert result.summary is EvaluationSummary.FAIL
         assert any(item.code == "INPUT_REQUIRED" for item in result.diagnostics)
@@ -679,7 +703,7 @@ class TestEvaluateDeploymentProfile:
 class TestPureReaderParity:
     @pytest.mark.parametrize("name", ["swiss", "nepal"])
     def test_extracted_readers_match_legacy_loaders(
-        self, name: str, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from sapphire_flow.config._overlay import load_merged_toml
         from sapphire_flow.config.deployment import load_config, parse_deployment_config
@@ -697,7 +721,12 @@ class TestPureReaderParity:
         )
         from sapphire_flow.config.qc_rules import load_qc_rules, parse_qc_rules
 
-        profile = select_deployment_profile(name=name, ambient_environment={}).profile
+        profile = select_deployment_profile(
+            profile_file=recipe_profile(
+                tmp_path, "macmini" if name == "swiss" else "nepal-cloud"
+            ),
+            ambient_environment={},
+        ).profile
         monkeypatch.setenv(
             "SAPPHIRE_CONFIG_OVERLAY", ",".join(str(path) for path in profile.overlays)
         )
@@ -715,3 +744,167 @@ class TestPureReaderParity:
         assert parse_forecast_qc_rules(raw)[0] == load_forecast_qc_rules(
             profile.base_config
         )
+
+
+class TestGenericDefaults:
+    def test_exact_neutral_allowlist_uses_actual_typed_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.config.deployment_profile import NEUTRAL_DEFAULT_FIELDS
+
+        expected = {
+            "default_display_timezone",
+            "calendar",
+            "enable_forecast_alerts",
+            "enable_observation_alerts",
+            "enable_pipeline_alerts",
+        }
+        assert expected == NEUTRAL_DEFAULT_FIELDS
+        result = evaluate_deployment_profile(
+            evaluation_selection(tmp_path, "max_retention_days = 3650\n")
+        )
+        typed = DeploymentConfig(max_retention_days=3650).model_dump(mode="json")
+        settings = {item.field: item for item in result.provenance}
+        for field in expected:
+            assert settings[field].value == typed[field]
+            assert settings[field].default_status == "neutral"
+            assert settings[field].source == f"DeploymentConfig.{field}"
+        missing = {
+            item.field for item in result.diagnostics if item.code == "INPUT_REQUIRED"
+        }
+        assert not missing & expected
+        assert {
+            "daily_grid_origin",
+            "available_nwp_parameters",
+            "available_past_only_nwp_parameters",
+            "reanalysis_source",
+        } <= missing
+        assert settings["nwp_cycle_min_age_minutes"].default_status == "review"
+        assert settings["reanalysis_source"].default_status == "review"
+        assert settings["reanalysis_source"].value == typed["reanalysis_source"]
+        assert any(
+            item.code == "DEFAULT_REVIEW_PENDING" and item.owner == "developer"
+            for item in result.pending_checks
+        )
+
+    def test_explicit_overrides_are_not_inherited_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        selected = evaluation_selection(
+            tmp_path,
+            "max_retention_days = 3650\n",
+            'default_display_timezone = "Europe/Paris"\n'
+            "enable_pipeline_alerts = true\n",
+        )
+        fields = {
+            item.field: item
+            for item in evaluate_deployment_profile(selected).provenance
+        }
+        assert fields["default_display_timezone"].value == "Europe/Paris"
+        assert fields["enable_pipeline_alerts"].value is True
+        assert fields["enable_pipeline_alerts"].default_status == "explicit"
+        assert fields["enable_pipeline_alerts"].source == "overlay[0]"
+
+    @pytest.mark.parametrize(
+        ("provider", "enabled", "age_required"),
+        [
+            ("meteoswiss_nwp", True, True),
+            ("meteoswiss_nwp", False, False),
+            ("recap_gateway", True, False),
+        ],
+    )
+    def test_provider_specific_inputs(
+        self, tmp_path: Path, provider: str, enabled: bool, age_required: bool
+    ) -> None:
+        base = (
+            "max_retention_days = 3650\navailable_nwp_parameters = []\n"
+            "available_past_only_nwp_parameters = []\n"
+            f'[adapters.weather_forecast]\ntype = "{provider}"\n'
+            f"enabled = {str(enabled).lower()}\n"
+        )
+        result = evaluate_deployment_profile(evaluation_selection(tmp_path, base))
+        missing = {
+            item.field for item in result.diagnostics if item.code == "INPUT_REQUIRED"
+        }
+        assert ("nwp_cycle_min_age_minutes" in missing) == age_required
+        assert "available_nwp_parameters" not in missing
+        assert "available_past_only_nwp_parameters" not in missing
+
+    def test_legacy_state_is_rejected(self, tmp_path: Path) -> None:
+        profile = write_profile(tmp_path)
+        profile.write_text(
+            profile.read_text().replace('state = "configured"', 'state = "legacy"')
+        )
+        with pytest.raises(ProfileError, match="PROFILE_SCHEMA_INVALID"):
+            load_agency_profile(profile)
+
+    def test_gateway_key_loader_is_not_called(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.config import recap_gateway
+
+        secret = tmp_path / "key"
+        secret.write_text("credential-canary")
+        monkeypatch.setenv("RECAP_API_KEY_FILE", str(secret))
+        monkeypatch.setattr(
+            recap_gateway,
+            "load_recap_api_key",
+            lambda: pytest.fail("credential loader called"),
+        )
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path,
+                "max_retention_days = 3650\n[adapters.weather_forecast]\n"
+                'type = "recap_gateway"\nenabled = true\n',
+            )
+        )
+        assert "credential-canary" not in json.dumps(asdict(result))
+
+    def test_first_example_names_retention_grid_and_shows_only_absent_neutral_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.config.deployment_profile import NEUTRAL_DEFAULT_FIELDS
+
+        selected = select_deployment_profile(
+            profile_file=incomplete_profile(tmp_path), ambient_environment={}
+        )
+        evaluated = evaluate_deployment_profile(selected)
+        missing = {
+            item.field: item
+            for item in evaluated.diagnostics
+            if item.code == "INPUT_REQUIRED"
+        }
+        assert {"max_retention_days", "daily_grid_origin"} <= missing.keys()
+        assert missing["max_retention_days"].owner == "administrator"
+        assert "max_retention_days" in missing["max_retention_days"].next_action
+        neutral = {
+            item.field: item
+            for item in evaluated.provenance
+            if item.default_status == "neutral"
+        }
+        assert set(neutral) == NEUTRAL_DEFAULT_FIELDS
+        for field, setting in neutral.items():
+            assert setting.value == DeploymentConfig.model_fields[field].default
+            assert setting.source == f"DeploymentConfig.{field}"
+        assert evaluated.summary is EvaluationSummary.FAIL
+
+    def test_invalid_explicit_neutral_value_is_not_given_default_provenance(
+        self, tmp_path: Path
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path, 'enable_pipeline_alerts = "credential-canary"\n'
+            )
+        )
+        assert result.summary is EvaluationSummary.FAIL
+        assert any(item.code == "CONFIG_READER_INVALID" for item in result.diagnostics)
+        assert not any(
+            item.field == "enable_pipeline_alerts" for item in result.provenance
+        )
+        assert any(
+            item.field == "calendar" and item.default_status == "neutral"
+            for item in result.provenance
+        )
+        assert "credential-canary" not in json.dumps(asdict(result))

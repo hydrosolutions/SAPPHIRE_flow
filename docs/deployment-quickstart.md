@@ -1,119 +1,102 @@
-# Prepare an agency deployment
+# Prepare a deployment
 
-Use a named profile to preview an agency's configuration and check desired service
-wiring before following its host runbook. **Profile-driven launching is not
-available.** The current Swiss/Nepal profiles still report `PENDING` for checks
-listed in the [profile reference](deployment/profiles.md#offline-wiring-coverage-and-remaining-evidence).
-No shipped profile can currently reach `PASS_OFFLINE`; developer-owned coverage
-gaps must be completed in a follow-up. An offline preview does not inspect or
-change a running server.
+This tool previews private deployment inputs and checks desired service wiring.
+It does not launch services, migrate a host, retrieve credentials or produce a
+forecast. It remains a preparation tool: developer-owned coverage gaps prevent a
+complete `PASS_OFFLINE`. Actual deployment files belong outside the public
+application repository.
 
-## 1. Select an existing agency or create a private profile
+## 1. Copy the generic examples into private storage
 
-Use a checkout with its Python/uv environment installed using the project's
-[developer setup](../README.md#developer-quick-start). `show` needs no Docker;
-`check` also needs Docker Compose with `config --no-env-resolution` support.
-Run commands below from the checkout; `/private/agency/` denotes a directory you
-own outside the public repository, not a required location.
+Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)
+installed. Copy these files together into a directory you own outside this checkout:
 
-For an existing agency:
+- `deploy/examples/profile.example.toml`
+- `deploy/examples/application.example.toml`
+- `deploy/examples/installation.example.toml`
 
-```bash
-uv run python tools/deployment_profile.py swiss show
-uv run python tools/deployment_profile.py nepal show
-```
+They are annotated incomplete shapes, not runnable recipes. `/private/deployment/`
+below denotes your directory; it is not a required location. You may maintain these
+files in a separate private Git repository. Credentials stay in a secret manager
+or delivery files, never in either Git repository.
 
-For a new agency, copy these two templates into your private directory:
+Keep the profile's relative `base_config` reference aligned with the copied
+application file. Give the profile any private label; it is not a lookup key and
+is not emitted in shareable output. Paths inside TOML resolve relative to their
+own file, not the current working directory.
 
-- `deploy/profiles/agency/kazhydromet.toml` → `/private/agency/profile.toml`
-- `config/agencies/kazhydromet.toml` → `/private/agency/base.toml`
+## 2. Supply the short required checklist
 
-In the copied profile, change `name` to your agency's lowercase identifier and
-`base_config` to `"base.toml"`. Keep `state = "incomplete"`, the unresolved input
-list and empty host recipe until those choices have been supplied. Paths inside
-the profile resolve relative to that file. Do not copy the Swiss base or fill
-missing choices using another agency's defaults.
+The application example shows commented key shapes. Work with the indicated owners:
 
-```bash
-uv run python tools/deployment_profile.py --profile-file /private/agency/profile.toml show
-uv run python tools/deployment_profile.py --profile-file /private/agency/profile.toml check
-```
+| Owner | Inputs to supply |
+| --- | --- |
+| Administrator | Tenant/write authority, retention, host recipe/paths/domain, schedules and logical secret-delivery references. |
+| Data/science specialists | Observation/forecast/history sources, declared model-input capabilities, hydrological grid, station/rating files, units/datums, QC/alert/season policy, model/artifact choices and training conventions. |
+| Developer support | Unsupported source formats, missing integrations and coverage gaps reported as developer-owned. |
 
-The first command can succeed while describing missing inputs; the second returns
-`FAIL` until the required choices are supplied. A developer supports configuration
-and host wiring; agency specialists supply sources, stations/identifiers,
-rating units/datums, QC/alert/season policy, models/artifacts and training
-conventions. **Display timezone, hydrological day grid and training-time conventions
-are separate choices.** Kazhydromet has no assumed data source, station set, model
-or hydrological day.
+Reuse existing **typed defaults** for optional presentation and disabled alerts.
+UTC display, Gregorian calendar and disabled forecast/observation/pipeline alerts
+are neutral initial defaults; omit these fields unless you need an override.
+Other inherited defaults require review. Do not copy every field from the reference
+or treat another deployment's scientific settings as general defaults.
 
-Keep station/rating deliveries separate and reference them by their supported
-purpose/parser as described in the [profile reference](deployment/profiles.md).
-The maintained [application configuration reference](spec/config-reference.toml)
-owns field details. Public examples must contain no credentials or confidential
-agency data.
+Hydrological grid, display timezone and model training conventions are separate.
+Explicitly declare `available_nwp_parameters` and
+`available_past_only_nwp_parameters`; an empty list is a valid capability declaration.
+An enabled `meteoswiss_nwp` adapter also requires its publication-delay choice.
+Keep station/rating deliveries separate and reference their supported parser/file
+in the profile. The [configuration reference](spec/config-reference.toml) owns
+field details; the [profile reference](deployment/profiles.md) owns selection,
+precedence and diagnostic behavior.
 
-## 2. Describe the intended installation
+Leave `state = "incomplete"` while choices remain unresolved. Remove a
+`required_inputs` entry only when its choice/file is supplied. `configured` is a
+declaration, not validation success; it cannot waive required scientific inputs.
 
-Copy `deploy/examples/installation.example.toml` outside git and edit it. It shows
-a synthetic Nepal-shaped installation, not defaults for a new agency: replace its
-recipe and remove/replace bindings not declared by your agency profile. Set
-`agency_profile` to the same named profile or canonical private-profile path you
-select on the command line. Supply the actual checkout directory, project name
-and **complete ordered Compose file list**, including any operator, NHS or other
-installed overlays. A private new agency needs a reviewed host recipe; the empty
-template is not runnable.
+## 3. Preview, describe the installation, then check
 
-Fill non-secret installation inputs using the host's
-[release instructions](deployment/actions-staging-release.md). Runtime
-`secret_bindings` contain only delivery-file paths; use
-[secrets bootstrap](secrets-bootstrap.md) and the host runbook for credential
-provisioning. Existing build credentials retain their environment-name mechanism.
-A secrets manager can supply delivery inputs, but this tool does not retrieve or
-validate credentials. Installation files describe desired state; they do not
-replace the server's `.env` or alter Compose configuration.
-
-## 3. Check and interpret the result
+From the application checkout:
 
 ```bash
-uv run python tools/deployment_profile.py nepal check --installation /private/agency/installation.toml
-uv run python tools/deployment_profile.py --profile-file /private/agency/profile.toml check --installation /private/agency/installation.toml --format json
+uv run python tools/deployment_profile.py --profile-file /private/deployment/profile.example.toml show
+uv run python tools/deployment_profile.py --profile-file /private/deployment/profile.example.toml check --installation /private/deployment/installation.example.toml --format json
 uv run python tools/deployment_profile.py --help
 ```
 
-| Result | Exit | Administrator action |
+`show` needs no Docker. `check` also requires compatible Compose; see the
+[renderer requirements](deployment/profiles.md#offline-rendering).
+
+Edit the installation example's placeholder checkout and complete ordered Compose
+file list. Set `agency_profile` to the same private manifest path. Supply release
+identity from the reviewed build/release record. Align runtime `secret_bindings`
+with the profile's declared logical requirements; file references are relative to
+the installation file unless absolute. These inputs describe desired state and do
+not replace the server's `.env` or change Compose files.
+
+| Result | Exit | Action |
 | --- | --- | --- |
-| `FAIL` | 1 | Correct the listed invalid/inconsistent inputs or supply unresolved agency choices; follow each diagnostic owner/action and check again. |
-| `PENDING` | 2 | Supply missing evidence or ask deployment support to resolve the named coverage gap. This is not a checked launch handoff. |
-| `PASS_OFFLINE` | 0 | Reserved for completed offline coverage; not currently reachable for shipped profiles. Even then, host, credentials, providers and registered jobs need runtime verification. |
+| `FAIL` | 1 | Supply missing inputs or correct invalid/inconsistent settings using the diagnostic owner and action. |
+| `PENDING` | 2 | Supply missing administrator evidence or ask developers to complete the stated coverage gap. |
+| `PASS_OFFLINE` | 0 | Reserved for completed offline coverage in a follow-up; not currently an administrator-reachable launch approval. |
 
-`show` exits 0 for a parseable incomplete profile and 1 for invalid selection or
-input. It is informational, never a launch approval. JSON includes safe diagnostic
-codes, provenance and ordered file aliases for support; private paths and arbitrary
-config values are omitted/redacted. Text also shows local desired paths. Do not
-attach credential files or the raw rendered Compose document to a support request.
+A parseable incomplete `show` exits 0 with unresolved input diagnostics; invalid
+TOML or supplied typed values exit 1. It never approves a launch. JSON reports safe
+provenance and file aliases, omitting private names/paths and arbitrary values.
+Do not share credential files or raw Compose output. Text includes local selected
+paths and always lists unverified runtime facts.
 
-Schedules and skipped jobs come from the
-[registrar](../src/sapphire_flow/cli/register_deployments.py) and
-[orchestration reference](standards/orchestration.md#scheduling), not a second
-schedule table here. Skipping a job does not remove an already registered live job.
-Configure actual CORS origins using the [security standard](standards/security.md);
-wildcard origins are not a substitute for authentication setup.
+## 4. Continue with deployment support
 
-## 4. Follow the host's run instructions
+A matching host runbook must preserve the **complete ordered recipe** and provide
+runtime credential/provider/job checks, authentication, backups and upgrade steps.
+Existing source-specific runbooks and configurations are compatibility material,
+not generic starters; their migration is separate work. Existing runtime readers
+and recipes remain unchanged by this tool.
 
-- Swiss: [Mac-mini staging](deployment/mac-mini-staging.md).
-- Nepal: [Nepal cloud host](deployment/nepal-cloud-host.md) and its exact-image route.
-- Forecast-only NHS overlay: additionally follow the
-  [NHS lifecycle](deployment/nhs-forecast-configuration.md).
-- New agency: have deployment support supply a matching host runbook before launch.
-
-Keep every selected Compose file in every operational command. A shorter example
-in a host runbook does not replace the installation's full list. Existing Swiss
-and Nepal files and launch commands are preserved; adopting this preview requires
-no live migration. Inventory the actual host recipe before describing an existing
-installation, since the shipped profiles cannot discover extra host overlays.
-
-A repeatable deployment forecast smoke test remains proposed follow-on work.
-Offline `check` does not produce a forecast, and the separate station-onboarding
-sandbox does not establish deployment wiring or host readiness.
+Schedule defaults remain owned by the [registrar](../src/sapphire_flow/cli/register_deployments.py).
+Skipping a job does not remove an already registered job. Use the
+[security standard](standards/security.md) and [secrets bootstrap](secrets-bootstrap.md)
+for credential/authentication details. Manager integration, profile-driven launch
+and a deployment forecast smoke test remain follow-on work; the separate station
+onboarding sandbox does not prove host readiness.

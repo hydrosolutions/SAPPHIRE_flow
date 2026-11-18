@@ -19,6 +19,7 @@ from sapphire_flow.config.deployment_profile import (
     evaluate_deployment_profile,
     select_deployment_profile,
 )
+from tests.unit.config.profile_support import incomplete_profile, recipe_profile
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
@@ -30,13 +31,15 @@ spec.loader.exec_module(tool)
 
 
 def installation(
-    tmp_path: Path, agency: str = "swiss", extra: str = "", environment: str = ""
+    tmp_path: Path, agency: str = "macmini", extra: str = "", environment: str = ""
 ) -> Path:
-    selected = select_deployment_profile(name=agency, ambient_environment={})
+    selected = select_deployment_profile(
+        profile_file=recipe_profile(tmp_path, agency), ambient_environment={}
+    )
     path = tmp_path / "installation.toml"
     files = [str(path) for path in selected.compose_files]
     path.write_text(
-        f'schema_version = 1\nagency_profile = "{agency}"\n'
+        f'schema_version = 1\nagency_profile = "{selected.profile.manifest_path}"\n'
         f'project_name = "profile-test"\nproject_directory = "{ROOT}"\n'
         f"compose_files = {json.dumps(files)}\n{extra}\n[environment]\n"
         'VERSION = "1.2.3"\nSAPPHIRE_RELEASE_VERSION = "1.2.3"\n'
@@ -55,9 +58,31 @@ def installation(
 @pytest.fixture
 def compose_render(tmp_path: Path) -> tuple[Any, Any, dict[str, Any]]:
     selected = select_deployment_profile(
-        name="swiss", installation_file=installation(tmp_path), ambient_environment={}
+        profile_file=recipe_profile(tmp_path),
+        installation_file=installation(tmp_path),
+        ambient_environment={},
     )
-    evaluated = evaluate_deployment_profile(selected)
+    # Wiring-only evidence: this fixture does not certify legacy application inputs.
+    evaluated = ProfileEvaluation(
+        summary=EvaluationSummary.PENDING,
+        diagnostics=(),
+        provenance=(),
+        pending_checks=(
+            tool.diagnostic(
+                "COMPOSE_EVIDENCE_PENDING",
+                "compose",
+                "Wiring not checked",
+                "Render explicit recipe",
+            ),
+            tool.diagnostic(
+                "ADAPTER_POLICY_PENDING",
+                "adapters",
+                "Policy not assessed",
+                "Developer review required",
+            ),
+        ),
+        unverified_runtime=("actual_host_configuration",),
+    )
     try:
         rendered = tool.render_compose(selected)
     except tool.ProfileError as error:
@@ -71,14 +96,10 @@ class TestCommand:
     @pytest.mark.parametrize(
         ("arguments", "expected"),
         [
-            (["swiss", "show"], 0),
-            (["swiss", "check"], 2),
-            (["kazhydromet", "show"], 0),
-            (["kazhydromet", "check"], 1),
             (
                 [
                     "--profile-file",
-                    str(ROOT / "deploy/profiles/agency/kazhydromet.toml"),
+                    str(ROOT / "deploy/examples/profile.example.toml"),
                     "show",
                 ],
                 0,
@@ -86,7 +107,7 @@ class TestCommand:
             (
                 [
                     "--profile-file",
-                    str(ROOT / "deploy/profiles/agency/kazhydromet.toml"),
+                    str(ROOT / "deploy/examples/profile.example.toml"),
                     "check",
                 ],
                 1,
@@ -125,9 +146,9 @@ class TestCommand:
         "arguments",
         [
             ["--canary-secret", "canary-secret"],
-            ["swiss", "check", "--installation", "/canary-secret"],
+            ["--profile-file", "/canary-secret", "check"],
             ["canary-secret", "show"],
-            ["swiss", "show", "--format", "canary-secret"],
+            ["--profile-file", "/canary-secret", "show", "--format", "canary-secret"],
         ],
     )
     def test_errors_are_safe_json(
@@ -274,12 +295,13 @@ class TestComposeWiring:
         assert "credential-canary" not in repr(checked)
 
     def test_nepal_and_installation_cli(self, tmp_path: Path) -> None:
-        path = installation(tmp_path, agency="nepal")
+        path = installation(tmp_path, agency="nepal-cloud")
         completed = subprocess.run(
             [
                 sys.executable,
                 str(ROOT / "tools/deployment_profile.py"),
-                "nepal",
+                "--profile-file",
+                str(recipe_profile(tmp_path, "nepal-cloud")),
                 "check",
                 "--installation",
                 str(path),
@@ -299,10 +321,10 @@ class TestComposeWiring:
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
         )
-        assert completed.returncode == 2, completed.stderr + completed.stdout
+        assert completed.returncode == 1, completed.stderr + completed.stdout
         report = json.loads(completed.stdout)
-        assert report["diagnostics"] == []
-        assert "COMPOSE_EVIDENCE_PENDING" not in {
+        assert all(item["code"] == "INPUT_REQUIRED" for item in report["diagnostics"])
+        assert "COMPOSE_EVIDENCE_PENDING" in {
             item["code"] for item in report["pending_checks"]
         }
 
@@ -515,6 +537,8 @@ class TestComposeWiring:
     ) -> None:
         import socket
 
+        profile = incomplete_profile(tmp_path)
+        before = set(tmp_path.iterdir())
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             socket,
@@ -527,9 +551,11 @@ class TestComposeWiring:
         monkeypatch.setattr(
             Path, "write_bytes", lambda *args, **kwargs: pytest.fail("file write")
         )
-        assert tool.main(["swiss", "show", "--format", "json"]) == 0
-        assert json.loads(capsys.readouterr().out)["summary"] == "PENDING"
-        assert list(tmp_path.iterdir()) == []
+        assert (
+            tool.main(["--profile-file", str(profile), "show", "--format", "json"]) == 0
+        )
+        assert json.loads(capsys.readouterr().out)["summary"] == "FAIL"
+        assert set(tmp_path.iterdir()) == before
 
     def test_capture_reaps_after_eof_wait_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -576,10 +602,24 @@ class TestComposeWiring:
         assert events == ["bounded_wait", "kill", "reap", "exit"]
 
     def test_actionable_ambient_conflict(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         monkeypatch.setenv("COMPOSE_FILE", "/credential-canary.yml")
-        assert tool.main(["swiss", "show", "--format", "json"]) == 1
+        assert (
+            tool.main(
+                [
+                    "--profile-file",
+                    str(recipe_profile(tmp_path)),
+                    "show",
+                    "--format",
+                    "json",
+                ]
+            )
+            == 1
+        )
         output = capsys.readouterr().out
         item = json.loads(output)["diagnostics"][0]
         assert item["field"] == "COMPOSE_FILE"
@@ -593,7 +633,15 @@ class TestComposeWiring:
         path.write_text(path.read_text() + 'unknown_canary = "/credential-canary"\n')
         assert (
             tool.main(
-                ["swiss", "show", "--installation", str(path), "--format", "json"]
+                [
+                    "--profile-file",
+                    str(recipe_profile(tmp_path)),
+                    "show",
+                    "--installation",
+                    str(path),
+                    "--format",
+                    "json",
+                ]
             )
             == 1
         )
@@ -605,7 +653,15 @@ class TestComposeWiring:
         path = installation(tmp_path)
         assert (
             tool.main(
-                ["nepal", "show", "--installation", str(path), "--format", "json"]
+                [
+                    "--profile-file",
+                    str(recipe_profile(tmp_path, "nepal-cloud")),
+                    "show",
+                    "--installation",
+                    str(path),
+                    "--format",
+                    "json",
+                ]
             )
             == 1
         )
@@ -614,9 +670,12 @@ class TestComposeWiring:
         assert "same" in item["next_action"]
 
     def test_text_lists_runtime_limitations_and_input_owners(
-        self, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        assert tool.main(["kazhydromet", "show"]) == 0
+        assert (
+            tool.main(["--profile-file", str(incomplete_profile(tmp_path)), "show"])
+            == 0
+        )
         output = capsys.readouterr().out
         assert "owner=agency_specialist" in output
         assert "models_and_artifacts" in output
@@ -700,7 +759,9 @@ class TestComposeWiring:
             for item in tool.check_wiring(selected, evaluated, rendered).provenance
         }
         assert settings["jobs.forecast-cycle.schedule"].visibility == "redacted"
+        assert settings["jobs.forecast-cycle.schedule"].default_status == "explicit"
         assert settings["jobs.backup-database.schedule"].visibility == "value"
+        assert settings["jobs.backup-database.schedule"].default_status == "review"
         assert (
             settings["jobs.collect-bafu-forecasts.forwarding"].value
             == "not_forwarded_using_registrar_default"
@@ -735,7 +796,15 @@ class TestComposeWiring:
         path.write_text("\n".join(lines))
         assert (
             tool.main(
-                ["swiss", "show", "--installation", str(path), "--format", "json"]
+                [
+                    "--profile-file",
+                    str(recipe_profile(tmp_path)),
+                    "show",
+                    "--installation",
+                    str(path),
+                    "--format",
+                    "json",
+                ]
             )
             == 1
         )
@@ -771,8 +840,10 @@ class TestComposeWiring:
             item.code for item in checked.pending_checks
         }
 
-    def test_empty_incomplete_requirements_still_fail(self) -> None:
-        selected = select_deployment_profile(name="kazhydromet", ambient_environment={})
+    def test_empty_incomplete_requirements_still_fail(self, tmp_path: Path) -> None:
+        selected = select_deployment_profile(
+            profile_file=incomplete_profile(tmp_path), ambient_environment={}
+        )
         selected = replace(
             selected, profile=replace(selected.profile, required_inputs=())
         )

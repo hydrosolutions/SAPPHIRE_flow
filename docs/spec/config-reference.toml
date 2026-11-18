@@ -1,6 +1,8 @@
-# Agency profile selection, file precedence and safe offline preview:
+# Private profile selection, file precedence and safe offline preview:
 # docs/deployment/profiles.md; administrator entry: docs/deployment-quickstart.md.
 # This reference owns application fields, not installation/secret delivery inputs.
+# Typed neutral presentation/disabled-alert defaults may be omitted; scientific
+# choices and audited provider capabilities must be explicit in private deployments.
 # SAPPHIRE Flow — config.toml reference
 #
 # This file documents every config.toml field with its purpose, default value,

@@ -48,8 +48,8 @@ SELECTION_GUIDANCE = {
     ),
     "PROFILE_SELECTION_CONFLICT": (
         "The installation selects a different manifest.",
-        "Set installation agency_profile to the same named profile or canonical "
-        "private manifest selected on the command line.",
+        "Set installation agency_profile to the same canonical private manifest "
+        "selected on the command line.",
     ),
     "PROFILE_SCHEMA_INVALID": (
         "The profile does not match schema version 1.",
@@ -77,11 +77,11 @@ SELECTION_GUIDANCE = {
     ),
     "PROFILE_SELECTOR_REQUIRED": (
         "No agency profile was selected.",
-        "Specify a shipped name or --profile-file PATH, followed by show or check.",
+        "Specify --profile-file PATH, followed by show or check.",
     ),
     "CLI_INPUT_INVALID": (
         "The command does not match the supported syntax.",
-        "Use NAME show|check or --profile-file PATH show|check; see --help.",
+        "Use --profile-file PATH show|check; see --help.",
     ),
 }
 
@@ -744,6 +744,7 @@ def _check_schedules(
                 operation="default",
                 value="not_forwarded_using_registrar_default",
                 visibility="value",
+                default_status="review",
             )
         )
     pools = {
@@ -784,9 +785,10 @@ def _check_schedules(
             EffectiveSetting(
                 field=f"jobs.{spec.deployment_name}.schedule",
                 source="registrar_spec_and_init_environment",
-                operation="set",
+                operation="set" if overridden else "default",
                 value=None if overridden else defaults[spec.deployment_name].cron,
                 visibility="redacted" if overridden else "value",
+                default_status="explicit" if overridden else "review",
             )
         )
         settings.append(
@@ -796,6 +798,7 @@ def _check_schedules(
                 operation="default",
                 value=spec.work_pool_name,
                 visibility="value",
+                default_status="review",
             )
         )
 
@@ -904,7 +907,7 @@ class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise ProfileError(
             "CLI_INPUT_INVALID",
-            "Use a named profile or --profile-file, followed by show or check.",
+            "Use --profile-file PATH, followed by show or check.",
         )
 
 
@@ -934,7 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "selection",
         nargs="*",
-        help="NAME show|check, or show|check with --profile-file",
+        help="show|check with --profile-file PATH",
     )
     parser.add_argument("--profile-file", type=Path)
     parser.add_argument("--installation", type=Path)
@@ -944,16 +947,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         options = parser.parse_args(args)
         tokens = options.selection
-        if options.profile_file is not None and len(tokens) == 1:
-            name, command = None, tokens[0]
-        elif options.profile_file is None and len(tokens) == 2:
-            name, command = tokens
-        else:
-            raise ProfileError("CLI_INPUT_INVALID", "Select one profile and command.")
+        if options.profile_file is None or len(tokens) != 1:
+            raise ProfileError(
+                "CLI_INPUT_INVALID", "Select a private profile file and command."
+            )
+        command = tokens[0]
         if command not in {"show", "check"}:
             raise ProfileError("CLI_INPUT_INVALID", "Choose show or check.")
         selection = select_deployment_profile(
-            name=name,
             profile_file=options.profile_file,
             installation_file=options.installation,
             ambient_environment=os.environ,
@@ -997,13 +998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     support: dict[str, Any] = {"selection": None, "desired_source_revision": None}
     if selection is not None:
         support["selection"] = {
-            "profile": selection.profile.name
-            if selection.profile.manifest_path
-            in {
-                ROOT / "deploy/profiles/agency" / f"{name}.toml"
-                for name in ("swiss", "nepal", "kazhydromet")
-            }
-            else "private-profile",
+            "profile": "private-profile",
             "compose_files": [
                 f"compose[{index}]" for index, _ in enumerate(selection.compose_files)
             ],
@@ -1076,7 +1071,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for item in evaluation.provenance:
             value = item.value if item.visibility == "value" else f"<{item.visibility}>"
             sys.stdout.write(
-                f"{item.field} = {value} ({item.source}; {item.operation})\n"
+                f"{item.field} = {value} ({item.source}; {item.operation}; "
+                f"default={item.default_status})\n"
             )
         sys.stdout.write(
             "Unverified runtime: " + ", ".join(evaluation.unverified_runtime) + "\n"

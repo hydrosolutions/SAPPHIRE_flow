@@ -6,6 +6,13 @@ title: Named agency profiles — validate and preview first
 
 # Named agency profiles — validate and preview first
 
+> Superseded catalogue/default ownership: the owner-approved
+> [generic deployment inputs revision](2026-11-18-generic-deployment-inputs.md)
+> removes built-in manifests and name/path exemptions. Actual profiles are private
+> inputs; this document retains implementation history, not current administrator
+> instructions. Preparation-only scope is unchanged.
+
+
 ## Settled scope
 
 **Owner decision, 2026-11-17:** deliver named profiles and safe validation/preview
