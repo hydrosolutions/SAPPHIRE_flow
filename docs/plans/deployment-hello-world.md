@@ -17,9 +17,10 @@ The command removes its disposable resources and retains a small safe report.
 It proves this synthetic path, not agency readiness or forecast skill.
 
 The owner authorized planning/review and subsequently dispatched **HW1a only** on
-2026-11-18. Independent model/weather/artifact packaging can proceed while the
-station-supported discharge fixture is pending; that dependency still gates full
-HW1a completion. Container execution, deployment, secret changes, operational
+2026-11-18. The owner subsequently authorized adoption and pure QC qualification
+of the merged station-supported fixture. HW1a now covers package/model/fixture
+qualification. Normal loader/QC integration and runtime qualification remain
+mandatory HW1b acceptance gates. Container execution, deployment, secret changes, operational
 configuration changes and later implementation milestones remain undispatched.
 The merged profile increment (#544) remains preparation-only. This smoke command
 does not turn its pending checks into PASS or implement profile-driven launching.
@@ -78,9 +79,9 @@ dispatch; do not copy their plans into this branch.
 | Dependency | Current state / dispatch condition |
 | --- | --- |
 | M2 station creation | Merged #551. Preserve new defaulted station fields and legacy migration-test helper. |
-| M3a observation loader | Other session reports implementation in progress, not reviewed/merged. HW1b requires merged `load_station_observations discharge` and its actual config/tenant/CSV/`--apply` contract. |
-| M3b Stage 1 QC on load | Planned. HW1b requires merged normal QC path and evidence of usable input coverage; never insert already-GOOD observations directly to bypass it. |
-| Fixed discharge fixture | Requested from station side; no supported candidate yet accepted. HW1a pins a station-side supplied/qualified generic fixture. If unavailable, record blocked fixture work; do not silently build a competing generator. |
+| M3a observation loader | Merged #552 at `4cf5684dc894ec0d39e04e11e8ad0b98b8b2977a`; stores RAW observations and explicitly reports that QC has not run. HW1b preserves its actual config/tenant/CSV/`--apply` contract. |
+| M3b Stage 1 QC on load | In progress on the station side, not merged at fixture adoption. HW1b requires merged normal QC path and evidence of usable input coverage; never insert already-GOOD observations directly to bypass it. |
+| Fixed discharge fixture | Merged #554 at `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`. Exact-byte hourly CSV and station metadata adopted; pure real-checker qualification covers 72 readings, zero flags. Normal loader/QC integration remains unproved. |
 | M3c/M3d | Not dependencies of this direct-discharge scenario. M3d outputs water-level/rating files; that alternative needs M3c as well to produce discharge. No request to accelerate them. |
 | M5 Gateway bindings / M7 promotion | Not reused as general commands here. A narrowly scoped smoke bootstrap seeds its own point binding and active diagnostic assignment through existing services/stores in the newly created smoke DB only. This is test setup, not a general onboarding/promotion command. |
 
@@ -91,14 +92,17 @@ scope. Other workstreams allocate the next free revision at integration time.
 
 ## Scenario and packaging contract
 
-- Scenario id `hello-world-v1`; tenant/network `smoke`, station code `demo-001`.
-  Use generic synthetic metadata, not a real agency/station identity. Resolve the
+- Scenario id `hello-world-v1`; tenant `smoke` supplied at setup, network
+  `synthetic`, station code `SYN001`, from packaged `scenario.json`. Reuse the
+  station team's generic identity instead of the initial `demo-001` proposal; this
+  avoids conflicting fixture metadata and changes no scientific behavior. Resolve the
   created UUID normally and retain it in the report; UUIDs need not be identical
   across installations.
 - Fixed cycle `2025-01-03T00:00:00Z`, hourly grid aligned to UTC, no daily aggregation.
   Target history must cover the three complete hourly buckets before that issue.
   The last three input stamps are 2025-01-02 21:00Z, 22:00Z and 23:00Z.
-  The supplied fixture may include a longer QC-support window. All CSV timestamps
+  The adopted fixture supplies 72 hourly readings beginning 2024-12-31 00:00Z
+  as its pinned QC-support window. All CSV timestamps
   carry explicit UTC offsets; pin first/last timestamps, columns and units in the
   manifest. Include only the necessary history after qualification with M3b.
 - Smoke configuration explicitly selects UTC display and UTC station timezone.
@@ -235,8 +239,9 @@ specific preparation instruction if anything is missing/mismatched.
    and succeeded, zero failed, and one diagnostic-model forecast. A skipped station
    is failure, even if Prefect itself completed. Require input coverage and weather
    freshness for this fixed clock; do not confuse fixture time with wall-clock
-   token expiry. HW1a pins expected health/input-quality codes and API response
-   shape; no blanket acceptance of degraded outcomes. `no_floor=true` is an explicit
+   token expiry. HW1a pins numerical expectations; HW1b must pin and verify
+   expected health/input-quality codes and API response shape before acceptance;
+   no blanket acceptance of degraded outcomes. `no_floor=true` is an explicit
    scope limitation, not missing required fixture input. Also assert no pre-existing forecast
    existed before enqueue and worker/flow-run provenance matches this run.
 7. In `finally`, stop only this project's services and remove its volumes/network
@@ -312,7 +317,7 @@ report remains local at `/private/tmp/sapphire-hello-world-plan-review.txt`; no
 automatic additional review round. Dependency-graph/metadata/whitespace checks
 passed. No container, application test or forecast ran during this planning pass.
 
-## HW1a implementation checkpoint — 2026-11-18
+## Initial HW1a implementation checkpoint — 2026-11-18
 
 Partial implementation independently reviewed; **HW1a is not
 complete**. Added the explicitly supplied FI model, fixed point-weather adapter,
@@ -364,3 +369,54 @@ qualification; pinned expected runtime values and health/input-quality codes;
 final-code full suite in CI. Worker/API execution,
 cleanup and administrator instructions remain HW1b/HW1c. No operational files,
 station-onboarding files, migrations, secrets or live services changed.
+
+
+## HW1a fixture adoption checkpoint — 2026-11-18
+
+Owner authorized adopting the merged station fixture on fresh main
+`3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`. Packaged exact copies of
+`tests/fixtures/synthetic_station/discharge_hourly.csv` and `scenario.json`;
+source files, generator, loader and QC implementation remain unchanged. The
+manifest records source paths/commit and SHA-256 hashes. Its current status is
+`pending_loader_qc_integration`, superseding the initial pending-fixture status.
+
+The loadable `qc-rules.toml` snapshot contains only the existing four hourly
+discharge rules: range 0–100000, rate max 50, spike tolerance 0.75, gross-outlier
+k_sigma 5, all rule version 1.0.0. No implicit agency configuration or new rule
+schema. Pure checker tests parse actual CSV timestamps and prove 72 contiguous
+UTC readings, all judged with zero flags. Per-rule judged counts are 72 range,
+71 rate, 70 spike and zero gross outlier (no baseline); hourly frozen sensor is
+not configured. This does not establish loaded GOOD observations or complete M3b.
+
+`expected-result.json` contains the independent Decimal reference for all twenty
+members at each of the three forecast hours, using last discharge 19.737592 and
+packaged precipitation 1, 2, 4. Real point-weather assembly and FI adaptation must
+match every value with absolute tolerance 1e-8. Runtime health/input-quality codes,
+API shape, normal loader/QC integration and worker execution remain pending.
+The packaged README explains these limits and provenance; later administrator
+instructions remain HW1c. No runtime module or operational configuration changed.
+
+
+Phase boundary clarified during fixture adoption: HW1a supplies qualified
+package/model/fixture contracts and numerical expectations; it does not depend on
+running HW1b. Normal loader/QC integration, runtime health/input-quality codes and
+API delivery remain mandatory HW1b gates, not waived checks. Independent Claude
+review found no blockers; HW1a awaits final-code CI before completion can be recorded.
+The whole scenario remains incomplete and its manifest remains pending.
+
+Review follow-up makes timestamp offsets explicit and independently recomputes
+the numerical oracle in tests. The QC snapshot deliberately stays fixed to its
+recorded source revision rather than tracking future agency-default changes.
+M3a (#552) stores RAW observations and reports that QC has not run; the pure
+checker qualification does not replace M3b. Full review evidence remains local.
+
+Validation: 37 focused smoke model/fixture/weather tests pass, including actual
+per-rule QC coverage and all 60 reference values. Ruff lint/format pass. The new
+fixture test module passes strict Pyright; no runtime Python module changed.
+The full-source Pyright ratchet passes with 344 diagnostics against baseline 400.
+Built and installed a wheel in isolated scratch space, then outside the checkout
+verified all nine packaged resources and seven recorded hashes, parsed the QC
+TOML, ran actual CSV observations through the real checker (72 judged, zero flags),
+loaded the artifact and 60-value oracle, and confirmed no tests package was imported
+or shipped. No database, Docker, provider or secret access was used. Full final-code
+suite remains the PR's CI gate.

@@ -171,6 +171,7 @@ sapphire_flow = [
     "data/icon_ch2_eps_grid.npz",
     "data/deployment_smoke/*.json",
     "data/deployment_smoke/*.csv",
+    "data/deployment_smoke/*.toml",
     "data/deployment_smoke/README.md",
     "api/templates/**/*.html",
     "basin_operator/templates/*.html",

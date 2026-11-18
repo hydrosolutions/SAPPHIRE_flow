@@ -1,0 +1,10 @@
+{
+  "code": "SYN001",
+  "network": "synthetic",
+  "name": "Synthetic Test River at Example",
+  "lon": 0.0,
+  "lat": 0.0,
+  "timezone": "UTC",
+  "parameters": "discharge",
+  "gateway_name": "syn001"
+}
