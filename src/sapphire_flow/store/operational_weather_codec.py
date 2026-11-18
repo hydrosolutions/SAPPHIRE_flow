@@ -171,6 +171,12 @@ def completion_digest(
         _canonical(
             {"version": 2, "completion": dump_period_wire(COMPLETION_V2, completion)}
             if isinstance(completion, WeatherCacheCompletionV2)
-            else _COMPLETION.dump_python(completion, mode="json")
+            else _COMPLETION.dump_python(
+                completion,
+                mode="json",
+                exclude={"retained_future_receipts"}
+                if not completion.retained_future_receipts
+                else None,
+            )
         )
     ).hexdigest()

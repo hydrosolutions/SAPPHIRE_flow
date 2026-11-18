@@ -260,7 +260,7 @@ class ReleaseBuilder:
                 cwd=self.root,
                 evidence=self.work / "evidence" / gate,
                 env=env,
-                timeout_seconds=3600 if variant == "default" else 1200,
+                timeout_seconds=4800 if variant == "default" else 1200,
             )
             self.results[gate] = outcome.value
             try:
@@ -306,7 +306,13 @@ class ReleaseBuilder:
                     self.work / "evidence" / (variant + "-identity-failure.log"),
                     traceback.format_exc().encode(),
                 )
-            for component in ("build", "scan", "sbom", "proof"):
+            for component in (
+                "build",
+                "scan",
+                "sbom",
+                "proof",
+                *(("deployment-smoke",) if variant == "default" else ()),
+            ):
                 component_path = (
                     self.work / "evidence" / f"{variant}-{component}-result.json"
                 )

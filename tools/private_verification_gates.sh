@@ -164,7 +164,7 @@ build_image() {
       docker run --rm --entrypoint sh "$image" -c "python /app/scripts/$script --help"
     done
   fi
-  local scan_status sbom_status proof_status=1
+  local scan_status sbom_status proof_status=1 smoke_status=0
   image_component "$variant" scan scan_image "$image" "$variant"
   scan_status=$COMPONENT_STATUS
   image_component "$variant" sbom generate_sbom "$image" "$variant"
@@ -178,7 +178,14 @@ build_image() {
     printf '{"outcome":"blocked","reason":"sbom_failed"}\n' \
       > "$PRIVATE_EVIDENCE/$variant-proof-result.json"
   fi
-  test "$scan_status" = 0 && test "$sbom_status" = 0 && test "$proof_status" = 0
+  if [ "$variant" = default ]; then
+    local identity=release-target
+    if [ "$EXPECTED_VERSION" = "0.dev0+g$EXPECTED_REVISION" ]; then identity=ci-development; fi
+    image_component "$variant" deployment-smoke python3 tools/qualify_deployment_smoke.py run \
+      --image "$image" --image-identity "$identity" --report-dir "$PRIVATE_EVIDENCE/deployment-smoke"
+    smoke_status=$COMPONENT_STATUS
+  fi
+  test "$scan_status" = 0 && test "$sbom_status" = 0 && test "$proof_status" = 0 && test "$smoke_status" = 0
 }
 
 case "${1:?required gate}" in

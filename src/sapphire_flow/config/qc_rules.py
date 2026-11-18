@@ -371,7 +371,11 @@ def _resolve_qc_rules_from_path(path: Path) -> tuple[QcRuleSet, QcRuleSource]:
     check (Plan 402 T1)."""
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
-    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
+    return parse_qc_rules(load_merged_toml(path, _resolve_overlay_paths()))
+
+
+def parse_qc_rules(raw: dict[str, object]) -> tuple[QcRuleSet, QcRuleSource]:
+    data = cast("dict[str, Any]", raw)
 
     qc_section = data.get("qc_rules")
     if qc_section is None:

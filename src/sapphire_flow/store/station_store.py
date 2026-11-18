@@ -23,6 +23,7 @@ from sapphire_flow.types.enums import (
     StationOwnership,
     StationStatus,
     ThresholdSource,
+    WaterLevelGaugeType,
     WeatherSourceRole,
     WeatherSourceStatus,
 )
@@ -131,6 +132,8 @@ class PgStationStore:
                 altitude_masl=station.location.altitude_masl,
                 water_level_datum_masl=station.water_level_datum_masl,
                 water_level_unit=station.water_level_unit,
+                water_level_gauge_type=_gauge_type_value(station),
+                water_level_sensor_masl=station.water_level_sensor_masl,
                 station_kind=station.station_kind.value,
                 basin_id=station.basin_id,
                 timezone=station.timezone,
@@ -166,6 +169,8 @@ class PgStationStore:
                 altitude_masl=station.location.altitude_masl,
                 water_level_datum_masl=station.water_level_datum_masl,
                 water_level_unit=station.water_level_unit,
+                water_level_gauge_type=_gauge_type_value(station),
+                water_level_sensor_masl=station.water_level_sensor_masl,
                 measured_parameters=list(station.measured_parameters),
                 forecast_targets=list(station.forecast_targets)
                 if station.forecast_targets
@@ -375,6 +380,7 @@ class PgStationStore:
 
 def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
     basin_raw = row["basin_id"]
+    gauge_raw = row["water_level_gauge_type"]
     regulation_raw = row["regulation_type"]
     return StationConfig(
         id=StationId(row["id"]),
@@ -404,8 +410,17 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         gauging_status=GaugingStatus(row["gauging_status"]),
         water_level_datum_masl=row["water_level_datum_masl"],
         water_level_unit=row["water_level_unit"],
+        water_level_gauge_type=WaterLevelGaugeType(gauge_raw)
+        if gauge_raw is not None
+        else None,
+        water_level_sensor_masl=row["water_level_sensor_masl"],
         tenant_id=TenantId(row["tenant_id"]),
     )
+
+
+def _gauge_type_value(station: StationConfig) -> str | None:
+    gauge_type = station.water_level_gauge_type
+    return gauge_type.value if gauge_type is not None else None
 
 
 def _row_to_threshold(row: sa.engine.row.RowMapping) -> StationThreshold:

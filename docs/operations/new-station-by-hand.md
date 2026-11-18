@@ -90,36 +90,26 @@ Start one worker per pool (`ingest` and `default`) in the environment the jobs n
 
 Tear down when done: stop the workers and server, `docker stop sapphire-onboarding-sandbox-db`.
 
-## Step 3: create the station record (no tool yet)
+## Step 3: create the station record
+
+One command. It is a dry run until you add `--apply`. Ask the gauge type first: a staff or
+pressure gauge gives the height above the gauge zero; a bridge radar/ultrasonic sensor gives
+the distance down to the water, so it needs the sensor elevation as well. In both cases the
+datum is the elevation of the gauge zero in m a.s.l. Without a TTY pass `--gauge-type`,
+`--datum-masl` (and `--sensor-masl`), or `--datum-unknown` (water-level range checks stay off).
 
 ```bash
-uv run python - <<'EOF'
-import os
-from datetime import UTC, datetime
-from uuid import uuid4
-import sqlalchemy as sa
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.station import StationConfig
-from sapphire_flow.types.enums import StationKind, StationStatus, StationOwnership, GaugingStatus
-from sapphire_flow.types.domain import GeoCoord
-from sapphire_flow.types.ids import StationId, TenantId
-TENANT, CODE, NETWORK, NAME = "chwrr", "00001", "research", "Trishuli"
-LON, LAT, TZ = 85.33996353048586, 28.164345566064725, "Asia/Kathmandu"
-now = datetime.now(UTC)
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    tid = c.execute(sa.text("select id from tenants where code=:t"), {"t": TENANT}).scalar_one()
-    s = StationConfig(id=StationId(uuid4()), code=CODE, name=NAME, location=GeoCoord(lon=LON, lat=LAT),
-        station_kind=StationKind.RIVER, basin_id=None, timezone=TZ, regulation_type=None,
-        forecast_targets=None, measured_parameters=frozenset({"water_level"}),
-        station_status=StationStatus.ONBOARDING, created_at=now, updated_at=now, network=NETWORK,
-        ownership=StationOwnership.OWN, wigos_id=None, gauging_status=GaugingStatus.GAUGED,
-        water_level_unit="m", tenant_id=TenantId(tid))
-    print(PgStationStore(c).store_station(s))
-EOF
+export SAPPHIRE_CONFIG=/path/to/config.toml   # or pass --config
+uv run python -m sapphire_flow.cli.create_station list    # tenants and networks that exist
+uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
+  --network research --name Trishuli --lon 85.33996 --lat 28.16434 \
+  --timezone Asia/Kathmandu --parameters water_level,discharge \
+  --gauge-type staff --datum-masl 1480 --gateway-name trishuli_00001 [--apply]
 ```
 
-`CODE` and `NETWORK` must equal the handover package's, or the basin import holds the basin.
-Set `measured_parameters` to what the station delivers (`discharge`, `water_level`).
+`--code` and `--network` must equal the handover package's, or the basin import holds the
+basin. The pair is unique across all tenants. The Gateway name is only checked and printed
+into the next steps; it is not stored on the station.
 
 ## Step 4: import the basin
 
@@ -208,6 +198,29 @@ Three facts decide whether this works:
    derive discharge from water level. A sandbox may invent a table (the Trishuli rehearsal used
    `Q = 60 * (h + 0.2) ** 1.8`, h = gauge height in m, labelled SYNTHETIC in `rating_type_label`).
 
+**Loading observations (Plan 540 M3a).** `load_station_observations` replaces the load part of
+the script below. It reads the station's gauge type and datum (set at station creation), converts
+the reading (staff gauge: `datum + value`; bridge sensor: `sensor elevation - value`), stores it
+and writes one audit row, then runs the same Stage 1 quality checks as live ingest (in memory on
+a dry run). Dry run by default; `--apply` writes; exit 3 means refused: the station has no datum
+(range and outlier checks would be skipped), no quality rule applies to the series (too few
+readings per day), or the stored data changed while the checks ran. `--allow-unchecked` accepts
+the first two:
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations water-level \
+  --tenant sandbox --station-code 00001 --network research --csv gauge_heights.csv \
+  --time-column timestamp_npt --value-column water_level_m   # add --apply to write
+uv run python -m sapphire_flow.cli.load_station_observations discharge ...   # same flags
+```
+
+It prints one worked example (`reading 2 m -> stored 1482 m a.s.l. ...`), the first and last UTC
+instant, the QC rule version and counts (passed, failed, suspect, unchecked), and "N of 30 daily
+values usable (passed or unchecked)". A new station has no history baseline yet, so it prints
+"history-based check not run: no baseline yet" (that check is not counted as passed). The time zone defaults to the station's; override with
+`--utc-offset-minutes 345` or `--zone Asia/Kathmandu`. If the values already are metres above sea
+level, pass `--value-kind level-masl`.
+
 Set the datum, then load and check the observations (CSV with a local-time column and a gauge
 height column; adjust `CSV`, `OFFSET_MIN`, `DATUM`):
 
@@ -256,11 +269,35 @@ EOF
 Check the result: `select qc_rule_version, qc_status, count(*) from observations group by 1,2`
 must show `1.2-datum`, not `1.2-datum-skip`.
 
-**Rating curve and discharge.** Store the table with `PgRatingCurveStore.store_rating_curve`
-(points are `{"water_level": <m a.s.l.>, "discharge": <m3/s>}`, linear interpolation, no gaps in
-stage order) and derive discharge with `RatingConverter.from_curve(curve).convert(level).discharge`,
-writing `RawObservation(parameter="discharge", source=ObservationSource.RATING_CURVE_DERIVED,
-rating_curve_id=<curve id>)`, then run the same Stage 1 QC without the datum arguments.
+**Rating curve and discharge (Plan 540 M3c).** The same command family stores the table and
+derives discharge. Both dry run by default; `--apply` writes. The table's stage column is read like
+the observations (`--level-kind gauge-reading`, the default, uses the station's gauge type and
+datum; `level-masl` takes metres above sea level as they are) and is validated (at least 2
+points, strictly increasing stage, non-decreasing discharge, discharge above 0 for `log_linear`).
+A sandbox may invent a table: label it so (`--label SYNTHETIC`):
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations rating \
+  --tenant sandbox --station-code 00001 --network research --csv rating.csv \
+  --level-column stage_m --discharge-column q_m3s --label SYNTHETIC   # add --apply
+uv run python -m sapphire_flow.cli.load_station_observations derive-discharge \
+  --tenant sandbox --station-code 00001 --network research             # add --apply
+```
+
+An active curve is refused (exit 3) unless you pass `--supersede` (the old curve ends at
+`--valid-from`, default now; the new one is the next version). `rating` prints the curve's stage
+range next to the stored water-level range and warns when they do not overlap at all (usually a
+wrong datum). For a bridge sensor a larger reading means a lower level, so discharge must fall
+as the reading rises (the error names the file line). `derive-discharge` converts every stored
+measured water level in `--start`/`--end` whose quality status is passed or unchecked (the same
+"usable" rule as the forecast cycle) with the active curve (or `--curve-id`), stores it as
+`rating_curve_derived` with the curve id, **skips and counts** levels that failed or are
+suspect, levels not quality-checked yet (raw), and levels outside the table (never stores a
+clamped value). It applies the active curve to every level in the window, so re-running it
+after `--supersede` rewrites the derived values. Then runs the same
+Stage 1 quality checks (rule version `1.2`, no datum) and prints "N of 30 daily values usable".
+Exit 0 ok, 2 usage/validation, 3 refused (including a refused quality check, which rolls the
+whole run back).
 
 ## Step 7: readiness (no general tool yet)
 

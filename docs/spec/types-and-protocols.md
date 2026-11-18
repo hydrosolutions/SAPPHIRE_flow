@@ -412,6 +412,11 @@ class StationStatus(Enum):
     SUSPENDED = "suspended"
     DECOMMISSIONED = "decommissioned"
 
+class WaterLevelGaugeType(Enum):  # Plan 540 M2; stations.water_level_gauge_type (CHECK on both values)
+    STAFF_OR_PRESSURE = "staff_or_pressure"   # reading = height above the gauge zero
+    BRIDGE_SENSOR = "bridge_sensor"           # radar/ultrasonic; reading = distance down to water
+
+
 class GaugingStatus(Enum):
     GAUGED = "gauged"
     UNGAUGED = "ungauged"
@@ -457,6 +462,8 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
     MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
     DELIVERY_IMPORTED = "delivery_imported"     # additive (Plan 510 T2)
+    OBSERVATIONS_LOADED = "observations_loaded" # additive (Plan 540 M3a)
+    RATING_CURVE_STORED = "rating_curve_stored" # additive (Plan 540 M3c)
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"  # cache tenant rejection
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
     HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
@@ -1093,6 +1100,13 @@ class StationConfig:
     ownership: StationOwnership        # own = locally managed, foreign = display-only
     wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
+    water_level_datum_masl: float | None = None   # gauge-zero elevation (both gauge types)
+    water_level_unit: str | None = None
+    # Plan 540 M2 (migration 0087). Pairing rules in __post_init__: a gauge type needs the
+    # datum; BRIDGE_SENSOR needs water_level_sensor_masl (> datum); a sensor elevation is
+    # allowed only for BRIDGE_SENSOR. Live QC subtracts the datum unchanged for both types.
+    water_level_gauge_type: WaterLevelGaugeType | None = None
+    water_level_sensor_masl: float | None = None
     tenant_id: TenantId = DEFAULT_TENANT_ID  # Plan 147 Slice A — canonical tenant ownership (R4 LOCKED)
 ```
 
@@ -6656,6 +6670,39 @@ issue, per-parameter times and expected members. `FutureWeatherReceipt` adds the
 real selected cycle and canonical persisted row hash/count. They are evidence
 contracts, not permission to reuse arbitrary archive rows.
 
+The v1 paired window retains consecutive complete supplied forecast-tail days,
+up to `rollover_buffer_days` (default 15). Required past support may carry gaps;
+optional tail retention stops at the first unsupported day. v2 window bounds and
+wire format are unchanged. A verified per-station cache-size overflow preserves
+its old product without failing other stations; transfer/decode/hash faults remain
+fatal. Cache byte limits are unchanged.
+
+For selected past-plus-future assignments, replacement checks each model's actual
+past requirements, existing gap-fill policy, next rollover day and full native
+future horizon. Prefer fresh native-complete, retained native-complete, then
+fresh fillable, then retained fillable support. A fresh candidate cannot replace
+with an older qualified tail cycle. No usable candidate retains the cache but
+records `no_usable_product`, blocking past projection. IFS support consumed as past
+must end within `max_retained_past_lead_hours` (default 72) of its real source run;
+policy exclusions cannot become interpolatable gaps. Stored donors have the same
+lead bound. The future cycle-age limit applies separately when consuming future
+weather, not when retaining a product or reusing eligible past samples.
+
+When live future selection fails, an already-covering retained receipt keeps its
+existing path. Otherwise a local candidate may use the exact selected past
+snapshot's native tail, with one common eligible source run and complete current
+horizons. Equivalence is restricted to the qualified Recap HRES control 0.1-degree
+product, member 0, canonical P/T units and matching frozen station/HRU/polygon
+bindings. Explicit contradictory operational grid metadata is refused. Archive
+write/readback and ordinary future proofs remain mandatory; conflicts refuse.
+`WeatherCacheCompletion.retained_future_receipts` is an in-memory channel for
+these local proofs: its scopes must be UNAVAILABLE, never fabricated SUCCESS.
+It merges into the existing persisted receipt collection after generation, age
+and capacity checks. Empty-channel completion digests retain their old encoding.
+The owner verifies the exact selected past snapshot before creating/completing
+local proofs; capture retains that PastWeatherUse identity and actual future
+rows. Older/direct-IFS receipts do not acquire an inferred cross-leg origin.
+
 `operational_weather_cache` stores one bounded current/last-good state per station
 and past-binding fingerprint. Worker roles receive only SELECT/INSERT/UPDATE. API
 and PUBLIC roles have no cache privileges; neither runtime role may delete or
@@ -6786,25 +6833,15 @@ Entry-day refusal uses the existing fatal freshness boundary: one CRITICAL
 zero-output record for STANDARD automatic work, none for provisional or explicit
 replay. The original exception is re-raised before provider work.
 
-Several automatic ticks may target the same issue day (a schedule with retries,
-because the Recap operational product can be incomplete at the first tick). On
-this route in the `provisional_rating` lane, an omitted `cycle_time` whose issue
-day already has a current forecast for one of the run's operational river
-stations with a `provisional_ratings` binding returns before any provider
-request (configuration and client setup still run): HEALTHY, zero stations
-attempted, `alerts_checked=False`, no freshness record (none is emitted for this
-lane), and event `forecast_cycle.already_delivered` with the delivered forecast
-and station counts. The store's data-use scope and this station filter exclude
-other lanes' and other stations' rows in a shared database. STANDARD ticks are not skipped: the daily evaluation ledger already
-governs repeated automatic ticks there. Any delivered station counts, so a
-partially delivered day is not retried automatically; the incomplete-product
-failure this addresses rejects every station of the shared HRU request together,
-and some stations never forecast (for example without rating days), so "all
-stations" would never be reached. An
-explicit manual issue always runs, superseding as before. Any cycle that
-attempts stations but stores no forecast logs `forecast_cycle.no_forecasts_stored`
-(error) with its first 25 per-station reasons, each truncated to 300 characters;
-the returned result is unchanged.
+The automatic selected `provisional_rating` flow runs every configured tick,
+including after partial or complete delivery. Ordinary outputs from observation-free
+members participate in this same flow. The separate STANDARD daily ledger is
+unchanged. Existing atomic supersession retains earlier IDs/evidence; an identical
+retry keeps its ID. Selected v1 native weather changes (including effective
+freshness) can supersede equal runoff values; see Plan 327's row 7. QC verdict and
+evidence-version refusal rules remain unchanged. No schedule change is included.
+Any cycle that attempts stations but stores no forecast retains the existing
+`forecast_cycle.no_forecasts_stored` diagnostic.
 
 `selected_weather_issuance_refusal` checks the immutable consumed future cycle
 against actual execution time immediately before prediction and again after QC

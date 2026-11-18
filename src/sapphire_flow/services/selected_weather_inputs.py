@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         WeatherCacheAttempt,
         WeatherCacheEntry,
     )
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import WeatherForecastRecord
     from sapphire_flow.types.weather_gap import WeatherGapFill
     from sapphire_flow.types.weather_gap_v2 import WeatherGapFillV2
@@ -86,6 +87,7 @@ def assemble_selected_weather(
     model: ForecastModel | GroupForecastModel,
     model_id: ModelId,
     gap_config: WeatherGapConfig,
+    max_retained_past_lead: timedelta = timedelta(hours=72),
 ) -> AssignmentWeatherInputs:
     if expected_attempt is None:
         if past_requirement is not None or future_requirement is not None:
@@ -139,6 +141,15 @@ def assemble_selected_weather(
         )
     past_dynamic = pl.DataFrame()
     if isinstance(past, (PastWeatherUse, PastWeatherUseV2)):
+        if isinstance(past, PastWeatherUse):
+            from sapphire_flow.services.retained_operational_weather import (
+                past_leads_allowed,
+            )
+
+            if not past_leads_allowed(past.days, max_lead=max_retained_past_lead):
+                raise ConfigurationError(
+                    "operational past weather exceeds original IFS lead limit"
+                )
         periods = weather_use_periods(past)
         gap_parameters = weather_fill_parameters(
             model, model_id=model_id, config=gap_config, time_step=timedelta(days=1)
@@ -174,61 +185,17 @@ def assemble_selected_weather(
                     for parameter in gap_parameters
                 )
             }
-            qualified_records: dict[object, WeatherForecastRecord] = {}
-            for receipt in entry.future_receipts:
-                if (
-                    receipt.scope.station_id != station_id
-                    or receipt.scope.source != future_requirement.source
-                    or receipt.scope.binding_fingerprint
-                    != future_requirement.binding_fingerprint
-                    or receipt.cycle_time > ceiling
-                    or isinstance(receipt.scope.request, FutureWeatherRequestV2)
-                    != (grid is not None)
-                    or (
-                        isinstance(receipt.scope.request, FutureWeatherRequestV2)
-                        and receipt.scope.request.grid != grid
-                    )
-                    or not any(
-                        (
-                            grid.floor(stamp)
-                            if grid is not None
-                            else stamp.replace(hour=0)
-                        )
-                        in missing_days
-                        for req in receipt.scope.requirements
-                        for stamp in req.valid_times
-                    )
-                ):
-                    continue
-                donor_rows = store.fetch_weather_forecasts(
-                    station_id=station_id,
-                    nwp_source=receipt.scope.source,
-                    cycle_time=receipt.cycle_time,
-                    parameters=sorted(
-                        {req.parameter for req in receipt.scope.requirements}
-                    ),
-                )
-                verify_future_receipt(receipt, donor_rows)
-                scope_keys = {
-                    (req.parameter, stamp, member)
-                    for req in receipt.scope.requirements
-                    for stamp in req.valid_times
-                    for member in req.member_ids
-                }
-                qualified_records.update(
-                    {
-                        row.id: row
-                        for row in donor_rows
-                        if (row.parameter, row.valid_time, row.member_id) in scope_keys
-                    }
-                )
-            donors = stored_weather_donors(
-                tuple(qualified_records.values()),
+            donors = qualified_stored_weather_donors(
                 station_id=station_id,
-                issue_time=ceiling,
-                parameters=gap_parameters,
+                entry=entry,
+                future_requirement=future_requirement,
+                store=store,
+                ceiling=ceiling,
+                missing_days=missing_days,
+                gap_parameters=gap_parameters,
                 grid=grid,
                 past_end=past.requirement.end if grid is not None else None,
+                max_past_lead=max_retained_past_lead if grid is None else None,
             )
         prepared = fill_daily_weather(
             past_dynamic,
@@ -341,4 +308,80 @@ def selected_group_weather_provenance(
         else NwpCycleSource.PRIMARY
         if cycle == issue_time
         else NwpCycleSource.FALLBACK,
+    )
+
+
+def qualified_stored_weather_donors(
+    *,
+    station_id: StationId,
+    entry: WeatherCacheEntry | WeatherCacheEntryV2,
+    future_requirement: FutureWeatherRequest | FutureWeatherRequestV2,
+    store: WeatherForecastStore,
+    ceiling: UtcDatetime,
+    missing_days: set[UtcDatetime],
+    gap_parameters: frozenset[str],
+    grid: TimeGrid | None = None,
+    past_end: UtcDatetime | None = None,
+    max_past_lead: timedelta | None = None,
+) -> Mapping[tuple[str, UtcDatetime], WeatherGapFill | WeatherGapFillV2]:
+    qualified_records: dict[object, WeatherForecastRecord] = {}
+    for receipt in entry.future_receipts:
+        if (
+            receipt.scope.station_id != station_id
+            or receipt.scope.source != future_requirement.source
+            or receipt.scope.binding_fingerprint
+            != future_requirement.binding_fingerprint
+            or receipt.cycle_time > ceiling
+            or isinstance(receipt.scope.request, FutureWeatherRequestV2)
+            != (grid is not None)
+            or (
+                isinstance(receipt.scope.request, FutureWeatherRequestV2)
+                and receipt.scope.request.grid != grid
+            )
+            or not any(
+                (grid.floor(stamp) if grid is not None else stamp.replace(hour=0))
+                in missing_days
+                for req in receipt.scope.requirements
+                for stamp in req.valid_times
+            )
+        ):
+            continue
+        donor_rows = store.fetch_weather_forecasts(
+            station_id=station_id,
+            nwp_source=receipt.scope.source,
+            cycle_time=receipt.cycle_time,
+            parameters=sorted({req.parameter for req in receipt.scope.requirements}),
+        )
+        verify_future_receipt(receipt, donor_rows)
+        scope_keys = {
+            (req.parameter, stamp, member)
+            for req in receipt.scope.requirements
+            for stamp in req.valid_times
+            for member in req.member_ids
+        }
+        qualified_records.update(
+            {
+                row.id: row
+                for row in donor_rows
+                if (row.parameter, row.valid_time, row.member_id) in scope_keys
+                and (
+                    max_past_lead is None
+                    or row.valid_time
+                    + timedelta(
+                        hours=3
+                        if row.valid_time - row.cycle_time < timedelta(hours=144)
+                        else 6
+                    )
+                    - row.cycle_time
+                    <= max_past_lead
+                )
+            }
+        )
+    return stored_weather_donors(
+        tuple(qualified_records.values()),
+        station_id=station_id,
+        issue_time=ceiling,
+        parameters=gap_parameters,
+        grid=grid,
+        past_end=past_end,
     )

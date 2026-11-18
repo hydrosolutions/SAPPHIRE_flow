@@ -259,7 +259,13 @@ def _resolve_forecast_qc_rules_from_path(
     `config/qc_rules.py::_resolve_qc_rules_from_path`, the observation twin."""
     # Cast to dict[str, Any] — post-parse code treats TOML values loosely
     # (same behaviour as the prior tomllib.loads return type).
-    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
+    return parse_forecast_qc_rules(load_merged_toml(path, _resolve_overlay_paths()))
+
+
+def parse_forecast_qc_rules(
+    raw: dict[str, object],
+) -> tuple[ForecastQcRuleSet, ForecastQcRuleSource]:
+    data = cast("dict[str, Any]", raw)
 
     qc_section = data.get("forecast_qc_rules")
     if qc_section is None:

@@ -37,9 +37,15 @@ class _Scope(BaseModel):
 
 
 def load_weather_scope(config_path: Path, name: str) -> OperationalWeatherAdmission:
-    data = cast(
-        "dict[str, Any]", load_merged_toml(config_path, _resolve_overlay_paths())
+    return parse_weather_scope(
+        load_merged_toml(config_path, _resolve_overlay_paths()), name
     )
+
+
+def parse_weather_scope(
+    raw: dict[str, object], name: str
+) -> OperationalWeatherAdmission:
+    data = cast("dict[str, Any]", raw)
     try:
         parsed = _Scope.model_validate(data["weather_history"]["scopes"][name])
         return OperationalWeatherAdmission(

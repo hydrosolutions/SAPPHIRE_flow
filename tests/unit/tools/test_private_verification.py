@@ -671,7 +671,16 @@ class TestImageFailureEvidence:
     @pytest.mark.parametrize("variant", ["default", "aquacast"])
     @pytest.mark.parametrize(
         "failure",
-        ["finding", "operational", "malformed", "sarif", "sbom", "proof", "none"],
+        [
+            "finding",
+            "operational",
+            "malformed",
+            "sarif",
+            "sbom",
+            "proof",
+            "smoke",
+            "none",
+        ],
     )
     @pytest.mark.parametrize("source_kind", ["legacy", "release"])
     def test_image_components_retain_evidence_and_aggregate_failures(
@@ -745,6 +754,12 @@ elif name == 'jq':
         valid = value.get('SchemaVersion') == 2
         sys.exit(0 if valid and isinstance(value.get('Results'), list) else 1)
 elif name == 'python3':
+    if args[0] == 'tools/qualify_deployment_smoke.py':
+        mark('deployment-smoke')
+        if failure == 'smoke':
+            canary()
+            sys.exit(4)
+        sys.exit(0)
     assert args[0] == 'tools/image_identity_probe.py'
     mark('identity-proof')
     if failure == 'proof':
@@ -808,7 +823,9 @@ else:
             timeout_seconds=30,
         )
         expected = (
-            verifier.Outcome.PASSED if failure == "none" else verifier.Outcome.FAILED
+            verifier.Outcome.PASSED
+            if failure == "none" or (failure == "smoke" and variant == "aquacast")
+            else verifier.Outcome.FAILED
         )
         assert result == expected
         expected_calls = ["sbom-generated"]
@@ -819,6 +836,14 @@ else:
             expected_calls.append("identity-proof")
             if failure != "proof":
                 expected_calls.append("entrypoint")
+        if variant == "default":
+            expected_calls.append("deployment-smoke")
+            smoke_result = json.loads(
+                (evidence / "default-deployment-smoke-result.json").read_text()
+            )
+            assert smoke_result["outcome"] == (
+                "failed" if failure == "smoke" else "passed"
+            )
         assert (evidence / "tool-calls").read_text().splitlines() == expected_calls
         sbom = json.loads((evidence / f"{variant}-sbom.cdx.json").read_text())
         assert sbom["bomFormat"] == "CycloneDX"
@@ -860,10 +885,19 @@ else:
                 if name == "syft":
                     assert args[1] == captured_id
                 if name == "python3":
-                    assert args[args.index("--image-tag") + 1] == captured_id
+                    option = (
+                        "--image"
+                        if args[0] == "tools/qualify_deployment_smoke.py"
+                        else "--image-tag"
+                    )
+                    assert args[args.index(option) + 1] == captured_id
+                    if option == "--image":
+                        assert (
+                            args[args.index("--image-identity") + 1] == "release-target"
+                        )
         assert work.stat().st_mode & 0o777 == 0o700
         assert (evidence / gate).stat().st_mode & 0o777 == 0o700
-        if failure != "none":
+        if failure != "none" and not (failure == "smoke" and variant == "aquacast"):
             assert (
                 "PRIVATE_FINDING_CANARY"
                 in (evidence / gate / "command.log").read_text()

@@ -814,6 +814,18 @@ class FakeForecastStore:
         if existing_id is not None:
             stored = self._forecasts[existing_id]
             row = classify_forecast_retry(stored=stored, recomputed=forecast)
+            if (
+                row is ForecastRetryRow.IDENTICAL
+                and forecast.weather_evidence_version == 1
+            ):
+                from sapphire_flow.services.selected_weather_evidence import (
+                    selected_weather_retry_key,
+                )
+
+                if selected_weather_retry_key(
+                    self.fetch_evidence(existing_id), forecast=stored
+                ) != selected_weather_retry_key(forecast.evidence, forecast=forecast):
+                    row = ForecastRetryRow.WEATHER_INPUT_DIFFERS
             if row is ForecastRetryRow.IDENTICAL:
                 return existing_id
             if row not in SUPERSEDING_ROWS:

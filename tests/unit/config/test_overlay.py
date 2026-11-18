@@ -5,9 +5,77 @@ from pathlib import Path
 import pytest
 
 from sapphire_flow.config._overlay import (
+    TomlProvenance,
     _resolve_overlay_paths,
     load_merged_toml,
 )
+
+
+class TestMergeProvenance:
+    def test_tracing_preserves_merge_and_whole_list_replacement(
+        self, tmp_path: Path
+    ) -> None:
+        base = tmp_path / "base.toml"
+        overlay = tmp_path / "overlay.toml"
+        base.write_text("items = [1, 2]\n[table]\nkeep = 3\nchange = 4\n")
+        overlay.write_text("items = [5]\n[table]\nchange = 6\n")
+        trace = TomlProvenance()
+        traced = load_merged_toml(base, [overlay], environment={}, provenance=trace)
+        assert (
+            traced
+            == load_merged_toml(base, [overlay])
+            == {"items": [5], "table": {"keep": 3, "change": 6}}
+        )
+        assert trace.origins[("items",)].operation == "replace"
+        assert trace.origins[("items",)].document == 1
+        assert trace.origins[("table", "keep")].document == 0
+        assert trace.origins[("table", "change")].document == 1
+
+    def test_table_replacement_removes_obsolete_child_origins(
+        self, tmp_path: Path
+    ) -> None:
+        base = tmp_path / "base.toml"
+        overlay = tmp_path / "overlay.toml"
+        base.write_text("[value]\nold = 1\n")
+        overlay.write_text("value = [2]\n")
+        trace = TomlProvenance()
+        assert load_merged_toml(base, [overlay], provenance=trace) == {"value": [2]}
+        assert ("value", "old") not in trace.origins
+        assert trace.origins[("value",)].operation == "replace"
+
+    @pytest.mark.parametrize("traced", [False, True])
+    @pytest.mark.parametrize(
+        "overlay_text",
+        [
+            "[qc_rules]\n",
+            "[onboarding]\nstation_qc_thresholds = []\n",
+            "[onboarding]\nqc_pending_networks = []\n",
+        ],
+    )
+    def test_qc_overlay_prohibition_is_unchanged(
+        self, tmp_path: Path, traced: bool, overlay_text: str
+    ) -> None:
+        base = tmp_path / "base.toml"
+        overlay = tmp_path / "overlay.toml"
+        base.write_text("")
+        overlay.write_text(overlay_text)
+        with pytest.raises(ValueError, match="must be changed in the base"):
+            load_merged_toml(
+                base, [overlay], provenance=TomlProvenance() if traced else None
+            )
+
+    def test_explicit_environment_never_falls_back_to_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "base.toml"
+        base.write_text('value = "${SAPPHIRE_TEST_VALUE}"\n')
+        monkeypatch.setenv("SAPPHIRE_TEST_VALUE", "ambient")
+        assert load_merged_toml(
+            base, [], environment={"SAPPHIRE_TEST_VALUE": "explicit"}
+        ) == {"value": "explicit"}
+        with pytest.raises(ValueError, match="is not set"):
+            load_merged_toml(base, [], environment={})
+
 
 _BASE_TOML = """\
 max_retention_days = 3650

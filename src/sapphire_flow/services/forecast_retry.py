@@ -27,6 +27,7 @@ class ForecastRetryRow(Enum):
     IDENTICAL = 4
     INPUT_LINEAGE_DIFFERS = 5
     WEATHER_EVIDENCE_VERSION_DIFFERS = 6
+    WEATHER_INPUT_DIFFERS = 7
 
 
 #: Plan 328 T2 — the rows whose re-run SUPERSEDES the stored forecast and
@@ -35,6 +36,7 @@ SUPERSEDING_ROWS = (
     ForecastRetryRow.VALUES_DIFFER,
     ForecastRetryRow.ARTIFACT_DIFFERS,
     ForecastRetryRow.INPUT_LINEAGE_DIFFERS,
+    ForecastRetryRow.WEATHER_INPUT_DIFFERS,
 )
 
 #: ⛔ Row 3 stays refused permanently and is nobody's to replace. Widening it
@@ -131,6 +133,8 @@ def describe_difference(
             return "consumed input lineage differs"
         case ForecastRetryRow.WEATHER_EVIDENCE_VERSION_DIFFERS:
             return "immutable weather evidence version differs"
+        case ForecastRetryRow.WEATHER_INPUT_DIFFERS:
+            return "consumed selected weather or its effective quality differs"
         case ForecastRetryRow.IDENTICAL:
             return "row 4: identical"
 

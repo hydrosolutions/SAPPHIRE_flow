@@ -25,15 +25,40 @@ from tests.unit.flows.test_selected_weather_cycle import (
 
 
 @pytest.mark.parametrize(
-    "max_nan,expected,data_use,horizon_policy,support_days,gap_age",
+    "max_nan,expected,data_use,horizon_policy,support_days,operational_support_days,gap_age",
     [
-        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, None),
-        (0, 0, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, None),
-        (1, 1, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, None),
-        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, None, None),
-        (0, 0, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, 3, None),
-        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, 5),
-        (1, 1, ForecastDataUse.PROVISIONAL_RATING, HorizonSemantics.EXACT, None, 4),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, None, None),
+        (
+            0,
+            0,
+            ForecastDataUse.PROVISIONAL_RATING,
+            HorizonSemantics.EXACT,
+            None,
+            None,
+            None,
+        ),
+        (
+            1,
+            1,
+            ForecastDataUse.PROVISIONAL_RATING,
+            HorizonSemantics.EXACT,
+            None,
+            None,
+            None,
+        ),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, None, None, None),
+        (0, 0, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, 3, 3, None),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.AT_MOST, 3, None, None),
+        (0, 1, ForecastDataUse.STANDARD, HorizonSemantics.EXACT, None, None, 5),
+        (
+            1,
+            1,
+            ForecastDataUse.PROVISIONAL_RATING,
+            HorizonSemantics.EXACT,
+            None,
+            None,
+            4,
+        ),
     ],
 )
 def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
@@ -43,23 +68,29 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     data_use: ForecastDataUse,
     horizon_policy: HorizonSemantics,
     support_days: int | None,
+    operational_support_days: int | None,
     gap_age: int | None,
 ) -> None:
-    if gap_age is not None:
+    if gap_age is not None or operational_support_days is not None:
         original_fetch = FixtureOperationalApi.operational
 
-        def missing_day(api: FixtureOperationalApi, **kwargs: object) -> object:
+        def limited_support(api: FixtureOperationalApi, **kwargs: object) -> object:
             response = original_fetch(api, **kwargs)
             assert isinstance(response, pd.DataFrame)
-            missing = ISSUE - timedelta(days=gap_age)
-            response.loc[
-                (response.index >= missing)
-                & (response.index < missing + timedelta(days=1)),
-                "g_225",
-            ] = float("nan")
+            if gap_age is not None:
+                missing = ISSUE - timedelta(days=gap_age)
+                response.loc[
+                    (response.index >= missing)
+                    & (response.index < missing + timedelta(days=1)),
+                    "g_225",
+                ] = float("nan")
+            if operational_support_days is not None:
+                response = response.loc[
+                    response.index < ISSUE + timedelta(days=operational_support_days)
+                ].copy()
             return response
 
-        monkeypatch.setattr(FixtureOperationalApi, "operational", missing_day)
+        monkeypatch.setattr(FixtureOperationalApi, "operational", limited_support)
     step = timedelta(days=1)
     requirement = fi.InputRequirement(
         targets={
@@ -164,6 +195,9 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
         else frozenset(),
         data_use=data_use,
         expected_forecasts=expected,
+        expected_weather_error="past weather is blocked: missing_support"
+        if operational_support_days is not None
+        else None,
         consumed_future_count=88,
         future_support_days=support_days,
     )

@@ -1,0 +1,158 @@
+# Standalone disposable diagnostic. Invoke through tools/deployment_smoke.py.
+x-labels: &labels
+  org.sapphire-flow.smoke.run: ${SMOKE_RUN_ID:?required}
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "2"}
+x-env: &env
+  SAPPHIRE_SMOKE_RUN_ID: ${SMOKE_RUN_ID:?required}
+  SAPPHIRE_DATA_DIR: /data
+  SAPPHIRE_CONFIG: /app/src/sapphire_flow/data/deployment_smoke/qc-rules.toml
+  SAPPHIRE_CONFIG_OVERLAY: /app/src/sapphire_flow/data/deployment_smoke/runtime.toml
+  SAPPHIRE_IMAGE_DIGEST: ${SMOKE_IMAGE:?required}
+  PREFECT_API_URL: http://prefect-server:4200/api
+  PREFECT_HOME: /tmp/prefect
+  PREFECT_LOGGING_LEVEL: WARNING
+  PREFECT_SERVER_ALLOW_EPHEMERAL_MODE: "false"
+  PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+x-app: &app
+  image: ${SMOKE_IMAGE:?required}
+  pull_policy: never
+  labels: *labels
+  networks: [smoke]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  cap_add: [SETUID, SETGID, CHOWN, FOWNER]
+  security_opt: [no-new-privileges:true]
+  logging: *logging
+  cpus: 1
+  mem_limit: 1g
+  restart: "no"
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.5@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+    platform: linux/amd64
+    pull_policy: never
+    labels: *labels
+    environment:
+      POSTGRES_USER: sapphire
+      POSTGRES_DB: sapphire
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ${SMOKE_INIT_DB:?required}:/docker-entrypoint-initdb.d/init-db.sh:ro
+    networks: [smoke]
+    healthcheck:
+      test: [CMD, pg_isready, -h, "127.0.0.1", -U, sapphire, -d, sapphire]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    logging: *logging
+    cpus: 1
+    mem_limit: 1g
+    restart: "no"
+
+  prefect-server:
+    image: prefecthq/prefect:3-python3.11@sha256:369d8f0bb1fbf84c28b90d9af62dea8ef1b90d261fbc321f211dbba96883613c
+    pull_policy: never
+    labels: *labels
+    command:
+      - sh
+      - -c
+      - 'export PREFECT_API_DATABASE_CONNECTION_URL="postgresql+asyncpg://sapphire:$$(cat /run/secrets/db_password)@postgres:5432/prefect"; exec prefect server start --host 0.0.0.0'
+    environment:
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_SERVER_UI_ENABLED: "false"
+      PREFECT_HOME: /tmp/prefect
+    secrets: [db_password]
+    networks: [smoke]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 50
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    logging: *logging
+    cpus: 2
+    mem_limit: 2g
+    restart: "no"
+
+  init:
+    <<: *app
+    environment:
+      <<: *env
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/db_password
+      SAPPHIRE_API_DB_PASSWORD_FILE: /run/secrets/api_password
+      SAPPHIRE_WORKER_DB_PASSWORD_FILE: /run/secrets/worker_password
+      SAPPHIRE_BACKUP_DB_PASSWORD_FILE: /run/secrets/backup_password
+    command: [sh, -c, "alembic upgrade head && python -m sapphire_flow.cli.provision_tenants && /app/docker/bootstrap-roles.sh && python -m sapphire_flow.cli.deployment_smoke setup"]
+    secrets: [db_password, api_password, worker_password, backup_password]
+    volumes: [artifacts:/data/artifacts:rw]
+    depends_on:
+      prefect-server: {condition: service_healthy}
+
+  worker:
+    <<: *app
+    environment:
+      <<: *env
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_worker@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/worker_password
+    command: [prefect, worker, start, --pool, deployment-smoke, --type, process, --with-healthcheck]
+    secrets: [worker_password]
+    volumes: [artifacts:/data/artifacts:rw]
+    mem_limit: 2g
+    depends_on:
+      init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  api:
+    <<: *app
+    environment:
+      <<: *env
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_api@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/api_password
+    command: [uvicorn, sapphire_flow.api:app, --host, 0.0.0.0, --port, "8000"]
+    secrets: [api_password, access_token_pepper]
+    volumes: [artifacts:/data/artifacts:ro]
+    depends_on:
+      init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  smoke:
+    internal: true
+    labels: *labels
+volumes:
+  pgdata:
+    labels: *labels
+  artifacts:
+    labels: *labels
+secrets:
+  db_password:
+    file: ${SMOKE_SECRETS:?required}/db_password
+  api_password:
+    file: ${SMOKE_SECRETS:?required}/api_password
+  worker_password:
+    file: ${SMOKE_SECRETS:?required}/worker_password
+  backup_password:
+    file: ${SMOKE_SECRETS:?required}/backup_password
+  access_token_pepper:
+    file: ${SMOKE_SECRETS:?required}/access_token_pepper

@@ -132,7 +132,7 @@ GATES = (
         timeout_seconds=120,
         needs=("integration-heavy", "integration-rest"),
     ),
-    Gate(name="build-image-and-scan", timeout_seconds=3600),
+    Gate(name="build-image-and-scan", timeout_seconds=4800),
     Gate(name="aquacast-release-image-proof", timeout_seconds=1200),
 )
 

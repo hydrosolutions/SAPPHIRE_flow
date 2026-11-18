@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping  # noqa: TC003 - injectable runtime boundary
 from datetime import date, timedelta  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Annotated, Any, Literal, Self, cast
@@ -544,7 +545,9 @@ class DeploymentConfig(BaseModel):
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
-def _resolve_env_vars(text: str) -> str:  # pyright: ignore[reportUnusedFunction]
+def _resolve_env_vars(  # pyright: ignore[reportUnusedFunction]
+    text: str, environment: Mapping[str, str] | None = None
+) -> str:
     # Called cross-module by config._overlay; pyright's reportUnusedFunction
     # doesn't track external callers of private-prefixed module functions.
     def _replace(match: re.Match[str]) -> str:
@@ -554,7 +557,7 @@ def _resolve_env_vars(text: str) -> str:  # pyright: ignore[reportUnusedFunction
                 f"Environment variable ${{{var_name}}} is not in the allowlist; "
                 "only variables prefixed with SAPPHIRE_ may be referenced in config"
             )
-        value = os.environ.get(var_name)
+        value = (os.environ if environment is None else environment).get(var_name)
         if value is None:
             raise ValueError(f"Environment variable ${{{var_name}}} is not set")
         return value
