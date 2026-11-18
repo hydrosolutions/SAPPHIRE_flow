@@ -1,6 +1,6 @@
 {
   "scenario_id": "hello-world-v1",
-  "status": "pending_loader_qc_integration",
+  "status": "pending_release_qualification",
   "cycle_time": "2025-01-03T00:00:00Z",
   "display_timezone": "UTC",
   "station_timezone": "UTC",
@@ -17,12 +17,12 @@
     "discharge_hourly.csv": "4a2870601743dc72151bc7720a3b2d39de81962f7f34d98b04899e02892a58e4",
     "scenario.json": "d3f3433b62222360dfb2f54e8e57bf6842642326263c818573128448deb3f62a",
     "qc-rules.toml": "6df7e7a27b7f53abd3f026a94c486c67331ef6ddc84cab1ea3dd604a51fd153b",
-    "expected-result.json": "cbe87a1d9247457043e5c182b227e9052137435f87f3a567920db4ec96307734"
+    "expected-result.json": "cbe87a1d9247457043e5c182b227e9052137435f87f3a567920db4ec96307734",
+    "runtime.toml": "a49ac4a83fa8ad59504f96d5a14f1a8ccd14e8e2d81013c6c45baa761b0176f5"
   },
   "pending": [
-    "normal loader/QC integration qualification (M3b)",
-    "runtime health/input-quality codes and API response shape",
-    "worker/API execution"
+    "independent patch review and final full-suite CI",
+    "HW1c dedicated smoke CI and administrator release guidance"
   ],
   "station_metadata": "scenario.json",
   "tenant": "smoke",
@@ -65,5 +65,18 @@
     "gross_outlier": "unavailable without climatology baseline",
     "frozen_sensor": "not configured for hourly discharge",
     "loaded_status": "not established"
+  },
+  "runtime_qualification": {
+    "scope": "local disposable worker-to-internal-API run; not release qualification",
+    "source_revision": "bd9e34ecf267293199a463a430f4eff263da110f",
+    "loaded_status": "qc_passed",
+    "observations_passed": 72,
+    "weather_records": 3,
+    "forecasts_stored": 1,
+    "api_comparisons": 60,
+    "api_probe_origin": "worker",
+    "api_probe_target": "http://api:8000",
+    "host_port_verified": false,
+    "cleanup_verified": true
   }
 }

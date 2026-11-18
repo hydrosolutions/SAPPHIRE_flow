@@ -308,7 +308,16 @@ class TestDeploymentSmokeModel:
             )
         assert future["timestamp"].to_list() == [_ISSUE + n * _STEP for n in (1, 2, 3)]
 
-    def test_package_explicitly_remains_incomplete(self) -> None:
+    def test_local_runtime_evidence_does_not_claim_release_or_host_port_qualification(
+        self,
+    ) -> None:
         manifest = json.loads(_RESOURCES.joinpath("manifest.json").read_bytes())
-        assert manifest["status"] == "pending_loader_qc_integration"
+        assert manifest["status"] == "pending_release_qualification"
+        assert manifest["pending"]
         assert manifest["qc_qualification"]["loaded_status"] == "not established"
+        runtime = manifest["runtime_qualification"]
+        assert runtime["loaded_status"] == "qc_passed"
+        assert runtime["observations_passed"] == 72
+        assert runtime["api_comparisons"] == 60
+        assert runtime["host_port_verified"] is False
+        assert runtime["cleanup_verified"] is True

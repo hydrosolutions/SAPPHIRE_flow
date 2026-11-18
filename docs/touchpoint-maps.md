@@ -420,6 +420,10 @@ gates.
   excludes `QC_UNCHECKED`; the whole inventory is asserted in
   `tests/unit/services/test_unchecked_observation_policy.py` — a NEW consumer that
   forgets the split fails that test.
+  The inventory also names the smoke CLI's bounded diagnostic read: it inspects
+  every loaded fixture row and rejects any non-`QC_PASSED` status or QC flag.
+  Filtering to passing rows would hide bad rows. This diagnostic does not widen
+  the operational consumer policy.
 - Plan 145 D3.2d: an empty future-NWP read (`weather_forecast_store.fetch_weather_forecasts`
   returns nothing while `reqs.future_dynamic_features` is non-empty) does
   **NOT** return `None` from `assemble_station_operational_inputs` — it logs

@@ -597,8 +597,12 @@ def _observation_read_inventory() -> dict[str, tuple[str, ...]]:
 # `QC_UNCHECKED` — 272's accepted "No — with a consequence") plus the QC
 # task's own RAW sweep, and `api_stations` is the caller-parameterised raw
 # endpoint, which returns each row's own `qc_status` alongside it.
+# The smoke diagnostic reads all loaded rows to reject any nonpassing status;
+# it does not supply those rows to an operational consumer.
 _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     "src/sapphire_flow/api/routes/api_stations.py": ("qc",),
+    # Inspect the full loaded fixture: filtering QC_PASSED here could hide bad rows.
+    "src/sapphire_flow/cli/deployment_smoke.py": ("<unfiltered>",),
     # Plan 540 M3b: the QC-on-load read is the QC-context cohort (unfiltered).
     "src/sapphire_flow/cli/load_station_observations.py": ("<unfiltered>",),
     "src/sapphire_flow/flows/compute_skills.py": ("QcStatus.QC_PASSED",),
