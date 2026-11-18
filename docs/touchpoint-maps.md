@@ -1398,6 +1398,8 @@ When this map applies, the context packet should name: which touch trigger appli
 
 ### Touchpoint map: LINDAS / BAFU observation ingest
 
+**Lockstep copy.** `flows/ingest_observations.py::_evaluate_qc_window` (with `_aggregate_qc_status`) has a deliberate copy in `services/station_observation_qc.py::run_stage1_qc` (Plan 540 M3b, used by `cli/load_station_observations.py`); a change to either must be made in both, and `tests/unit/services/test_station_observation_qc.py::TestParityWithLiveIngest` must still pass.
+
 **D1 unit-safe dispatch (build only, inactive by default).**
 `flows/bafu_ingest.py` carries complete station outcomes, including failed or
 all-quarantined captures, into `BafuStationCaptureBatch`. The injected immutable

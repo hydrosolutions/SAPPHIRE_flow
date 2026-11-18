@@ -244,3 +244,31 @@ class TestWaterLevelWithDatum:
         )
         rows = _stored(db_connection, station_id, "water_level")
         assert {s for _, _, s in rows} == {QcStatus.QC_FAILED}
+
+
+class TestRefusedLoadIsRolledBack:
+    def test_zero_rule_refusal_leaves_no_rows_and_no_audit_row(
+        self, db_connection: sa.Connection
+    ) -> None:
+        _ensure_tenant(db_connection)
+        station_id = _create_scenario_station(db_connection)
+        sparse = "time,value\n2025-01-01,20.0\n2025-01-08,21.0\n"
+
+        def attempt(extra: list[str]) -> int:
+            try:
+                with db_connection.begin_nested():
+                    return _load(
+                        db_connection, "discharge", sparse, "SYN001", "synthetic", extra
+                    )
+            except lso.LoadRolledBack:
+                return 3
+
+        assert attempt([]) == 3
+        assert _stored(db_connection, station_id, "discharge") == []
+        assert _audit_rows(db_connection, station_id) == 0
+        assert attempt([]) == 3
+
+        assert attempt(["--allow-unchecked"]) == 0
+        rows = _stored(db_connection, station_id, "discharge")
+        assert {s for _, _, s in rows} == {QcStatus.QC_UNCHECKED}
+        assert _audit_rows(db_connection, station_id) == 1

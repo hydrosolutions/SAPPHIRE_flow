@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,12 @@ from sapphire_flow.services.station_observation_qc import (
     run_stage1_qc,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import ClimBaseline, StationQcOverride
+from sapphire_flow.types.domain import (
+    ClimBaseline,
+    QcRuleParams,
+    QcRuleSet,
+    StationQcOverride,
+)
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.observation import Observation, RawObservation
@@ -259,20 +265,26 @@ class _StaleStore(FakeObservationStore):
         return False
 
 
-def _live_and_mine(
-    raws: list[RawObservation],
-    *,
-    datum: float | None,
-    baselines: FakeClimBaselineStore | None = None,
-    stale: bool = False,
-    overrides: tuple[StationQcOverride, ...] = (),
-) -> tuple[Any, Any, Any, Any]:
+@dataclass(frozen=True, kw_only=True)
+class ParityCase:
+    raws: list[RawObservation]
+    datum: float | None = None
+    baseline: bool = False
+    stale: bool = False
+    rules: QcRuleSet = RULES
+    overrides: tuple[StationQcOverride, ...] = ()
+    target_from: int = 0
+    pre_unchecked: int = 0
+
+
+def _live_and_mine(case: ParityCase) -> tuple[Any, Any, Any, Any]:
+    raws = case.raws
     results = []
     for runner in ("live", "mine"):
-        base = _StaleStore() if stale else FakeObservationStore()
+        base = _StaleStore() if case.stale else FakeObservationStore()
         base.store_raw_observations(raws)
         reader = base.qc_context_reader()
-        if stale:
+        if case.stale:
             reader.update_qc_batch_if_current = base.update_qc_batch_if_current  # type: ignore[method-assign]
         times = [r.timestamp for r in raws]
         obs = reader.fetch_observations(
@@ -281,19 +293,32 @@ def _live_and_mine(
             ensure_utc(min(times) - timedelta(hours=2)),
             ensure_utc(max(times) + timedelta(microseconds=1)),
         )
-        ids = frozenset(o.id for o in obs)
-        bl = baselines or FakeClimBaselineStore()
+        for o in obs[: case.pre_unchecked]:
+            base.update_qc(o.id, QcStatus.QC_UNCHECKED, [])
+        if case.pre_unchecked:
+            obs = reader.fetch_observations(
+                STATION,
+                raws[0].parameter,
+                ensure_utc(min(times) - timedelta(hours=2)),
+                ensure_utc(max(times) + timedelta(microseconds=1)),
+            )
+        ids = frozenset(o.id for o in obs[case.target_from :])
+        bl = (
+            _baselines(raws[0].parameter, 20.0, 1.0)
+            if case.baseline
+            else FakeClimBaselineStore()
+        )
         if runner == "live":
             out: Any = live._evaluate_qc_window(  # pyright: ignore[reportPrivateUsage]
                 obs,
                 reader,
-                bl,
+                bl,  # pyright: ignore[reportArgumentType]
                 STATION,
                 raws[0].parameter,
-                RULES,  # pyright: ignore[reportArgumentType]
+                case.rules,
                 station_networks=NETWORKS,
-                datum=datum,
-                overrides=overrides,
+                datum=case.datum,
+                overrides=case.overrides,
                 target_ids=ids,
             )
         else:
@@ -303,10 +328,10 @@ def _live_and_mine(
                 bl,
                 STATION,
                 raws[0].parameter,
-                RULES,
+                case.rules,
                 station_networks=NETWORKS,
-                datum=datum,
-                overrides=overrides,
+                datum=case.datum,
+                overrides=case.overrides,
                 target_ids=ids,
             )
         stored = {
@@ -333,21 +358,82 @@ def _spiked() -> list[RawObservation]:
     return _raws(values, timedelta(hours=1), "discharge")
 
 
-PARITY_CASES: dict[str, tuple[list[RawObservation], float | None, str]] = {
-    "synthetic_hourly": (_fixture("discharge_hourly.csv"), None, "plain"),
-    "synthetic_daily": (_fixture("discharge_daily.csv"), None, "plain"),
-    "spiked_hourly": (_spiked(), None, "plain"),
-    "sparse_zero_rule": (
-        _raws([20.0, 21.0, 22.0], timedelta(days=7), "discharge"),
-        None,
-        "plain",
+def _hourly_discharge() -> list[RawObservation]:
+    return _raws([20.0 + 0.01 * i for i in range(72)], timedelta(hours=1), "discharge")
+
+
+def _rules(*rules: tuple[str, str, timedelta, dict[str, float]]) -> QcRuleSet:
+    return QcRuleSet(
+        version="custom",
+        rules=tuple(
+            QcRuleParams(
+                rule_id=rule_id,  # type: ignore[arg-type]
+                rule_version="1",
+                parameter=parameter,
+                time_step=step,
+                thresholds=thresholds,
+            )
+            for rule_id, parameter, step, thresholds in rules
+        ),
+    )
+
+
+HOUR, DAY = timedelta(hours=1), timedelta(days=1)
+_TIGHT_RANGE = StationQcOverride(
+    station_id=STATION,
+    rule_id="range_check",
+    parameter="discharge",
+    time_step=HOUR,
+    thresholds={"value_max": 20.3},
+)
+
+PARITY_CASES: dict[str, ParityCase] = {
+    "synthetic_hourly": ParityCase(raws=_fixture("discharge_hourly.csv")),
+    "synthetic_daily": ParityCase(raws=_fixture("discharge_daily.csv")),
+    "spiked_hourly": ParityCase(raws=_spiked()),
+    "sparse_zero_rule": ParityCase(
+        raws=_raws([20.0, 21.0, 22.0], timedelta(days=7), "discharge")
     ),
-    "single_reading": (_raws([20.0], timedelta(days=1), "discharge"), None, "plain"),
-    "water_level_datum": (_ramp(1482.0), 1480.0, "plain"),
-    "water_level_unshifted": (_ramp(2.0), 1480.0, "plain"),
-    "water_level_no_datum": (_ramp(1482.0), None, "plain"),
-    "with_baseline": (_spiked(), None, "baseline"),
-    "stale": (_spiked(), None, "stale"),
+    "single_reading": ParityCase(raws=_raws([20.0], DAY, "discharge")),
+    "water_level_datum": ParityCase(raws=_ramp(1482.0), datum=1480.0),
+    "water_level_unshifted": ParityCase(raws=_ramp(2.0), datum=1480.0),
+    "water_level_no_datum": ParityCase(raws=_ramp(1482.0)),
+    "with_baseline": ParityCase(raws=_spiked(), baseline=True),
+    "stale": ParityCase(raws=_spiked(), stale=True),
+    # Context rows outside the target ids, and a station override that bites
+    # only the target rows.
+    "context_outside_targets_with_override": ParityCase(
+        raws=_hourly_discharge(), target_from=48, overrides=(_TIGHT_RANGE,)
+    ),
+    "override_on_all_rows": ParityCase(
+        raws=_hourly_discharge(), overrides=(_TIGHT_RANGE,)
+    ),
+    # Rows an earlier load left qc_unchecked are not re-judged.
+    "already_unchecked_rows": ParityCase(raws=_hourly_discharge(), pre_unchecked=24),
+    # A group that selects exactly one rule is not a zero-rule group ...
+    "one_rule_group": ParityCase(
+        raws=_hourly_discharge(),
+        rules=_rules(("range_check", "discharge", HOUR, {"value_max": 100.0})),
+    ),
+    # ... but one that selects none is.
+    "zero_rule_group_custom_rules": ParityCase(
+        raws=_hourly_discharge(),
+        rules=_rules(("range_check", "discharge", DAY, {"value_max": 100.0})),
+    ),
+    # Latent: with no datum range_check/gross_outlier are skipped, which can
+    # empty the group (live: unchecked + zero-rule group).
+    "skip_empties_the_group": ParityCase(
+        raws=_ramp(1482.0),
+        rules=_rules(
+            (
+                "range_check",
+                "water_level",
+                HOUR,
+                {"value_min": -2.0, "value_max": 20.0},
+            ),
+            ("gross_outlier", "water_level", HOUR, {"k_sigma": 5.0}),
+        ),
+    ),
 }
 
 
@@ -356,13 +442,8 @@ class TestParityWithLiveIngest:
     def test_same_statuses_flags_version_counts_and_zero_rule_output(
         self, case: str
     ) -> None:
-        raws, datum, variant = PARITY_CASES[case]
-        baselines = (
-            _baselines(raws[0].parameter, 20.0, 1.0) if variant == "baseline" else None
-        )
-        live_out, live_stored, my_out, my_stored = _live_and_mine(
-            raws, datum=datum, baselines=baselines, stale=variant == "stale"
-        )
+        spec = PARITY_CASES[case]
+        live_out, live_stored, my_out, my_stored = _live_and_mine(spec)
         assert my_stored == live_stored
         assert my_out.counts == live_out.counts
         assert [
@@ -372,23 +453,17 @@ class TestParityWithLiveIngest:
             (g.parameter, g.inferred_time_step_seconds, g.reason)
             for g in live_out.zero_rule_groups
         ]
-        stored_versions = {v for _, v, _ in my_stored.values()}
-        if variant != "stale":
-            assert stored_versions == {my_out.rule_version}
+        if spec.stale:
+            assert my_out.stale
+            assert my_out.counts["stale_evaluation"] == len(spec.raws)
         else:
-            assert my_out.stale and my_out.counts["stale_evaluation"] == len(raws)
+            stored_versions = {v for _, v, _ in my_stored.values()} - {None}
+            assert stored_versions == {my_out.rule_version}
 
     def test_the_corpus_exercises_every_outcome(self) -> None:
         seen: set[str] = set()
-        for raws, datum, variant in PARITY_CASES.values():
-            baselines = (
-                _baselines(raws[0].parameter, 20.0, 1.0)
-                if variant == "baseline"
-                else None
-            )
-            live_out, _, _, _ = _live_and_mine(
-                raws, datum=datum, baselines=baselines, stale=variant == "stale"
-            )
+        for spec in PARITY_CASES.values():
+            live_out, _, _, _ = _live_and_mine(spec)
             seen |= {k for k, v in live_out.counts.items() if v}
             if live_out.zero_rule_groups:
                 seen.add("zero_rule_group")
@@ -400,3 +475,19 @@ class TestParityWithLiveIngest:
             "zero_rule_group",
             "stale_evaluation",
         } <= seen
+
+    def test_new_cases_actually_differ_from_the_plain_run(self) -> None:
+        outcomes = {
+            name: _live_and_mine(PARITY_CASES[name])[0].counts
+            for name in (
+                "context_outside_targets_with_override",
+                "already_unchecked_rows",
+                "override_on_all_rows",
+            )
+        }
+        assert outcomes["context_outside_targets_with_override"]["newly_checked"] == 24
+        assert outcomes["already_unchecked_rows"]["newly_checked"] == 48
+        assert outcomes["override_on_all_rows"]["failed"] > 0
+        zero = _live_and_mine(PARITY_CASES["skip_empties_the_group"])[0]
+        assert zero.counts["unchecked"] == 48 and zero.zero_rule_groups
+        assert not _live_and_mine(PARITY_CASES["one_rule_group"])[0].zero_rule_groups

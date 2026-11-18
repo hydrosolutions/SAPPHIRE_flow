@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -56,8 +57,18 @@ class Rig:
 
     def run(self, command: str, extra: list[str], text: str = CSV) -> int:
         args = lso._parse_args([command, *ARGS, *extra])  # pyright: ignore[reportPrivateUsage]
+        before = copy.deepcopy((self.observations.__dict__, self.audit.__dict__))
+        try:
+            return self._run_load(args, text)
+        except lso.LoadRolledBack:
+            # What the real transaction does on rollback.
+            self.observations.__dict__.update(before[0])
+            self.audit.__dict__.update(before[1])
+            return lso.EXIT_REFUSED
+
+    def _run_load(self, args: object, text: str) -> int:
         return lso.run_load(
-            args,
+            args,  # pyright: ignore[reportArgumentType]
             text=text,
             identity=SCOPED,
             tenants=self.tenants,
@@ -204,17 +215,34 @@ class TestQcOnLoad:
         assert "has no datum" in capsys.readouterr().out
         assert rig.run("water-level", [*args, "--allow-unchecked"]) == 0
 
-    def test_zero_rule_group_is_refused_unless_allowed(
+    def test_refused_apply_saves_nothing_and_keeps_refusing_until_allowed(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         station = _station()
         rig = Rig(station)
         sparse = "t,v\n2026-11-01 06:00,2.0\n2026-11-08 06:00,2.5\n"
-        assert rig.run("water-level", ["--apply"], text=sparse) == 3
-        out = capsys.readouterr().out
-        assert "no quality rule applies" in out
+        window = (ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)), NOW)
+
+        for _ in range(2):
+            assert rig.run("water-level", ["--apply"], text=sparse) == 3
+            out = capsys.readouterr().out
+            assert "no quality rule applies" in out
+            assert "NOTHING WAS SAVED" in out
+            assert rig.audit.entries == []
+            assert (
+                rig.observations.fetch_observations(station.id, "water_level", *window)
+                == []
+            )
+
         assert rig.run("water-level", ["--apply", "--allow-unchecked"], sparse) == 0
-        stored = rig.observations.fetch_observations(
-            station.id, "water_level", ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)), NOW
-        )
+        stored = rig.observations.fetch_observations(station.id, "water_level", *window)
         assert {o.qc_status.value for o in stored} == {"qc_unchecked"}
+        assert len(rig.audit.entries) == 1
+
+    def test_dry_run_refusal_does_not_claim_a_rollback(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = Rig(_station())
+        sparse = "t,v\n2026-11-01 06:00,2.0\n2026-11-08 06:00,2.5\n"
+        assert rig.run("water-level", [], text=sparse) == 3
+        assert "NOTHING WAS SAVED" not in capsys.readouterr().out

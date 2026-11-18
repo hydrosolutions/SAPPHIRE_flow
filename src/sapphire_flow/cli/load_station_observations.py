@@ -84,6 +84,12 @@ log = structlog.get_logger(__name__)
 _QC_CONTEXT = timedelta(hours=2)
 
 EXIT_OK, EXIT_USAGE, EXIT_REFUSED = 0, 2, 3
+
+
+class LoadRolledBack(Exception):  # noqa: N818
+    """QC refused an applied load: the caller must discard the transaction."""
+
+
 _KIND_CHOICES = {
     "gauge-reading": ObservationValueKind.GAUGE_READING,
     "level-masl": ObservationValueKind.LEVEL_MASL,
@@ -294,6 +300,16 @@ def run_load(
         lookback_days=args.lookback_days,
     )
     code = _print_qc(report, usable, args)
+    if code == EXIT_REFUSED and args.apply:
+        _out(
+            "NOTHING WAS SAVED: the load was rolled back. "
+            + (
+                "Run the same command again."
+                if report.stale
+                else "Re-run with --allow-unchecked to save it anyway."
+            )
+        )
+        raise LoadRolledBack
     if not args.apply:
         _out("\nRe-run with --apply to write.")
     return code
@@ -336,7 +352,6 @@ def _print_qc(report: Stage1QcReport, usable: int, args: argparse.Namespace) -> 
     if problems and not args.allow_unchecked:
         for problem in problems:
             _out(f"REFUSED: {problem}")
-        _out("Re-run with --allow-unchecked to accept data that was not fully checked.")
         return EXIT_REFUSED
     return EXIT_OK
 
@@ -411,19 +426,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         identity = load_deployment_identity_config(config_path)
         qc_rules, rule_source = resolve_qc_rules()
         _out(f"QC rule set: {rule_source}")
-        with create_engine_from_env().begin() as conn:
-            return run_load(
-                args,
-                text=text,
-                identity=identity,
-                tenants=PgTenantStore(conn),
-                stations=PgStationStore(conn),
-                observations=PgObservationStore(conn),
-                audit=PgAuditLogStore(conn),
-                baselines=PgClimBaselineStore(conn),
-                qc_rules=qc_rules,
-                clock=lambda: ensure_utc(datetime.now(UTC)),
-            )
+        try:
+            with create_engine_from_env().begin() as conn:
+                return run_load(
+                    args,
+                    text=text,
+                    identity=identity,
+                    tenants=PgTenantStore(conn),
+                    stations=PgStationStore(conn),
+                    observations=PgObservationStore(conn),
+                    audit=PgAuditLogStore(conn),
+                    baselines=PgClimBaselineStore(conn),
+                    qc_rules=qc_rules,
+                    clock=lambda: ensure_utc(datetime.now(UTC)),
+                )
+        except LoadRolledBack:
+            return EXIT_REFUSED
     except (ConfigurationError, OSError) as exc:
         log.error("load_observations_invalid", error=str(exc))
         return EXIT_USAGE
