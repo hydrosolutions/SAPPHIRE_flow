@@ -21,7 +21,7 @@ new supplier sign-off on this draft.
 | --- | --- | --- |
 | Source | One merged NetCDF mosaic at `s3://snow-model-data-source/joel-snow-model-mosaic/` | Confirmed: Joel, 6/11 Nov |
 | Forecast | Control run, 00Z and 12Z cycles, uniformly 3-hour output through a 240-hour horizon | Control confirmed; Joel confirms cycles, step and horizon |
-| Reanalysis | Daily files; history from 2025 on S3; longer training history offline | History route confirmed: Joel, 11 Nov; day D on D+7, usually ≈ 02:00 (Joel, 17 Nov; see Schedule) |
+| Reanalysis | Daily files; history from 2025 on S3; longer training history offline | History route confirmed: Joel, 11 Nov; day D on D+7, usually ≈ 06:00–06:30 (Joel, 18 Nov; see Schedule) |
 | Variables | `swe`: snow water equivalent in mm at the timestamp. `rof`: mm over the following interval, not a running accumulation | Proposed; Joel states whether `rof` includes rainfall as well as snowmelt |
 | Time | UTC, start stamps: `rof` at 00:00 covers [00:00, 03:00); `swe` at 00:00 is the state at 00:00 | Start stamps confirmed: Joel and Vatro, 11 Nov; example assumes 3-hour output |
 | Gateway output | One requested variable, UTC timestamps, one column per registered polygon, and each row's dataset (`source`) and producing cycle/date (`source_run`); retain source units and time step | Existing output structure; Vatro confirms new-file handling |
@@ -95,16 +95,16 @@ keys. Use these to settle the details rather than separate meetings for each:
 
 All times are **UTC**. Deployment-local deadlines are configuration, not part of this
 agreement (see “Local deadlines”). Joel's delivery times are for the 0.1° forecast;
-until the 0.25° → 0.1° switch completes (in progress 17 Nov) deliveries are about
-2 hours earlier. A cycle counts as delivered only when its manifest exists on S3.
+until the 0.25° → 0.1° switch completes (planned, not started on 18 Nov) deliveries are about
+2 hours earlier (18 Nov: 00Z ≈ 08:25, 12Z ≈ 20:25). A cycle counts as delivered only when its manifest exists on S3.
 
 ### Delivery chain
 
 | Step | Reanalysis day D | 00Z cycle | 12Z cycle |
 | --- | --- | --- | --- |
-| ECMWF IFS 0.1° complete | ERA5T for D at D+6, 00:10–01:40 | ≈ 09:35 | ≈ 21:35 |
-| SnowMapper → S3 (usual) | ≈ 02:00 on D+7 | ≈ 10:20 | ≈ 22:20 |
-| SnowMapper → S3 (promise) | 03:00 on D+7 | 12:00 (init + 12 h) | 00:00 (init + 12 h) |
+| ECMWF IFS 0.1° complete | ERA5T on ARCO reaches D+1 at D+7, uploaded gradually 00:10–05:30 | ≈ 09:35 | ≈ 21:35 |
+| SnowMapper → S3 (usual) | ≈ 06:00–06:30 on D+7 | ≈ 10:20 | ≈ 22:20 |
+| SnowMapper → S3 (promise) | 09:00 on D+7 | 12:00 (init + 12 h) | 00:00 (init + 12 h) |
 | Gateway weather (IFS) | not applicable | ≈ 10:10 typical; plan for 12:00 | ≈ 22:10 typical; plan for 00:00 |
 | Gateway snow served | Vatro to state | Vatro to state | Vatro to state |
 | Forecast tools run | not on critical path | see below | see below |
@@ -115,8 +115,13 @@ Weather is delivered four times a day (00Z, 06Z, 12Z, 18Z; 06Z/18Z about 6 h aft
 the 00Z/12Z times above); snow twice. The weather “typical” times are Bea's
 estimate (about 10 h plus about 10 min of gateway processing); Vatro confirms.
 The older gateway agreement assumed 7–8 h.
+Reanalysis day D is complete only once ERA5 for the start of D+1 is on ARCO, which uploads a
+day's files over about five hours; SnowMapper starts once the whole day is there. If ARCO
+lacks a file, the 14:30 retry fetches it from CDS, so that day arrives in the afternoon of D+7.
 Reanalysis day D is not needed for the run: the days between the last reanalysis
 day and the forecast start come from stitching successive cycles (kept 14 days).
+A late or missing reanalysis day therefore never delays the forecast: the stitched
+bridge simply extends over it, for up to 14 days.
 
 ### Forecast runs
 
