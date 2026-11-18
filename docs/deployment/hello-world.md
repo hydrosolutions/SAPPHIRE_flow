@@ -1,8 +1,9 @@
 # Disposable deployment smoke test
 
-The worker-to-API command is under local qualification. It is not yet a released
-installation check; the dedicated CI gate and administrator release guidance are
-HW1c in [the implementation plan](../plans/deployment-hello-world.md).
+The worker-to-internal-API command has passed local qualification. It is not yet a
+released installation check: independent patch review and final full-suite CI remain
+required, with the dedicated smoke CI gate and administrator release guidance in
+HW1c of [the implementation plan](../plans/deployment-hello-world.md).
 
 For development qualification, prepare the normal application image using the
 [existing image build and release-identity instructions](../standards/cicd.md#release-identity-tags-and-receipts).

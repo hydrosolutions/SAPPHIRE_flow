@@ -468,3 +468,21 @@ Docker's [internal-network documentation](https://docs.docker.com/reference/cli/
 describes inter-container access without routes to other networks. The local
 qualification keeps that boundary instead of changing the host daemon or
 operational networking settings.
+
+### Local runtime qualification — 2026-11-18
+
+The corrected internal HTTP path passed on source
+`bd9e34ecf267293199a463a430f4eff263da110f` with its exact-source standard image.
+The real process worker and nested forecast flow loaded 72 `QC_PASSED` readings,
+persisted three weather records and one forecast, and delivered all 60 expected
+values through authenticated HTTP. The unauthenticated request returned 401.
+Cleanup verified removal of every owned container, network and volume and erased
+temporary credentials. No host-port check is claimed.
+
+This local run took 79.089 seconds including cleanup. Observed per-container
+memory peaks were approximately 350 MiB Postgres, 273 MiB Prefect, 424 MiB worker
+and 345 MiB API; persistent volume usage was approximately 124 MiB plus 20 KiB
+of artifacts. These are observations on an ARM Docker Desktop host with emulated
+PostGIS, not minimum resource guarantees. Exact-source final qualification,
+independent patch review and full final-code CI remain gates for this PR.
+HW1c's dedicated CI gate and released administrator instructions remain separate.

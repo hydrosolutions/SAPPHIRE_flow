@@ -1,9 +1,10 @@
 # Deployment smoke scenario resources
 
-This is an incomplete, synthetic installation diagnostic, not an operational
-forecast configuration or a runnable deployment. The packaged station-supported
-discharge fixture has passed pure Stage 1 QC qualification. Normal loader/QC
-integration and worker/API evidence remain pending in the manifest.
+This synthetic installation diagnostic has passed local worker-to-internal-API
+qualification. It is not an operational forecast configuration or a released
+installation check. The manifest separates pure fixture QC evidence from the real
+loader, worker and HTTP API run; patch review, final full-suite CI and HW1c smoke
+CI/release guidance remain pending.
 
 `discharge_hourly.csv` and `scenario.json` are exact-byte copies of the generic
 station team's fixtures from commit `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`
@@ -28,9 +29,10 @@ This explicit snapshot avoids inheriting agency configuration. Tests run the rea
 
 All 72 readings are judged by at least one rule. Rate needs a predecessor and
 spike needs both neighbours. Gross outlier is unavailable without a climatology
-baseline; hourly frozen-sensor detection is not configured. Zero flags do not
-establish database `GOOD` status: the merged observation loader currently stores
-raw observations, and its QC integration remains a separate dependency.
+baseline; hourly frozen-sensor detection is not configured. This pure checker test
+does not establish a persisted observation status. Separately, the local runtime
+used the normal observation loader and verified all 72 stored readings were
+`QC_PASSED`, with no flags; no SQL status override was used.
 
 The fixed cycle is `2025-01-03T00:00:00Z`. Weather contains one control member (`0`)
 with precipitation in mm for the three future hours. The `icon_ch2_eps` source tag
@@ -61,14 +63,16 @@ Tests exercise real FI input/output adaptation and the configured operational
 ensemble-size floor with correctly timed inputs. Generic model-onboarding helper
 qualification remains unavailable: its generated prediction inputs reuse historical
 timestamps for future weather and set issue time to the final observation. The
-model's declared future grid and coverage checks remain strict. The planned audited
-artifact-import path does not require those helper-generated prediction inputs.
+model's declared future grid and coverage checks remain strict. The audited
+artifact-import path used by this diagnostic does not require those helper-generated
+prediction inputs.
 
 `runtime.toml` supplies the fixed smoke-only settings and hourly forecast-QC rules
 as the sole overlay of `qc-rules.toml`. This uses the existing config loader;
 Compose fixes the order and checks the image copies against packaged resources.
-The worker/API command is under local qualification. Its HTTP probe runs from the
-worker to the API inside the internal network; no ports are published and host
-access is not tested. See
-`docs/deployment/hello-world.md` for development use and the plan for the remaining
-runtime/CI gates. No complete installation pass is claimed by these resources.
+The local run verified one real worker forecast, three persisted weather records,
+all 60 expected values through authenticated HTTP, and cleanup. Its HTTP probe runs
+from the worker to the API inside the internal network; no ports are published and
+host access is not tested. See `docs/deployment/hello-world.md` for development use
+and the plan for the remaining review/CI/release gates. This local proof does not
+establish agency readiness or hydrological skill.
