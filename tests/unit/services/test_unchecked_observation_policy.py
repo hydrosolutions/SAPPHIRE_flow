@@ -604,7 +604,9 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     # Inspect the full loaded fixture: filtering QC_PASSED here could hide bad rows.
     "src/sapphire_flow/cli/deployment_smoke.py": ("<unfiltered>",),
     # Plan 540 M3b: the QC-on-load read is the QC-context cohort (unfiltered).
-    "src/sapphire_flow/cli/load_station_observations.py": ("<unfiltered>",),
+    # Plan 540 M3c: derive-discharge reads usable (passed/unchecked) levels, and
+    # the failed/suspect/raw ones only to count them; the rating range is unfiltered.
+    "src/sapphire_flow/cli/load_station_observations.py": ("<unfiltered>", "qc_status"),
     "src/sapphire_flow/flows/compute_skills.py": ("QcStatus.QC_PASSED",),
     "src/sapphire_flow/flows/ingest_observations.py": ("<unfiltered>", "<unfiltered>"),
     "src/sapphire_flow/services/calculated_station_onboarding.py": ("<unfiltered>",),

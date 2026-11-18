@@ -105,7 +105,7 @@ def parse_observation_csv(
     return rows
 
 
-def _convert(
+def convert_for_kind(
     station: StationConfig, kind: ObservationValueKind
 ) -> Callable[[float], float]:
     match kind:
@@ -138,7 +138,7 @@ def to_raw_observations(
     kind: ObservationValueKind,
     source: ObservationSource = ObservationSource.MEASURED,
 ) -> list[RawObservation]:
-    convert = _convert(station, kind)
+    convert = convert_for_kind(station, kind)
     return [
         RawObservation(
             station_id=station.id,
