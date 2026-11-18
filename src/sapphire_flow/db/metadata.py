@@ -304,6 +304,25 @@ stations = sa.Table(
     sa.Column("water_level_datum_masl", sa.Float, nullable=True),
     sa.Column("water_level_unit", sa.Text, nullable=True),
     sa.Column(
+        "water_level_gauge_type",
+        sa.Text,
+        sa.CheckConstraint(
+            "water_level_gauge_type IN ('staff_or_pressure', 'bridge_sensor')",
+            name="ck_stations_water_level_gauge_type",
+        ),
+        nullable=True,
+    ),
+    sa.Column(
+        "water_level_sensor_masl",
+        sa.Float,
+        sa.CheckConstraint(
+            "water_level_sensor_masl IS NULL "
+            "OR water_level_gauge_type IS NOT DISTINCT FROM 'bridge_sensor'",
+            name="ck_stations_water_level_sensor_pairing",
+        ),
+        nullable=True,
+    ),
+    sa.Column(
         "station_kind",
         sa.Text,
         sa.CheckConstraint("station_kind IN ('weather', 'river', 'lake')"),
@@ -364,6 +383,15 @@ stations = sa.Table(
         UUID(as_uuid=True),
         sa.ForeignKey("tenants.id"),
         nullable=False,
+    ),
+    sa.CheckConstraint(
+        "water_level_gauge_type IS NULL OR water_level_datum_masl IS NOT NULL",
+        name="ck_stations_water_level_gauge_datum",
+    ),
+    sa.CheckConstraint(
+        "water_level_gauge_type IS DISTINCT FROM 'bridge_sensor' "
+        "OR water_level_sensor_masl IS NOT NULL",
+        name="ck_stations_water_level_bridge_sensor",
     ),
     sa.UniqueConstraint("network", "code", name="uq_stations_network_code"),
     # (id, tenant_id) is redundant with the PK alone but is the FK target the

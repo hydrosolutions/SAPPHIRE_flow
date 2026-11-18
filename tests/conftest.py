@@ -108,6 +108,7 @@ from sapphire_flow.types.enums import (
     StationKind,
     StationOwnership,
     StationStatus,
+    WaterLevelGaugeType,
 )
 from sapphire_flow.types.ids import (
     AlertId,
@@ -289,6 +290,8 @@ def make_station_config(
     gauging_status: GaugingStatus = GaugingStatus.GAUGED,
     water_level_datum_masl: float | None = None,
     water_level_unit: str | None = None,
+    water_level_gauge_type: WaterLevelGaugeType | None = None,
+    water_level_sensor_masl: float | None = None,
     tenant_id: TenantId = DEFAULT_TENANT_ID,
     rng: random.Random | None = None,
 ) -> StationConfig:
@@ -317,6 +320,8 @@ def make_station_config(
         gauging_status=gauging_status,
         water_level_datum_masl=water_level_datum_masl,
         water_level_unit=water_level_unit,
+        water_level_gauge_type=water_level_gauge_type,
+        water_level_sensor_masl=water_level_sensor_masl,
         tenant_id=tenant_id,
     )
 

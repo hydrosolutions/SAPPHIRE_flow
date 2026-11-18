@@ -39,6 +39,7 @@ from tests.conftest import make_observation
 from tests.integration.api.test_dashboard_forecasts import _client, app_overrides_clear
 from tests.integration.cli.test_import_dhm_delivery import _CHWRR, _NOW, _ensure_chwrr
 from tests.integration.cli.test_rating_only import FIXTURE, delivery
+from tests.integration.legacy_stations import legacy_station_columns
 from tests.integration.store.test_forecast_store import (
     _make_forecast,
     _seed_artifact,
@@ -53,14 +54,15 @@ from tests.integration.store.test_rejected_forecast_store import (
 def native_pair(conn: sa.Connection) -> tuple[OperationalForecast, OperationalForecast]:
     tenants = PgTenantStore(conn)
     tenant_id = _ensure_chwrr(tenants)
-    register_stations(
-        tenants,
-        PgStationStore(conn),
-        _CHWRR,
-        load_station_metadata(FIXTURE / "stations.toml"),
-        audit_log_store=PgAuditLogStore(conn),
-        now=_NOW,
-    )
+    with legacy_station_columns(conn):
+        register_stations(
+            tenants,
+            PgStationStore(conn),
+            _CHWRR,
+            load_station_metadata(FIXTURE / "stations.toml"),
+            audit_log_store=PgAuditLogStore(conn),
+            now=_NOW,
+        )
     admit_rating_deliveries(
         conn, tenant_id, (delivery("native-forecast", date(2026, 9, 8)),), now=_NOW
     )

@@ -36,6 +36,7 @@ from sapphire_flow.types.ids import (
 )
 from sapphire_flow.types.rating_curve import RatingCurve
 from tests.conftest import make_forecast_ensemble, make_station_config
+from tests.integration.legacy_stations import legacy_station_columns
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -89,7 +90,8 @@ _NWP_CYCLE = ensure_utc(datetime(2024, 12, 31, 18, tzinfo=UTC))
 
 def _seed_station(conn: sa.Connection) -> StationId:
     station = make_station_config(rng=random.Random(77))
-    PgStationStore(conn).store_station(station)
+    with legacy_station_columns(conn):
+        PgStationStore(conn).store_station(station)
     return station.id
 
 
