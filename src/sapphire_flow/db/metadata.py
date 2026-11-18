@@ -304,6 +304,25 @@ stations = sa.Table(
     sa.Column("water_level_datum_masl", sa.Float, nullable=True),
     sa.Column("water_level_unit", sa.Text, nullable=True),
     sa.Column(
+        "water_level_gauge_type",
+        sa.Text,
+        sa.CheckConstraint(
+            "water_level_gauge_type IN ('staff_or_pressure', 'bridge_sensor')",
+            name="ck_stations_water_level_gauge_type",
+        ),
+        nullable=True,
+    ),
+    sa.Column(
+        "water_level_sensor_masl",
+        sa.Float,
+        sa.CheckConstraint(
+            "water_level_sensor_masl IS NULL "
+            "OR water_level_gauge_type = 'bridge_sensor'",
+            name="ck_stations_water_level_sensor_pairing",
+        ),
+        nullable=True,
+    ),
+    sa.Column(
         "station_kind",
         sa.Text,
         sa.CheckConstraint("station_kind IN ('weather', 'river', 'lake')"),

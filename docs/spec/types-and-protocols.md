@@ -412,6 +412,11 @@ class StationStatus(Enum):
     SUSPENDED = "suspended"
     DECOMMISSIONED = "decommissioned"
 
+class WaterLevelGaugeType(Enum):  # Plan 540 M2; stations.water_level_gauge_type (CHECK on both values)
+    STAFF_OR_PRESSURE = "staff_or_pressure"   # reading = height above the gauge zero
+    BRIDGE_SENSOR = "bridge_sensor"           # radar/ultrasonic; reading = distance down to water
+
+
 class GaugingStatus(Enum):
     GAUGED = "gauged"
     UNGAUGED = "ungauged"
@@ -1093,6 +1098,13 @@ class StationConfig:
     ownership: StationOwnership        # own = locally managed, foreign = display-only
     wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
+    water_level_datum_masl: float | None = None   # gauge-zero elevation (both gauge types)
+    water_level_unit: str | None = None
+    # Plan 540 M2 (migration 0087). Pairing rules in __post_init__: a gauge type needs the
+    # datum; BRIDGE_SENSOR needs water_level_sensor_masl (> datum); a sensor elevation is
+    # allowed only for BRIDGE_SENSOR. Live QC subtracts the datum unchanged for both types.
+    water_level_gauge_type: WaterLevelGaugeType | None = None
+    water_level_sensor_masl: float | None = None
     tenant_id: TenantId = DEFAULT_TENANT_ID  # Plan 147 Slice A — canonical tenant ownership (R4 LOCKED)
 ```
 

@@ -295,6 +295,11 @@ class FetchOutcomeCause(Enum):
     BATCH_ABORTED = "batch_aborted"
 
 
+class WaterLevelGaugeType(Enum):
+    STAFF_OR_PRESSURE = "staff_or_pressure"
+    BRIDGE_SENSOR = "bridge_sensor"
+
+
 class GaugingStatus(Enum):
     GAUGED = "gauged"
     UNGAUGED = "ungauged"

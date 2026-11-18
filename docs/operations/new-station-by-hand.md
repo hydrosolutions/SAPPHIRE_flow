@@ -90,36 +90,26 @@ Start one worker per pool (`ingest` and `default`) in the environment the jobs n
 
 Tear down when done: stop the workers and server, `docker stop sapphire-onboarding-sandbox-db`.
 
-## Step 3: create the station record (no tool yet)
+## Step 3: create the station record
+
+One command. It is a dry run until you add `--apply`. Ask the gauge type first: a staff or
+pressure gauge gives the height above the gauge zero; a bridge radar/ultrasonic sensor gives
+the distance down to the water, so it needs the sensor elevation as well. In both cases the
+datum is the elevation of the gauge zero in m a.s.l. Without a TTY pass `--gauge-type`,
+`--datum-masl` (and `--sensor-masl`), or `--datum-unknown` (water-level range checks stay off).
 
 ```bash
-uv run python - <<'EOF'
-import os
-from datetime import UTC, datetime
-from uuid import uuid4
-import sqlalchemy as sa
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.station import StationConfig
-from sapphire_flow.types.enums import StationKind, StationStatus, StationOwnership, GaugingStatus
-from sapphire_flow.types.domain import GeoCoord
-from sapphire_flow.types.ids import StationId, TenantId
-TENANT, CODE, NETWORK, NAME = "chwrr", "00001", "research", "Trishuli"
-LON, LAT, TZ = 85.33996353048586, 28.164345566064725, "Asia/Kathmandu"
-now = datetime.now(UTC)
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    tid = c.execute(sa.text("select id from tenants where code=:t"), {"t": TENANT}).scalar_one()
-    s = StationConfig(id=StationId(uuid4()), code=CODE, name=NAME, location=GeoCoord(lon=LON, lat=LAT),
-        station_kind=StationKind.RIVER, basin_id=None, timezone=TZ, regulation_type=None,
-        forecast_targets=None, measured_parameters=frozenset({"water_level"}),
-        station_status=StationStatus.ONBOARDING, created_at=now, updated_at=now, network=NETWORK,
-        ownership=StationOwnership.OWN, wigos_id=None, gauging_status=GaugingStatus.GAUGED,
-        water_level_unit="m", tenant_id=TenantId(tid))
-    print(PgStationStore(c).store_station(s))
-EOF
+export SAPPHIRE_CONFIG=/path/to/config.toml   # or pass --config
+uv run python -m sapphire_flow.cli.create_station list    # tenants and networks that exist
+uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
+  --network research --name Trishuli --lon 85.33996 --lat 28.16434 \
+  --timezone Asia/Kathmandu --parameters water_level,discharge \
+  --gauge-type staff --datum-masl 1480 --gateway-name trishuli_00001 [--apply]
 ```
 
-`CODE` and `NETWORK` must equal the handover package's, or the basin import holds the basin.
-Set `measured_parameters` to what the station delivers (`discharge`, `water_level`).
+`--code` and `--network` must equal the handover package's, or the basin import holds the
+basin. The pair is unique across all tenants. The Gateway name is only checked and printed
+into the next steps; it is not stored on the station.
 
 ## Step 4: import the basin
 
