@@ -349,9 +349,15 @@ station into the forecast cycle, and demoting it later can lose observations.
    against the source, and read the six provenance values from the source host's
    `model_artifact_provenance` record. Run the `import-model-artifact` deployment with
    `group_id` set to your group.
-2. **Assign the model to the group:** `create_group_assignment(group_id, ModelId("cmal_small"),
-   timedelta(days=1), 1, PgStationGroupStore(conn), clock)` from
-   `sapphire_flow.services.model_onboarding`.
+2. **Assign the model to the group** (after the artifact import; dry run first, then `--apply`):
+
+   ```bash
+   uv run python -m sapphire_flow.cli.assign_group_model --tenant chwrr \
+     --group-name my-group --model cmal_small --time-step-hours 24 [--priority 1] [--apply]
+   ```
+
+   It refuses an unknown model or group and an INACTIVE assignment, and re-running an
+   identical ACTIVE assignment changes nothing.
 3. **Forecast configuration (not in the guide before):** run with the base `config.toml`, the
    overlays `nepal-cloud.toml` and `nepal-daily-weather.toml`, and a last overlay of your own:
 
