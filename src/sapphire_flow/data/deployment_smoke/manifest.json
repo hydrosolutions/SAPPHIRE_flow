@@ -21,8 +21,7 @@
     "runtime.toml": "a49ac4a83fa8ad59504f96d5a14f1a8ccd14e8e2d81013c6c45baa761b0176f5"
   },
   "pending": [
-    "independent patch review and final full-suite CI",
-    "HW1c dedicated smoke CI and administrator release guidance"
+    "matching source/image qualification: independent patch review, final full-suite CI and mandatory twice-clean smoke gate"
   ],
   "station_metadata": "scenario.json",
   "tenant": "smoke",

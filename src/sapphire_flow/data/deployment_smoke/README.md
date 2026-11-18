@@ -3,8 +3,9 @@
 This synthetic installation diagnostic has passed local worker-to-internal-API
 qualification. It is not an operational forecast configuration or a released
 installation check. The manifest separates pure fixture QC evidence from the real
-loader, worker and HTTP API run; patch review, final full-suite CI and HW1c smoke
-CI/release guidance remain pending.
+loader, worker and HTTP API run. Release qualification requires independent patch
+review, final full-suite CI and the mandatory twice-clean smoke gate for the matching
+source/image; historical local evidence does not replace those checks.
 
 `discharge_hourly.csv` and `scenario.json` are exact-byte copies of the generic
 station team's fixtures from commit `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`
@@ -73,6 +74,6 @@ Compose fixes the order and checks the image copies against packaged resources.
 The local run verified one real worker forecast, three persisted weather records,
 all 60 expected values through authenticated HTTP, and cleanup. Its HTTP probe runs
 from the worker to the API inside the internal network; no ports are published and
-host access is not tested. See `docs/deployment/hello-world.md` for development use
-and the plan for the remaining review/CI/release gates. This local proof does not
+host access is not tested. See `docs/deployment/hello-world.md` for administrator instructions and developer qualification
+and the plan for the review/CI/release gates. This local proof does not
 establish agency readiness or hydrological skill.

@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -197,7 +197,12 @@ def source_hashes() -> dict[str, str]:
     }
 
 
-def preflight(docker: Docker, image: str) -> dict[str, Any]:
+def preflight(
+    docker: Docker,
+    image: str,
+    *,
+    image_identity: Literal["release-target", "ci-development"] = "release-target",
+) -> dict[str, Any]:
     endpoint = local_endpoint(docker)
     version = json.loads(docker.run(["compose", "version", "--format", "json"]))[
         "version"
@@ -218,7 +223,11 @@ def preflight(docker: Docker, image: str) -> dict[str, Any]:
         text=True,
         check=True,
     ).stdout.strip()
-    release = (_ROOT / "RELEASE_TARGET").read_text().strip()
+    release = (
+        "0.dev0+g" + revision
+        if image_identity == "ci-development"
+        else (_ROOT / "RELEASE_TARGET").read_text().strip()
+    )
     probe = _probe.probe_image(
         image, release, revision, variant="default", runner=docker
     )
@@ -564,7 +573,13 @@ def measure_resources(docker: Docker, compose: list[str]) -> dict[str, object]:
     return {"status": "measured", "memory_peak_bytes": peaks, "volume_bytes": sizes}
 
 
-def run_smoke(docker: Docker, image: str, path: Path) -> int:
+def run_smoke(
+    docker: Docker,
+    image: str,
+    path: Path,
+    *,
+    image_identity: Literal["release-target", "ci-development"] = "release-target",
+) -> int:
     started = time.monotonic()
     stage = "preflight"
     record: dict[str, Any] | None = None
@@ -580,7 +595,7 @@ def run_smoke(docker: Docker, image: str, path: Path) -> int:
     try:
         if not path.is_absolute() or path.exists() or path.is_symlink():
             raise SmokeError("report_directory_must_be_new_and_absolute")
-        identity = preflight(docker, image)
+        identity = preflight(docker, image, image_identity=image_identity)
         record = create_run_directory(path, identity)
         report.update(identity)
         report["run_id"] = record["run_id"]
@@ -739,15 +754,33 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run")
     run.add_argument("--image", required=True)
     run.add_argument("--report-dir", required=True, type=Path)
+    run.add_argument(
+        "--image-identity",
+        choices=["release-target", "ci-development"],
+        default="release-target",
+    )
+    run.add_argument(
+        "--runtime-timeout-seconds",
+        type=int,
+        choices=range(1, 601),
+        default=600,
+        metavar="1..600",
+    )
     clean = sub.add_parser("cleanup")
     clean.add_argument("--report-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         env = isolated_environment(dict(os.environ))
-        docker = Docker(env, time.monotonic() + (600 if args.command == "run" else 120))
+        docker = Docker(
+            env,
+            time.monotonic()
+            + (args.runtime_timeout_seconds if args.command == "run" else 120),
+        )
         if args.command == "run":
             signal.signal(signal.SIGTERM, _interrupt)
-            return run_smoke(docker, args.image, args.report_dir)
+            return run_smoke(
+                docker, args.image, args.report_dir, image_identity=args.image_identity
+            )
         record = read_record(args.report_dir)
         try:
             cleanup(docker, args.report_dir, record)

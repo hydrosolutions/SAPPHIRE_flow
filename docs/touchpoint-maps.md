@@ -2281,6 +2281,10 @@ runtime/production acceptance from implementation.
 - `tools/private_verification.py`: exact source/attempt admission, private process
   and workflow-file capture, full gate-set assertion, bounded private report and
   strict fixed-command SSH acknowledgement. `receive_build_report.py` is unchanged.
+- `tools/qualify_deployment_smoke.py`: twice-clean CLI execution, isolated sentinel
+  identity/state/content checks, bounded recovery and curated public summary only.
+  Mirror the named default-image gate in CI attestation and private verification;
+  no image export or provider credentials enter this runtime proof.
 - `tools/private_verification_gates.sh`: all eight CI jobs mapped to retained logical
   gates, existing shard selectors/coverage merge, wheel guard, image identity probes
   and scan/SBOM policy. No missing-token degradation or skipped-green aggregate.

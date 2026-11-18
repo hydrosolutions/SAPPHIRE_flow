@@ -6,6 +6,10 @@ forecast. It remains a preparation tool: developer-owned coverage gaps prevent a
 complete `PASS_OFFLINE`. Actual deployment files belong outside the public
 application repository.
 
+For a separate check of installation and worker/API wiring, run the
+[synthetic deployment smoke test](deployment/hello-world.md). It needs no agency
+data or provider credentials and does not validate your private profile.
+
 ## 1. Copy the generic examples into private storage
 
 Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)

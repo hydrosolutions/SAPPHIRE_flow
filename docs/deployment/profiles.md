@@ -8,6 +8,9 @@ The feature remains preparation-only: missing inputs fail; unchecked evidence is
 PENDING. Complete offline PASS and profile-driven launching require follow-up work.
 It never inspects a live server, opens credential files or retrieves manager secrets.
 
+The [synthetic deployment smoke test](hello-world.md) independently checks generic
+worker/API wiring. It does not select, launch or validate a private profile.
+
 ## Selection and file ownership
 
 ```bash
