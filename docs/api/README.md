@@ -14,6 +14,7 @@ available features. All examples below are read-only.
 | Read native or hourly discharge, including rating-derived values | `GET /stations/{station_id}/observation-history` |
 | Find the latest stored reading at each station | `GET /observations/latest` |
 | Inspect daily rating-derived inputs to a forecast | `GET /forecasts/{forecast_id}/rating-input-history` |
+| Discover stored models and leads for event review | `GET /stations/{station_id}/review-options` |
 
 The [OpenAPI reference](../spec/api-v1-map.openapi.json) defines exact request and
 response structures for the supported dashboard/read routes. It does not describe
@@ -147,6 +148,31 @@ They are not hourly means. Missing slots stay gaps. In the documented Nepal
 baseline, the discharge block does **not** project rating-table conversions.
 See the [overview contract](../spec/network-overview.md) for availability states,
 compact series and private conditional polling.
+
+## Discover event-review options
+
+The event-review branch adds `GET /stations/{station_id}/review-options` to
+contract **2.14**; this is not yet a deployed feature. It requires reviewer or
+administrator access and accepts no query parameters. Use the returned source
+identities and `lead_hours` to populate choices: these are actual stored exact
+elapsed-hour leads, including historical artifacts, not model horizon guesses.
+
+Sources keep operational and hindcast identities separate, with recorded artifact
+hash, training dates, run, forcing and cadence. Missing provenance remains null.
+Bounds are inclusive stored valid-time bounds, not proof of continuous coverage.
+`completeness: unknown` means expected coverage is not recorded; detectable orphan
+headers or inconsistent lead timestamps are `incomplete` with reasons.
+
+Only ordinary discharge is offered. Under an active publication gate, the catalog
+contains selected operational forecasts and reports hindcast availability as
+`unsupported`, without enumerating hindcast metadata. Out-of-scope stations return
+404. All responses are `no-store`. Bounded catalog overflow returns 422 with
+`detail.code: review_catalog_limit_exceeded`; a five-second database timeout returns
+503 with `detail.code: review_query_timeout`. No partial catalog is returned.
+
+The limits are 100,000 headers, 1,000,000 stored value rows, 100 source identities
+and 2 MiB. Series and period-skill reads remain future milestones; see the
+[event-review contract](../spec/event-review-draft.md).
 
 ## Get observations and discharge history
 

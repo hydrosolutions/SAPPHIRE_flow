@@ -2020,6 +2020,14 @@
         "title": "EvaluationValue",
         "type": "object"
       },
+      "ForcingType": {
+        "enum": [
+          "nwp_archive",
+          "reanalysis"
+        ],
+        "title": "ForcingType",
+        "type": "string"
+      },
       "ForecastDataUse": {
         "enum": [
           "standard",
@@ -5938,6 +5946,318 @@
         "title": "RejectedForecastValuePoint",
         "type": "object"
       },
+      "ReviewAvailability": {
+        "enum": [
+          "available",
+          "absent",
+          "unsupported"
+        ],
+        "title": "ReviewAvailability",
+        "type": "string"
+      },
+      "ReviewCompleteness": {
+        "enum": [
+          "unknown",
+          "incomplete"
+        ],
+        "title": "ReviewCompleteness",
+        "type": "string"
+      },
+      "ReviewErrorDetail": {
+        "properties": {
+          "code": {
+            "enum": [
+              "review_catalog_limit_exceeded",
+              "review_query_timeout"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ReviewErrorDetail",
+        "type": "object"
+      },
+      "ReviewErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ReviewErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ReviewErrorResponse",
+        "type": "object"
+      },
+      "ReviewKind": {
+        "enum": [
+          "operational",
+          "hindcast"
+        ],
+        "title": "ReviewKind",
+        "type": "string"
+      },
+      "ReviewOptionsResponse": {
+        "properties": {
+          "data_use": {
+            "const": "standard",
+            "default": "standard",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "hindcast_availability": {
+            "$ref": "#/components/schemas/ReviewAvailability"
+          },
+          "lead_definition": {
+            "default": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then.",
+            "title": "Lead Definition",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "operational_availability": {
+            "$ref": "#/components/schemas/ReviewAvailability"
+          },
+          "parameter": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewSourceResponse"
+            },
+            "maxItems": 100,
+            "title": "Sources",
+            "type": "array"
+          },
+          "station_id": {
+            "format": "uuid",
+            "title": "Station Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "operational_availability",
+          "hindcast_availability",
+          "message",
+          "sources"
+        ],
+        "title": "ReviewOptionsResponse",
+        "type": "object"
+      },
+      "ReviewSourceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "artifact_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Sha256"
+          },
+          "completeness": {
+            "$ref": "#/components/schemas/ReviewCompleteness"
+          },
+          "first_valid_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Valid Time"
+          },
+          "forcing_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForcingType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null means unknown, not absence of weather forcing."
+          },
+          "hindcast_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hindcast Run Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "last_valid_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Inclusive last valid time; bounds do not promise full coverage.",
+            "title": "Last Valid Time"
+          },
+          "lead_hours": {
+            "description": "Exact nonnegative integer leads stored; not the model horizon.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Lead Hours",
+            "type": "array"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_role": {
+            "enum": [
+              "model",
+              "baseline"
+            ],
+            "title": "Model Role",
+            "type": "string"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Recorded model version, otherwise null; not a forecast revision.",
+            "title": "Model Version"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "temporal_support": {
+            "const": "unknown",
+            "default": "unknown",
+            "title": "Temporal Support",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Recorded cadence, or null. Does not establish interval support.",
+            "title": "Time Step Seconds"
+          },
+          "training_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Period End"
+          },
+          "training_period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Period Start"
+          },
+          "units": {
+            "title": "Units",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "model_id",
+          "model_name",
+          "model_role",
+          "artifact_id",
+          "artifact_sha256",
+          "training_period_start",
+          "training_period_end",
+          "hindcast_run_id",
+          "forcing_type",
+          "time_step_seconds",
+          "units",
+          "lead_hours",
+          "first_valid_time",
+          "last_valid_time",
+          "completeness",
+          "reasons"
+        ],
+        "title": "ReviewSourceResponse",
+        "type": "object"
+      },
       "SapphireForecastMembersSchema": {
         "additionalProperties": false,
         "properties": {
@@ -7745,7 +8065,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "2.13"
+    "version": "2.14"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9527,6 +9847,105 @@
         "summary": "Inspect rejected forecasts",
         "tags": [
           "Quality and evaluation"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/review-options": {
+      "get": {
+        "description": "Authorized stored discharge models, source tuples and exact integer leads. Historical artifacts remain selectable; bounds do not imply completeness. Publication-gated stations expose only selected operational metadata, with hindcast availability unsupported and no hindcast enumeration. Standard data only. All responses and supported preflights are no-store. Bounded catalog overflow is 422; query timeout is 503; neither means no data.",
+        "operationId": "review_options_api_v1_stations__station_id__review_options_get",
+        "parameters": [
+          {
+            "description": "Station UUID returned by the station list, not the provider code.",
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get historical review source and lead options",
+        "tags": [
+          "Forecasts"
         ]
       }
     },

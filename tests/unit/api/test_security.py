@@ -425,6 +425,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/forecast-lab/snapshot"): "PRINCIPAL",
         ("GET", "/api/v1/qc/rules"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/skill"): "REVIEW",
+        ("GET", "/api/v1/stations/{station_id}/review-options"): "REVIEW",
         ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"): "REVIEW_OR_HUMAN",
         (
             "GET",

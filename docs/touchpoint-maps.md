@@ -1,5 +1,19 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
+### Event-review options (M2)
+
+The reviewer-only `api/routes/api_event_review.py` route delegates to
+`services/event_review.py` and `store/event_review.py`, with shared domain values
+in `types/event_review.py`. Options use actual stored exact leads and historical
+artifacts, independent of active assignments. Preserve the tenant/station and
+ordinary-data predicates, single-statement bounded catalog snapshot, publication
+selection lock and absence of hindcast queries under an active publication gate.
+No protected lineage columns are selected. Timeout cancellation rolls back its
+savepoint before the auth transaction completes. Route additions must update
+`api/publication_cache.py` (including error/CORS paths), the auth matrix and
+generated map contract together. Tests are `test_event_review.py` under unit API,
+unit services and integration store. Series and period skill are later milestones.
+
 Reusable per-subsystem routing checklists. When a task touches a subsystem,
 inspect the relevant map for touchpoints, contracts that must not change silently,
 and verification to run. Project safeguards live in `AGENTS.md`; agent workflows

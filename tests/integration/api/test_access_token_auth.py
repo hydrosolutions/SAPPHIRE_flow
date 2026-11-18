@@ -682,6 +682,42 @@ def _review_test_app(db_connection: sa.Connection) -> FastAPI:
     return review_app
 
 
+class TestEventReviewOptionsTokens:
+    @pytest.mark.parametrize(
+        "role,status",
+        [
+            (AccessTokenRole.CONSUMER, 403),
+            (AccessTokenRole.REVIEWER, 200),
+            (AccessTokenRole.ADMIN, 200),
+        ],
+    )
+    def test_real_token_role_and_scope(
+        self,
+        client: TestClient,
+        db_connection: sa.Connection,
+        role: AccessTokenRole,
+        status: int,
+    ) -> None:
+        sid = _seed_station(db_connection, seed=61, tenant_id=DEFAULT_TENANT_ID)
+        raw_key = _make_token(
+            db_connection,
+            role=role,
+            tenant_id=None if role is AccessTokenRole.ADMIN else DEFAULT_TENANT_ID,
+            station_ids=None if role is AccessTokenRole.ADMIN else frozenset({sid}),
+        )
+        response = client.get(
+            f"/api/v1/stations/{sid}/review-options", headers=_auth(raw_key)
+        )
+        assert response.status_code == status
+        assert response.headers["cache-control"] == "no-store"
+        if role is AccessTokenRole.REVIEWER:
+            other = _seed_station(db_connection, seed=62, tenant_id=DEFAULT_TENANT_ID)
+            denied = client.get(
+                f"/api/v1/stations/{other}/review-options", headers=_auth(raw_key)
+            )
+            assert denied.status_code == 404
+
+
 class TestReviewRouteGate:
     """Plan 401 D2: a REVIEW route admits reviewer and admin tokens, refuses a
     consumer with 403, and applies the principal's station scope."""
