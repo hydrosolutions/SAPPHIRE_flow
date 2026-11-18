@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -12,6 +12,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AuditEventType,
     ObservationSource,
+    QcStatus,
     WaterLevelGaugeType,
 )
 from sapphire_flow.types.ids import TenantId
@@ -68,12 +69,19 @@ class Rig:
     def station_id(self):  # noqa: ANN202
         return self.stations.fetch_all_stations()[0].id
 
-    def levels(self, values: list[float]) -> None:
+    def levels(
+        self,
+        values: list[float],
+        status: QcStatus = QcStatus.QC_PASSED,
+        step: timedelta = timedelta(hours=1),
+    ) -> None:
         self.observations.store_raw_observations(
             [
                 RawObservation(
                     station_id=self.station_id,
-                    timestamp=ensure_utc(datetime(2026, 11, 1, hour, tzinfo=UTC)),
+                    timestamp=ensure_utc(
+                        datetime(2026, 11, 1, tzinfo=UTC) + step * hour
+                    ),
                     parameter="water_level",
                     value=v,
                     source=ObservationSource.MEASURED,
@@ -81,6 +89,17 @@ class Rig:
                 for hour, v in enumerate(values)
             ]
         )
+        reader = self.observations.qc_context_reader()
+        stored = reader.fetch_observations(self.station_id, "water_level", EPOCH, NOW)
+        reader.update_qc_batch_if_current(
+            [(o, status, []) for o in stored], qc_rule_version="t"
+        )
+
+    def set_status(self, hour: int, status: QcStatus) -> None:
+        reader = self.observations.qc_context_reader()
+        stored = reader.fetch_observations(self.station_id, "water_level", EPOCH, NOW)
+        target = next(o for o in stored if o.timestamp.hour == hour)
+        reader.update_qc_batch_if_current([(target, status, [])], qc_rule_version="t")
 
     def discharge(self):  # noqa: ANN202
         return self.observations.fetch_observations(
@@ -295,3 +314,47 @@ class TestDeriveCommand:
         assert rig.rating(["--level-kind", "level-masl", "--apply"], MASL_TABLE) == 0
         assert rig.derive(["--apply", "--allow-unchecked"]) == 0
         assert [o.value for o in rig.discharge()] == [25.0]
+
+
+class TestDeriveSkipsUnusableQc:
+    def test_failed_suspect_and_raw_levels_are_skipped_and_counted(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = _setup_derive([1481.5, 1482.5, 1482.0, 1482.0, 1481.0])
+        rig.set_status(2, QcStatus.QC_FAILED)
+        rig.set_status(3, QcStatus.QC_SUSPECT)
+        rig.set_status(4, QcStatus.RAW)
+        rig.set_status(1, QcStatus.QC_UNCHECKED)
+        assert rig.derive(["--apply", "--allow-unchecked"]) == 0
+        assert sorted(o.value for o in rig.discharge() if o.value) == [25.0, 65.0]
+        out = capsys.readouterr().out
+        assert "2 levels skipped: failed or suspect QC" in out
+        assert "1 levels skipped: not quality-checked yet (raw)" in out
+        entry = rig.audit.entries[-1]
+        assert entry.detail is not None
+        assert entry.detail["skipped_failed_or_suspect_qc"] == 2
+
+    def test_only_unusable_levels_exits_2_and_writes_nothing(self) -> None:
+        rig = _setup_derive([1481.5])
+        rig.set_status(0, QcStatus.QC_FAILED)
+        assert rig.derive(["--apply"]) == 2
+        assert rig.discharge() == []
+
+
+class TestDeriveRollsBackOnRefusedQc:
+    def test_refused_qc_leaves_no_rows_and_no_audit_row(self) -> None:
+        import copy
+
+        rig = Rig(_station())
+        rig.levels([1481.5, 1482.5], step=timedelta(days=7))
+        assert rig.rating(["--apply"]) == 0
+        before = copy.deepcopy((rig.observations.__dict__, rig.audit.__dict__))
+        try:
+            code = rig.derive(["--apply"])  # sparse series: zero-rule group
+        except lso.LoadRolledBack:
+            rig.observations.__dict__.update(before[0])
+            rig.audit.__dict__.update(before[1])
+            code = 3
+        assert code == 3
+        assert rig.discharge() == []
+        assert len(rig.audit.entries) == 1  # the rating row only

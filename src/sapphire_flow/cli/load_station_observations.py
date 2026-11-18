@@ -75,7 +75,7 @@ from sapphire_flow.types.ids import ObservationId, RatingCurveId
 from sapphire_flow.types.observation import Observation
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.stores import (
@@ -417,6 +417,7 @@ def _print_qc(report: Stage1QcReport, usable: int, args: argparse.Namespace) -> 
     return EXIT_OK
 
 
+_NOT_USABLE = (QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.RAW)
 _EARLIEST = ensure_utc(datetime(1900, 1, 1, tzinfo=UTC))
 
 
@@ -464,10 +465,13 @@ def _level_range_line(
     lo, hi = min(levels), max(levels)
     _out(f"  stored water level range: {lo:g} to {hi:g} m a.s.l.")
     if hi < low or lo > high:
+        if station.water_level_gauge_type is WaterLevelGaugeType.BRIDGE_SENSOR:
+            reference = f"the sensor elevation ({station.water_level_sensor_masl})"
+        else:
+            reference = f"the datum ({station.water_level_datum_masl})"
         _out(
             "WARNING: the curve and the stored levels do not overlap at all; "
-            f"check the datum ({station.water_level_datum_masl}) and the level kind "
-            "(--level-kind) used for the table"
+            f"check {reference} and the level kind (--level-kind) used for the table"
         )
 
 
@@ -476,6 +480,7 @@ def _stored_levels(
     station: StationConfig,
     start: UtcDatetime,
     end: UtcDatetime,
+    qc_status: Collection[QcStatus] | None,
 ) -> list[Observation]:
     return [
         o
@@ -484,6 +489,7 @@ def _stored_levels(
             "water_level",
             start,
             end,
+            qc_status=qc_status,
             source=ObservationSource.MEASURED,
         )
         if o.value is not None
@@ -578,7 +584,7 @@ def run_rating(
     if active is not None:
         _out(f"  supersedes curve version {active.version} [{active.id}]")
     levels = _stored_levels(
-        observations, station, _EARLIEST, ensure_utc(now + timedelta(days=1))
+        observations, station, _EARLIEST, ensure_utc(now + timedelta(days=1)), None
     )
     _level_range_line(curve, [o.value for o in levels if o.value is not None], station)
     if args.apply:
@@ -654,15 +660,19 @@ def run_derive(
                     f"station {station.code!r} has no active rating curve; "
                     "store one first (the rating command)"
                 )
-        levels = _stored_levels(
-            observations,
-            station,
-            args.start or _EARLIEST,
-            args.end or ensure_utc(clock() + timedelta(days=1)),
-        )
+        start = args.start or _EARLIEST
+        end = args.end or ensure_utc(clock() + timedelta(days=1))
+        levels = _stored_levels(observations, station, start, end, USABLE_STATUSES)
+        # Same "usable" rule as the forecast cycle (passed or unchecked). RAW
+        # (not yet quality-checked) levels are NOT usable: they are skipped.
+        excluded = _stored_levels(observations, station, start, end, _NOT_USABLE)
+        bad_qc = sum(o.qc_status is not QcStatus.RAW for o in excluded)
+        raw = len(excluded) - bad_qc
         if not levels:
             raise ObservationCsvError(
-                "no stored water-level observations in the window; load them first"
+                "no usable stored water-level observations in the window "
+                f"({bad_qc} failed or suspect, {raw} not quality-checked yet); "
+                "load them first"
             )
         derived = derive_discharge(levels, curve)
     except TenantIsolationError as exc:
@@ -681,6 +691,8 @@ def run_derive(
     )
     _level_range_line(curve, [o.value for o in levels if o.value is not None], station)
     skipped = derived.skipped_below + derived.skipped_above
+    _out(f"  {bad_qc} levels skipped: failed or suspect QC")
+    _out(f"  {raw} levels skipped: not quality-checked yet (raw)")
     _out(
         f"  derived: {len(derived.rows)}; skipped outside the curve: {skipped} "
         f"({derived.skipped_below} below, {derived.skipped_above} above)"
@@ -707,6 +719,8 @@ def run_derive(
                 "curve_id": str(curve.id),
                 "rows": len(raws),
                 "skipped_outside_curve": skipped,
+                "skipped_failed_or_suspect_qc": bad_qc,
+                "skipped_raw_qc": raw,
                 "first_utc": first.isoformat(),
                 "last_utc": last.isoformat(),
                 "operator": operator,
@@ -829,6 +843,8 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         case "rating":
             args.level_kind = level_kind_choices()[args.level_kind]
             args.interpolation = InterpolationMethod(args.interpolation)
+        case _:
+            pass
     if getattr(args, "lookback_days", 1) < 1:
         _build_parser().error("--lookback-days must be at least 1")
     return args
@@ -854,37 +870,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         _out(f"QC rule set: {rule_source}")
         try:
             with create_engine_from_env().begin() as conn:
-                common = {
-                    "identity": identity,
-                    "tenants": PgTenantStore(conn),
-                    "stations": PgStationStore(conn),
-                    "observations": PgObservationStore(conn),
-                    "audit": PgAuditLogStore(conn),
-                    "clock": lambda: ensure_utc(datetime.now(UTC)),
-                }
+                clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
+                tenants = PgTenantStore(conn)
+                stations = PgStationStore(conn)
+                observations = PgObservationStore(conn)
+                audit = PgAuditLogStore(conn)
                 match args.command:
                     case "rating":
                         return run_rating(
                             args,
                             text=text,
+                            identity=identity,
+                            tenants=tenants,
+                            stations=stations,
+                            observations=observations,
                             ratings=PgRatingCurveStore(conn),
-                            **common,
+                            audit=audit,
+                            clock=clock,
                         )
                     case "derive-discharge":
                         return run_derive(
                             args,
+                            identity=identity,
+                            tenants=tenants,
+                            stations=stations,
+                            observations=observations,
                             ratings=PgRatingCurveStore(conn),
+                            audit=audit,
                             baselines=PgClimBaselineStore(conn),
                             qc_rules=qc_rules,
-                            **common,
+                            clock=clock,
                         )
                     case _:
                         return run_load(
                             args,
                             text=text,
+                            identity=identity,
+                            tenants=tenants,
+                            stations=stations,
+                            observations=observations,
+                            audit=audit,
                             baselines=PgClimBaselineStore(conn),
                             qc_rules=qc_rules,
-                            **common,
+                            clock=clock,
                         )
         except LoadRolledBack:
             return EXIT_REFUSED

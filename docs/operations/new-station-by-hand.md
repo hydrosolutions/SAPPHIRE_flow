@@ -287,9 +287,14 @@ uv run python -m sapphire_flow.cli.load_station_observations derive-discharge \
 An active curve is refused (exit 3) unless you pass `--supersede` (the old curve ends at
 `--valid-from`, default now; the new one is the next version). `rating` prints the curve's stage
 range next to the stored water-level range and warns when they do not overlap at all (usually a
-wrong datum). `derive-discharge` converts every stored measured water level in `--start`/`--end`
-with the active curve (or `--curve-id`), stores it as `rating_curve_derived` with the curve id,
-**skips and counts levels outside the table** (never stores a clamped value), then runs the same
+wrong datum). For a bridge sensor a larger reading means a lower level, so discharge must fall
+as the reading rises (the error names the file line). `derive-discharge` converts every stored
+measured water level in `--start`/`--end` whose quality status is passed or unchecked (the same
+"usable" rule as the forecast cycle) with the active curve (or `--curve-id`), stores it as
+`rating_curve_derived` with the curve id, **skips and counts** levels that failed or are
+suspect, levels not quality-checked yet (raw), and levels outside the table (never stores a
+clamped value). It applies the active curve to every level in the window, so re-running it
+after `--supersede` rewrites the derived values. Then runs the same
 Stage 1 quality checks (rule version `1.2`, no datum) and prints "N of 30 daily values usable".
 Exit 0 ok, 2 usage/validation, 3 refused (including a refused quality check, which rolls the
 whole run back).

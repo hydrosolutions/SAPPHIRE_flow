@@ -207,3 +207,48 @@ def test_supersede_closes_the_old_curve_in_the_database(
     curves = store.fetch_all_curves_for_station(station.id)
     assert [(c.version, c.valid_to) for c in curves] == [(1, NOW), (2, None)]
     assert _audit(db_connection, station.id, "rating_curve_stored") == 2
+
+
+def test_derive_skips_failed_and_suspect_levels(
+    db_connection: sa.Connection, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tenant = PgTenantStore(db_connection).ensure_tenant(
+        tenant_id=TenantId(uuid4()), code="sandbox", name="Sandbox"
+    )
+    station = make_station_config(
+        station_id=StationId(uuid4()),
+        code="R3",
+        network="research",
+        tenant_id=tenant.id,
+        tz="UTC",
+        water_level_datum_masl=1480.0,
+        water_level_unit="m",
+        water_level_gauge_type=WaterLevelGaugeType.STAFF_OR_PRESSURE,
+    )
+    PgStationStore(db_connection).store_station(station)
+    _load_levels(db_connection, "R3", _levels_csv(2.0, step=0.1))
+    assert (
+        _rating(db_connection, "R3", "h,q\n1.0,10\n2.0,40\n3.0,90\n", ["--apply"]) == 0
+    )
+    db_connection.execute(
+        sa.text(
+            "UPDATE observations SET qc_status = :s WHERE station_id = :i "
+            "AND parameter = 'water_level' AND timestamp = :t"
+        ),
+        [
+            {
+                "s": "qc_failed",
+                "i": station.id,
+                "t": datetime(2026, 10, 1, 6, tzinfo=UTC),
+            },
+            {
+                "s": "qc_suspect",
+                "i": station.id,
+                "t": datetime(2026, 10, 2, 6, tzinfo=UTC),
+            },
+        ],
+    )
+    capsys.readouterr()
+    assert _derive(db_connection, "R3", ["--apply"]) == 0
+    assert "2 levels skipped: failed or suspect QC" in capsys.readouterr().out
+    assert len(_derived_rows(db_connection, station.id)) == DAYS - 2

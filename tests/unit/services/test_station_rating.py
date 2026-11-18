@@ -100,6 +100,10 @@ class TestParseRatingCsv:
         with pytest.raises(RatingCsvError, match=match):
             _parse(text, kind=ObservationValueKind.LEVEL_MASL)
 
+    def test_bridge_error_quotes_the_csv_line_and_explains_direction(self) -> None:
+        with pytest.raises(RatingCsvError, match="line 3: reading 2 .*larger reading"):
+            _parse(TABLE, station=BRIDGE)
+
     def test_zero_discharge_rejected_for_log_linear_only(self) -> None:
         text = "h,q\n1481,0\n1482,5\n"
         kind = ObservationValueKind.LEVEL_MASL

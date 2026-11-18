@@ -18,7 +18,7 @@ from sapphire_flow.services.station_observation_load import (
     ObservationValueKind,
     convert_for_kind,
 )
-from sapphire_flow.types.enums import ObservationSource
+from sapphire_flow.types.enums import ObservationSource, WaterLevelGaugeType
 from sapphire_flow.types.observation import RawObservation
 from sapphire_flow.types.rating_curve import RatingCurve
 
@@ -75,24 +75,48 @@ def parse_rating_csv(
             f"column(s) {missing} not in the file; found {list(reader.fieldnames)}"
         )
     convert = convert_for_kind(station, level_kind)
-    points: list[dict[str, float]] = [
-        {
-            "water_level": convert(_number(rec[level_column], line, level_column)),
-            "discharge": _number(rec[discharge_column], line, discharge_column),
-        }
+    readings = [
+        (
+            line,
+            _number(rec[level_column], line, level_column),
+            _number(rec[discharge_column], line, discharge_column),
+        )
         for line, rec in enumerate(reader, start=2)
+    ]
+    rows = sorted(((convert(r), line, r, q) for line, r, q in readings))
+    points: list[dict[str, float]] = [
+        {"water_level": stage, "discharge": q} for stage, _, _, q in rows
     ]
     if len(points) < 2:
         raise RatingCsvError(
             f"a rating table needs at least 2 points, got {len(points)}"
         )
+    hint = (
+        " (for a bridge sensor a larger reading is a lower level, so discharge "
+        "must fall as the reading rises)"
+        if station.water_level_gauge_type is WaterLevelGaugeType.BRIDGE_SENSOR
+        and level_kind is ObservationValueKind.GAUGE_READING
+        else ""
+    )
+    for (h0, _, _, q0), (h1, line, reading, q1) in zip(rows, rows[1:], strict=False):
+        if h1 <= h0:
+            raise RatingCsvError(
+                f"line {line}: reading {reading:g} gives a duplicate or "
+                f"non-increasing stage {h1:g} m a.s.l.{hint}"
+            )
+        if q1 < q0:
+            raise RatingCsvError(
+                f"line {line}: reading {reading:g} (stage {h1:g} m a.s.l.) has "
+                f"discharge {q1:g}, which decreases from {q0:g} at a lower stage"
+                f"{hint}"
+            )
     curve = RatingCurve(
         id=curve_id,
         station_id=station.id,
         version=version,
         valid_from=valid_from,
         valid_to=None,
-        points=list(sorted(points, key=lambda p: p["water_level"])),
+        points=points,
         interpolation=interpolation,
         uploaded_by=uploaded_by,
         created_at=created_at,
