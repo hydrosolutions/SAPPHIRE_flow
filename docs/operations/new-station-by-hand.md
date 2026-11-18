@@ -269,11 +269,30 @@ EOF
 Check the result: `select qc_rule_version, qc_status, count(*) from observations group by 1,2`
 must show `1.2-datum`, not `1.2-datum-skip`.
 
-**Rating curve and discharge.** Store the table with `PgRatingCurveStore.store_rating_curve`
-(points are `{"water_level": <m a.s.l.>, "discharge": <m3/s>}`, linear interpolation, no gaps in
-stage order) and derive discharge with `RatingConverter.from_curve(curve).convert(level).discharge`,
-writing `RawObservation(parameter="discharge", source=ObservationSource.RATING_CURVE_DERIVED,
-rating_curve_id=<curve id>)`, then run the same Stage 1 QC without the datum arguments.
+**Rating curve and discharge (Plan 540 M3c).** The same command family stores the table and
+derives discharge. Both dry run by default; `--apply` writes. The table's stage column is read like
+the observations (`--level-kind gauge-reading`, the default, uses the station's gauge type and
+datum; `level-masl` takes metres above sea level as they are) and is validated (at least 2
+points, strictly increasing stage, non-decreasing discharge, discharge above 0 for `log_linear`).
+A sandbox may invent a table: label it so (`--label SYNTHETIC`):
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations rating \
+  --tenant sandbox --station-code 00001 --network research --csv rating.csv \
+  --level-column stage_m --discharge-column q_m3s --label SYNTHETIC   # add --apply
+uv run python -m sapphire_flow.cli.load_station_observations derive-discharge \
+  --tenant sandbox --station-code 00001 --network research             # add --apply
+```
+
+An active curve is refused (exit 3) unless you pass `--supersede` (the old curve ends at
+`--valid-from`, default now; the new one is the next version). `rating` prints the curve's stage
+range next to the stored water-level range and warns when they do not overlap at all (usually a
+wrong datum). `derive-discharge` converts every stored measured water level in `--start`/`--end`
+with the active curve (or `--curve-id`), stores it as `rating_curve_derived` with the curve id,
+**skips and counts levels outside the table** (never stores a clamped value), then runs the same
+Stage 1 quality checks (rule version `1.2`, no datum) and prints "N of 30 daily values usable".
+Exit 0 ok, 2 usage/validation, 3 refused (including a refused quality check, which rolls the
+whole run back).
 
 ## Step 7: readiness (no general tool yet)
 
