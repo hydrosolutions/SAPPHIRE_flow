@@ -275,6 +275,14 @@ where warning/replacement behaviour needs clarification, the relevant weather
 spec, config reference and operations runbook. Both milestones must be delivered
 before claiming the user's continuity-and-update requirement is complete.
 
+Compatibility checks preserve the v1 weather window, completion and source-record
+digests. Full evidence and execution fingerprints include the changed retention
+policy and therefore change. FI cycle tests cover both a complete retained tail
+rescuing a short live forecast and refusal when neither product covers the full
+requested horizon; successful fallback still reports the failed refresh and
+STALE weather. A valid product exceeding the station cache cap is recoverable,
+but cannot produce a forecast without usable retained support.
+
 Rollout is separately authorized staging work after PR approval/merge. It must
 seed and verify a complete last-good product while the gateway is available;
 the currently truncated cache cannot recover discarded tail data. Verify a

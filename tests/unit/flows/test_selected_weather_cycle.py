@@ -169,6 +169,7 @@ def _run_selected_cycle(
     omitted_observation_days: frozenset[int] = frozenset(),
     missing_observation_days: frozenset[int] = frozenset(),
     expected_forecasts: int | None = None,
+    expected_weather_error: str | None = None,
     consumed_future_count: int = 128,
     future_support_days: int | None = None,
     data_use: ForecastDataUse = ForecastDataUse.STANDARD,
@@ -408,8 +409,11 @@ def _run_selected_cycle(
             else:
                 expected_state = (
                     WeatherAttemptState.FAILED
-                    if execution_time > ISSUE
-                    and refresh_case not in ("none", "rollover")
+                    if (
+                        execution_time > ISSUE
+                        and refresh_case not in ("none", "rollover")
+                    )
+                    or future_support_days is not None
                     else WeatherAttemptState.COMPLETE
                 )
                 assert entry is not None and entry.state is expected_state
@@ -750,9 +754,10 @@ def _run_selected_cycle(
     if expected_forecasts == 0:
         assert result.forecasts_stored == 0, result
         assert not observed
-        if future_support_days is not None:
+        if future_support_days is not None or expected_weather_error is not None:
             assert any(
-                "full requested future window" in error for error in result.errors
+                (expected_weather_error or "full requested future window") in error
+                for error in result.errors
             )
         return []
     assert (
@@ -766,7 +771,10 @@ def _run_selected_cycle(
         if weather_legs in ("both", "past")
         else 0
     )
-    if refresh_case in ("future_unavailable", "retained_subset"):
+    if (
+        refresh_case in ("future_unavailable", "retained_subset")
+        or future_support_days is not None
+    ):
         assert future.fetch_calls
     else:
         assert future.fetch_calls == (
@@ -837,7 +845,12 @@ def _run_selected_cycle(
         expected_freshness = (
             "stale"
             if refresh_case == f"{leg}_unavailable"
-            or (leg == "future" and refresh_case == "retained_subset")
+            or (
+                leg == "future"
+                and (
+                    refresh_case == "retained_subset" or future_support_days is not None
+                )
+            )
             else "current"
         )
         assert fact["freshness"] == expected_freshness if consumed else fact == {}
