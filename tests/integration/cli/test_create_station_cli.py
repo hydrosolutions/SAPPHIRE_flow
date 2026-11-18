@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -94,6 +95,47 @@ class TestStationGaugeColumns:
                 ),
                 {"i": station.id},
             )
+
+    def test_database_refuses_inconsistent_gauge_rows(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = make_station_config()
+        PgStationStore(db_connection).store_station(station)
+        bad_updates = {
+            "ck_stations_water_level_gauge_type": "water_level_gauge_type='radar', "
+            "water_level_datum_masl=1",
+            "ck_stations_water_level_sensor_pairing": "water_level_sensor_masl=5",
+            "ck_stations_water_level_gauge_datum": "water_level_gauge_type="
+            "'staff_or_pressure'",
+            "ck_stations_water_level_bridge_sensor": "water_level_gauge_type="
+            "'bridge_sensor', water_level_datum_masl=1",
+        }
+        for name, assignment in bad_updates.items():
+            with db_connection.begin_nested() as savepoint:
+                with pytest.raises(sa.exc.IntegrityError, match=name):
+                    db_connection.execute(
+                        sa.text(f"UPDATE stations SET {assignment} WHERE id = :i"),
+                        {"i": station.id},
+                    )
+                savepoint.rollback()
+
+    def test_update_station_writes_gauge_columns(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = make_station_config()
+        store = PgStationStore(db_connection)
+        store.store_station(station)
+        updated = replace(
+            station,
+            water_level_datum_masl=1480.0,
+            water_level_gauge_type=WaterLevelGaugeType.BRIDGE_SENSOR,
+            water_level_sensor_masl=1490.0,
+        )
+        store.update_station(updated)
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.water_level_gauge_type is WaterLevelGaugeType.BRIDGE_SENSOR
+        assert fetched.water_level_sensor_masl == 1490.0
 
     def test_migration_0087_down_and_up(self, db_connection: sa.Connection) -> None:
         revision = ScriptDirectory.from_config(Config("alembic.ini")).get_revision(

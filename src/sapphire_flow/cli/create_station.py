@@ -347,10 +347,23 @@ def run_create(
     except ConfigurationError as exc:
         log.error("create_station_refused", error=str(exc))
         return 1
+    gauge_flags = (args.gauge_type, args.datum_masl, args.sensor_masl)
+    prompted = (
+        ask is not None
+        and "water_level" in request.parameters
+        and not args.datum_unknown
+        and all(flag is None for flag in gauge_flags)
+    )
     if not args.apply:
         _out(render(station, request, applied=False))
         _out("\nRe-run with --apply to write.")
         return 0
+    example = conversion_example(station)
+    if prompted and ask is not None and example is not None:
+        _out(f"  example: {example}")
+        if ask("Write this station? [y/N]: ").strip().lower() != "y":
+            log.error("create_station_refused", error="not confirmed")
+            return 1
     stations.store_station(station)
     audit.append_entry(
         AuditEntry.system(  # pyright: ignore[reportUnknownMemberType]

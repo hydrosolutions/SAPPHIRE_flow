@@ -225,7 +225,7 @@ class TestRefusals:
 
 class TestPrompt:
     def test_prompt_path_stores_answers(self, rig: Rig) -> None:
-        answers = iter(["2", "1480", "1490"])
+        answers = iter(["2", "1480", "1490", "y"])
         assert rig.run(["--apply"], ask=lambda _p: next(answers)) == 0
         (station,) = rig.stations.fetch_all_stations()
         assert station.water_level_gauge_type is WaterLevelGaugeType.BRIDGE_SENSOR
@@ -260,3 +260,37 @@ def _override(base: list[str], override: list[str]) -> list[str]:
 
 def _swap_tenant(code: str) -> list[str]:
     return _override(BASE, ["--tenant", code])
+
+
+class TestConfirmation:
+    def test_example_shown_before_save_and_decline_writes_nothing(
+        self, rig: Rig, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        answers = iter(["1", "1480", "n"])
+        assert rig.run(["--apply"], ask=lambda _p: next(answers)) == 1
+        assert "stored 1482.0" in capsys.readouterr().out
+        assert rig.stations.fetch_all_stations() == []
+        assert rig.audit.entries == []
+
+    def test_scripted_flags_do_not_ask_for_confirmation(self, rig: Rig) -> None:
+        def ask(_p: str) -> str:
+            raise AssertionError("must not prompt")
+
+        assert rig.run([*STAFF, "--apply"], ask=ask) == 0
+
+
+class TestOwnerHiddenOnFullPath:
+    def test_scoped_admin_output_never_names_other_tenant(self, rig: Rig) -> None:
+        from structlog.testing import capture_logs
+
+        other = rig.tenants.ensure_tenant(
+            tenant_id=TenantId(uuid4()), code="secret_org", name="S"
+        )
+        rig.stations.store_station(
+            make_station_config(code="00001", network="research", tenant_id=other.id)
+        )
+        with capture_logs() as logs:
+            assert rig.run([*STAFF, "--apply"]) == 1
+        text = " ".join(str(entry) for entry in logs)
+        assert "already exists" in text
+        assert "secret_org" not in text
