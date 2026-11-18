@@ -11,6 +11,7 @@ from sapphire_flow.cli.register_deployments import (
     WORK_POOL,
     DeploymentSpec,
     _build_specs,
+    _flow_source_root,
     _register_one,
     register_all,
 )
@@ -629,6 +630,96 @@ class TestSkippedDeployments:
         assert not [s for s in _build_specs() if "bafu" in s.deployment_name]
 
 
+class TestOnlyDeployments:
+    def test_unset_returns_every_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SAPPHIRE_ONLY_DEPLOYMENTS", raising=False)
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        assert {s.deployment_name for s in _build_specs()} == DEPLOYMENT_NAMES
+
+    def test_returns_exactly_the_named_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv(
+            "SAPPHIRE_ONLY_DEPLOYMENTS",
+            "ingest-operational-era5-history, import-model-artifact",
+        )
+        assert {s.deployment_name for s in _build_specs()} == {
+            "ingest-operational-era5-history",
+            "import-model-artifact",
+        }
+
+    def test_an_unknown_name_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "no-such-deployment")
+        with pytest.raises(ValueError, match="SAPPHIRE_ONLY_DEPLOYMENTS"):
+            _build_specs()
+
+    def test_only_together_with_skip_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "train-models")
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "run-hindcast")
+        with pytest.raises(ValueError, match="cannot both be set"):
+            _build_specs()
+
+    @pytest.mark.asyncio
+    async def test_register_all_creates_pools_only_for_selected_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "import-model-artifact")
+        mock_client = AsyncMock()
+        with (
+            patch("prefect.client.orchestration.get_client") as mock_get_client,
+            patch(
+                "sapphire_flow.cli.register_deployments._register_one",
+                AsyncMock(),
+            ) as mock_register,
+        ):
+            mock_get_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client
+            )
+            mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            await register_all()
+
+        created = {c.args[0].name for c in mock_client.create_work_pool.call_args_list}
+        assert created == {WORK_POOL}
+        assert mock_register.await_count == 1
+
+
+class TestFlowSourceRoot:
+    def test_defaults_to_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SAPPHIRE_FLOW_SOURCE_ROOT", raising=False)
+        assert _flow_source_root() == "/app"
+
+    def test_env_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/checkout")
+        assert _flow_source_root() == "/tmp/checkout"
+
+    @pytest.mark.asyncio
+    async def test_register_one_passes_env_source_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/checkout")
+        spec = DeploymentSpec(
+            flow_module="sapphire_flow.flows.import_model_artifact",
+            flow_attr="import_model_artifact_flow",
+            deployment_name="import-model-artifact",
+        )
+        sourced = MagicMock()
+        sourced.adeploy = AsyncMock(return_value="id")
+        flow = MagicMock()
+        flow.afrom_source = AsyncMock(return_value=sourced)
+        module = MagicMock()
+        module.import_model_artifact_flow = flow
+        with patch("importlib.import_module", return_value=module):
+            await _register_one(spec)
+        assert flow.afrom_source.call_args[1]["source"] == "/tmp/checkout"
+
+
 class TestForecastConfigOverlay:
     @pytest.mark.parametrize("raw", [None, ""])
     def test_disabled(self, raw: str | None) -> None:
@@ -936,3 +1027,64 @@ class TestBackupDeploymentRegistration:
         defaults = backup_database_flow.parameters.properties
         assert defaults["backup_dir"]["default"] == "/data/backups"
         assert defaults["keep_count"]["default"] == 7
+
+
+def test_explicit_spec_environment_ignores_ambient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sapphire_flow.cli.register_deployments import build_deployment_specs
+
+    baseline = build_deployment_specs({})
+    monkeypatch.setenv("SCHEDULE_FORECAST_CYCLE", "7 * * * *")
+    monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "collect-bafu-forecasts")
+    assert build_deployment_specs({}) == baseline
+    runtime = {spec.deployment_name: spec for spec in _build_specs()}
+    assert runtime["forecast-cycle"].cron == "7 * * * *"
+    assert "collect-bafu-forecasts" not in runtime
+
+
+def test_explicit_subset_ignores_ambient_and_logs_only_at_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from sapphire_flow.cli import register_deployments as registrar
+
+    log = Mock()
+    monkeypatch.setattr(registrar, "log", log)
+    monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "forecast-cycle")
+    monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/runtime-checkout")
+    monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+
+    def forbid_runtime_source_root() -> str:
+        pytest.fail("Pure preview must not resolve the runtime source root")
+
+    with monkeypatch.context() as preview_patch:
+        preview_patch.setattr(
+            registrar, "_flow_source_root", forbid_runtime_source_root
+        )
+        explicit = registrar.build_deployment_specs(
+            {"SAPPHIRE_ONLY_DEPLOYMENTS": "collect-bafu-forecasts"}
+        )
+        assert [spec.deployment_name for spec in explicit] == ["collect-bafu-forecasts"]
+        assert len(registrar.build_deployment_specs({})) > 1
+        log.info.assert_not_called()
+    assert registrar._flow_source_root() == "/tmp/runtime-checkout"
+    assert [spec.deployment_name for spec in registrar._build_specs()] == [
+        "forecast-cycle"
+    ]
+    log.info.assert_called_once_with("deployments.subset", only=["forecast-cycle"])
+
+
+def test_explicit_subset_preserves_selector_validation() -> None:
+    from sapphire_flow.cli.register_deployments import build_deployment_specs
+
+    with pytest.raises(ValueError, match="SAPPHIRE_ONLY_DEPLOYMENTS"):
+        build_deployment_specs({"SAPPHIRE_ONLY_DEPLOYMENTS": "unknown"})
+    with pytest.raises(ValueError, match="SAPPHIRE_SKIP_DEPLOYMENTS"):
+        build_deployment_specs(
+            {
+                "SAPPHIRE_ONLY_DEPLOYMENTS": "forecast-cycle",
+                "SAPPHIRE_SKIP_DEPLOYMENTS": "collect-bafu-forecasts",
+            }
+        )

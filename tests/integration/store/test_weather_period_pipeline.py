@@ -29,6 +29,7 @@ from sapphire_flow.store.operational_weather_cache import PgOperationalWeatherCa
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.weather_forecast_store import PgWeatherForecastStore
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import (
     EnsembleMode,
     ForecastDataUse,
@@ -48,6 +49,7 @@ from sapphire_flow.types.forecast_evidence import StationSourceEvidence
 from sapphire_flow.types.operational_weather import WeatherCacheKey, WeatherLegState
 from sapphire_flow.types.operational_weather_v2 import (
     PastWeatherRequirementV2,
+    PastWeatherUseV2,
     WeatherCacheAttemptV2,
     WeatherCacheEntryV2,
 )
@@ -113,8 +115,10 @@ class ForecastSource:
         )
 
 
+@pytest.mark.parametrize("missing_offsets", [(), (3,)], ids=["complete", "short-gap"])
 def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
     db_connection: sa.Connection,
+    missing_offsets: tuple[int, ...],
 ) -> None:
     station = make_station_config(station_id=SID)
     stations = PgStationStore(db_connection)
@@ -127,7 +131,7 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
             source, resolver.resolve(source), GRID
         ),
     )
-    snapshot = period_snapshot(days=7, missing_offsets=(3,))
+    snapshot = period_snapshot(days=7, missing_offsets=missing_offsets)
     frames = {}
     for parameter, variable in [("precipitation", "tp"), ("temperature", "2t")]:
         rows = [
@@ -252,7 +256,20 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
         model_id=MID,
         gap_config=WeatherGapConfig(mode=WeatherGapMode.ALWAYS),
     )
+    assert result.past_dynamic["timestamp"].to_list() == [
+        FIRST - offset * GRID.step for offset in range(7, 0, -1)
+    ]
     assert result.past_dynamic["precipitation"].to_list() == [24.0] * 7
+    assert isinstance(result.use.past, PastWeatherUseV2)
+    assert len(result.use.past.gap_fills) == (2 if missing_offsets else 0)
+    flags = selected_weather_quality_flags(
+        StationSourceEvidence(weather_use=result.use)
+    )
+    assert bool(flags) == bool(missing_offsets)
+    if not missing_offsets:
+        assert result.past_dynamic["temperature"].to_list() == [
+            period.temperature_c for period in snapshot.window.periods
+        ]
     assert result.future_dynamic["timestamp"].to_list() == [
         FIRST + i * GRID.step for i in range(3)
     ]
@@ -263,9 +280,8 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
         _make_forecast(SID, MID, artifact, issued_at=ISSUE),
         evidence=evidence,
         weather_evidence_version=2,
-        input_quality_flags=selected_weather_quality_flags(
-            StationSourceEvidence(weather_use=result.use)
-        ),
+        input_quality=aggregate_input_quality(flags),
+        input_quality_flags=flags,
     )
     forecasts = PgForecastStore(
         db_connection, transaction_factory=savepoint_factory(db_connection)
@@ -273,10 +289,15 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
     forecasts.store_forecast(forecast)
     persisted = forecasts.fetch_evidence(forecast.id)
     assert persisted is not None
+    restored = restore_selected_weather(persisted, model_id=MID, issue_time=ISSUE)[SID]
+    assert restored == result.use
     assert (
-        restore_selected_weather(persisted, model_id=MID, issue_time=ISSUE)[SID]
-        == result.use
+        selected_weather_quality_flags(StationSourceEvidence(weather_use=restored))
+        == flags
     )
+    stored = forecasts.fetch_forecast(forecast.id)
+    assert stored is not None
+    assert stored.input_quality_flags == flags
     summary = read_weather_summary(
         version=2,
         forecast_id=forecast.id,

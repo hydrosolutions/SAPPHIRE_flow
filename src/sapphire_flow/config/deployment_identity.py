@@ -59,10 +59,15 @@ def load_deployment_identity_config(
         load_merged_toml,
     )
 
-    data = cast(
-        "dict[str, Any]",
-        load_merged_toml(_Path(config_path), _resolve_overlay_paths()),
+    return parse_deployment_identity_config(
+        load_merged_toml(_Path(config_path), _resolve_overlay_paths())
     )
+
+
+def parse_deployment_identity_config(
+    raw: dict[str, object],
+) -> DeploymentIdentityConfig:
+    data = cast("dict[str, Any]", raw)
     section_raw = data.get("deployment", {})
     section = cast(
         "dict[str, Any]", section_raw if isinstance(section_raw, dict) else {}

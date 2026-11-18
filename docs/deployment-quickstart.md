@@ -1,167 +1,106 @@
-# v0 Deployment Quick-Start
+# Prepare a deployment
 
-Minimal steps to deploy SAPPHIRE Flow on a test server.
+This tool previews private deployment inputs and checks desired service wiring.
+It does not launch services, migrate a host, retrieve credentials or produce a
+forecast. It remains a preparation tool: developer-owned coverage gaps prevent a
+complete `PASS_OFFLINE`. Actual deployment files belong outside the public
+application repository.
 
-## 1. Prerequisites
+## 1. Copy the generic examples into private storage
 
-- Docker Engine 24+ and Docker Compose v2
-- Git
-- 50 GB disk (grows ~0.2-0.4 GB/day at ~170 Swiss stations)
+Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)
+installed. Copy these files together into a directory you own outside this checkout:
 
-```bash
-git clone <repo-url> && cd SAPPHIRE_flow
-```
+- `deploy/examples/profile.example.toml`
+- `deploy/examples/application.example.toml`
+- `deploy/examples/installation.example.toml`
 
-## 2. Secrets
+They are annotated incomplete shapes, not runnable recipes. `/private/deployment/`
+below denotes your directory; it is not a required location. You may maintain these
+files in a separate private Git repository. Credentials stay in a secret manager
+or delivery files, never in either Git repository.
 
-See [secrets-bootstrap.md](secrets-bootstrap.md) for details.
+Keep the profile's relative `base_config` reference aligned with the copied
+application file. Give the profile any private label; it is not a lookup key and
+is not emitted in shareable output. Paths inside TOML resolve relative to their
+own file, not the current working directory.
 
-```bash
-mkdir -p secrets && chmod 700 secrets
-openssl rand -base64 32 | tr -d '\n' > secrets/db_password
-chmod 600 secrets/db_password
-```
+## 2. Supply the short required checklist
 
-## 3. Optional configuration
+The application example shows commented key shapes. Work with the indicated owners:
 
-Create a `.env` file to override defaults:
+| Owner | Inputs to supply |
+| --- | --- |
+| Administrator | Tenant/write authority, retention, host recipe/paths/domain, schedules and logical secret-delivery references. |
+| Data/science specialists | Observation/forecast/history sources, declared model-input capabilities, hydrological grid, station/rating files, units/datums, QC/alert/season policy, model/artifact choices and training conventions. |
+| Developer support | Unsupported source formats, missing integrations and coverage gaps reported as developer-owned. |
 
-```bash
-# .env (all optional — defaults shown)
-# DB_USER=sapphire
-# SAPPHIRE_DOMAIN=sapphire.example.ch   # enables auto-TLS via Let's Encrypt
-# SAPPHIRE_CORS_ORIGINS=https://sapphire.example.ch
-# SCHEDULE_INGEST_OBSERVATIONS=*/30 * * * *
-# SCHEDULE_FORECAST_CYCLE=0 */6 * * *
-# SCHEDULE_BACKUP_DATABASE=0 2 * * *
-```
+Reuse existing **typed defaults** for optional presentation and disabled alerts.
+Choose `default_display_timezone` explicitly as a valid named timezone, normally
+the local operational zone; explicit `UTC` is valid. Named zones handle daylight
+saving where applicable. Incomplete previews label omitted UTC as a provisional
+`fallback`, not a completed choice. Gregorian calendar and disabled
+forecast/observation/pipeline alerts are neutral initial defaults; omit these
+four fields unless you need an override.
+Other inherited defaults require review. Do not copy every field from the reference
+or treat another deployment's scientific settings as general defaults.
 
-> **⚠ v0 only**: The default `SAPPHIRE_CORS_ORIGINS=*` allows all origins.
-> This is acceptable for a test server with no authentication. Before any
-> public-facing or v1 deployment, set this to an explicit origin list
-> (e.g., `SAPPHIRE_CORS_ORIGINS=https://dashboard.example.ch`).
+Hydrological grid, display timezone and model training conventions are separate.
+Explicitly declare `available_nwp_parameters` and
+`available_past_only_nwp_parameters`; an empty list is a valid capability declaration.
+An enabled `meteoswiss_nwp` adapter also requires its publication-delay choice.
+Keep station/rating deliveries separate and reference their supported parser/file
+in the profile. The [configuration reference](spec/config-reference.toml) owns
+field details; the [profile reference](deployment/profiles.md) owns selection,
+precedence and diagnostic behavior.
 
-Without `SAPPHIRE_DOMAIN`, Caddy serves plain HTTP on port 80.
+Leave `state = "incomplete"` while choices remain unresolved. Remove a
+`required_inputs` entry only when its choice/file is supplied. `configured` is a
+declaration, not validation success; it cannot waive required scientific inputs.
 
-### Deployment TOML (not `.env`)
+## 3. Preview, describe the installation, then check
 
-Nepal-only stored Gateway history can opt in with the top-level TOML setting
-`reanalysis_source = "recap_era5_land"` in the deployment config selected by
-`SAPPHIRE_CONFIG`, after the
-[Recap history activation checks](operations/recap-gateway-runbook.md#opt-in-stored-era5-land-history-reads).
-This does not change the Swiss default or the weather-history API. Verify the
-actual configuration source for each worker/deployment before activation.
-
-## 4. Build and start
-
-```bash
-docker compose build
-docker compose up -d
-```
-
-The `init` service runs automatically on first boot:
-1. Applies database migrations (`alembic upgrade head`)
-2. Registers Prefect deployments with schedules
-3. Exits
-
-Check init completed:
-```bash
-docker compose logs init
-```
-
-## 5. Verify
+From the application checkout:
 
 ```bash
-# Health check
-curl http://localhost/api/v1/health
-
-# All services healthy
-docker compose ps
+uv run python tools/deployment_profile.py --profile-file /private/deployment/profile.example.toml show
+uv run python tools/deployment_profile.py --profile-file /private/deployment/profile.example.toml check --installation /private/deployment/installation.example.toml --format json
+uv run python tools/deployment_profile.py --help
 ```
 
-Access the Prefect UI via SSH tunnel (not exposed by default):
-```bash
-ssh -L 4200:localhost:4200 user@server
-# then open http://localhost:4200 in browser
-```
+`show` needs no Docker. `check` also requires compatible Compose; see the
+[renderer requirements](deployment/profiles.md#offline-rendering).
 
-For local development with exposed ports:
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-# postgres: localhost:5438, prefect: localhost:4200, api: localhost:8010
-```
+Edit the installation example's placeholder checkout and complete ordered Compose
+file list. Set `agency_profile` to the same private manifest path. Supply release
+identity from the reviewed build/release record. Align runtime `secret_bindings`
+with the profile's declared logical requirements; file references are relative to
+the installation file unless absolute. These inputs describe desired state and do
+not replace the server's `.env` or change Compose files.
 
-## 6. First data load
+| Result | Exit | Action |
+| --- | --- | --- |
+| `FAIL` | 1 | Supply missing inputs or correct invalid/inconsistent settings using the diagnostic owner and action. |
+| `PENDING` | 2 | Supply missing administrator evidence or ask developers to complete the stated coverage gap. |
+| `PASS_OFFLINE` | 0 | Reserved for completed offline coverage in a follow-up; not currently an administrator-reachable launch approval. |
 
-Trigger station onboarding from the Prefect UI (Deployments > onboard-stations > Run),
-or via the Prefect CLI:
+A parseable incomplete `show` exits 0 with unresolved input diagnostics; invalid
+TOML or supplied typed values exit 1. It never approves a launch. JSON reports safe
+provenance and file aliases, omitting private names/paths and arbitrary values.
+Do not share credential files or raw Compose output. Text includes local selected
+paths and always lists unverified runtime facts.
 
-```bash
-docker compose exec prefect-worker prefect deployment run onboard-stations/onboard-stations
-```
+## 4. Continue with deployment support
 
-This downloads CAMELS-CH data, inserts stations and basins, imports historical
-observations, runs QC, and computes baselines. Takes 10-30 minutes depending on
-network speed.
+A matching host runbook must preserve the **complete ordered recipe** and provide
+runtime credential/provider/job checks, authentication, backups and upgrade steps.
+Existing source-specific runbooks and configurations are compatibility material,
+not generic starters; their migration is separate work. Existing runtime readers
+and recipes remain unchanged by this tool.
 
-After onboarding, trigger model onboarding and training via the Prefect UI.
-
-## 7. Monitoring
-
-```bash
-# Follow all logs
-docker compose logs -f
-
-# Check specific service
-docker compose logs -f api
-
-# Health endpoint
-curl http://localhost/api/v1/health
-```
-
-Scheduled flows (observation ingest every 30 min, forecast cycle every 6h,
-backup daily at 02:00 UTC) start automatically after init completes.
-
-## 8. Backup and restore
-
-Backups run daily via the `backup-database` Prefect deployment. Dumps are stored
-in the `backups` Docker volume.
-
-Manual backup:
-```bash
-docker compose exec prefect-worker prefect deployment run backup-database/backup-database
-```
-
-Restore from backup:
-```bash
-# Stop services
-docker compose down
-
-# Start only postgres
-docker compose up -d postgres
-# Wait for healthy...
-docker compose exec postgres pg_isready -U sapphire
-
-# List available backups (backups volume is on prefect-worker, not postgres)
-docker compose run --rm prefect-worker ls -lt /data/backups/
-
-# Restore (run from prefect-worker which has pg_dump/pg_restore and the volume)
-docker compose run --rm prefect-worker pg_restore \
-  --clean --if-exists \
-  -h postgres -U sapphire -d sapphire \
-  /data/backups/sapphire_YYYYMMDD_HHMMSS.dump
-# Enter db password when prompted, or set PGPASSWORD
-
-# Restart all services
-docker compose up -d
-```
-
-## 9. Upgrade
-
-```bash
-git pull
-docker compose build
-docker compose stop prefect-worker   # graceful stop — let running flows finish
-docker compose run --rm init         # run migrations + re-register deployments
-docker compose up -d                 # restart all services with new image
-```
+Schedule defaults remain owned by the [registrar](../src/sapphire_flow/cli/register_deployments.py).
+Skipping a job does not remove an already registered job. Use the
+[security standard](standards/security.md) and [secrets bootstrap](secrets-bootstrap.md)
+for credential/authentication details. Manager integration, profile-driven launch
+and a deployment forecast smoke test remain follow-on work; the separate station
+onboarding sandbox does not prove host readiness.

@@ -1,0 +1,57 @@
+# Copy outside the public repository; this is an incomplete shape, not a recipe.
+schema_version = 1
+name = "example deployment"
+state = "incomplete"
+base_config = "application.example.toml"
+overlays = []
+compose_files = []
+required_inputs = [
+  "tenant_identity", "observation_source", "forecast_weather_source",
+  "historical_weather_source", "stations_and_identifiers", "rating_units_datums",
+  "qc_danger_season_policy", "models_and_artifacts", "training_time_conventions",
+  "hydrological_day_grid", "schedules", "hosting_paths_domain_ports",
+  "secret_requirements_and_bindings",
+]
+
+# Standard service credential contracts only; no values or delivery locations.
+[secret_requirements.db_password]
+use = "runtime"
+consumers = ["postgres", "prefect-server", "init"]
+
+[secret_requirements.sapphire_api_db_password]
+use = "runtime"
+consumers = ["api", "init"]
+
+[secret_requirements.sapphire_worker_db_password]
+use = "runtime"
+consumers = ["prefect-worker", "prefect-worker-ingest", "init"]
+
+[secret_requirements.sapphire_backup_db_password]
+use = "runtime"
+consumers = ["prefect-worker-backup", "init"]
+
+[secret_requirements.access_token_pepper]
+use = "runtime"
+consumers = ["api"]
+
+[secret_requirements.recap_dg_client_token]
+use = "build"
+consumers = ["prefect-worker", "prefect-worker-ingest", "prefect-worker-backup", "api", "init"]
+environment_name = "RECAP_DG_CLIENT_TOKEN"
+
+[secret_requirements.aquacast_token]
+use = "build"
+consumers = ["prefect-worker"]
+environment_name = "AQUACAST_TOKEN"
+
+
+# Private station/rating references: choose a supported format, not just a suffix.
+# An unsupported agency format needs developer work before it can be validated.
+# [[inputs]]
+# purpose = "stations"
+# parser = "stations_toml"
+# path = "stations.toml"
+# [[inputs]]
+# purpose = "ratings"
+# parser = "rating_delivery_manifest"
+# path = "ratings/manifest.json"

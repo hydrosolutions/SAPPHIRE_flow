@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sapphire_flow.types.enums import GaugingStatus
+from sapphire_flow.types.enums import GaugingStatus, WaterLevelGaugeType
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class StationConfig:
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
     water_level_datum_masl: float | None = None
     water_level_unit: str | None = None
+    water_level_gauge_type: WaterLevelGaugeType | None = None
+    water_level_sensor_masl: float | None = None
     # Plan 147 Slice A: canonical tenant ownership (R4 LOCKED). REQUIRED — no
     # default (parse-don't-validate): every constructor, production or test,
     # must resolve and name a tenant explicitly. Onboarding resolves the config
@@ -60,6 +63,24 @@ class StationConfig:
     # `sapphire` default lives ONLY in the one-time migration backfill, never as
     # an ongoing domain fallback.
     tenant_id: TenantId
+
+    def __post_init__(self) -> None:
+        gauge_type = self.water_level_gauge_type
+        datum = self.water_level_datum_masl
+        sensor = self.water_level_sensor_masl
+        if gauge_type is not None and datum is None:
+            raise ValueError("a gauge type needs the gauge-zero datum (m a.s.l.)")
+        if sensor is None:
+            if gauge_type is WaterLevelGaugeType.BRIDGE_SENSOR:
+                raise ValueError("a bridge sensor needs the sensor elevation")
+            return
+        if gauge_type is not WaterLevelGaugeType.BRIDGE_SENSOR:
+            raise ValueError("a sensor elevation applies to bridge sensors only")
+        assert datum is not None  # guaranteed by the gauge-type rule above
+        if not (math.isfinite(sensor) and sensor > datum):
+            raise ValueError(
+                f"sensor elevation {sensor} must be above the gauge zero {datum}"
+            )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

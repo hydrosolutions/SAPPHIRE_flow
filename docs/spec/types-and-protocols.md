@@ -412,6 +412,11 @@ class StationStatus(Enum):
     SUSPENDED = "suspended"
     DECOMMISSIONED = "decommissioned"
 
+class WaterLevelGaugeType(Enum):  # Plan 540 M2; stations.water_level_gauge_type (CHECK on both values)
+    STAFF_OR_PRESSURE = "staff_or_pressure"   # reading = height above the gauge zero
+    BRIDGE_SENSOR = "bridge_sensor"           # radar/ultrasonic; reading = distance down to water
+
+
 class GaugingStatus(Enum):
     GAUGED = "gauged"
     UNGAUGED = "ungauged"
@@ -1093,6 +1098,13 @@ class StationConfig:
     ownership: StationOwnership        # own = locally managed, foreign = display-only
     wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
+    water_level_datum_masl: float | None = None   # gauge-zero elevation (both gauge types)
+    water_level_unit: str | None = None
+    # Plan 540 M2 (migration 0087). Pairing rules in __post_init__: a gauge type needs the
+    # datum; BRIDGE_SENSOR needs water_level_sensor_masl (> datum); a sensor elevation is
+    # allowed only for BRIDGE_SENSOR. Live QC subtracts the datum unchanged for both types.
+    water_level_gauge_type: WaterLevelGaugeType | None = None
+    water_level_sensor_masl: float | None = None
     tenant_id: TenantId = DEFAULT_TENANT_ID  # Plan 147 Slice A — canonical tenant ownership (R4 LOCKED)
 ```
 
@@ -3064,8 +3076,8 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig: ...
 ```
 
 `load_recap_api_key` reads the `sapphire_dg_api_key` Docker secret file (default
-`/run/secrets/sapphire_dg_api_key`), falling back to the `RECAP_API_KEY` env var for
-local dev — never logged. `[adapters.recap_gateway]` TOML section is validated
+`/run/secrets/sapphire_dg_api_key`), then the file named by `RECAP_API_KEY_FILE`, then the
+`RECAP_API_KEY` env var for local dev — never logged. `[adapters.recap_gateway]` TOML section is validated
 independently of `[adapters.weather_forecast]`'s MeteoSwiss-only fields (Task 2C's
 `type` selector branches on this).
 

@@ -28,6 +28,18 @@ class GatewayFailure(StrEnum):
     MALFORMED = "malformed_response"
 
 
+class PrepareFailureReason(StrEnum):
+    EVIDENCE_DIR_NOT_PRIVATE = "evidence_dir_not_private"
+    SCOPE_INCOMPLETE = "scope_incomplete"
+    OTHER = "other"
+
+
+class PrepareHeld(ValueError):  # noqa: N818 -- a ValueError carrying a typed reason
+    def __init__(self, reason: PrepareFailureReason, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 class RegistrationStatus(StrEnum):
     NOT_SENT = "not_sent"
     RECONCILIATION_REQUIRED = "reconciliation_required"

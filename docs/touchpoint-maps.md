@@ -125,6 +125,23 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: Observation QC threshold configuration
 
+- Generic private-deployment entry: `docs/deployment-quickstart.md` and
+  `docs/deployment/profiles.md`. `tools/deployment_profile.py` consumes the shared
+  typed evaluation and adds bounded render-only Compose evidence. There is no
+  built-in manifest catalogue or path-based validation exemption; neutral defaults
+  are name-allowlisted and values come from existing typed readers. It must not
+  start services, read credential files or silently drop pending checks. Test
+  exact CLI forms and safe failures in `tests/unit/tools/test_deployment_profile.py`.
+  `cli/register_deployments.py::build_deployment_specs(environment)` is the pure
+  schedule source; retain ambient behavior for runtime registration callers.
+
+- Agency-profile offline evaluation uses the same merge traversal with optional
+  provenance and an explicitly injected interpolation environment. Pure
+  `parse_onboarding_config`, `parse_qc_rules` and `parse_forecast_qc_rules` are shared
+  with their runtime loaders. Preserve QC overlay prohibitions and default parity;
+  test `tests/unit/config/test_overlay.py` and `test_deployment_profile.py` alongside
+  the reader tests. Safe preview must not invoke the DB-backed onboarding validator.
+
 - Read `config/onboarding.py::load_onboarding_config`,
   `config/_overlay.py::load_merged_toml`,
   `services/station_qc_overrides.py::resolve_station_qc_overrides` and
@@ -963,6 +980,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - version-gated mutation: `PgForecastStore.transition_status`
 - upsert / idempotent writers (`store_observations` / `store_raw_observations`, `store_weather_forecasts`, `store_forcing`, `PgAlertStore.upsert_alert`, `store_baselines`, station/group upserts, `register_model`)
 - declared tenants (Plan 513): a host's `[tenants.<code>]` (name only, never an id) is created by the `init` step `cli/provision_tenants.py` (`TenantStore.ensure_tenant`, one transaction, sorted codes, name conflict aborts) — touch this when changing `init`'s command chain or its `SAPPHIRE_CONFIG`/overlay wiring in any compose file, the `tenants` table, or `config/declared_tenants.py`; re-run `tests/unit/config/test_declared_tenants.py`, `tests/unit/cli/test_provision_tenants.py`, `tests/unit/deploy/test_compose_declared_tenants.py`, `tests/unit/deploy/test_compose_db_roles.py`, `tests/integration/db/test_provision_tenants.py`; `config/overlays/chwrr-import.toml` must never declare tenants
+- station creation (Plan 540 M2): `cli/create_station.py` writes the ONBOARDING row for any writable tenant (dry run default, `--apply`, one `STATION_ONBOARDED` audit row, `list` subcommand); gauge type + datum live on `stations.water_level_gauge_type` / `water_level_sensor_masl` (migration 0087, CHECKs mirrored in `db/metadata.py`, `StationConfig.__post_init__` pairing rules) — touch this when changing those columns, `station_store` read/write, or the datum QC consumers (`services/qc_datum.py` takes the gauge-zero datum for BOTH types; no consumer reads the gauge type); re-run `tests/unit/cli/test_create_station.py`, `tests/unit/types/test_station_gauge_type.py`, `tests/integration/cli/test_create_station_cli.py`
 - tenant-scoped station/group writes (Plan 147 Slice A): `stations.tenant_id`/`station_groups.tenant_id` are canonical and `NOT NULL`; `station_group_members.tenant_id` is bound by TWO composite FKs (`(station_id, tenant_id) -> stations(id, tenant_id)`, `(group_id, tenant_id) -> station_groups(id, tenant_id)`) so `PgStationGroupStore.store_group`/`add_station_to_group` structurally reject a cross-tenant membership (`IntegrityError`, not a Python check) — touch this when changing group membership writers or the `tenants` table; `fetch_group_by_name` now takes a `tenant_id` (name is unique per tenant, not globally)
 - plain-insert / append-only writers (`store_hindcast`, `store_state`, `store_config`, `append_health_record`) — and `store_forecast`, which is a plain insert only when the natural key is FREE; otherwise it classifies the re-run (Plan 327, see contracts below)
 - append-only audit writer: `PgAuditLogStore.append_entry` (Plan 147 Slice B) — ONLY an insert, no update/delete method on the class or the `AuditLogStore` Protocol; append-only is additionally enforced at the DB by a role-independent `BEFORE UPDATE OR DELETE` trigger (migration `0046`) that RAISEs for every role including the table owner, so it holds even before the scoped DB roles exist (Slice D). Deliberately takes NO `transaction_factory` and opens no transaction of its own — it executes on the SAME `sa.Connection` the caller passes in, so a caller sharing one externally-owned `conn.begin()` across a domain mutation store AND this store gets atomicity "for free" (a failed audit INSERT rolls back the paired domain mutation, since both share one SQLAlchemy transaction) — no repo-wide connection refactor. A REJECTED write instead persists its rejection event (attempted `event_type` + `detail.outcome="rejected"`) in a SEPARATE, independently-committed transaction after the domain rollback. Slice C wired the first call sites (`cli/access_tokens.py::create_token`/`revoke_token`/the `create-admin` bootstrap — token insert + `API_KEY_CREATED`/`API_KEY_REVOKED` audit row in ONE `engine.begin()` transaction, CLI-side, no `PgAuditLogStore` needed for `list_tokens` which is read-only); Slice E's onboard/promote/assign + rejection call sites are still unwired — touch this when adding a new audited mutation or changing the `audit_log` schema/enums (`types/enums.py::AuditEventType`/`AuditActorType`, `types/auth.py::AuditEntry`)
@@ -1053,7 +1071,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 
 **Core implementation touchpoints:**
 
-- **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. It, not the standards tables, is the source of truth for what is deployed.
+- **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. Env options: `SAPPHIRE_SKIP_DEPLOYMENTS` (opt out; unknown name is an error), `SAPPHIRE_ONLY_DEPLOYMENTS` (register only these; unknown name is an error; rejected together with the skip list; logs `deployments.subset`), `SAPPHIRE_FLOW_SOURCE_ROOT` (flow source path, default `/app`; set to a checkout for sandbox registration). It, not the standards tables, is the source of truth for what is deployed.
 - **Work pools**: `default` and `ingest` only. The `ops`/`training`/`hindcast` split in `orchestration.md` is **aspirational**; conversely `ingest_weather_history_flow` and (Plan 146) `ingest_recap_reanalysis_flow` are implemented + scheduled but **absent from the main Flow-to-Prefect mapping table** — both are documented in their own `orchestration.md` § "Rolling-window ingest flows" subsection instead — drift runs both ways; verify which table you're reading before depending on it.
 - **Schedules / concurrency**: cron + env overrides + `concurrency_limit` in `register_deployments`; the only implemented named-resource slot is `model_training:{model_id}`. The `db_bulk_write` / `observation_write` slots, `retries=`, and `ThreadPoolTaskRunner(max_workers=)` in `orchestration.md` are **aspirational** — Prefect 3 defaults apply.
 - **Docker build**: two-stage `Dockerfile` (builder + slim non-root runtime; rationale in `cicd.md`). Net-new facts: **`git` is required in the builder** for the git-pinned `forecastinterface`; the current base image is **`python:3.14.8-slim`** in both stages; `Dockerfile` holds the authoritative digest and active standards describe that same base. **Plan 218**: the runtime stage also ships a CURATED set of operator scripts at `/app/scripts` (`import_caravan_attributes.py`, `onboard.py`, `backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`, `validate_forcing_reference.py`, `create_station_group.py`) — **not** all of `scripts/`; adding a new operator script to that set is a deliberate Dockerfile edit, not automatic (`tests/unit/deploy/test_dockerfile_operator_scripts.py` locks the curated list).
@@ -2692,3 +2710,7 @@ alongside existing selected-weather regressions. Candidate acceptance must cover
 the entire declared period/member/feature scope before persistence. Retained gap
 donors must still verify their original receipts; longer snapshots may project
 exact subwindows but future issue/cutoff evidence must not leak backward.
+Explicit-grid gap filling validates every supplied timestamp before its no-fill
+return; empty frames remain empty, while off-grid rows are rejected, never shifted.
+The PostgreSQL route fixture covers complete and short-gap 18:00 windows, including
+zero artificial fills and persisted/restored quality flags for complete input.

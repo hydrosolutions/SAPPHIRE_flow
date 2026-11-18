@@ -41,6 +41,8 @@ Details and rules for every step are in § Technical reference below.
 
 Exit code `0` = this Gateway scope passed (not model readiness). `2` = something is held.
 
+When a run is held, stderr names the reason in one fixed sentence: the evidence folder is not private (run `chmod 700` on it), the scope has unresolved required inputs (complete the scope file and run `prepare` again), or the generic "Gateway preparation held or failed" line for anything else. No raw error text, key or URL is printed; exit status stays `2`.
+
 ### Copy-paste
 
 ```bash
@@ -671,6 +673,9 @@ The recap API-key secret is **Nepal-only**, provided by the
   file). No `./secrets/sapphire_dg_api_key` file is needed at all — the base
   compose declares no such secret, and the Recap adapters are never
   constructed on a Swiss deployment (`type` selector stays `meteoswiss_nwp`).
+- Outside Docker: `RECAP_API_KEY_FILE` names a mode-600 file holding the key
+  (read after the Docker secret path; an empty or unreadable file is a
+  `ConfigurationError`, not a fall-through).
 - Local dev fallback: `RECAP_API_KEY` env var (same pattern as
   `DB_PASSWORD`/`db_password`).
 - Rotation (Nepal / overlay in use): per Gateway operator schedule; rotate by
