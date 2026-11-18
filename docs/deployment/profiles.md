@@ -52,10 +52,22 @@ engine. Preview coverage does not mean every application field is displayed.
 
 ## Defaults and required choices
 
-The name-only neutral allowlist contains exactly `default_display_timezone`,
-`calendar`, `enable_forecast_alerts`, `enable_observation_alerts` and
-`enable_pipeline_alerts`. Effective values come from existing typed readers. When incomplete/invalid inputs
-prevent full parsing, only absent neutral fields can still be shown using the
+Set `default_display_timezone` explicitly to a valid named timezone, normally the
+local operational zone; explicit `UTC` is valid. Named zones handle daylight
+saving where applicable. This is one choice per deployment, not per user. Missing
+values produce administrator-owned `INPUT_REQUIRED`; empty, invalid, offset-only
+or non-string values fail validation without echoing the input. Incomplete `show`
+remains informational for omission and labels the reader's UTC value
+`default_status = fallback`. Configured profiles never show an omitted timezone
+as effective UTC; `check` and configured `show` fail for the missing choice.
+Invalid supplied values never receive a fallback. Existing runtime defaults and
+UI formatting are unchanged. Display time, hydrological boundaries, storage and
+transport timestamps, and model training conventions remain separate.
+
+The name-only neutral allowlist contains exactly `calendar`, `enable_forecast_alerts`, `enable_observation_alerts` and
+`enable_pipeline_alerts`. Effective values come from existing typed readers.
+When incomplete/invalid inputs
+prevent full parsing, absent neutral fields can still be shown using the
 reader’s literal field defaults; supplied invalid values are never replaced or
 labelled neutral. Missing retention is named as administrator-owned
 `max_retention_days`.

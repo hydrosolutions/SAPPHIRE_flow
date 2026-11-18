@@ -36,8 +36,12 @@ The application example shows commented key shapes. Work with the indicated owne
 | Developer support | Unsupported source formats, missing integrations and coverage gaps reported as developer-owned. |
 
 Reuse existing **typed defaults** for optional presentation and disabled alerts.
-UTC display, Gregorian calendar and disabled forecast/observation/pipeline alerts
-are neutral initial defaults; omit these fields unless you need an override.
+Choose `default_display_timezone` explicitly as a valid named timezone, normally
+the local operational zone; explicit `UTC` is valid. Named zones handle daylight
+saving where applicable. Incomplete previews label omitted UTC as a provisional
+`fallback`, not a completed choice. Gregorian calendar and disabled
+forecast/observation/pipeline alerts are neutral initial defaults; omit these
+four fields unless you need an override.
 Other inherited defaults require review. Do not copy every field from the reference
 or treat another deployment's scientific settings as general defaults.
 

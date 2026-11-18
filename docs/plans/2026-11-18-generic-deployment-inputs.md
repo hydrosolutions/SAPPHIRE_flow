@@ -3,6 +3,8 @@ status: READY
 title: Generic deployment tooling and administrator-owned inputs
 ---
 
+> Superseded in part by [explicit display timezone](2026-11-18-explicit-display-timezone.md): display timezone is now an explicit choice, leaving four neutral fields. The five-field decisions and evidence below are historical.
+
 # Generic deployment tooling and administrator-owned inputs
 
 ## Decision and boundary

@@ -1041,3 +1041,50 @@ def test_explicit_spec_environment_ignores_ambient(
     runtime = {spec.deployment_name: spec for spec in _build_specs()}
     assert runtime["forecast-cycle"].cron == "7 * * * *"
     assert "collect-bafu-forecasts" not in runtime
+
+
+def test_explicit_subset_ignores_ambient_and_logs_only_at_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from sapphire_flow.cli import register_deployments as registrar
+
+    log = Mock()
+    monkeypatch.setattr(registrar, "log", log)
+    monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "forecast-cycle")
+    monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/runtime-checkout")
+    monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+
+    def forbid_runtime_source_root() -> str:
+        pytest.fail("Pure preview must not resolve the runtime source root")
+
+    with monkeypatch.context() as preview_patch:
+        preview_patch.setattr(
+            registrar, "_flow_source_root", forbid_runtime_source_root
+        )
+        explicit = registrar.build_deployment_specs(
+            {"SAPPHIRE_ONLY_DEPLOYMENTS": "collect-bafu-forecasts"}
+        )
+        assert [spec.deployment_name for spec in explicit] == ["collect-bafu-forecasts"]
+        assert len(registrar.build_deployment_specs({})) > 1
+        log.info.assert_not_called()
+    assert registrar._flow_source_root() == "/tmp/runtime-checkout"
+    assert [spec.deployment_name for spec in registrar._build_specs()] == [
+        "forecast-cycle"
+    ]
+    log.info.assert_called_once_with("deployments.subset", only=["forecast-cycle"])
+
+
+def test_explicit_subset_preserves_selector_validation() -> None:
+    from sapphire_flow.cli.register_deployments import build_deployment_specs
+
+    with pytest.raises(ValueError, match="SAPPHIRE_ONLY_DEPLOYMENTS"):
+        build_deployment_specs({"SAPPHIRE_ONLY_DEPLOYMENTS": "unknown"})
+    with pytest.raises(ValueError, match="SAPPHIRE_SKIP_DEPLOYMENTS"):
+        build_deployment_specs(
+            {
+                "SAPPHIRE_ONLY_DEPLOYMENTS": "forecast-cycle",
+                "SAPPHIRE_SKIP_DEPLOYMENTS": "collect-bafu-forecasts",
+            }
+        )

@@ -4,7 +4,7 @@ import math
 import os
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -176,7 +176,7 @@ class EffectiveSetting:
     value: str | int | float | bool | None
     visibility: Literal["value", "redacted", "absent"]
     environment: tuple[EnvironmentReference, ...] = ()
-    default_status: Literal["explicit", "neutral", "review"] = "explicit"
+    default_status: Literal["explicit", "neutral", "review", "fallback"] = "explicit"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -584,7 +584,6 @@ def _check_ambient(
 
 NEUTRAL_DEFAULT_FIELDS = frozenset(
     {
-        "default_display_timezone",
         "calendar",
         "enable_forecast_alerts",
         "enable_observation_alerts",
@@ -739,7 +738,7 @@ def _safe_setting_value(field: str, value: object) -> str | int | float | bool |
     }:
         try:
             ZoneInfo(value)
-        except (ValueError, ZoneInfoNotFoundError):
+        except (OSError, ValueError, ZoneInfoNotFoundError):
             return None
         return value
     allowed = {
@@ -1061,6 +1060,27 @@ def evaluate_deployment_profile(
             )
         )
     if raw is not None:
+        timezone_present = "default_display_timezone" in raw
+        timezone_value = raw.get("default_display_timezone")
+        timezone_valid = (
+            isinstance(timezone_value, str)
+            and _safe_setting_value("default_display_timezone", timezone_value)
+            is not None
+        )
+        if not timezone_present or not timezone_valid:
+            diagnostics.append(
+                _diagnostic(
+                    "DISPLAY_TIMEZONE_INVALID"
+                    if timezone_present
+                    else "INPUT_REQUIRED",
+                    "default_display_timezone",
+                    "The supplied display timezone is not a valid named timezone."
+                    if timezone_present
+                    else "Choose the deployment's display timezone.",
+                    "Set default_display_timezone to a valid named timezone, normally "
+                    "the local operational zone; explicit UTC is also valid.",
+                )
+            )
         for field in _EXPLICIT_AGENCY_FIELDS:
             if _lookup(raw, field) is None or _lookup(raw, field) == "":
                 diagnostics.append(
@@ -1117,6 +1137,7 @@ def evaluate_deployment_profile(
             provenance.extend(
                 _setting(field, _lookup(parsed, field), trace, supplied_names)
                 for field in _PREVIEW_FIELDS
+                if field != "default_display_timezone" or timezone_valid
             )
             if config.swiss_overview is not None:
                 pending.append(
@@ -1139,6 +1160,20 @@ def evaluate_deployment_profile(
                 )
                 for field in _PREVIEW_FIELDS
                 if field in NEUTRAL_DEFAULT_FIELDS and field not in raw
+            )
+        if not timezone_present and selection.profile.state == ProfileState.INCOMPLETE:
+            provenance.append(
+                replace(
+                    _setting(
+                        "default_display_timezone",
+                        DeploymentConfig.model_fields[
+                            "default_display_timezone"
+                        ].default,
+                        trace,
+                        supplied_names,
+                    ),
+                    default_status="fallback",
+                )
             )
         try:
             identity = parse_deployment_identity_config(raw)

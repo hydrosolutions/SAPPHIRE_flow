@@ -4,6 +4,9 @@
 # Maintained field schemas: docs/spec/config-reference.toml.
 
 # ROOT FIELDS FIRST (before any [table] below).
+# Administrator: choose one named display zone, normally local; UTC is valid.
+# Named zones handle daylight saving; this does not set the hydrological grid.
+# default_display_timezone = "<named timezone>"
 # Retention/storage owner: choose a period compatible with forecast retention.
 # max_retention_days = <positive integer>
 # Scientific owner: choose the hydrological grid independently of display time.
@@ -19,7 +22,7 @@
 # Only an enabled meteoswiss_nwp adapter consumes this publication-delay setting:
 # nwp_cycle_min_age_minutes = <provider publication delay in minutes>
 
-# Optional presentation and disabled-alert settings use existing typed defaults;
+# Optional calendar and disabled-alert settings use existing typed defaults;
 # leave them omitted unless you need an override. See the profile defaults guide.
 
 # IDENTITY: administrator supplies matching tenant/write-authority declarations.

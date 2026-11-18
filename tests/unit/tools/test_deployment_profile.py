@@ -680,6 +680,7 @@ class TestComposeWiring:
         assert "owner=agency_specialist" in output
         assert "models_and_artifacts" in output
         assert "hosting_paths_domain_ports" in output
+        assert "default=fallback" in output
         assert "Unverified runtime:" in output
         assert "registered_jobs_and_pools" in output
         assert "build_credentials" in output
@@ -969,3 +970,48 @@ class TestComposeWiring:
         monkeypatch.setattr(tool, "_capture", capture)
         with pytest.raises(tool.ProfileError, match="COMPOSE_RENDER_FAILED"):
             tool.render_compose(selected)
+
+
+@pytest.mark.parametrize("state", ["incomplete", "configured"])
+@pytest.mark.parametrize(
+    "value", [None, '""', '"timezone-secret-canary"', '"+02:00"', "42", "true"]
+)
+def test_timezone_cli_missing_vs_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str, value: str | None
+) -> None:
+    profile = incomplete_profile(tmp_path)
+    profile.write_text(
+        profile.read_text().replace('state = "incomplete"', f'state = "{state}"')
+    )
+    if state == "configured":
+        profile.write_text(
+            profile.read_text().replace(
+                "compose_files = []", 'compose_files = ["compose.yml"]'
+            )
+        )
+    application = profile.parent / "application.example.toml"
+    if value is not None:
+        application.write_text(f"default_display_timezone = {value}\n")
+    for command in ("show", "check"):
+        status = tool.main(
+            ["--profile-file", str(profile), command, "--format", "json"]
+        )
+        output = capsys.readouterr().out
+        report = json.loads(output)
+        assert status == (
+            0 if command == "show" and state == "incomplete" and value is None else 1
+        )
+        assert "timezone-secret-canary" not in output
+        expected = "INPUT_REQUIRED" if value is None else "DISPLAY_TIMEZONE_INVALID"
+        assert any(
+            d["field"] == "default_display_timezone" and d["code"] == expected
+            for d in report["diagnostics"]
+        )
+        rows = [
+            p for p in report["provenance"] if p["field"] == "default_display_timezone"
+        ]
+        if value is None and state == "incomplete":
+            assert rows[0]["default_status"] == "fallback"
+            assert rows[0]["value"] == "UTC"
+        else:
+            assert rows == []

@@ -1,7 +1,7 @@
 # Private profile selection, file precedence and safe offline preview:
 # docs/deployment/profiles.md; administrator entry: docs/deployment-quickstart.md.
 # This reference owns application fields, not installation/secret delivery inputs.
-# Typed neutral presentation/disabled-alert defaults may be omitted; scientific
+# Typed neutral calendar/disabled-alert defaults may be omitted; scientific
 # choices and audited provider capabilities must be explicit in private deployments.
 # SAPPHIRE Flow — config.toml reference
 #
@@ -103,6 +103,10 @@ enable_skill_generations = false
 
 # --- Display ---
 # Source: types-and-protocols.md § DeploymentConfig
+# Deployment preparation requires an explicit valid named display timezone;
+# normally choose local operational time, or explicitly UTC. Named zones handle DST.
+# The legacy runtime UTC default remains unchanged; incomplete preview fallback
+# is provisional and does not satisfy the required deployment choice.
 default_display_timezone = "Europe/Zurich"
 
 # Fixed daily boundary in UTC, strict HH:MM; independent of display timezone.

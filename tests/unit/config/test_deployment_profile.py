@@ -625,12 +625,12 @@ class TestEvaluateDeploymentProfile:
                 tmp_path, base, 'default_display_timezone = "secret-canary"\n'
             )
         )
-        entry = next(
-            item
-            for item in result.provenance
-            if item.field == "default_display_timezone"
+        assert not any(
+            item.field == "default_display_timezone" for item in result.provenance
         )
-        assert entry.visibility == "redacted"
+        assert any(
+            item.code == "DISPLAY_TIMEZONE_INVALID" for item in result.diagnostics
+        )
         assert "secret-canary" not in json.dumps(asdict(result))
 
     def test_existing_m1_validator_rejects_nonzero_grid(self, tmp_path: Path) -> None:
@@ -754,7 +754,6 @@ class TestGenericDefaults:
         from sapphire_flow.config.deployment_profile import NEUTRAL_DEFAULT_FIELDS
 
         expected = {
-            "default_display_timezone",
             "calendar",
             "enable_forecast_alerts",
             "enable_observation_alerts",
@@ -908,3 +907,85 @@ class TestGenericDefaults:
             for item in result.provenance
         )
         assert "credential-canary" not in json.dumps(asdict(result))
+
+
+class TestExplicitDisplayTimezone:
+    @pytest.mark.parametrize("base", ["", "max_retention_days = 3650\n"])
+    @pytest.mark.parametrize("state", list(ProfileState))
+    def test_missing_choice_only_has_fallback_when_incomplete(
+        self, tmp_path: Path, base: str, state: ProfileState
+    ) -> None:
+        from dataclasses import replace
+
+        selection = evaluation_selection(tmp_path, base)
+        selection = replace(selection, profile=replace(selection.profile, state=state))
+        result = evaluate_deployment_profile(selection)
+        missing = next(
+            d for d in result.diagnostics if d.field == "default_display_timezone"
+        )
+        assert missing.code == "INPUT_REQUIRED"
+        assert missing.owner == "administrator"
+        rows = [p for p in result.provenance if p.field == "default_display_timezone"]
+        if state is ProfileState.INCOMPLETE:
+            assert len(rows) == 1
+            assert rows[0].value == "UTC"
+            assert rows[0].default_status == "fallback"
+            assert rows[0].source == "DeploymentConfig.default_display_timezone"
+        else:
+            assert rows == []
+        assert any(d.field == "daily_grid_origin" for d in result.diagnostics)
+
+    @pytest.mark.parametrize(
+        "value", ['""', '"secret-zone-canary"', '"Europe"', '"+02:00"', "42", "true"]
+    )
+    def test_invalid_supplied_values_never_get_fallback_or_usable_preview(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path,
+                f"max_retention_days = 3650\ndefault_display_timezone = {value}\n",
+            )
+        )
+        assert any(d.code == "DISPLAY_TIMEZONE_INVALID" for d in result.diagnostics)
+        assert not any(p.field == "default_display_timezone" for p in result.provenance)
+        assert "secret-zone-canary" not in repr(result)
+
+    def test_timezone_os_error_is_sanitized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.config import deployment_profile
+
+        def unavailable_timezone(key: str) -> None:
+            raise OSError("timezone-filesystem-secret-canary")
+
+        monkeypatch.setattr(deployment_profile, "ZoneInfo", unavailable_timezone)
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path,
+                "max_retention_days = 3650\n"
+                'default_display_timezone = "Europe/Paris"\n',
+            )
+        )
+        assert any(d.code == "DISPLAY_TIMEZONE_INVALID" for d in result.diagnostics)
+        assert not any(p.field == "default_display_timezone" for p in result.provenance)
+        assert "timezone-filesystem-secret-canary" not in json.dumps(asdict(result))
+
+    @pytest.mark.parametrize("zone", ["UTC", "Europe/Paris"])
+    def test_valid_overlay_choice_preserves_source_and_grid(
+        self, tmp_path: Path, zone: str
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path,
+                'max_retention_days = 3650\ndefault_display_timezone = "UTC"\n'
+                'daily_grid_origin = "00:00"\n',
+                f'default_display_timezone = "{zone}"\n',
+            )
+        )
+        settings = {p.field: p for p in result.provenance}
+        assert settings["default_display_timezone"].value == zone
+        assert settings["default_display_timezone"].source == "overlay[0]"
+        assert settings["default_display_timezone"].default_status == "explicit"
+        assert settings["daily_grid_origin"].value == "00:00"
+        assert settings["daily_grid_origin"].source == "base"
