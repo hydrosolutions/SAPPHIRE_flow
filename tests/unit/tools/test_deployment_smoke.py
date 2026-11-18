@@ -172,7 +172,7 @@ class FakeDocker:
 
 
 def _prepare(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> None:
-    def preflight(runner: object, image: str) -> dict[str, str]:
+    def preflight(runner: object, image: str, **kwargs: object) -> dict[str, str]:
         return dict(
             endpoint="unix:///local.sock",
             image_id="sha256:fixed",

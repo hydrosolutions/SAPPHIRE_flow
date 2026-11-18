@@ -97,6 +97,8 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
         "Require a valid SBOM",
         "Upload SBOM artifact",
         "Prove default image release identity",
+        "Qualify deployment smoke twice",
+        "Upload deployment smoke qualification",
     ),
     "aquacast-release-image-proof": (
         "Checkout exact source",
@@ -109,7 +111,7 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
 
 # Reviewed workflow bytes bind names to actual commands, action pins and inputs.
 # Update only with the workflow and the producer inventory drift tests.
-WORKFLOW_SHA256 = "3ac6a1f4831beb848032fe491e69b4fff6946f3267be32b257c9e35a5e9bafd8"
+WORKFLOW_SHA256 = "baa2a0bcd0e5819c03f4d48e3f4befd0d2960e5b396b0c88456f7f9600060a3a"
 
 
 def require_workflow(root: Path) -> None:

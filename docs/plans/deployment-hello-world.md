@@ -17,11 +17,12 @@ The command removes its disposable resources and retains a small safe report.
 It proves this synthetic path, not agency readiness or forecast skill.
 
 The owner authorized planning/review, HW1a package/model/fixture qualification,
-and subsequently **HW1b** on 2026-11-18 after #555 and #557 merged. HW1b includes
+and subsequently **HW1b** on 2026-11-18 after #555 and #557 merged, followed by
+**HW1c** after #558 merged. HW1b includes
 disposable local container validation with generated smoke-only credentials.
 Normal loader/QC integration and runtime qualification remain mandatory HW1b
 acceptance gates. Operational deployment/configuration/secret changes and later
-implementation milestones remain undispatched.
+target-server runs remain undispatched.
 The merged profile increment (#544) remains preparation-only. This smoke command
 does not turn its pending checks into PASS or implement profile-driven launching.
 
@@ -171,14 +172,16 @@ changes to the live forecast/FI boundary, pause that expansion for reconciliatio
 
 ## Administrator command and execution
 
-Proposed interface (not available until HW1c):
+Administrator interface implemented in HW1b; automated qualification and the
+released guide are HW1c:
 
 ```bash
-uv run python tools/deployment_smoke.py run --image sapphire-flow:<prepared-version> --report-dir /absolute/path/smoke-report
-uv run python tools/deployment_smoke.py cleanup --report-dir /absolute/path/smoke-report
+uv run --no-project --no-python-downloads python tools/deployment_smoke.py run --image sapphire-flow:<prepared-version> --report-dir /absolute/path/smoke-report
+uv run --no-project --no-python-downloads python tools/deployment_smoke.py cleanup --report-dir /absolute/path/smoke-report
 ```
 
-Prerequisites: local Docker/Compose, the checkout matching the prepared image,
+Prerequisites: uv and an installed compatible Python interpreter, local
+Docker/Compose, the checkout matching the prepared image,
 and preloaded application/PostGIS/Prefect images. Reuse the existing build recipe
 and release identity verifier. Private dependency/build credentials may be needed
 in that separate preparation step; the smoke runtime neither retrieves nor reads
@@ -266,7 +269,11 @@ Exit 0 only for verified forecast **and** verified cleanup; 2 for preflight refu
 1 for runtime/assertion/cleanup failure. Interrupts still attempt cleanup.
 
 Budget: initial runtime timeout 10 minutes plus at most 2 minutes for cleanup;
-CI job timeout 20 minutes including setup. Target a host with 8 GiB available RAM,
+CI qualification timeout 20 minutes including image preparation and cleanup.
+The qualification gate uses a four-minute runtime budget per run, preserving
+the existing two-minute cleanup reserve. The shared image job retains its other
+checks and increases its ceiling from 60 to 80 minutes to accommodate this gate.
+Target a host with 8 GiB available RAM,
 2 CPUs and 10 GiB free disk after image preparation. These are proposed qualification
 budgets, not measured performance claims. HW1b measures peak memory/disk and elapsed
 time on supported Linux/macOS Docker hosts before documenting supported minima.
@@ -284,7 +291,7 @@ owner approves/merges; no auto-merge, host deployment or extra review loop.
 | HW0 — this plan | `docs/plans/deployment-hello-world.md`; owner authorized planning | Evidence reconciled, ownership/dependencies explicit, one bounded independent Claude plan review covering administrator, developer, FI and isolation concerns. Orchestrator sets READY only after findings are resolved; material owner decisions are escalated. |
 | HW1a — qualify/package the scenario | Proposed model, adapter and package-data paths above; `tests/unit/models/test_deployment_smoke.py`, `tests/unit/adapters/test_deployment_smoke_weather.py`; accepted station-side discharge fixture gates fixture completion | Freeze UTC timestamps/offsets, QC support, exact variable mapping, model classification, artifact config hash and expected values. Test FI contract/floors; artifact round trip; missing/short/nonfinite inputs return typed failure; mutate observation and weather independently and require the specified output change. Wrong cycle/source/coverage must refuse; an hourly gap or skipped station cannot satisfy the fixture contract. Verify installed wheel contains all resources and has no tests-package imports. No services or complete-pass claim. |
 | HW1b — worker-to-API path | `docker-compose.smoke.yml`, `tools/deployment_smoke.py`, smoke CLI/flow modules; `tests/unit/tools/test_deployment_smoke.py`, `tests/integration/test_deployment_smoke.py`; depends HW1a + merged M3a/M3b and qualified fixture | Complete steps 1–7 through actual process worker, real DB roles and real HTTP API. Assert no model/provider substitution, no fixture weather inserted behind the forecast flow, no SQL bypass of observation QC. Check missing image/unsafe selector before writes; cleanup on setup/worker/API failure and interrupt; no credential canary in any output/report. Mutation tests verify controller refuses cleanup of a foreign project and missing worker/malformed API output cannot pass. Measure resource/runtime budgets. |
-| HW1c — release qualification and guide | `.github/workflows/ci.yml` (one smoke gate, coordinate shared edits), `docs/deployment/hello-world.md`, links from quick-start/profile guide, affected standards/touchpoint maps | Dedicated CI job uses the built app image and pinned infrastructure images; execute the same command, not a direct flow invocation. Run twice from clean state; exercise alongside an unrelated sentinel project and prove it is unchanged. Verify API 401 without token and expected authorized response. CLI help matches docs. Independent patch review, full suite, image checks and smoke job pass on final commit before PR ready. |
+| HW1c — release qualification and guide | `.github/workflows/ci.yml` (one mandatory smoke step in the existing image job), smoke qualification helper/controller, CI attestation inventory and private image-gate parity, `docs/deployment/hello-world.md`, links from quick-start/profile guide, affected standards/touchpoint maps | Reuse the built app image and pinned infrastructure images; execute the same command, not a direct flow invocation. Run twice from clean state; exercise alongside an unrelated sentinel project and prove it is unchanged. Verify API 401 without token and expected authorized response. CLI help matches docs. Independent patch review, full suite, image checks and smoke gate pass on final commit before PR ready. |
 | HW2 — target-server proof | No dispatch from this plan | After HW1c merge, explicit owner server-run authorization. Run same versioned scenario and record cleanup. Real-station onboarding/scientific acceptance remain the station team's work. |
 
 Documentation is short and task-oriented: prerequisites/build link, one run command,
@@ -295,7 +302,7 @@ history. Do not advertise unimplemented commands in the administrator quick-star
 ```json
 {
   "planning_authorized": ["HW0"],
-  "implementation_authorized": ["HW1a", "HW1b"],
+  "implementation_authorized": ["HW1a", "HW1b", "HW1c"],
   "milestones": [
     {"id": "HW0", "depends_on": [], "gate": "independent_plan_review"},
     {"id": "HW1a", "depends_on": ["HW0"], "external": ["owner_dispatch", "station_fixture_contract"]},
@@ -486,3 +493,36 @@ of artifacts. These are observations on an ARM Docker Desktop host with emulated
 PostGIS, not minimum resource guarantees. Exact-source final qualification,
 independent patch review and full final-code CI remain gates for this PR.
 HW1c's dedicated CI gate and released administrator instructions remain separate.
+
+## HW1c dispatch — 2026-11-18
+
+Owner authorized HW1c after #558 merged as
+`4c38a2fc7e755eeba86e08c0c0d5cc7774fd9847`. Its final CI passed on
+`9a54e4386bdb43813a8cfc18ef99bd8a1cdda195`; the unchanged application code at
+`f7a7538ec7ee39c5d4dcd8e4d327290b9c1b02e8` passed real worker/internal-API
+qualification, including 72 QC-accepted readings, all 60 values and cleanup.
+Independent patch review found no blockers; the follow-up inventory correction
+changed only tests and the maintained touchpoint reference.
+
+HW1c uses an independent clone from this merged baseline. Investigation found
+that CI builds a source-derived `0.dev0+g<commit>` image, while the administrator
+command defaults to `RELEASE_TARGET`. An explicit CI identity choice will accept
+only that exact checkout-derived version, retaining revision/resource checks and
+the strict administrator default. It is not a general image-identity override.
+
+Implement one named, mandatory smoke step inside `build-image-and-scan`, reusing
+its loaded image. This replaces the earlier standalone-job wording: a new job
+would require another build or transfer of an image containing private package
+code. Update the full-CI attestation step inventory and mirror the qualification
+in the existing private default-image gate; do not weaken either admission path.
+
+A small qualification helper runs the normal CLI twice with fresh report paths,
+checks a separate synthetic sentinel's container/network/volume identity and
+volume content after each run, and tears down only owned resources. Public CI
+uploads only an explicitly safe summary, never raw logs, secret directories or
+application image bytes. The administrator guide stays focused on the single-run
+command, its exact proof limits, preparation, diagnosis and cleanup.
+
+HW2 target-server runs, host-port verification, profile launching and scientific
+acceptance remain outside this dispatch. Final patch review, full CI and the new
+smoke gate must pass before the PR is ready for owner review.

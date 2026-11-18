@@ -855,7 +855,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 
 Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
 
-- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 40 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 60, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
+- **Every job sets `timeout-minutes`** — `lint` 20, `unit` 40 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 80, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
 - **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
 - **The `integration-shard` job is a two-leg SHARD MATRIX** (`heavy`, `rest`) with `fail-fast: false`. `heavy` first runs the selectable `performance` group in a fresh pytest process, then its sustained main group; `rest` is the complement of both curated groups. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
@@ -1102,7 +1102,15 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
   ⚠️ Every step in the chain carries `!cancelled() && steps.build-image.outcome == 'success'`. A step `if:` without a status function has an implicit `success()`, so without those guards an SBOM failure underneath an already-red CVE gate would skip every retry *and* the enforcement step. ⚠️ The per-step `timeout-minutes` are not decorative either: the **job**-level timeout cancels, which skips every `!cancelled()` step — no enforcement, no message, no upload.
 
   🔑 **A missing SBOM is nobody's silent problem: re-running the job is the recovery, and the person merging the PR owns invoking it.** Nothing else watches for it.
-- **There is no `e2e` job.** Plan 064 specified one gated on this job — the image build/scan path — succeeding (`064:245`, `064:286`), and `ci.yml:475` still carries the comment saying so, but the job was never built. Nothing in `ci.yml` depends on `build-image-and-scan`, so a failing CVE scan blocks the PR only through its own job status, not by starving a downstream suite.
+- The mandatory **Qualify deployment smoke twice** step uses the same loaded image.
+  It runs the public smoke CLI twice beside an unrelated sentinel and checks cleanup
+  and sentinel identity/state/content after each run. It runs after a successful
+  build even if scan/SBOM failed; it cannot turn those failures green. The twenty-minute
+  step fits the eighty-minute job ceiling (existing bounded work/retries about 57
+  minutes plus qualification and a one-minute safe-report upload). Only curated
+  `qualification.json` is uploaded; no application image, secret directories or raw
+  logs. See [the administrator/developer guide](../deployment/hello-world.md).
+  This is a named gate in the image job, not a separate image-exporting `e2e` job.
 
 All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
@@ -1943,7 +1951,7 @@ killed before delivery supplies no report or snapshots.
 | `wheel-only-guard` | Separate environment; no-build/no-cache guard before the existing ForecastInterface/recap exception reinstall. No new exception. |
 | `integration-shard` | Existing heavy/rest gate names, native partition proof, unchanged live/slow exclusions and a fresh pinned PostGIS container per shard. `integration-heavy` runs the selectable performance group first in its own pytest process and JUnit, then heavy; `integration-rest` remains unchanged. |
 | `integration` | Explicit fail-closed dependency assertion over both integration results; a failed/missing shard blocks the aggregate. |
-| `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation. |
+| `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation; mandatory twice-clean deployment smoke with sentinel and separately retained component outcome. |
 | `aquacast-release-image-proof` | Actual Aquacast amd64 build/load and existing identity/shim/import/entrypoint/isolation proof, without missing-token degradation. Also applies the same private scan/SBOM gates to this variant. |
 
 `tools/private_verification.py::CI_JOB_GATES` and focused tests bind this mapping to
