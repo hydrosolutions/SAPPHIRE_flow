@@ -16,12 +16,12 @@ execute one forecast through a worker, and return that forecast through the API.
 The command removes its disposable resources and retains a small safe report.
 It proves this synthetic path, not agency readiness or forecast skill.
 
-The owner authorized planning/review and subsequently dispatched **HW1a only** on
-2026-11-18. The owner subsequently authorized adoption and pure QC qualification
-of the merged station-supported fixture. HW1a now covers package/model/fixture
-qualification. Normal loader/QC integration and runtime qualification remain
-mandatory HW1b acceptance gates. Container execution, deployment, secret changes, operational
-configuration changes and later implementation milestones remain undispatched.
+The owner authorized planning/review, HW1a package/model/fixture qualification,
+and subsequently **HW1b** on 2026-11-18 after #555 and #557 merged. HW1b includes
+disposable local container validation with generated smoke-only credentials.
+Normal loader/QC integration and runtime qualification remain mandatory HW1b
+acceptance gates. Operational deployment/configuration/secret changes and later
+implementation milestones remain undispatched.
 The merged profile increment (#544) remains preparation-only. This smoke command
 does not turn its pending checks into PASS or implement profile-driven launching.
 
@@ -79,9 +79,9 @@ dispatch; do not copy their plans into this branch.
 | Dependency | Current state / dispatch condition |
 | --- | --- |
 | M2 station creation | Merged #551. Preserve new defaulted station fields and legacy migration-test helper. |
-| M3a observation loader | Merged #552 at `4cf5684dc894ec0d39e04e11e8ad0b98b8b2977a`; stores RAW observations and explicitly reports that QC has not run. HW1b preserves its actual config/tenant/CSV/`--apply` contract. |
-| M3b Stage 1 QC on load | In progress on the station side, not merged at fixture adoption. HW1b requires merged normal QC path and evidence of usable input coverage; never insert already-GOOD observations directly to bypass it. |
-| Fixed discharge fixture | Merged #554 at `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`. Exact-byte hourly CSV and station metadata adopted; pure real-checker qualification covers 72 readings, zero flags. Normal loader/QC integration remains unproved. |
+| M3a observation loader | Merged #552 at `4cf5684dc894ec0d39e04e11e8ad0b98b8b2977a`; its initial RAW-only behavior is superseded by M3b below. Preserve the config/tenant/CSV/`--apply` contract. |
+| M3b Stage 1 QC on load | Merged #557 at `a7717bb0d1185c5012adca2c2d2b73a447a0eade`. Its integration test loads our exact packaged fixture and pinned rules: 72 `QC_PASSED`, persisted QC version `1.2`, all three model-lookback hours present. Dry run writes nothing. HW1b must reproduce this through the container command; never bypass QC or use `--allow-unchecked`. |
+| Fixed discharge fixture | Merged #554 at `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`; packaged and qualified in #555 at `d81a52f96167cfbdd3bc001d01b53b27c74fa93c`. Exact-byte CSV/station metadata, pinned rules and 60-value numerical reference are available. Worker/API proof remains HW1b. |
 | M3c/M3d | Not dependencies of this direct-discharge scenario. M3d outputs water-level/rating files; that alternative needs M3c as well to produce discharge. No request to accelerate them. |
 | M5 Gateway bindings / M7 promotion | Not reused as general commands here. A narrowly scoped smoke bootstrap seeds its own point binding and active diagnostic assignment through existing services/stores in the newly created smoke DB only. This is test setup, not a general onboarding/promotion command. |
 
@@ -195,8 +195,8 @@ specific preparation instruction if anything is missing/mismatched.
 2. Render only `docker-compose.smoke.yml`, with the generated env file and project.
    It defines PostGIS, Prefect server, init, one process worker and API; setup is a
    one-shot command using the same app image. No base/agency overlay composition.
-   Reuse pinned infrastructure images and current security settings. Only the API
-   gets a dynamically allocated localhost host port; no Postgres/Prefect exposure.
+   Reuse pinned infrastructure images and current security settings. Publish no
+   host ports; the HTTP probe runs from the worker container to the API container.
    Internal network has no provider egress; no host network, Docker socket,
    operational bind mounts, external volumes or fixed container names.
 3. Generate disposable DB-role passwords and API pepper inside the private run
@@ -205,7 +205,7 @@ specific preparation instruction if anything is missing/mismatched.
    role bootstrap. API and worker retain their distinct scoped DB roles; owner
    credentials are setup-only. No secret values in command arguments or reports.
 4. Setup invokes `create_station` and the merged M3a/M3b discharge/QC command with
-   explicit fixture/config paths and identity. Require GOOD coverage of the
+   explicit fixture/config paths and identity. Require `QC_PASSED` coverage of the
    model lookback. Register/import the fixture artifact using existing audited
    services (`register_models`, `import_external_artifact`, real audited writer,
    principal and audit store); create its assignment via `create_station_assignment`.
@@ -233,9 +233,14 @@ specific preparation instruction if anything is missing/mismatched.
 6. Poll that flow run with bounded timeout, then resolve its forecast by exact
    station/model/cycle/data-use identity. Mint a short-lived station-scoped API
    token with `create_token`; keep raw credentials out of logs and Prefect results.
-   Probe the localhost API with normal authentication and assert the returned
+   Probe `http://api:8000` from the worker container with normal authentication
+   and assert the returned
    forecast identity, units, issue/valid times, 20×3 shape, acceptable QC and every
-   expected value (absolute tolerance `1e-8`). Require exactly one station attempted
+   expected value (absolute tolerance `1e-8`). Pass the token through captured
+   stdin to the fixed-route HTTP client, never arguments, environment, logs or
+   Prefect results. Disable ambient HTTP proxies. Require 401 without the token
+   and 200 with it. This proves internal HTTP service wiring, not host-port access.
+   Require exactly one station attempted
    and succeeded, zero failed, and one diagnostic-model forecast. A skipped station
    is failure, even if Prefect itself completed. Require input coverage and weather
    freshness for this fixed clock; do not confuse fixture time with wall-clock
@@ -290,7 +295,7 @@ history. Do not advertise unimplemented commands in the administrator quick-star
 ```json
 {
   "planning_authorized": ["HW0"],
-  "implementation_authorized": ["HW1a"],
+  "implementation_authorized": ["HW1a", "HW1b"],
   "milestones": [
     {"id": "HW0", "depends_on": [], "gate": "independent_plan_review"},
     {"id": "HW1a", "depends_on": ["HW0"], "external": ["owner_dispatch", "station_fixture_contract"]},
@@ -420,3 +425,46 @@ TOML, ran actual CSV observations through the real checker (72 judged, zero flag
 loaded the artifact and 60-value oracle, and confirmed no tests package was imported
 or shipped. No database, Docker, provider or secret access was used. Full final-code
 suite remains the PR's CI gate.
+
+## HW1b dispatch checkpoint — 2026-11-18
+
+HW1a completed in merged #553 and #555. Final #555 CI passed on
+`0d896fa6840c89e9415914362475d1dd406680f9` after one same-commit retry of an
+unrelated station-history 503 failure; the PR retains both outcomes. Independent
+Claude review found no blockers. This supersedes the earlier pending-CI checkpoint.
+
+Owner dispatched HW1b after #557 merged. Implementation starts from remote main
+`a7717bb0d1185c5012adca2c2d2b73a447a0eade` in an isolated worktree. #556's
+retained operational-weather changes are included in that baseline and must not
+be bypassed or duplicated. The hourly synthetic path continues to use the normal
+forecast cycle with explicit model/weather injection.
+
+The merged M3b integration test already proves dry-run/apply semantics with our
+packaged CSV and `deployment-smoke-hourly-1` rule snapshot: 72 `QC_PASSED` rows,
+persisted QC evaluation version `1.2`, one audit row and the required three input
+hours. That service-level evidence clears the dependency, not the worker/API gate.
+Runtime verification, isolation, cleanup and measured budgets remain outstanding.
+HW1c's dedicated CI smoke job/administrator guide and HW2 server runs are not
+dispatched by this checkpoint.
+
+### Accepted runtime correction — internal HTTP probe
+
+Local Docker Engine 29.8.2 accepted the requested localhost port binding but
+reported `:0` for the API attached only to the internal network. Six diagnostic
+runs left no owned resources behind; after correcting the smoke-only PostgreSQL
+healthcheck to wait for TCP, runs reached the API stage with worker/child-flow,
+72-row observation QC and three-row weather persistence checks passed.
+The first complete API proof is still pending.
+
+On 2026-11-18 the owner chose to retain the offline network and verify real
+authenticated HTTP from another container inside it. The worker-side client
+therefore calls the API service directly; no host ports, extra proxy or external
+network are added. Authentication, forecast identity, every expected value and
+cleanup remain required. Host-port access is explicitly outside this increment's
+pass claim and requires a later separately scoped check. This supersedes the
+initial localhost-port design; final independent patch review must cover it.
+
+Docker's [internal-network documentation](https://docs.docker.com/reference/cli/docker/network/create/#network-internal-mode---internal)
+describes inter-container access without routes to other networks. The local
+qualification keeps that boundary instead of changing the host daemon or
+operational networking settings.

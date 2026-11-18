@@ -1,0 +1,78 @@
+# Used only as overlay of the packaged qc-rules.toml by the disposable smoke stack.
+max_retention_days = 600
+available_nwp_parameters = ["precipitation"]
+available_past_only_nwp_parameters = []
+enable_forecast_alerts = false
+enable_observation_alerts = false
+enable_pipeline_alerts = false
+publication_active_tenant_ids = []
+reanalysis_source = "single"
+
+[deployment]
+writable_tenants = ["smoke"]
+global_admin = false
+operator = "deployment-smoke"
+
+[tenants.smoke]
+name = "Disposable synthetic smoke"
+
+[paths]
+data_dir = "/data"
+
+[api]
+display_timezone = "UTC"
+
+[operational_weather]
+route = "stored_reanalysis"
+
+[forecast_qc_rules]
+version = "deployment-smoke-hourly-1"
+
+[[forecast_qc_rules.rules]]
+rule_id = "negative_value"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0, value_max = 100000.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "flat_ensemble"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { tolerance = 0.001 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "ensemble_spread"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { min_spread_ratio = 0.01, max_spread_ratio = 10.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "climatology_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { k_sigma = 6.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "temporal_consistency"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { max_rate = 500.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "quantile_crossing"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = {}

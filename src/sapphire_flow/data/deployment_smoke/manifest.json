@@ -17,7 +17,8 @@
     "discharge_hourly.csv": "4a2870601743dc72151bc7720a3b2d39de81962f7f34d98b04899e02892a58e4",
     "scenario.json": "d3f3433b62222360dfb2f54e8e57bf6842642326263c818573128448deb3f62a",
     "qc-rules.toml": "6df7e7a27b7f53abd3f026a94c486c67331ef6ddc84cab1ea3dd604a51fd153b",
-    "expected-result.json": "cbe87a1d9247457043e5c182b227e9052137435f87f3a567920db4ec96307734"
+    "expected-result.json": "cbe87a1d9247457043e5c182b227e9052137435f87f3a567920db4ec96307734",
+    "runtime.toml": "a49ac4a83fa8ad59504f96d5a14f1a8ccd14e8e2d81013c6c45baa761b0176f5"
   },
   "pending": [
     "normal loader/QC integration qualification (M3b)",

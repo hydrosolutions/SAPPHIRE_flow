@@ -64,5 +64,11 @@ timestamps for future weather and set issue time to the final observation. The
 model's declared future grid and coverage checks remain strict. The planned audited
 artifact-import path does not require those helper-generated prediction inputs.
 
-Runtime commands, worker/API proof and administrator instructions belong to later
-milestones in `docs/plans/deployment-hello-world.md`.
+`runtime.toml` supplies the fixed smoke-only settings and hourly forecast-QC rules
+as the sole overlay of `qc-rules.toml`. This uses the existing config loader;
+Compose fixes the order and checks the image copies against packaged resources.
+The worker/API command is under local qualification. Its HTTP probe runs from the
+worker to the API inside the internal network; no ports are published and host
+access is not tested. See
+`docs/deployment/hello-world.md` for development use and the plan for the remaining
+runtime/CI gates. No complete installation pass is claimed by these resources.
