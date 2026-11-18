@@ -311,7 +311,17 @@ def run_load(
         )
         raise LoadRolledBack
     if not args.apply:
-        _out("\nRe-run with --apply to write.")
+        refused_hint = (
+            "run the dry run again."
+            if report.stale
+            else "add --allow-unchecked to save it anyway."
+        )
+        _out(
+            "\nRe-run with --apply to write."
+            if code != EXIT_REFUSED
+            else "\nWith --apply this load would be refused and nothing saved; "
+            + refused_hint
+        )
     return code
 
 
