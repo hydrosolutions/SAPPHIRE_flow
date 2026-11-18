@@ -201,9 +201,11 @@ Three facts decide whether this works:
 **Loading observations (Plan 540 M3a).** `load_station_observations` replaces the load part of
 the script below. It reads the station's gauge type and datum (set at station creation), converts
 the reading (staff gauge: `datum + value`; bridge sensor: `sensor elevation - value`), stores it
-and writes one audit row. It does not run quality checks yet (M3b); use the check part of the
-script below for that. Dry run by default; `--apply` writes; exit 3 means refused (for example
-the station has no datum):
+and writes one audit row, then runs the same Stage 1 quality checks as live ingest (in memory on
+a dry run). Dry run by default; `--apply` writes; exit 3 means refused: the station has no datum
+(range and outlier checks would be skipped), no quality rule applies to the series (too few
+readings per day), or the stored data changed while the checks ran. `--allow-unchecked` accepts
+the first two:
 
 ```bash
 uv run python -m sapphire_flow.cli.load_station_observations water-level \
@@ -213,7 +215,9 @@ uv run python -m sapphire_flow.cli.load_station_observations discharge ...   # s
 ```
 
 It prints one worked example (`reading 2 m -> stored 1482 m a.s.l. ...`), the first and last UTC
-instant, and "N of 30 days have a value". The time zone defaults to the station's; override with
+instant, the QC rule version and counts (passed, failed, suspect, unchecked), and "N of 30 daily
+values usable (passed or unchecked)". A new station has no history baseline yet, so it prints
+"history-based check not run: no baseline yet" (that check is not counted as passed). The time zone defaults to the station's; override with
 `--utc-offset-minutes 345` or `--zone Asia/Kathmandu`. If the values already are metres above sea
 level, pass `--value-kind level-masl`.
 
