@@ -1,0 +1,66 @@
+# Incomplete by design: copy with profile.example.toml into private storage.
+# Uncomment only choices supplied by data/model owners. Placeholder text is not
+# valid configuration. This short checklist is not a second defaults file.
+# Maintained field schemas: docs/spec/config-reference.toml.
+
+# ROOT FIELDS FIRST (before any [table] below).
+# Administrator: choose one named display zone, normally local; UTC is valid.
+# Named zones handle daylight saving; this does not set the hydrological grid.
+# default_display_timezone = "<named timezone>"
+# Retention/storage owner: choose a period compatible with forecast retention.
+# max_retention_days = <positive integer>
+# Scientific owner: choose the hydrological grid independently of display time.
+# daily_grid_origin = "<HH:MM>"
+# Keep existing activation restrictions; model training conventions need a
+# separate documented handoff and are not inferred from this display/grid choice.
+
+# Source owner: choose a supported history route and actual model capabilities.
+# reanalysis_source = "<supported history source>"
+# available_nwp_parameters = ["<supported forecast parameter>"]
+# available_past_only_nwp_parameters = ["<supported historical parameter>"]
+# Explicit [] is allowed for a capability set with no available parameters.
+# Only an enabled meteoswiss_nwp adapter consumes this publication-delay setting:
+# nwp_cycle_min_age_minutes = <provider publication delay in minutes>
+
+# Optional calendar and disabled-alert settings use existing typed defaults;
+# leave them omitted unless you need an override. See the profile defaults guide.
+
+# IDENTITY: administrator supplies matching tenant/write-authority declarations.
+# [deployment]
+# writable_tenants = ["<tenant code>"]
+# [tenants.<tenant code>]
+# name = "<private display name>"
+
+# SOURCES: select supported adapters; unsupported formats require developer work.
+# [adapters.river_stations]
+# type = "<supported observation adapter>"
+# [adapters.weather_forecast]
+# enabled = <true or false>
+# type = "<supported forecast adapter; required when enabled>"
+# [adapters.weather_reanalysis]
+# type = "<supported historical weather adapter>"
+# [adapters.weather_stations]
+# type = "<supported station-weather adapter>"
+# Adapter-specific fields and credentials are documented in the source references;
+# never put credentials here.
+
+# STATIONS/MODELS: files remain separate; declare references in the profile.
+# [onboarding]
+# tenant = "<same tenant code>"
+# data_source = "<supported onboarding source>"
+# basin_ids = ["<approved basin identifier>"]
+# Models/artifacts and rating units/datums require the separate model/data handoff;
+# selecting an adapter does not establish their suitability.
+
+# SCIENTIFIC POLICY: choose rules/thresholds with the agency's specialists.
+# [qc_rules]
+# rules = [<rule tables; see configuration reference>]
+# [forecast_qc_rules]
+# rules = [<rule tables; see configuration reference>]
+# [[danger_levels]]
+# level = <integer>
+# name = "<level label>"
+# ... complete probability/duration/direction fields from the reference ...
+# [[seasons]]
+# name = "<season label>"
+# months = [<month numbers>]

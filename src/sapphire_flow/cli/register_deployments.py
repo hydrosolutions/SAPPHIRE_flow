@@ -12,11 +12,14 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import structlog
 
 from sapphire_flow.config.river_stations import ForecastConfigOverlay
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 log = structlog.get_logger(__name__)
 
@@ -75,22 +78,26 @@ def _flow_source_root() -> str:
     return os.environ.get(_SOURCE_ROOT_ENV_VAR) or FLOW_SOURCE_ROOT
 
 
-def _only_deployments() -> frozenset[str]:
-    raw = os.environ.get(_ONLY_ENV_VAR, "")
+def _only_deployments(
+    environment: Mapping[str, str] | None = None,
+) -> frozenset[str]:
+    raw = (os.environ if environment is None else environment).get(_ONLY_ENV_VAR, "")
     return frozenset(name.strip() for name in raw.split(",") if name.strip())
 
 
-def _skipped_deployments() -> frozenset[str]:
+def _skipped_deployments(
+    environment: Mapping[str, str] | None = None,
+) -> frozenset[str]:
     """Deployment names a host opts out of (Plan 511 D4), comma-separated."""
-    raw = os.environ.get(_SKIP_ENV_VAR, "")
+    raw = (os.environ if environment is None else environment).get(_SKIP_ENV_VAR, "")
     return frozenset(name.strip() for name in raw.split(",") if name.strip())
 
 
-def _build_specs() -> list[DeploymentSpec]:
+def _build_specs(environment: Mapping[str, str] | None = None) -> list[DeploymentSpec]:
     """Build the deployment specs, minus any the host opts out of."""
-    specs = _all_specs()
-    skipped = _skipped_deployments()
-    only = _only_deployments()
+    specs = _all_specs(environment)
+    skipped = _skipped_deployments(environment)
+    only = _only_deployments(environment)
     if skipped and only:
         raise ValueError(f"{_SKIP_ENV_VAR} and {_ONLY_ENV_VAR} cannot both be set")
     known = {spec.deployment_name for spec in specs}
@@ -100,36 +107,43 @@ def _build_specs() -> list[DeploymentSpec]:
                 f"{env_var} names unknown deployments: {sorted(names - known)}"
             )
     if only:
-        log.info("deployments.subset", only=sorted(only))
+        if environment is None:
+            log.info("deployments.subset", only=sorted(only))
         return [spec for spec in specs if spec.deployment_name in only]
-    if "forecast-cycle" in skipped and any(
-        spec.forecast_config_overlay is not None for spec in specs
+    if (
+        environment is None
+        and "forecast-cycle" in skipped
+        and any(spec.forecast_config_overlay is not None for spec in specs)
     ):
         log.info("deployment.forecast_config_unused", reason="deployment_skipped")
     return [spec for spec in specs if spec.deployment_name not in skipped]
 
 
-def _all_specs() -> list[DeploymentSpec]:
+def build_deployment_specs(
+    environment: Mapping[str, str],
+) -> tuple[DeploymentSpec, ...]:
+    """Preview registrar specifications from explicit inputs without registration."""
+    return tuple(_build_specs(environment))
+
+
+def _all_specs(environment: Mapping[str, str] | None = None) -> list[DeploymentSpec]:
     """Build deployment specs with env-var-configurable schedules."""
+    env = os.environ if environment is None else environment
     forecast_overlay = ForecastConfigOverlay.parse(
-        os.environ.get("SAPPHIRE_FORECAST_CONFIG_OVERLAY")
+        env.get("SAPPHIRE_FORECAST_CONFIG_OVERLAY")
     )
-    cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
-    cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
-    cron_backup = os.environ.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
-    cron_weather_history = os.environ.get(
-        "SCHEDULE_INGEST_WEATHER_HISTORY", "0 6 * * *"
-    )
+    cron_ingest = env.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
+    cron_forecast = env.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
+    cron_backup = env.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
+    cron_weather_history = env.get("SCHEDULE_INGEST_WEATHER_HISTORY", "0 6 * * *")
     # Plan 146 D2: daily rolling ingest for the recap-Gateway snow-reanalysis
     # channel — a distinct time from ingest-weather-history so both never
     # contend for the DB at the same moment.
-    cron_snow_reanalysis = os.environ.get(
-        "SCHEDULE_INGEST_SNOW_REANALYSIS", "0 5 * * *"
-    )
+    cron_snow_reanalysis = env.get("SCHEDULE_INGEST_SNOW_REANALYSIS", "0 5 * * *")
     # Plan 111 route-C BAFU forecast collector. Hourly matches BAFU's issue
     # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
     # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
-    cron_bafu_forecast = os.environ.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
+    cron_bafu_forecast = env.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
     # Plan 136 BAFU LINDAS observation archive collector. Plan 176 D1:
     # LINDAS actually publishes on a 10-minute grid (the "hourly refresh"
     # claim that justified the old `37 * * * *` was measured and falsified
@@ -157,7 +171,7 @@ def _all_specs() -> list[DeploymentSpec]:
     # rather than overlaps runs, and a feed failing that long trips the D4
     # freshness alert regardless (see docs/plans/archive/189-audit-window-edge-and-
     # poll-bound.md § T2).
-    cron_bafu_observation = os.environ.get(
+    cron_bafu_observation = env.get(
         "SCHEDULE_COLLECT_BAFU_OBSERVATIONS",
         "1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58 * * * *",
     )

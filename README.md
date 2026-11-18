@@ -21,7 +21,7 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 |---|---|---|
 | Read station data and forecasts | [API guide](docs/api/README.md) | Read-only requests, authentication, examples and interpreting results. |
 | Run SAPPHIRE Flow locally | [Developer quick start](#developer-quick-start) | Development on your own machine, with public Swiss demo data. |
-| Deploy it on a server | [Deployment quick-start](docs/deployment-quickstart.md) | Setting up a fresh deployment for a new organization (Docker Compose, secrets, schedules). |
+| Deploy it on a server | [Deployment quick-start](docs/deployment-quickstart.md) | Create private deployment inputs from generic examples, reuse neutral defaults and check desired configuration; launching remains separate. |
 | Onboard new stations | [Onboard stations: the guide](docs/operations/onboarding-start-here.md) | Adding your organization's stations to an existing deployment, step by step. |
 | Get basins for my stations (hydromet admin, not a developer) | [Get approved basins](docs/operations/basin-operator-runbook.md#get-approved-basins-admin-checklist) | The first onboarding step: extract or attach the catchments of your stations and have a hydrologist approve them. Check "Before you start" there first. |
 

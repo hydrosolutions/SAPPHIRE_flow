@@ -102,6 +102,23 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: Observation QC threshold configuration
 
+- Generic private-deployment entry: `docs/deployment-quickstart.md` and
+  `docs/deployment/profiles.md`. `tools/deployment_profile.py` consumes the shared
+  typed evaluation and adds bounded render-only Compose evidence. There is no
+  built-in manifest catalogue or path-based validation exemption; neutral defaults
+  are name-allowlisted and values come from existing typed readers. It must not
+  start services, read credential files or silently drop pending checks. Test
+  exact CLI forms and safe failures in `tests/unit/tools/test_deployment_profile.py`.
+  `cli/register_deployments.py::build_deployment_specs(environment)` is the pure
+  schedule source; retain ambient behavior for runtime registration callers.
+
+- Agency-profile offline evaluation uses the same merge traversal with optional
+  provenance and an explicitly injected interpolation environment. Pure
+  `parse_onboarding_config`, `parse_qc_rules` and `parse_forecast_qc_rules` are shared
+  with their runtime loaders. Preserve QC overlay prohibitions and default parity;
+  test `tests/unit/config/test_overlay.py` and `test_deployment_profile.py` alongside
+  the reader tests. Safe preview must not invoke the DB-backed onboarding validator.
+
 - Read `config/onboarding.py::load_onboarding_config`,
   `config/_overlay.py::load_merged_toml`,
   `services/station_qc_overrides.py::resolve_station_qc_overrides` and
