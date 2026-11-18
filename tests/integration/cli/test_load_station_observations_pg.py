@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,8 +11,12 @@ import sqlalchemy as sa
 
 from sapphire_flow.cli import create_station as cs
 from sapphire_flow.cli import load_station_observations as lso
-from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
+from sapphire_flow.config.deployment_identity import (
+    DeploymentIdentityConfig,
+    load_deployment_identity_config,
+)
 from sapphire_flow.config.qc_rules import resolve_qc_rules
+from sapphire_flow.services.qc import Stage1QualityChecker
 from sapphire_flow.services.qc_datum import obs_qc_rule_version
 from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
@@ -272,3 +277,137 @@ class TestRefusedLoadIsRolledBack:
         rows = _stored(db_connection, station_id, "discharge")
         assert {s for _, _, s in rows} == {QcStatus.QC_UNCHECKED}
         assert _audit_rows(db_connection, station_id) == 1
+
+
+class TestDeploymentSmokeFixtureWithItsPinnedRules:
+    SMOKE = files("sapphire_flow").joinpath("data/deployment_smoke")
+
+    def _config(self, tmp_path: Path) -> Path:
+        path = tmp_path / "smoke.toml"
+        path.write_text(
+            self.SMOKE.joinpath("qc-rules.toml").read_text()
+            + '\n[deployment]\nwritable_tenants = ["smoke"]\n'
+        )
+        return path
+
+    def _run(
+        self,
+        conn: sa.Connection,
+        config: Path,
+        csv_text: str,
+        extra: list[str],
+    ) -> int:
+        identity = load_deployment_identity_config(config)
+        args = lso._parse_args(  # pyright: ignore[reportPrivateUsage]
+            [
+                "discharge", "--config", str(config), "--tenant", "smoke",
+                "--station-code", "SYN001", "--network", "synthetic",
+                "--csv", "x.csv", "--time-column", "time", "--value-column", "value",
+                "--zone", "UTC", *extra,
+            ]
+        )  # fmt: skip
+        return lso.run_load(
+            args,
+            text=csv_text,
+            identity=identity,
+            tenants=PgTenantStore(conn),
+            stations=PgStationStore(conn),
+            observations=PgObservationStore(conn),
+            audit=PgAuditLogStore(conn),
+            baselines=PgClimBaselineStore(conn),
+            qc_rules=resolve_qc_rules()[0],
+            clock=lambda: NOW,
+        )
+
+    def test_dry_run_then_apply_with_one_config_file(
+        self,
+        db_connection: sa.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        config = self._config(tmp_path)
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        identity = load_deployment_identity_config(config)
+        PgTenantStore(db_connection).ensure_tenant(
+            tenant_id=TenantId(uuid4()), code="smoke", name="Smoke"
+        )
+        scenario = json.loads(self.SMOKE.joinpath("scenario.json").read_text())
+        created = cs.run_create(
+            cs._parse_args(  # pyright: ignore[reportPrivateUsage]
+                [
+                    "--config",
+                    str(config),
+                    "--tenant",
+                    "smoke",
+                    "--apply",
+                    *[
+                        a
+                        for k, v in scenario.items()
+                        for a in (f"--{k.replace('_', '-')}", str(v))
+                    ],
+                ]
+            ),  # fmt: skip
+            identity=identity,
+            tenants=PgTenantStore(db_connection),
+            stations=PgStationStore(db_connection),
+            audit=PgAuditLogStore(db_connection),
+            ask=None,
+            new_id=uuid4,
+            clock=lambda: NOW,
+        )
+        assert created == 0
+        station = PgStationStore(db_connection).fetch_station_by_code(
+            "SYN001", "synthetic"
+        )
+        assert station is not None
+        text = self.SMOKE.joinpath("discharge_hourly.csv").read_text()
+        capsys.readouterr()
+
+        assert self._run(db_connection, config, text, []) == 0
+        assert "QC rule version: 1.2" in capsys.readouterr().out
+        assert _stored(db_connection, station.id, "discharge") == []
+        assert _audit_rows(db_connection, station.id) == 0
+
+        assert self._run(db_connection, config, text, ["--apply"]) == 0
+        out = capsys.readouterr().out
+        rows = _stored(db_connection, station.id, "discharge")
+        assert len(rows) == 72
+        assert {s for _, _, s in rows} == {QcStatus.QC_PASSED}
+        assert {v for _, v, _ in rows} == {"1.2"}
+        assert "3 of 30 daily values usable (passed or unchecked)" in out
+        assert "history-based check not run: no baseline yet" in out
+        stamps = {t for t, _, _ in rows}
+        assert {
+            f"2025-01-02T{hour}:00:00+00:00" for hour in ("21", "22", "23")
+        } <= stamps
+        assert _audit_rows(db_connection, station.id) == 1
+
+        rules = resolve_qc_rules()[0]
+        assert rules.version == "deployment-smoke-hourly-1"
+        stored = PgObservationStore(db_connection).fetch_observations(
+            station.id, "discharge", EPOCH, NOW
+        )
+        judged = {
+            rule_id: len(
+                Stage1QualityChecker()
+                .check_with_coverage(
+                    stored,
+                    rules,
+                    overrides=[],
+                    baselines=[],
+                    station_networks={station.id: "synthetic"},
+                    skipped_rule_ids=frozenset(
+                        r.rule_id for r in rules.rules if r.rule_id != rule_id
+                    ),
+                )
+                .judged
+            )
+            for rule_id in ("range_check", "rate_of_change", "spike", "gross_outlier")
+        }
+        assert judged == {
+            "range_check": 72,
+            "rate_of_change": 71,
+            "spike": 70,
+            "gross_outlier": 0,
+        }
