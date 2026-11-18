@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import random
 from datetime import UTC, datetime, timedelta
@@ -225,6 +227,12 @@ class TestDeploymentSmokeModel:
         assert frames[0].data.equals(frames[1].data)
 
     def test_weather_assembly_and_fi_adapter_preserve_fixture_contract(self) -> None:
+        discharge_rows = list(
+            csv.DictReader(
+                io.StringIO(_RESOURCES.joinpath("discharge_hourly.csv").read_text())
+            )
+        )
+        expected = json.loads(_RESOURCES.joinpath("expected-result.json").read_text())
         sid = StationId(UUID(int=1))
         binding = StationWeatherSource(
             station_id=sid,
@@ -261,8 +269,13 @@ class TestDeploymentSmokeModel:
             data=StationInputData(
                 past_targets=pl.DataFrame(
                     {
-                        "timestamp": [_ISSUE - n * _STEP for n in (3, 2, 1)],
-                        "discharge": [8.0, 9.0, 10.0],
+                        "timestamp": [
+                            datetime.fromisoformat(row["time"])
+                            for row in discharge_rows[-3:]
+                        ],
+                        "discharge": [
+                            float(row["value"]) for row in discharge_rows[-3:]
+                        ],
                     }
                 ),
                 past_dynamic=pl.DataFrame(
@@ -284,12 +297,18 @@ class TestDeploymentSmokeModel:
             >= DeploymentConfig(max_retention_days=600).min_operational_ensemble_size
         )
         assert ensemble.forecast_horizon_steps == 3
-        assert ensemble.values.filter(pl.col("member_id") == 1)[
-            "value"
-        ].to_list() == pytest.approx([10.1, 10.2, 10.4])
+        assert ensemble.values.height == 60
+        for step in expected["forecast"]:
+            actual = ensemble.values.filter(
+                pl.col("valid_time") == datetime.fromisoformat(step["valid_time"])
+            ).sort("member_id")
+            assert actual["member_id"].to_list() == expected["member_ids"]
+            assert actual["value"].to_list() == pytest.approx(
+                step["values"], abs=1e-8, rel=0
+            )
         assert future["timestamp"].to_list() == [_ISSUE + n * _STEP for n in (1, 2, 3)]
 
     def test_package_explicitly_remains_incomplete(self) -> None:
         manifest = json.loads(_RESOURCES.joinpath("manifest.json").read_bytes())
-        assert manifest["status"] == "pending_discharge_fixture"
-        assert not _RESOURCES.joinpath("discharge.csv").is_file()
+        assert manifest["status"] == "pending_loader_qc_integration"
+        assert manifest["qc_qualification"]["loaded_status"] == "not established"

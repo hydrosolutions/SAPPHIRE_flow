@@ -1,6 +1,6 @@
 {
   "scenario_id": "hello-world-v1",
-  "status": "pending_discharge_fixture",
+  "status": "pending_loader_qc_integration",
   "cycle_time": "2025-01-03T00:00:00Z",
   "display_timezone": "UTC",
   "station_timezone": "UTC",
@@ -13,12 +13,57 @@
   "sha256": {
     "model-config.json": "ff07706460ee64ab0ef82d46eba96dfafdf80790d4751f9c1cad47320e7f2dc2",
     "artifact.json": "53a152621a70a728c3f06bfdf1ef561005ba619ff37b4b9605e8967a0d717fc6",
-    "weather.csv": "f0b807ce1c4a852cf8b3a22e6fead3640401a118364d43f14e90f0527d6d7f39"
+    "weather.csv": "f0b807ce1c4a852cf8b3a22e6fead3640401a118364d43f14e90f0527d6d7f39",
+    "discharge_hourly.csv": "4a2870601743dc72151bc7720a3b2d39de81962f7f34d98b04899e02892a58e4",
+    "scenario.json": "d3f3433b62222360dfb2f54e8e57bf6842642326263c818573128448deb3f62a",
+    "qc-rules.toml": "6df7e7a27b7f53abd3f026a94c486c67331ef6ddc84cab1ea3dd604a51fd153b",
+    "expected-result.json": "cbe87a1d9247457043e5c182b227e9052137435f87f3a567920db4ec96307734"
   },
   "pending": [
-    "station-supported discharge CSV",
-    "normal loader/QC qualification",
-    "expected runtime forecast values",
+    "normal loader/QC integration qualification (M3b)",
+    "runtime health/input-quality codes and API response shape",
     "worker/API execution"
-  ]
+  ],
+  "station_metadata": "scenario.json",
+  "tenant": "smoke",
+  "tenant_binding": "supplied at setup; absent from station source metadata",
+  "discharge": {
+    "file": "discharge_hourly.csv",
+    "columns": [
+      "time",
+      "value"
+    ],
+    "unit": "m3/s",
+    "rows": 72,
+    "first_timestamp": "2024-12-31T00:00:00Z",
+    "last_timestamp": "2025-01-02T23:00:00Z",
+    "interval_seconds": 3600,
+    "last_value": 19.737592
+  },
+  "provenance": {
+    "commit": "3ea1c2ec752faf916e8aa64023a6190cb0b7ec65",
+    "pull_request": 554,
+    "copied_files": {
+      "discharge_hourly.csv": "tests/fixtures/synthetic_station/discharge_hourly.csv",
+      "scenario.json": "tests/fixtures/synthetic_station/scenario.json"
+    },
+    "qc_source": "src/sapphire_flow/config/qc_rules.py: builtin_default 1.0.0 hourly discharge rules only",
+    "qc_snapshot": "qc-rules.toml",
+    "expected_result_method": "Decimal reference arithmetic: 19.737592 + 0.1 * [1,2,4] + 0.01 * m, m=0..19; not model-generated"
+  },
+  "qc_qualification": {
+    "scope": "pure Stage1QualityChecker.check_with_coverage; no loader or database",
+    "rule_set_version": "deployment-smoke-hourly-1",
+    "judged": 72,
+    "flags": 0,
+    "rule_judged_counts": {
+      "range_check": 72,
+      "rate_of_change": 71,
+      "spike": 70,
+      "gross_outlier": 0
+    },
+    "gross_outlier": "unavailable without climatology baseline",
+    "frozen_sensor": "not configured for hourly discharge",
+    "loaded_status": "not established"
+  }
 }
