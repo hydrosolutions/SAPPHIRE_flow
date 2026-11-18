@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 import threading
 from contextlib import suppress
@@ -52,6 +53,8 @@ from sapphire_flow.types.gateway_preparation import (
     ForecastScope,
     HistoryScope,
     PreparationState,
+    PrepareFailureReason,
+    PrepareHeld,
     ProductContract,
     RegistrationStatus,
     SubscriptionPlan,
@@ -178,6 +181,27 @@ def _load_explicit_api_key(path: Path) -> str:
     return key
 
 
+_REASON_SENTENCES: dict[PrepareFailureReason, str] = {
+    PrepareFailureReason.SCOPE_INCOMPLETE: (
+        "Gateway preparation held: the scope has unresolved required inputs; "
+        "complete them in the scope file and run prepare again.\n"
+    ),
+    PrepareFailureReason.OTHER: (
+        "Gateway preparation held or failed. Inspect local state and "
+        "unresolved scope; no automatic retry.\n"
+    ),
+}
+
+
+def _failure_sentence(reason: PrepareFailureReason, workspace: Path) -> str:
+    if reason is PrepareFailureReason.EVIDENCE_DIR_NOT_PRIVATE:
+        return (
+            "Gateway preparation held: the evidence folder must be private; "
+            f"run `chmod 700 {shlex.quote(str(workspace))}`.\n"
+        )
+    return _REASON_SENTENCES[reason]
+
+
 def run(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     if threading.current_thread() is not threading.main_thread():
@@ -282,12 +306,14 @@ def run(arguments: list[str] | None = None) -> int:
                     finally:
                         adapter.close()
             return _show(state, instructions=instructions)
-    except (ValueError, OSError, ConfigurationError, ValidationError):
+    except (ValueError, OSError, ConfigurationError, ValidationError) as error:
         # Do not print raw third-party exception text, URLs, bodies or chains.
-        sys.stderr.write(
-            "Gateway preparation held or failed. Inspect local state and "
-            "unresolved scope; no automatic retry.\n"
+        reason = (
+            error.reason
+            if isinstance(error, PrepareHeld)
+            else PrepareFailureReason.OTHER
         )
+        sys.stderr.write(_failure_sentence(reason, workspace))
         if state is not None:
             try:
                 with preparation_workspace(workspace, handover=source):

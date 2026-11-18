@@ -1364,3 +1364,51 @@ def test_cli_malformed_native_responses_keep_distinct_digest_without_raw_values(
     state = (case.workspace / "state.json").read_text()
     assert case.secret not in state + json.dumps(second)
     assert '"raw"' not in state and '"values"' not in state
+
+
+def test_group_readable_evidence_folder_names_reason_and_exit_2(
+    approved: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder = tmp_path / "evidence"
+    folder.mkdir()
+    folder.chmod(0o755)
+    scope = tmp_path / "scope.json"
+    scope.write_text('{"time_step_seconds": 3600, "api_key": "SENTINEL-KEY"}')
+    assert (
+        prepare_gateway.run(
+            [*arguments(folder, approved), "prepare", "--scope", str(scope)]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"Gateway preparation held: the evidence folder must be private; "
+        f"run `chmod 700 {folder}`.\n"
+    )
+    assert "SENTINEL-KEY" not in captured.out + captured.err
+    assert "http" not in captured.err
+
+
+def test_incomplete_scope_confirmation_names_reason_and_exit_2(
+    gateway_cli: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = gateway_cli
+    source = json.loads(case.scope.read_text())
+    source["forecast"]["source_runs"] = []
+    case.scope.write_text(json.dumps(source))
+    preview = invoke_cli(case, ["prepare", "--scope", str(case.scope)], capsys)
+    command = [
+        *case.argv,
+        "prepare",
+        "--scope",
+        str(case.scope),
+        "--confirm",
+        preview["proposal_revision"],
+    ]
+    assert prepare_gateway.run(command) == 2
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "Gateway preparation held: the scope has unresolved required inputs; "
+        "complete them in the scope file and run prepare again.\n"
+    )
+    assert "http" not in captured.err and "key" not in captured.err.lower()

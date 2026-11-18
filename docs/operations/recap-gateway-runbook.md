@@ -41,6 +41,8 @@ Details and rules for every step are in § Technical reference below.
 
 Exit code `0` = this Gateway scope passed (not model readiness). `2` = something is held.
 
+When a run is held, stderr names the reason in one fixed sentence: the evidence folder is not private (run `chmod 700` on it), the scope has unresolved required inputs (complete the scope file and run `prepare` again), or the generic "Gateway preparation held or failed" line for anything else. No raw error text, key or URL is printed; exit status stays `2`.
+
 ### Copy-paste
 
 ```bash
