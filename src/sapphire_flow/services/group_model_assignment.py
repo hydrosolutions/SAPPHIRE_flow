@@ -1,7 +1,8 @@
 """Plan 540 M5-assign: plan and apply a station-group model assignment.
 
 The plan reads only; the apply calls ``create_group_assignment`` (which writes the
-assignment and its ``MODEL_ASSIGNED`` audit row) and only when the plan says CREATE.
+assignment and its ``MODEL_ASSIGNED`` audit row) unless the plan is a no-op. A
+differing ACTIVE assignment is overwritten (time step, priority, created_at).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sapphire_flow.services.write_principal import enforce_tenant_isolation
 from sapphire_flow.types.enums import AuditEventType, ModelAssignmentStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable
 
     from sapphire_flow.protocols.stores import (
         AuditLogStore,
@@ -62,7 +63,6 @@ def plan_group_assignment(
     priority: int,
     groups: StationGroupStore,
     models: ModelStore,
-    discovered_models: Collection[ModelId],
     principal: WritePrincipal,
     clock: Callable[[], UtcDatetime],
 ) -> AssignmentPlan:
@@ -84,9 +84,9 @@ def plan_group_assignment(
         detail={"model_id": str(model_id)},
         now=clock(),
     )
-    if model_id not in discovered_models and models.fetch_model(model_id) is None:
+    if models.fetch_model(model_id) is None:
         raise AssignmentRefusedError(
-            f"unknown model {model_id!r}: not installed and no models row "
+            f"unknown model {model_id!r}: no models row "
             "(import the model artifact first)"
         )
     existing = next(

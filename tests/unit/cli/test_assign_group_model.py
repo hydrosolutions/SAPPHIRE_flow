@@ -16,6 +16,7 @@ from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     ModelId,
     StationGroupId,
+    TenantId,
 )
 from sapphire_flow.types.model import ModelRecord
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
@@ -54,6 +55,15 @@ class Rig:
             tenant_id=DEFAULT_TENANT_ID,
         )
         self.groups.store_group(self.group)
+        self.models.register_model(
+            ModelRecord(
+                id=MODEL,
+                display_name="x",
+                artifact_scope=ArtifactScope.GROUP,
+                description="",
+                created_at=NOW,
+            )
+        )
 
     def seed(self, status: ModelAssignmentStatus, hours: int = 24) -> None:
         self.groups.store_group_model_assignment(
@@ -71,7 +81,6 @@ class Rig:
         self,
         extra: list[str] | None = None,
         *,
-        discovered: frozenset[ModelId] = frozenset({MODEL}),
         identity: DeploymentIdentityConfig = SCOPED,
         base: list[str] | None = None,
     ) -> int:
@@ -83,7 +92,6 @@ class Rig:
             groups=self.groups,
             models=self.models,
             audit=self.audit,
-            discovered_models=discovered,
             clock=lambda: NOW,
         )
 
@@ -126,21 +134,45 @@ class TestAssignGroupModel:
 
     def test_unknown_model_is_refused(self) -> None:
         rig = Rig()
-        assert rig.run(["--apply"], discovered=frozenset()) == 3
+        base = [*BASE]
+        base[5] = "no_such_model"
+        assert rig.run(["--apply"], base=base) == 3
         assert rig.assignments() == []
 
-    def test_model_row_without_installed_class_is_accepted(self) -> None:
+    def test_installed_model_without_models_row_is_refused(self) -> None:
+        # the models row (artifact import) is required even if the class is installed
         rig = Rig()
-        rig.models.register_model(
-            ModelRecord(
-                id=MODEL,
-                display_name="x",
-                artifact_scope=ArtifactScope.GROUP,
-                description="",
+        rig.models = FakeModelStore()
+        assert rig.run(["--apply"]) == 3
+        assert rig.assignments() == []
+
+    def test_differing_active_assignment_is_rewritten(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = Rig()
+        rig.seed(ModelAssignmentStatus.ACTIVE, hours=12)
+        assert rig.run() == 0
+        assert "REWRITE" in capsys.readouterr().out
+        assert rig.assignments()[0].time_step == timedelta(hours=12)
+        assert rig.run(["--apply"]) == 0
+        (assignment,) = rig.assignments()
+        assert assignment.time_step == timedelta(days=1)
+        assert len(rig.audit.entries) == 1
+
+    def test_group_in_another_tenant_is_refused(self) -> None:
+        rig = Rig()
+        rig.groups = FakeStationGroupStore()
+        rig.groups.store_group(
+            StationGroup(
+                id=rig.group.id,
+                name="g1",
+                station_ids=frozenset(),
                 created_at=NOW,
+                tenant_id=TenantId(uuid4()),
             )
         )
-        assert rig.run(["--apply"], discovered=frozenset()) == 0
+        assert rig.run(["--apply"]) == 3
+        assert rig.assignments() == []
 
     def test_unknown_group_is_refused(self) -> None:
         rig = Rig()
@@ -159,6 +191,6 @@ class TestAssignGroupModel:
         rig = Rig()
         base = [*BASE]
         base[5] = str(CLIMATOLOGY_FALLBACK_MODEL_ID)
-        code = rig.run(base=base, discovered=frozenset({CLIMATOLOGY_FALLBACK_MODEL_ID}))
+        code = rig.run(base=base)
         assert code == 2
         assert rig.assignments() == []

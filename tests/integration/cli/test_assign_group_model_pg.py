@@ -37,7 +37,6 @@ def _run(conn: sa.Connection, args: list[str]) -> int:
         groups=PgStationGroupStore(conn, transaction_factory=lambda: nullcontext(conn)),
         models=PgModelStore(conn),
         audit=PgAuditLogStore(conn),
-        discovered_models=frozenset(),
         clock=lambda: NOW,
     )
 

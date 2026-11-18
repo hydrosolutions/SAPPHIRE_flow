@@ -356,8 +356,9 @@ station into the forecast cycle, and demoting it later can lose observations.
      --group-name my-group --model cmal_small --time-step-hours 24 [--priority 1] [--apply]
    ```
 
-   It refuses an unknown model or group and an INACTIVE assignment, and re-running an
-   identical ACTIVE assignment changes nothing.
+   It refuses a model without a `models` row (import the artifact first), an unknown group
+   and an INACTIVE assignment. Re-running an identical ACTIVE assignment changes nothing; an
+   ACTIVE one that differs is overwritten (time step, priority, `created_at`).
 3. **Forecast configuration (not in the guide before):** run with the base `config.toml`, the
    overlays `nepal-cloud.toml` and `nepal-daily-weather.toml`, and a last overlay of your own:
 

@@ -29,7 +29,6 @@ from sapphire_flow.services.group_model_assignment import (
     apply_group_assignment,
     plan_group_assignment,
 )
-from sapphire_flow.services.model_registry import discover_models
 from sapphire_flow.services.write_principal import resolve_run_principal
 from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.model_store import PgModelStore
@@ -39,7 +38,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ModelId
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Callable, Sequence
 
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.stores import (
@@ -81,7 +80,6 @@ def run_assign(
     groups: StationGroupStore,
     models: ModelStore,
     audit: AuditLogStore,
-    discovered_models: Collection[ModelId],
     clock: Callable[[], UtcDatetime],
 ) -> int:
     try:
@@ -97,7 +95,6 @@ def run_assign(
             priority=args.priority,
             groups=groups,
             models=models,
-            discovered_models=discovered_models,
             principal=principal,
             clock=clock,
         )
@@ -154,7 +151,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path = _config_path(args.config)
         os.environ["SAPPHIRE_CONFIG"] = config_path
         identity = load_deployment_identity_config(config_path)
-        discovered = frozenset(discover_models())
         with create_engine_from_env().begin() as conn:
             return run_assign(
                 args,
@@ -165,7 +161,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 models=PgModelStore(conn),
                 audit=PgAuditLogStore(conn),
-                discovered_models=discovered,
                 clock=lambda: ensure_utc(datetime.now(UTC)),
             )
     except ConfigurationError as exc:
