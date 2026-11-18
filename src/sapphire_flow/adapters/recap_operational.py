@@ -126,9 +126,16 @@ def parse_operational_samples(
             seen.add(valid_time)
             raw_meta = cast("object", series["source_meta"])
             if isinstance(raw_meta, str):
-                _SourceMetadata.model_validate_json(raw_meta)
+                metadata = _SourceMetadata.model_validate_json(raw_meta)
             else:
-                _SourceMetadata.model_validate(raw_meta)
+                metadata = _SourceMetadata.model_validate(raw_meta)
+            if (
+                source is OperationalWeatherSource.IFS
+                and metadata.grid_resolution != 0.1
+            ):
+                raise ValueError(
+                    "operational IFS contradicts qualified HRES 0.1-degree product"
+                )
             row = _ProviderSample.model_validate(
                 {
                     "source": source,
@@ -496,34 +503,54 @@ class RecapGatewayOperationalAdapter:
                 max_response_bytes=self._config.max_response_bytes,
                 mode="identity",
             )
-        try:
-            optional = tuple(
-                sample
-                for parameter in ("precipitation", "temperature")
-                for sample in parse_operational_samples(
-                    responses[parameter],
-                    polygon=ref.polygon_name,
-                    parameter=parameter,
-                    start=end,
-                    end=buffer_end,
-                    max_response_bytes=self._config.max_response_bytes,
+        # Keep the complete prefix, including when the provider's last day is
+        # partial. Slice first rather than rescanning the entire history daily.
+        days = list(required.days)
+        cursor = end
+        while cursor < buffer_end:
+            next_day = ensure_utc(cursor + timedelta(days=1))
+            try:
+                optional = tuple(
+                    sample
+                    for parameter in ("precipitation", "temperature")
+                    for sample in parse_operational_samples(
+                        _response_day(responses[parameter], cursor, next_day),
+                        polygon=ref.polygon_name,
+                        parameter=parameter,
+                        start=cursor,
+                        end=next_day,
+                        max_response_bytes=self._config.max_response_bytes,
+                    )
                 )
-            )
-        except OperationalWeatherSupportError:
-            return required
-        try:
-            buffer = reduce_daily_window(
-                station_id=source.station_id,
-                binding_fingerprint=fingerprint,
-                issue_time=issue_time,
-                start=end,
-                end=buffer_end,
-                samples=optional,
-            )
-            return replace(required, end=buffer_end, days=required.days + buffer.days)
-        except OperationalWeatherCoverageError:
-            # Optional incomplete support cannot invalidate the required past.
-            return required
-        except ValueError:
-            # Identity is validated above; only optional day support differs.
-            return required
+                buffer = reduce_daily_window(
+                    station_id=source.station_id,
+                    binding_fingerprint=fingerprint,
+                    issue_time=issue_time,
+                    start=cursor,
+                    end=next_day,
+                    samples=optional,
+                )
+            except (
+                OperationalWeatherSupportError,
+                OperationalWeatherCoverageError,
+                ValueError,
+            ):
+                break
+            days.extend(buffer.days)
+            cursor = next_day
+        return replace(required, end=cursor, days=tuple(days))
+
+
+def _response_day(
+    response: object, start: UtcDatetime, end: UtcDatetime
+) -> pd.DataFrame:
+    if not isinstance(response, pd.DataFrame):
+        raise RecapPayloadIntegrityError("operational response is not a dataframe")
+    if not isinstance(response.index, pd.DatetimeIndex):
+        raise RecapPayloadIntegrityError("operational response has invalid time index")
+    index = (
+        response.index.tz_localize("UTC")  # pyright: ignore[reportUnknownMemberType] -- pandas stub tz parameter
+        if response.index.tz is None
+        else response.index.tz_convert("UTC")  # pyright: ignore[reportUnknownMemberType] -- pandas stub tz parameter
+    )
+    return cast("pd.DataFrame", response.loc[(index >= start) & (index < end)])

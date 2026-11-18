@@ -510,6 +510,37 @@ def _run_selected_cycle(
             **cycle_options,
         )
 
+    archive = stores["nwp_store"]
+    write_archive = archive.store_weather_forecasts
+
+    def preserve_identical_archive_rows(
+        records: list[WeatherForecastRecord],
+    ) -> None:
+        # The general fake appends; real PostgreSQL has a natural-key upsert.
+        # Keep the old IDs/timestamps on an identical refresh, as that store does.
+        fresh = []
+        for row in records:
+            matches = [
+                old
+                for old in archive.fetch_weather_forecasts(
+                    row.station_id, row.nwp_source, row.cycle_time, [row.parameter]
+                )
+                if (old.valid_time, old.member_id, old.band_id, old.spatial_type)
+                == (row.valid_time, row.member_id, row.band_id, row.spatial_type)
+            ]
+            if matches:
+                assert len(matches) == 1
+                assert (
+                    replace(row, id=matches[0].id, created_at=matches[0].created_at)
+                    == matches[0]
+                )
+            else:
+                fresh.append(row)
+        write_archive(fresh)
+
+    monkeypatch.setattr(
+        archive, "store_weather_forecasts", preserve_identical_archive_rows
+    )
     counts: list[int] = []
     for run_index in range(execution_runs):
         execution_time = ensure_utc(ISSUE + timedelta(hours=6 * run_index))
@@ -536,37 +567,6 @@ def _run_selected_cycle(
         if configure_refresh is not None:
             cycle_options.update(configure_refresh(stores))
         observed.clear()
-        archive = stores["nwp_store"]
-        write_archive = archive.store_weather_forecasts
-
-        def preserve_identical_archive_rows(
-            records: list[WeatherForecastRecord],
-        ) -> None:
-            # The general fake appends; real PostgreSQL has a natural-key upsert.
-            # Keep the old IDs/timestamps on an identical refresh, as that store does.
-            fresh = []
-            for row in records:
-                matches = [
-                    old
-                    for old in archive.fetch_weather_forecasts(
-                        row.station_id, row.nwp_source, row.cycle_time, [row.parameter]
-                    )
-                    if (old.valid_time, old.member_id, old.band_id, old.spatial_type)
-                    == (row.valid_time, row.member_id, row.band_id, row.spatial_type)
-                ]
-                if matches:
-                    assert len(matches) == 1
-                    assert (
-                        replace(row, id=matches[0].id, created_at=matches[0].created_at)
-                        == matches[0]
-                    )
-                else:
-                    fresh.append(row)
-            write_archive(fresh)
-
-        monkeypatch.setattr(
-            archive, "store_weather_forecasts", preserve_identical_archive_rows
-        )
         if refresh_case in ("retained_subset", "retained_corrupt"):
             model.data_requirements = replace(
                 model.data_requirements, forecast_horizon_steps=5
@@ -620,7 +620,7 @@ def _run_selected_cycle(
                     freq="h",
                 )
                 raw_value = 0.001 if kwargs["ifs_variable_name"] == "tp" else 284.15
-                return pd.DataFrame(
+                history = pd.DataFrame(
                     {
                         **{name: raw_value for name in polygons},
                         "source": "era5_land",
@@ -629,6 +629,14 @@ def _run_selected_cycle(
                     },
                     index=index,
                 )
+                parameter = (
+                    "precipitation"
+                    if kwargs["ifs_variable_name"] == "tp"
+                    else "temperature"
+                )
+                tail = pd.read_parquet(FIXTURES / f"{parameter}.parquet")
+                tail = tail.loc[tail.index >= ISSUE]
+                return pd.concat([history, tail])
 
             monkeypatch.setattr(api, "operational", complete_reanalysis)
         elif refresh_case == "mixed_cycles":
@@ -719,9 +727,17 @@ def _run_selected_cycle(
                 assert all(
                     sample.source.value == "era5_land"
                     for day in entry.past_snapshot.window.days
+                    if day.day < ISSUE
                     for sample in day.samples
                 )
-                assert entry.past_snapshot.window.days[-1].precipitation_mm == 24.0
+                assert (
+                    next(
+                        day
+                        for day in entry.past_snapshot.window.days
+                        if day.day == ISSUE - timedelta(days=1)
+                    ).precipitation_mm
+                    == 24.0
+                )
     if expected_health is not None:
         assert result.health is expected_health, result
     if capture_fault != "none":
@@ -1266,16 +1282,16 @@ class TestSelectedWeatherIssuance:
 
         return configure
 
-    def test_scheduled_retry_skips_delivered_issue_day(
+    def test_scheduled_retry_refreshes_without_duplicate_publication(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Two automatic ticks on the same Nepal day (00:00 and 06:00 UTC).
         def verify(result: ForecastCycleResult, stores: dict[str, object]) -> None:
             forecasts = stores["forecast_store"].fetch_forecasts_for_cycle(ISSUE)
-            assert result.health is ForecastCycleHealth.HEALTHY
-            assert result.stations_attempted == 0
-            assert result.forecasts_stored == 0
+            assert result.health is ForecastCycleHealth.DEGRADED
+            assert result.stations_attempted == 1
+            assert result.forecasts_stored == 1
             assert len(forecasts) == 1
             assert forecasts[0].created_at == ISSUE
 
@@ -1289,11 +1305,9 @@ class TestSelectedWeatherIssuance:
                 execution_runs=2,
                 data_use=ForecastDataUse.PROVISIONAL_RATING,
             )
-        assert [
-            (entry["cycle_time"], entry["forecasts"], entry["stations"])
-            for entry in captured
-            if entry["event"] == "forecast_cycle.already_delivered"
-        ] == [(ISSUE.isoformat(), 1, 1)]
+        assert not any(
+            entry["event"] == "forecast_cycle.already_delivered" for entry in captured
+        )
         assert not any(
             entry["event"] == "forecast_cycle.no_forecasts_stored" for entry in captured
         )
@@ -1410,6 +1424,7 @@ class TestSelectedWeatherIssuance:
                 capture_fault="none",
                 future_support_days=3,
                 expected_forecasts=0,
+                weather_legs="future",
             )
         [entry] = [
             entry

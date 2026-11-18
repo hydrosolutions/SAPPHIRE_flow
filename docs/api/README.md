@@ -315,6 +315,12 @@ input flag. Keep the backend's detail text visible rather than treating every
 empty flag list means something different. Overview `input_quality_codes` contain
 compact `category:level` pairs; retrieve detail for full messages.
 
+Retained operational weather is reported separately from estimated gaps. Its
+past-weather detail states the original retrieval time and contributing IFS runs
+and lead. A later successful run can replace the current forecast for the same
+issue day, including when runoff values stay equal but weather improves. Refresh
+the forecast list to find its current ID; earlier IDs retain their evidence.
+
 Read units from the payload when supplied. Discharge is expressed in cubic metres
 per second (`m³/s` or `m3/s`); water level is in metres, with the gauge/absolute
 reference determined by station datum metadata. Do not compare levels from

@@ -15,7 +15,8 @@ findings. Both approve the amended plan; the owner has accepted the recommended
 72-hour past-lead limit, resolving the remaining condition. These are review
 perspectives, not measured Nepal skill results
 or a licensed human's certification. Full reports remain outside the repository.
-No implementation or deployment has begun.
+Implementation started on `feat/retained-operational-weather`; deployment remains
+a separate post-merge step.
 
 ## Outcome and boundaries
 

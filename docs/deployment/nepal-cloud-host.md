@@ -137,3 +137,19 @@ Also confirm from outside that only 22, 80 and 443 answer, and that no Prefect p
 `backup-database` stays registered and writes dumps to the local `backups` volume only; **off-box backup is
 not set up** (Plan 511 D9) — do not load restricted data before that follow-on is planned
 (`docs/decisions/2026-09-30-dhm-data-hosting-assumption.md`).
+
+## Retained operational weather rollout
+
+After deploying the retained-weather patch, run a normal successful forecast
+while the gateway is available. Verify that each selected station's paired cache
+contains the complete available native forecast tail, beyond the model's current
+horizon. Old one-day cache tails cannot recover discarded data. Do not claim
+fallback readiness until this seeding step succeeds.
+
+The Nepal overlay retains up to 15 supplied days, limits IFS reuse as past weather
+to 72 hours of original support lead, and keeps the 60-hour future-cycle age
+limit. Retention lasts until a usable replacement; eligibility is checked on use.
+The four existing daily forecast ticks now run even after a morning delivery.
+Verify the morning forecast's retained-weather flags and the later fresh-weather
+replacement by their IDs and evidence. Earlier successful forecasts remain
+available if an update fails. No operational-product archive is assumed upstream.

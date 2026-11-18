@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 
 from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
@@ -9,9 +10,17 @@ from sapphire_flow.flows.ingest_recap_era5_reanalysis import (
 )
 from sapphire_flow.protocols.adapters import OperationalWeatherPeriodSource
 from sapphire_flow.protocols.stores import OperationalWeatherPeriodCacheStore
+from sapphire_flow.services.retained_operational_weather import (
+    RetainedPastRequirement,
+    SnapshotSupport,
+    retained_future_samples,
+    retained_tail_cycle,
+    snapshot_support,
+)
 from sapphire_flow.store.operational_weather_codec import (
     WeatherSnapshotSizeError,
     make_past_snapshot,
+    verify_past_snapshot,
 )
 from sapphire_flow.types.operational_weather import (
     FutureWeatherAttempt,
@@ -53,6 +62,7 @@ if TYPE_CHECKING:
         StationStore,
         WeatherForecastStore,
     )
+    from sapphire_flow.services.track_resolution import AcceptedCandidate
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forcing_track import (
         ForcingRequired,
@@ -66,6 +76,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.operational_weather_v2 import FutureWeatherScopeV2
     from sapphire_flow.types.station import StationWeatherSource
     from sapphire_flow.types.time_grid import TimeGrid
+    from sapphire_flow.types.weather_gap import WeatherGapFill
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
@@ -110,6 +121,8 @@ class StationWeatherRefresh:
     source: StationWeatherSource
     past_requirement: PastWeatherRequirement | PastWeatherRequirementV2 | None
     future_requests: tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...]
+    retained_past_requirements: tuple[RetainedPastRequirement, ...] = ()
+    retained_future_bindings: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.source.station_id != self.key.station_id or any(
@@ -142,9 +155,19 @@ class OperationalWeatherRefresh:
         max_past_bytes: int,
         grid: TimeGrid | None = None,
         eligibility_cutoff: UtcDatetime | None = None,
+        weather_store: WeatherForecastStore | None = None,
+        earliest_cycle: UtcDatetime | None = None,
+        max_retained_past_lead: timedelta = timedelta(hours=72),
     ) -> None:
         if len({spec.key.station_id for spec in specs}) != len(specs):
             raise ValueError("weather refresh repeats a station")
+        if (
+            any(spec.retained_past_requirements for spec in specs)
+            and earliest_cycle is None
+        ):
+            raise ValueError(
+                "retained weather selection requires its receipt expiry boundary"
+            )
         if grid is not None:
             if eligibility_cutoff is None or not isinstance(
                 cache, OperationalWeatherPeriodCacheStore
@@ -209,6 +232,12 @@ class OperationalWeatherRefresh:
             StationId, WeatherCacheCompletion | WeatherCacheCompletionV2
         ] = {}
         self._completed: dict[StationId, CompletedStationWeather] = {}
+        self._previous: dict[StationId, WeatherCacheEntry] = {}
+        self._selected: dict[StationId, WeatherPastSnapshot] = {}
+        self._retained_receipts: dict[FutureWeatherRequest, FutureWeatherReceipt] = {}
+        self._weather_store = weather_store
+        self._earliest_cycle = earliest_cycle
+        self._max_retained_past_lead = max_retained_past_lead
 
     def begin(self) -> None:
         if self._attempts:
@@ -243,6 +272,11 @@ class OperationalWeatherRefresh:
                         "tuple[FutureWeatherRequest, ...]", spec.future_requests
                     ),
                 )
+                previous = cast("OperationalWeatherCacheStore", self._cache).fetch(
+                    spec.key
+                )
+                if previous is not None:
+                    self._previous[sid] = previous
 
     def fetch_past(
         self,
@@ -307,15 +341,38 @@ class OperationalWeatherRefresh:
                 )
             if set(windows) != {source.station_id for source in sources}:
                 raise ValueError("combined weather response station set mismatch")
-            snapshots = {
-                sid: make_past_snapshot(
-                    window=window,
-                    retrieved_at=self._clock(),
-                    snapshot_id=self._id_gen(),
-                    max_bytes=self._max_past_bytes,
-                )
-                for sid, window in windows.items()
-            }
+            snapshots: dict[StationId, WeatherPastSnapshot | WeatherPastSnapshotV2] = {}
+            for sid, window in windows.items():
+                if (
+                    window.binding_fingerprint
+                    != self._specs[sid].key.binding_fingerprint
+                ):
+                    raise ValueError("combined weather binding changed during refresh")
+                try:
+                    snapshot = make_past_snapshot(
+                        window=window,
+                        retrieved_at=self._clock(),
+                        snapshot_id=self._id_gen(),
+                        max_bytes=self._max_past_bytes,
+                    )
+                except WeatherSnapshotSizeError:
+                    self._past[sid] = WeatherLegOutcome(
+                        state=WeatherLegState.UNAVAILABLE,
+                        reason=WeatherFailureReason.MISSING_SUPPORT,
+                    )
+                    continue
+                if (
+                    isinstance(snapshot, WeatherPastSnapshot)
+                    and self._specs[sid].retained_past_requirements
+                ):
+                    chosen = self._select_snapshot(sid, snapshot)
+                    if chosen is not snapshot:
+                        self._past[sid] = WeatherLegOutcome(
+                            state=WeatherLegState.UNAVAILABLE,
+                            reason=WeatherFailureReason.MISSING_SUPPORT,
+                        )
+                        continue
+                snapshots[sid] = snapshot
             if any(
                 snapshot.window.binding_fingerprint
                 != self._specs[sid].key.binding_fingerprint
@@ -338,6 +395,221 @@ class OperationalWeatherRefresh:
                 )
             )
             raise
+
+    def _select_snapshot(
+        self, sid: StationId, fresh: WeatherPastSnapshot | None = None
+    ) -> WeatherPastSnapshot | None:
+        from sapphire_flow.services.selected_weather_inputs import (
+            qualified_stored_weather_donors,
+        )
+
+        spec = self._specs[sid]
+        previous = self._previous.get(sid)
+        old = None if previous is None else previous.past_snapshot
+        if not spec.retained_past_requirements:
+            return None
+        requests = cast("tuple[FutureWeatherRequest, ...]", spec.future_requests)
+        donors: dict[tuple[str, UtcDatetime], WeatherGapFill] = {}
+        if previous is not None and self._weather_store is not None:
+            from dataclasses import replace
+
+            donor_entry = replace(
+                previous,
+                future_receipts=tuple(
+                    receipt
+                    for receipt in previous.future_receipts
+                    if self._earliest_cycle is None
+                    or receipt.cycle_time >= self._earliest_cycle
+                ),
+            )
+            for policy in spec.retained_past_requirements:
+                stamps = {
+                    policy.past.start + timedelta(days=i)
+                    for i in range((policy.past.end - policy.past.start).days)
+                }
+                for request in requests:
+                    donors.update(
+                        cast(
+                            "dict[tuple[str, UtcDatetime], WeatherGapFill]",
+                            qualified_stored_weather_donors(
+                                station_id=sid,
+                                entry=donor_entry,
+                                future_requirement=request,
+                                store=self._weather_store,
+                                ceiling=self._issue_time,
+                                missing_days=stamps,
+                                gap_parameters=policy.fill_parameters,
+                                max_past_lead=self._max_retained_past_lead,
+                            ),
+                        )
+                    )
+        candidates: list[tuple[SnapshotSupport, WeatherPastSnapshot]] = []
+        for snapshot in (fresh, old):
+            if snapshot is None:
+                continue
+            verify_past_snapshot(snapshot, max_bytes=self._max_past_bytes)
+            support = snapshot_support(
+                snapshot,
+                binding_fingerprint=spec.key.binding_fingerprint,
+                requirements=spec.retained_past_requirements,
+                future_requests=requests,
+                issue_time=self._issue_time,
+                max_past_lead=self._max_retained_past_lead,
+                donors=donors,
+            )
+            if support is not SnapshotSupport.UNUSABLE:
+                candidates.append((support, snapshot))
+        if fresh is not None and old is not None:
+            old_cycle = retained_tail_cycle(old, requests)
+            fresh_cycle = retained_tail_cycle(fresh, requests)
+            if old_cycle is not None and (
+                fresh_cycle is None or fresh_cycle < old_cycle
+            ):
+                candidates = [
+                    (quality, snap) for quality, snap in candidates if snap is not fresh
+                ]
+        chosen = max(candidates, key=lambda item: item[0], default=None)
+        if chosen is not None:
+            self._selected[sid] = chosen[1]
+            return chosen[1]
+        return None
+
+    def retained_candidate(
+        self,
+        declared: Mapping[
+            StationId, tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...]
+        ],
+        *,
+        earliest_cycle: UtcDatetime,
+    ) -> AcceptedCandidate | None:
+        from sapphire_flow.services.track_resolution import AcceptedCandidate
+        from sapphire_flow.types.enums import NwpCycleSource, SpatialRepresentation
+        from sapphire_flow.types.weather import WeatherForecastRecord
+
+        if self._prior_future_covers(declared, earliest_cycle=earliest_cycle):
+            return None
+
+        selected: dict[StationId, tuple[WeatherPastSnapshot, UtcDatetime]] = {}
+        for sid, requests in declared.items():
+            spec = self._specs[sid]
+            if not requests or any(
+                isinstance(r, FutureWeatherRequestV2)
+                or r.binding_fingerprint not in spec.retained_future_bindings
+                for r in requests
+            ):
+                continue
+            outcome = self._past.get(sid)
+            if outcome is None or outcome.state not in (
+                WeatherLegState.SUCCESS,
+                WeatherLegState.UNAVAILABLE,
+            ):
+                continue
+            snapshot = self._selected.get(sid) or self._select_snapshot(sid)
+            if snapshot is None:
+                continue
+            cycle = retained_tail_cycle(
+                snapshot, cast("tuple[FutureWeatherRequest, ...]", requests)
+            )
+            if cycle is None or cycle < earliest_cycle:
+                continue
+            selected[sid] = (snapshot, cycle)
+        if not selected:
+            return None
+        chosen_cycle = max(cycle for _, cycle in selected.values())
+        rows: dict[StationId, list[WeatherForecastRecord]] = {}
+        now = self._clock()
+        for sid, (snapshot, cycle) in selected.items():
+            if cycle != chosen_cycle:
+                continue
+            samples = {
+                (sample.parameter, sample.valid_time): sample
+                for request in cast("tuple[FutureWeatherRequest, ...]", declared[sid])
+                for sample in (
+                    retained_future_samples(snapshot, request, cycle=cycle) or ()
+                )
+            }
+            rows[sid] = [
+                WeatherForecastRecord(
+                    id=self._id_gen(),
+                    station_id=sid,
+                    nwp_source="ifs_ecmwf",
+                    cycle_time=cycle,
+                    valid_time=sample.valid_time,
+                    parameter=sample.parameter,
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=0,
+                    value=sample.value,
+                    created_at=now,
+                )
+                for sample in samples.values()
+            ]
+        return AcceptedCandidate(
+            resolved_cycle=chosen_cycle,
+            nwp_cycle_source=NwpCycleSource.FALLBACK,
+            complete_station_records=rows,
+            incomplete_at_cycle=frozenset(set(declared) - set(rows)),
+        )
+
+    def _prior_future_covers(
+        self,
+        declared: Mapping[
+            StationId, tuple[FutureWeatherRequest | FutureWeatherRequestV2, ...]
+        ],
+        *,
+        earliest_cycle: UtcDatetime,
+    ) -> bool:
+        from sapphire_flow.services.operational_weather_projection import (
+            future_receipt_scope,
+        )
+
+        for sid, requests in declared.items():
+            entry = self._previous.get(sid)
+            if entry is None:
+                return False
+            for request in requests:
+                matching = []
+                for receipt in entry.future_receipts:
+                    if (
+                        receipt.scope.binding_fingerprint != request.binding_fingerprint
+                        or receipt.scope.source != request.source
+                        or receipt.scope.issue_time > request.issue_time
+                        or not earliest_cycle
+                        <= receipt.cycle_time
+                        <= request.issue_time
+                    ):
+                        continue
+                    scope = future_receipt_scope(request, cycle_time=receipt.cycle_time)
+                    if scope is None:
+                        continue
+                    wanted = {
+                        (r.parameter, t, m)
+                        for r in scope.requirements
+                        for t in r.valid_times
+                        for m in r.member_ids
+                    }
+                    covered = {
+                        (r.parameter, t, m)
+                        for r in receipt.scope.requirements
+                        for t in r.valid_times
+                        for m in r.member_ids
+                    }
+                    matching.append(wanted <= covered)
+                if not any(matching):
+                    return False
+        return bool(declared)
+
+    def record_retained_future(self, receipt: FutureWeatherReceipt) -> None:
+        request = receipt.scope.request
+        snapshot = self._selected.get(request.station_id)
+        if (
+            snapshot is None
+            or retained_future_samples(snapshot, request, cycle=receipt.cycle_time)
+            is None
+        ):
+            raise ValueError("retained future proof lacks selected past origin")
+        verify_past_snapshot(snapshot, max_bytes=self._max_past_bytes)
+        self._retained_receipts[request] = receipt
 
     def future_requests_for(
         self, station_id: StationId
@@ -424,6 +696,25 @@ class OperationalWeatherRefresh:
         if sid in self._completed:
             return self._completed[sid]
         attempt = self._attempts[sid]
+        if (
+            self._specs[sid].retained_past_requirements
+            and self._past[sid].state is WeatherLegState.UNAVAILABLE
+            and sid not in self._selected
+            and self._select_snapshot(sid) is None
+        ):
+            self._past[sid] = WeatherLegOutcome(
+                state=WeatherLegState.UNAVAILABLE,
+                reason=WeatherFailureReason.NO_USABLE_PRODUCT,
+            )
+        if any(request.station_id == sid for request in self._retained_receipts):
+            previous = self._previous.get(sid)
+            origin = self._snapshots.get(sid) or (
+                None if previous is None else previous.past_snapshot
+            )
+            if origin != self._selected.get(sid):
+                raise ValueError(
+                    "retained future origin differs from selected past snapshot"
+                )
         if sid not in self._completions:
             requests = self._specs[sid].future_requests
             snapshot = self._snapshots.get(sid)
@@ -452,6 +743,11 @@ class OperationalWeatherRefresh:
                     past_snapshot=cast("WeatherPastSnapshot | None", snapshot),
                     future_attempts=cast("tuple[FutureWeatherAttempt, ...]", attempts),
                     future_receipts=cast("tuple[FutureWeatherReceipt, ...]", receipts),
+                    retained_future_receipts=tuple(
+                        self._retained_receipts[request]
+                        for request in requests
+                        if request in self._retained_receipts
+                    ),
                 )
         if isinstance(attempt, WeatherCacheAttemptV2):
             entry = cast(
@@ -607,6 +903,11 @@ def resolve_selected_weather_tracks(
                 if context is None
                 else context.eligibility_cutoff,
             )
+            retained = accepted is None and context is None
+            if retained:
+                accepted = owner.retained_candidate(
+                    declared, earliest_cycle=earliest_cycle
+                )
             result = None
             if accepted is not None:
                 scopes: dict[
@@ -650,9 +951,9 @@ def resolve_selected_weather_tracks(
                     receipt = receipts.get(request)
                     owner.record_future(
                         request=request,
-                        receipt=receipt,
+                        receipt=None if retained else receipt,
                         outcome=WeatherLegOutcome(state=WeatherLegState.SUCCESS)
-                        if receipt is not None
+                        if receipt is not None and not retained
                         else WeatherLegOutcome(
                             state=WeatherLegState.UNAVAILABLE,
                             reason=WeatherFailureReason.NO_ELIGIBLE_CYCLE
@@ -660,6 +961,8 @@ def resolve_selected_weather_tracks(
                             else WeatherFailureReason.MISSING_SUPPORT,
                         ),
                     )
+                    if retained and isinstance(receipt, FutureWeatherReceipt):
+                        owner.record_retained_future(receipt)
         except Exception as exc:
             owner.fail_future(
                 tuple(
