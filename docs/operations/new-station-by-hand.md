@@ -310,8 +310,8 @@ It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (statio
 
 
 `onboard_nepal qualify` accepts only the six fixed DHM gauges ("missing DHM station 447") and
-only discharge. Until the general report exists, gather these facts yourself and hand them to
-the hydrologist:
+only discharge. The SQL below is the fallback if the command is unavailable; the facts to hand to
+the hydrologist are:
 
 ```sql
 select code, network, station_status, measured_parameters, water_level_datum_masl, forecast_targets from stations;

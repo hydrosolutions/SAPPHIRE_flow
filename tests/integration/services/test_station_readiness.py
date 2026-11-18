@@ -22,12 +22,17 @@ from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import QcStatus
+from sapphire_flow.types.enums import QcStatus, SpatialRepresentation, StationStatus
+from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import TenantId
-from tests.conftest import make_observation
+from tests.conftest import make_observation, make_station_config
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
+
+    from sapphire_flow.types.station import StationConfig
 
 NOW = ensure_utc(datetime(2026, 11, 18, 12, tzinfo=UTC))
 IDENTITY = DeploymentIdentityConfig(
@@ -105,7 +110,7 @@ class TestStationReadinessPg:
                 make_observation(
                     station_id=station.id,
                     value=1.0 + i,
-                    timestamp=ensure_utc(NOW - timedelta(days=i)),
+                    timestamp=ensure_utc(NOW - timedelta(days=i + 1)),
                     qc_status=QcStatus.QC_PASSED if i else QcStatus.QC_UNCHECKED,
                     rng=rng,
                 )
@@ -141,3 +146,130 @@ class TestStationReadinessPg:
         assert status["discharge_series"] == "FAIL"
         assert status["weather_history"] == "FAIL"
         assert data["failed"] >= 3
+
+
+class TestSummariesAgainstPostgres:
+    def _station(self, conn: sa.Connection) -> StationConfig:
+        _create(conn, "R1")
+        station = PgStationStore(conn).fetch_station_by_code("R1", "research")
+        assert station is not None
+        return station
+
+    def test_observation_summary_min_max(self, db_connection: sa.Connection) -> None:
+        station = self._station(db_connection)
+        rng = random.Random(5)
+        obs = [
+            make_observation(
+                station_id=station.id,
+                value=1.0 + i,
+                timestamp=ensure_utc(NOW - timedelta(days=i + 1)),
+                rng=rng,
+            )
+            for i in range(5)
+        ]
+        store = PgObservationStore(db_connection)
+        store.store_observations(obs)
+        (row,) = store.fetch_station_summary(station.id)
+        assert (row.count, row.first, row.last) == (
+            5,
+            obs[-1].timestamp,
+            obs[0].timestamp,
+        )
+
+    def test_forcing_summary_counts_distinct_valid_times_across_versions(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station = self._station(db_connection)
+        forcing = PgHistoricalForcingStore(db_connection)
+        forcing.store_forcing(
+            [
+                RawHistoricalForcing(
+                    station_id=station.id,
+                    source="era5_land",
+                    version=version,
+                    valid_time=ensure_utc(NOW - timedelta(days=i)),
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=None,
+                    value=1.0,
+                )
+                for version in ("v1", "v2")
+                for i in range(5)
+            ]
+        )
+        (row,) = forcing.fetch_station_summary(station.id)
+        assert row.count == 5
+        assert row.first == ensure_utc(NOW - timedelta(days=4))
+        assert row.last == NOW
+
+
+class TestMainIsReadOnly:
+    def test_real_main_cannot_write_and_leaves_rows_unchanged(
+        self,
+        db_engine: sa.Engine,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text('[deployment]\nwritable_tenants = ["rotest"]\n')
+        monkeypatch.setenv(
+            "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+        )
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        with db_engine.begin() as setup:
+            PgTenantStore(setup).ensure_tenant(
+                tenant_id=TenantId(uuid4()), code="rotest", name="Ro"
+            )
+            tenant = PgTenantStore(setup).fetch_tenant_by_code("rotest")
+            assert tenant is not None
+            PgStationStore(setup).store_station(
+                make_station_config(
+                    code="RO1", network="rotest", tz="UTC", tenant_id=tenant.id
+                )
+            )
+        write_errors: list[type[BaseException]] = []
+        real_run = cli.run_readiness
+
+        def run_then_try_a_write(*a: object, **kw: object) -> int:
+            code = real_run(*a, **kw)  # type: ignore[arg-type]
+            stores: ReadinessStores = kw["stores"]  # type: ignore[assignment]
+            station = stores.stations.fetch_station_by_code("RO1", "rotest")
+            assert station is not None
+            try:
+                stores.stations.update_station_status(
+                    station.id, StationStatus.OPERATIONAL
+                )
+            except sa.exc.DBAPIError as exc:
+                write_errors.append(type(exc.orig))  # type: ignore[arg-type]
+            return code
+
+        monkeypatch.setattr(cli, "run_readiness", run_then_try_a_write)
+        try:
+            with db_engine.connect() as probe:
+                before = _snapshot(probe)
+            capsys.readouterr()
+            code = cli.main(
+                [
+                    "--config",
+                    str(config),
+                    "--tenant",
+                    "rotest",
+                    "--network",
+                    "rotest",
+                    "--code",
+                    "RO1",
+                ]  # fmt: skip
+            )
+            assert code == 0
+            assert [e.__name__ for e in write_errors] == ["ReadOnlySqlTransaction"]
+            assert capsys.readouterr().out.splitlines()[-1].endswith(" passed")
+            with db_engine.connect() as probe:
+                assert _snapshot(probe) == before
+        finally:
+            with db_engine.begin() as cleanup:
+                cleanup.execute(
+                    sa.text("DELETE FROM stations WHERE network = 'rotest'")
+                )
+                cleanup.execute(sa.text("DELETE FROM tenants WHERE code = 'rotest'"))

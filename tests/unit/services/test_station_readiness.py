@@ -120,8 +120,8 @@ class World:
                 [
                     make_observation(
                         station_id=self.station.id,
-                        value=1.0 + i,
-                        timestamp=ensure_utc(NOW - timedelta(days=i)),
+                        value=None if qc is QcStatus.MISSING else 1.0 + i,
+                        timestamp=ensure_utc(NOW - timedelta(days=i + 1)),
                         qc_status=qc,
                         rng=self.rng,
                     )
@@ -250,7 +250,7 @@ class TestObservationsAndHistory:
         status, detail = world.line("observations")
         assert status is CheckStatus.PASS
         assert "n=4" in detail
-        assert "newest 0d old" in detail
+        assert "newest 1d old" in detail
         assert "qc_failed=25% qc_passed=75%" in detail
 
     def test_weather_history_reports_count_and_overlap(self) -> None:
@@ -374,7 +374,7 @@ class TestNaming:
     def test_mismatch_shows_both_spellings(self) -> None:
         world = World()
         self._binding(world, "syn001", "syn001")
-        status, detail = world.line("naming", scope=("syn01", None))
+        status, detail = world.line("naming", scope=("syn01", "syn001"))
         assert status is CheckStatus.FAIL
         assert "'syn01'" in detail
         assert "'syn001'" in detail
@@ -392,3 +392,72 @@ class TestNoSingleVerdict:
         assert not any("ready" in f.name for f in dataclasses.fields(report))
         assert len(report.checks) == 12
         assert report.failed() + report.passed() <= 12
+
+
+class TestReviewFixes:
+    def test_complete_daily_series_up_to_yesterday_passes_lookback(self) -> None:
+        world = World()
+        world.add_discharge(30)
+        assert world.line("discharge_lookback")[0] is CheckStatus.PASS
+
+    def test_naming_fails_when_station_not_in_scope(self) -> None:
+        world = World()
+        TestNaming()._binding(world, "syn001", "syn001")
+        status, detail = world.line("naming", scope=("syn001", None))
+        assert status is CheckStatus.FAIL
+        assert "not in the weather scope" in detail
+
+    def test_naming_fails_on_polygon_name_mismatch_alone(self) -> None:
+        world = World()
+        TestNaming()._binding(world, "syn001", "wrong_poly")
+        status, detail = world.line("naming", scope=("syn001", "syn001"))
+        assert status is CheckStatus.FAIL
+        assert "'wrong_poly'" in detail
+
+    def test_basin_fails_when_row_is_missing(self) -> None:
+        world = World(basin_id=BasinId(uuid4()))
+        assert world.line("basin")[0] is CheckStatus.FAIL
+
+    def test_basin_passes_when_row_exists(self) -> None:
+        basin = _basin(None)
+        world = World(basin_id=basin.id)
+        world.basins.store_basin(basin)
+        assert world.line("basin")[0] is CheckStatus.PASS
+
+    def test_inactive_binding_alone_does_not_make_roles_pass(self) -> None:
+        world = World()
+        helper = TestWeatherBindings()
+        for role in WeatherSourceRole:
+            helper._bind(
+                world,
+                role,
+                WeatherSourceStatus.INACTIVE
+                if role is WeatherSourceRole.OPERATIONAL
+                else WeatherSourceStatus.ACTIVE,
+            )
+        status, detail = world.line("weather_bindings")
+        assert status is CheckStatus.FAIL
+        assert "operational=inactive" in detail
+
+    def test_level_only_station_targeting_level_has_no_rating_line(self) -> None:
+        world = World()
+        world.station = dataclasses.replace(
+            world.station,
+            measured_parameters=frozenset({"water_level"}),
+            forecast_targets=frozenset({"water_level"}),
+        )
+        assert world.line("rating_curve")[0] is CheckStatus.NOT_APPLICABLE
+
+    def test_discharge_series_fails_when_only_missing_rows(self) -> None:
+        world = World()
+        world.add_discharge(3, qc=QcStatus.MISSING)
+        assert world.line("discharge_series")[0] is CheckStatus.FAIL
+
+    def test_untrusted_row_is_excluded_from_the_summary(self) -> None:
+        world = World()
+        world.add_discharge(2)
+        (obs,) = world.observations.fetch_observations(
+            world.station.id, "discharge", NOW - timedelta(days=30), NOW
+        )[:1]
+        world.observations.hold_unit_observation(obs.id, "h1")
+        assert "n=1" in world.line("observations")[1]

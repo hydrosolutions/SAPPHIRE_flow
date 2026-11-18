@@ -19,6 +19,7 @@ from sapphire_flow.services.station_observation_load import days_with_value_set
 from sapphire_flow.services.station_observation_qc import USABLE_STATUSES
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
+    QcStatus,
     SpatialRepresentation,
     WeatherSourceRole,
     WeatherSourceStatus,
@@ -179,7 +180,7 @@ def check_weather_history(
         )
     o_first = min(r.first for r in observations)
     o_last = max(r.last for r in observations)
-    overlap = (min(f_last, o_last) - max(f_first, o_first)).days
+    overlap = (min(f_last, o_last).date() - max(f_first, o_first).date()).days + 1
     return _check(
         "weather_history",
         _PASS,
@@ -214,7 +215,7 @@ def check_rating_curve(
     station: StationConfig, stores: ReadinessStores
 ) -> ReadinessCheck:
     targets = station.forecast_targets or frozenset()
-    if "discharge" not in targets and "water_level" not in station.measured_parameters:
+    if "discharge" not in targets:
         return _check("rating_curve", _NA, "discharge not a target")
     curve = stores.ratings.fetch_active_curve(station.id)
     if curve is None:
@@ -231,9 +232,13 @@ def check_rating_curve(
 def check_discharge_series(
     observations: Sequence[ObservationSummaryRow],
 ) -> ReadinessCheck:
-    rows = [r for r in observations if r.parameter == "discharge"]
+    rows = [
+        r
+        for r in observations
+        if r.parameter == "discharge" and r.qc_status is not QcStatus.MISSING
+    ]
     if not rows:
-        return _check("discharge_series", _FAIL, "no discharge observations")
+        return _check("discharge_series", _FAIL, "no discharge values stored")
     by_source: dict[str, int] = {}
     for r in rows:
         by_source[r.source] = by_source.get(r.source, 0) + r.count
@@ -285,11 +290,11 @@ def check_discharge_lookback(
 ) -> ReadinessCheck:
     days = lookback_days_for(model)
     zone = ZoneInfo(station.timezone)
-    end = now.astimezone(zone).date()
+    end = now.astimezone(zone).date() - timedelta(days=1)
     rows = observations.fetch_observations(
         station.id,
         "discharge",
-        now - timedelta(days=days + 2),
+        now - timedelta(days=days + 3),
         now + timedelta(days=1),
         qc_status=USABLE_STATUSES,
     )
@@ -326,6 +331,10 @@ def check_naming(
     stored = (
         f"binding gateway_hru_name={binding.gateway_hru_name!r} name={binding.name!r}"
     )
+    if scope_hru_name is not None and scope_polygon_name is None:
+        return _check(
+            "naming", _FAIL, f"{head}; {stored}; station is not in the weather scope"
+        )
     if scope_hru_name is None:
         return _check(
             "naming", _PASS, f"{head}; {stored}; weather scope comparison skipped"

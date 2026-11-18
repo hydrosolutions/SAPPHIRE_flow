@@ -154,7 +154,7 @@ class PgHistoricalForcingStore:
             sa.select(
                 t.c.parameter,
                 t.c.source,
-                sa.func.count().label("n"),
+                sa.func.count(sa.distinct(t.c.valid_time)).label("n"),
                 sa.func.min(t.c.valid_time).label("first"),
                 sa.func.max(t.c.valid_time).label("last"),
             )
