@@ -1,6 +1,6 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
-### Event-review options (M2)
+### Event-review options and series (M2–M3)
 
 The reviewer-only `api/routes/api_event_review.py` route delegates to
 `services/event_review.py` and `store/event_review.py`, with shared domain values
@@ -12,7 +12,16 @@ No protected lineage columns are selected. Timeout cancellation rolls back its
 savepoint before the auth transaction completes. Route additions must update
 `api/publication_cache.py` (including error/CORS paths), the auth matrix and
 generated map contract together. Tests are `test_event_review.py` under unit API,
-unit services and integration store. Series and period skill are later milestones.
+unit services and integration store. The series query reuses the bounded snapshot,
+pins hindcast run/artifact/forcing/cadence, validates exact elapsed lead and filters
+selected valid-time points before returning values. Current non-superseded
+operational rows or authoritative publication selections determine revisions.
+`services/network_overview.py::reduce_forecast_point` is the shared reduction used
+by overview and event review: preserve exact quantile medians, type-7 member bands,
+the five-member band minimum and finite outputs. No known interval support is
+currently persisted, so combined fallback is explicitly unsupported. Period skill
+remains a later milestone. Do not remove the typed errors, savepoint timeout
+rollback, no-store or 8,784-point/2-MiB output gates when extending the reader.
 
 Reusable per-subsystem routing checklists. When a task touches a subsystem,
 inspect the relevant map for touchpoints, contracts that must not change silently,

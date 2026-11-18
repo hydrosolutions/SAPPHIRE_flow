@@ -50,7 +50,12 @@ if TYPE_CHECKING:
         StationOwnership,
         StationStatus,
     )
-    from sapphire_flow.types.event_review import ReviewOptionsQuery, ReviewSource
+    from sapphire_flow.types.event_review import (
+        ReviewOptionsQuery,
+        ReviewSeriesQuery,
+        ReviewSeriesSnapshot,
+        ReviewSource,
+    )
     from sapphire_flow.types.forecast import (
         ForecastAdjustment,
         ForeignForecast,
@@ -1408,3 +1413,5 @@ class OperationalWeatherPeriodCacheStore(Protocol):
 
 class EventReviewStore(Protocol):
     def fetch_options(self, query: ReviewOptionsQuery) -> tuple[ReviewSource, ...]: ...
+
+    def fetch_series(self, query: ReviewSeriesQuery) -> ReviewSeriesSnapshot: ...

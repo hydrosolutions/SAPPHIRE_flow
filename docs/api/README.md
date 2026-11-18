@@ -15,6 +15,7 @@ available features. All examples below are read-only.
 | Find the latest stored reading at each station | `GET /observations/latest` |
 | Inspect daily rating-derived inputs to a forecast | `GET /forecasts/{forecast_id}/rating-input-history` |
 | Discover stored models and leads for event review | `GET /stations/{station_id}/review-options` |
+| Review stored forecasts at one lead over a past period | `GET /stations/{station_id}/review-series` |
 
 The [OpenAPI reference](../spec/api-v1-map.openapi.json) defines exact request and
 response structures for the supported dashboard/read routes. It does not describe
@@ -171,8 +172,52 @@ contains selected operational forecasts and reports hindcast availability as
 503 with `detail.code: review_query_timeout`. No partial catalog is returned.
 
 The limits are 100,000 headers, 1,000,000 stored value rows, 100 source identities
-and 2 MiB. Series and period-skill reads remain future milestones; see the
-[event-review contract](../spec/event-review-draft.md).
+and 2 MiB. See the [event-review contract](../spec/event-review-draft.md).
+
+### Read a period at one lead
+
+The same branch adds `/stations/{station_id}/review-series` in contract **2.15**;
+not yet deployed. Supply `model_id`, `lead_hours` (integer 0–8784), `start`, `end`
+and `source_mode=operational` or `source_mode=hindcast`. Bounds are aware timestamps
+covering at most 366 elapsed days, `[start,end)`, with no future end. They select
+**valid times**, including forecasts whose issue anchor precedes `start`.
+
+Hindcast requests additionally require `hindcast_run_id`, `hindcast_artifact_id`,
+`forcing_type`, and `time_step_seconds`, copied from options. An unknown or changed
+identity returns 404. An unoffered lead returns 422 `lead_not_offered`; an offered
+lead with an empty period is a successful missing result. Unknown and repeated
+parameters, including unsupported `data_use`, are rejected with typed 422 errors.
+
+Each segment contains source provenance, timestamped points and gap markers.
+Points include issue anchor, valid time, forecast ID, first storage time and QC.
+Storage time is not model generation or publication time. Members use the shared
+empirical type-7 reducer (bands need at least five members); quantiles require exact
+p50 and use exact p25/p75 if stored. Missing bands stay null with `band_reason`.
+Failed or suspect QC, invalid values and missing values expose no numbers. RAW
+hindcasts are labelled `qc_unchecked`, not QC-passed. See the
+[synthetic hindcast example](examples/review-series.json).
+
+`temporal_support` is currently `unknown`: display the labelled timestamps, but do
+not infer daily means, score these values or automatically combine sources.
+`operational_with_hindcast` therefore returns 422 `review_source_unsupported`.
+Cadence is retained metadata; gap markers identify spacing beyond that cadence
+without fabricating missing timestamps or claiming complete coverage. Preserve
+those breaks and null points when drawing lines. Series source bounds describe
+recorded values at the selected lead inside the requested period; options provides
+the wider stored bounds. Neither establishes an evaluation period or expected count.
+
+Operational reads use the current non-superseded revision for each issue, or the
+authoritative publication selection when the gate is active. Hidden issue dates,
+values and counts are not enumerated. An empty selected period under that gate is
+generically `withheld` (`no_visible_published_forecasts_in_period`); that does not
+assert that an unpublished forecast exists. Either hindcast-involving mode is
+refused before source lookup under the publication gate.
+
+Series reads share the work and byte limits above, add an 8,784 candidate-point
+limit and use a five-second SQL timeout. Work/output overflow returns 422
+`review_series_limit_exceeded` with advice to narrow the request; timeout returns
+503 `review_query_timeout`. No per-issue requests, refresh timer, forecast execution
+or skill calculation is triggered. Period skill remains future scope.
 
 ## Get observations and discharge history
 

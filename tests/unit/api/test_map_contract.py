@@ -23,6 +23,41 @@ from sapphire_flow.api.schemas import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class TestReviewSeriesContract:
+    def test_example_and_query_refs_match_committed_contract(self) -> None:
+        document = _load_committed()
+        route = document["paths"]["/api/v1/stations/{station_id}/review-series"]["get"]
+        payload = json.loads(
+            (_REPO_ROOT / "docs/api/examples/review-series.json").read_text()
+        )
+        schema = route["responses"]["200"]["content"]["application/json"]["schema"]
+        validator = jsonschema.Draft202012Validator(
+            schema, resolver=jsonschema.RefResolver.from_schema(document)
+        )
+        validator.validate(payload)
+        parameters = {p["name"]: p for p in route["parameters"] if p["in"] == "query"}
+        assert {name for name, p in parameters.items() if p["required"]} == {
+            "model_id",
+            "lead_hours",
+            "start",
+            "end",
+            "source_mode",
+        }
+        for name, value in [
+            ("source_mode", "hindcast"),
+            ("forcing_type", "reanalysis"),
+        ]:
+            jsonschema.Draft202012Validator(
+                parameters[name]["schema"],
+                resolver=jsonschema.RefResolver.from_schema(document),
+            ).validate(value)
+        assert route["responses"]["422"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ReviewErrorResponse"
+        }
+
+
 _CONTRACT_PATH = _REPO_ROOT / "docs/spec/api-v1-map.openapi.json"
 
 _EXPECTED_PATHS = {
@@ -37,6 +72,7 @@ _EXPECTED_PATHS = {
     "/api/v1/qc/rules",
     "/api/v1/stations/{station_id}/skill",
     "/api/v1/stations/{station_id}/review-options",
+    "/api/v1/stations/{station_id}/review-series",
     # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
     "/api/v1/stations/{station_id}/rejected-forecasts",
     "/api/v1/stations/{station_id}/evaluation-forecasts",

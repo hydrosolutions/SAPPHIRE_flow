@@ -21,6 +21,8 @@ from sapphire_flow.types.event_review import (
     ReviewOptionsQuery,
     ReviewPolicy,
     ReviewQueryTimeoutError,
+    ReviewSeriesQuery,
+    ReviewSeriesSnapshot,
     ReviewSource,
 )
 from sapphire_flow.types.ids import AccessTokenId, ArtifactId, ModelId, TenantId
@@ -35,12 +37,20 @@ class Catalog:
         self.sources = sources
         self.queries: list[ReviewOptionsQuery] = []
         self.failure: Exception | None = None
+        self.series = ReviewSeriesSnapshot(sources=sources, records=())
+        self.series_queries: list[ReviewSeriesQuery] = []
 
     def fetch_options(self, query: ReviewOptionsQuery) -> tuple[ReviewSource, ...]:
         self.queries.append(query)
         if self.failure:
             raise self.failure
         return self.sources
+
+    def fetch_series(self, query: ReviewSeriesQuery) -> ReviewSeriesSnapshot:
+        self.series_queries.append(query)
+        if self.failure:
+            raise self.failure
+        return self.series
 
 
 def source() -> ReviewSource:
@@ -225,3 +235,153 @@ class TestReviewOptions:
         assert response.status_code == 500
         assert "private" not in response.text
         assert response.headers["cache-control"] == "no-store"
+
+
+class TestReviewSeries:
+    def request_params(self) -> dict[str, str]:
+        return {
+            "model_id": "climatology_fallback",
+            "lead_hours": "48",
+            "start": "2019-06-01T00:00:00Z",
+            "end": "2019-07-01T00:00:00Z",
+            "source_mode": "operational",
+        }
+
+    @pytest.mark.parametrize("byte_limit, status", [(2 * 1024 * 1024, 200), (20, 422)])
+    def test_ordinary_bulk_read(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+        monkeypatch: pytest.MonkeyPatch,
+        byte_limit: int,
+        status: int,
+    ) -> None:
+        from tests.unit.services.test_event_review import record, series_query
+
+        monkeypatch.setattr(
+            "sapphire_flow.api.routes.api_event_review.MAX_REVIEW_BYTES", byte_limit
+        )
+        station = seed(fake_stores)
+        value = record(series_query())
+        value = replace(
+            value,
+            source=replace(
+                value.source,
+                kind=ReviewKind.OPERATIONAL,
+                hindcast_run_id=None,
+                forcing_type=None,
+            ),
+        )
+        catalog.series = ReviewSeriesSnapshot(sources=(value.source,), records=(value,))
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=self.request_params()
+        )
+        assert response.status_code == status
+        body = response.json()
+        if status == 422:
+            assert body["detail"]["code"] == "review_series_limit_exceeded"
+            return
+        point = body["segments"][0]["points"][0]
+        assert point["median"] == 3.0
+        assert point["issued_at"] == "2019-05-30T00:00:00Z"
+        assert point["valid_interval_start"] is None
+        assert body["temporal_support"] == "unknown"
+        assert response.headers["cache-control"] == "no-store"
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"start": "2019-06-01"},
+            {"end": "2019-06-01T00:00:00Z"},
+            {"end": "2021-01-01T00:00:00Z"},
+            {"end": "2099-01-01T00:00:00Z"},
+            {"lead_hours": "-1"},
+            {"lead_hours": "2.5"},
+            {"data_use": "provisional_rating"},
+            {"source_mode": "hindcast"},
+            {"hindcast_run_id": str(uuid4())},
+        ],
+    )
+    def test_invalid_queries_are_typed_and_do_not_read(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+        changes: dict[str, str],
+    ) -> None:
+        station = seed(fake_stores)
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series",
+            params=self.request_params() | changes,
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "invalid_review_query"
+        assert catalog.series_queries == []
+        assert response.headers["cache-control"] == "no-store"
+
+    def test_scope_before_query_parsing(
+        self, client: TestClient, fake_stores: dict[str, Any], catalog: Catalog
+    ) -> None:
+        seed(fake_stores)
+        response = client.get(f"/api/v1/stations/{uuid4()}/review-series")
+        assert response.status_code == 404
+        assert catalog.series_queries == []
+
+    def test_repeated_parameters_rejected(
+        self, client: TestClient, fake_stores: dict[str, Any], catalog: Catalog
+    ) -> None:
+        station = seed(fake_stores)
+        params = [*self.request_params().items(), ("lead_hours", "48")]
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=params
+        )
+        assert response.status_code == 422
+        assert catalog.series_queries == []
+
+    @pytest.mark.parametrize("mode", ["hindcast", "operational_with_hindcast"])
+    def test_gated_hindcast_rejected_before_lookup(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+        mode: str,
+    ) -> None:
+        station = seed(fake_stores)
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
+        params = self.request_params() | {
+            "source_mode": mode,
+            "hindcast_run_id": str(uuid4()),
+            "hindcast_artifact_id": str(uuid4()),
+            "forcing_type": "reanalysis",
+            "time_step_seconds": "86400",
+        }
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=params
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "review_source_unsupported"
+        assert catalog.series_queries == []
+
+    def test_unknown_source_404(
+        self, client: TestClient, fake_stores: dict[str, Any], catalog: Catalog
+    ) -> None:
+        station = seed(fake_stores)
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=self.request_params()
+        )
+        assert response.status_code == 404
+
+    def test_timeout_503(
+        self, client: TestClient, fake_stores: dict[str, Any], catalog: Catalog
+    ) -> None:
+        station = seed(fake_stores)
+        catalog.failure = ReviewQueryTimeoutError("private sql")
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=self.request_params()
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "review_query_timeout"
+        assert "private" not in response.text

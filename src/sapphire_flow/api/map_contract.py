@@ -27,7 +27,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "2.14"
+MAP_CONTRACT_VERSION = "2.15"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -49,6 +49,7 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/qc/rules"),
         ("GET", "/api/v1/stations/{station_id}/skill"),
         ("GET", "/api/v1/stations/{station_id}/review-options"),
+        ("GET", "/api/v1/stations/{station_id}/review-series"),
         # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
         ("GET", "/api/v1/stations/{station_id}/rejected-forecasts"),
         ("GET", "/api/v1/stations/{station_id}/evaluation-forecasts"),
@@ -61,6 +62,7 @@ _REVIEW_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/review-options",
+        "/api/v1/stations/{station_id}/review-series",
         "/api/v1/swiss/overview",
         "/api/v1/swiss/observation-history",
         "/api/v1/forecasts/{forecast_id}/rating-input-history",
@@ -92,6 +94,7 @@ _400_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/review-options",
+        "/api/v1/stations/{station_id}/review-series",
         "/api/v1/stations/{station_id}/rejected-forecasts",
         "/api/v1/stations/{station_id}/evaluation-forecasts",
     }
@@ -109,12 +112,22 @@ _404_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/review-options",
+        "/api/v1/stations/{station_id}/review-series",
         "/api/v1/stations/{station_id}/rejected-forecasts",
         "/api/v1/stations/{station_id}/evaluation-forecasts",
     }
 )
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/stations/{station_id}/review-series"): (
+        "Bulk ordinary discharge at an exact lead over a half-open valid-time period "
+        "of at most 366 days. Pinned hindcast identities, historical artifacts, "
+        "explicit QC/gaps and stored uncertainty; no forecast execution. "
+        "Unknown interval support permits timestamp display but disallows automatic "
+        "operational/hindcast fallback and period scoring. Publication rules apply "
+        "before source lookup. No-store including errors. Limits fail with typed 422; "
+        "a five-second database timeout is typed 503. Never silently truncated."
+    ),
     ("GET", "/api/v1/stations/{station_id}/review-options"): (
         "Authorized stored discharge models, source tuples and exact integer leads. "
         "Historical artifacts remain selectable; bounds do not imply completeness. "
@@ -257,6 +270,10 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
 
 # Display labels only; operation IDs still come from the unchanged routes.
 _OPERATION_LABELS: dict[str, tuple[str, str]] = {
+    "/api/v1/stations/{station_id}/review-series": (
+        "Get historical review series",
+        "Forecasts",
+    ),
     "/api/v1/stations/{station_id}/review-options": (
         "Get historical review source and lead options",
         "Forecasts",

@@ -1,12 +1,12 @@
 # Event review API — draft contract
 
-Implementation status (M2, 18 November 2026): `/review-options` is implemented in
-the event-review branch with generated OpenAPI contract 2.14. It is not deployed.
-The series and period-skill sections below remain proposals for later milestones.
-Options accepts no query parameters; its wire schema is authoritative in
-`api-v1-map.openapi.json` (`ReviewOptionsResponse`, `ReviewSourceResponse`).
+Implementation status (M3, 18 November 2026): `/review-options` and `/review-series`
+are implemented in the event-review branch with generated OpenAPI contract 2.15.
+Neither is deployed. Period skill remains a proposal. Options accepts no query
+parameters; series accepts the parameters below. The generated schemas in
+`api-v1-map.openapi.json` are authoritative for the wire format.
 
-Status: implementation design approved for options and series; options implemented
+Status: implementation design approved for options and series; both implemented
 on the branch only. Nothing deployed. Period skill remains a future proposal. See
 [delivery plan](../plans/2026-11-17-event-review-delivery.md).
 This file is not a replacement for generated OpenAPI. Publish an immutable generated
@@ -52,6 +52,10 @@ Hindcast modes additionally require `hindcast_run_id`, `hindcast_artifact_id`,
 `forcing_type`, and `time_step_seconds`, supplied by options. Validate their full
 tuple against station/model/discharge; unknown and foreign tuples both return 404.
 Verify exact timestamp difference, not only the floored stored lead column.
+The first implementation bounds integer lead hours to 0–8784 and rejects unknown
+or repeated query parameters. Current storage has no authoritative interval
+support: `operational_with_hindcast` is explicitly unsupported, while separate
+operational/hindcast timestamped reads are available.
 Source selection identifies operational, a selected hindcast run, or operational
 with that hindcast as fallback. Source IDs must belong to the authorized station
 and model. Unknown/unoffered leads return 422 with `lead_not_offered`; offered leads
@@ -63,6 +67,14 @@ recorded version, run ID, generation provenance, training period and known hindc
 evaluation coverage. Each point carries valid time/support, issue anchor, original
 forecast ID, median, p25, p75, quartile method and state/reason. Segment references
 avoid repeating provenance on every point.
+Implemented shape: `segments[].source` carries units/cadence and provenance;
+`segments[].points` carries values and states. `generation_time` and valid interval
+bounds remain null; `stored_at` is explicitly first storage time only.
+`segments[].gaps` marks spacing beyond recorded cadence using `after`/`before`,
+without inventing expected timestamps. Empty periods under an active publication
+gate have generic `withheld` state, not hidden issue metadata. QC_FAILED and
+QC_SUSPECT values are nulled. Current non-superseded operational rows are selected
+when the gate is inactive; active gates use authoritative selected IDs.
 
 Numeric null means unavailable, never zero. States distinguish available, missing,
 withheld, and QC-rejected; incomplete is also a source/run coverage state. An
@@ -149,7 +161,10 @@ future scope and is not enabled by readiness of this first series/options slice.
 
 ## First-slice error contract
 
-Errors use `detail: {code: string, message: string}`. Unqualified hindcast policy
+Review validation, limit, policy and timeout errors use
+`detail: {code: string, message: string}`. Existing authentication, authorization,
+malformed station UUID and 404 errors retain the shared API error envelope.
+Unqualified hindcast policy
 returns 422 `review_source_unsupported` for either hindcast-involving mode before
 source lookup, whether or not data exists. No silent operational-only downgrade.
 Options may still show authorized operational choices with a generic hindcast

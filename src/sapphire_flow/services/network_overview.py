@@ -35,7 +35,7 @@ def _type7(values: Sequence[float], probability: float) -> float:
     return (1 - fraction) * ordered[lower] + fraction * ordered[lower + 1]
 
 
-def _point(
+def reduce_forecast_point(
     timestamp: UtcDatetime,
     keyed: list[tuple[float, float]],
     representation: EnsembleRepresentation,
@@ -59,7 +59,12 @@ def _point(
         lower = _type7(values, 0.25) if len(values) >= 5 else None
         upper = _type7(values, 0.75) if len(values) >= 5 else None
     if (
-        (parameter == "discharge" and any(value < 0 for value in values))
+        any(
+            not math.isfinite(value)
+            for value in (middle, lower, upper)
+            if value is not None
+        )
+        or (parameter == "discharge" and any(value < 0 for value in values))
         or (lower is not None and lower > middle)
         or (upper is not None and upper < middle)
     ):
@@ -88,7 +93,9 @@ def compact_forecast_series(
         if len(grouped) > 512:
             raise ValueError("forecast support exceeds admission bound")
         points = tuple(
-            _point(timestamp, keyed, ensemble.representation, ensemble.parameter)
+            reduce_forecast_point(
+                timestamp, keyed, ensemble.representation, ensemble.parameter
+            )
             for timestamp, keyed in sorted(grouped.items())
             if timestamp + ensemble.time_step > as_of
         )

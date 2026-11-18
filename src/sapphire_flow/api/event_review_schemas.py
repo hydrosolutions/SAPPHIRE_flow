@@ -6,15 +6,19 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from sapphire_flow.types.enums import ForcingType
+from sapphire_flow.types.enums import ForcingType, QcStatus
 from sapphire_flow.types.event_review import (
     MAX_REVIEW_SOURCES,
     ReviewAvailability,
     ReviewCompleteness,
+    ReviewErrorCode,
     ReviewKind,
     ReviewOptions,
+    ReviewPointState,
+    ReviewSeries,
+    ReviewSourceMode,
 )
 from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
 
@@ -96,9 +100,105 @@ class ReviewOptionsResponse(BaseModel):
 
 
 class ReviewErrorDetail(BaseModel):
-    code: Literal["review_catalog_limit_exceeded", "review_query_timeout"]
+    code: ReviewErrorCode
     message: str
 
 
 class ReviewErrorResponse(BaseModel):
     detail: ReviewErrorDetail
+
+
+class ReviewSeriesParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(min_length=1, max_length=200)
+    lead_hours: int = Field(ge=0, le=8784)
+    start: AwareDatetime
+    end: AwareDatetime
+    source_mode: ReviewSourceMode
+    hindcast_run_id: UUID | None = None
+    hindcast_artifact_id: UUID | None = None
+    forcing_type: ForcingType | None = None
+    time_step_seconds: int | None = Field(default=None, gt=0)
+
+
+class ReviewPointResponse(BaseModel):
+    valid_time: datetime
+    issued_at: datetime
+    forecast_id: UUID | None
+    stored_at: datetime | None = Field(
+        description="First storage time, not generation or publication time."
+    )
+    state: ReviewPointState
+    reason: str | None
+    qc_status: QcStatus | None
+    median: float | None
+    p25: float | None
+    p75: float | None
+    quartile_method: Literal["stored_quantiles", "member_empirical_type7"] | None
+    band_reason: str | None
+    valid_interval_start: None = None
+    valid_interval_end: None = None
+
+
+class ReviewGapResponse(BaseModel):
+    after: datetime
+    before: datetime
+    reason: str
+
+
+class ReviewSegmentResponse(BaseModel):
+    source: ReviewSourceResponse
+    points: tuple[ReviewPointResponse, ...]
+    gaps: tuple[ReviewGapResponse, ...]
+    generation_time: None = None
+
+
+class ReviewSeriesResponse(BaseModel):
+    station_id: UUID
+    model_id: str
+    lead_hours: int
+    start: datetime
+    end: datetime
+    source_mode: ReviewSourceMode
+    parameter: Literal["discharge"] = "discharge"
+    data_use: Literal["standard"] = "standard"
+    lead_definition: str = LEAD_DEFINITION
+    state: ReviewPointState
+    reason: str | None
+    temporal_support: Literal["unknown"] = "unknown"
+    support_message: str = (
+        "Timestamped values; interval support is unknown. "
+        "Do not score or automatically combine sources."
+    )
+    segments: tuple[ReviewSegmentResponse, ...]
+
+    @classmethod
+    def from_domain(cls, series: ReviewSeries) -> ReviewSeriesResponse:
+        query = series.query
+        return cls(
+            station_id=query.scope.station_id,
+            model_id=query.model_id,
+            lead_hours=query.lead_hours,
+            start=query.start,
+            end=query.end,
+            source_mode=query.source_mode,
+            state=series.state,
+            reason=series.reason,
+            segments=tuple(
+                ReviewSegmentResponse(
+                    source=ReviewSourceResponse(
+                        **asdict(segment.source),
+                        model_role="baseline"
+                        if segment.source.model_id == CLIMATOLOGY_FALLBACK_MODEL_ID
+                        else "model",
+                    ),
+                    points=tuple(
+                        ReviewPointResponse(**asdict(point)) for point in segment.points
+                    ),
+                    gaps=tuple(
+                        ReviewGapResponse(**asdict(gap)) for gap in segment.gaps
+                    ),
+                )
+                for segment in series.segments
+            ),
+        )
