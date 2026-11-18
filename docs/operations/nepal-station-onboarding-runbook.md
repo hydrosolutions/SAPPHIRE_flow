@@ -384,6 +384,7 @@ uv run python -m sapphire_flow.cli.onboard_nepal qualify \
 ```
 
 Repeat `qualify` without `--dry-run` after inspecting the aggregate report.
+For any station outside the six DHM gauges use the read-only `station_readiness` report instead (`new-station-by-hand.md` Step 7).
 All three commands support rollback dry runs. History requests cover at most
 31 days each and preserve the adapter's source and per-row version. Each batch
 checks station state and bindings under the tenant lock, then commits separately

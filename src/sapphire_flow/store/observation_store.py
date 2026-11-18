@@ -49,6 +49,7 @@ from sapphire_flow.types.observation_read import (
     QcContextWindow,
     QcReadToken,
 )
+from sapphire_flow.types.station_readiness import ObservationSummaryRow
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -703,6 +704,40 @@ class PgObservationStore:
             )
         ).scalar_one_or_none()
         return utc_or_none(row)
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ObservationSummaryRow, ...]:
+        t = observations_table
+        rows = self._conn.execute(
+            sa.select(
+                t.c.parameter,
+                t.c.source,
+                t.c.qc_status,
+                t.c.qc_rule_version,
+                sa.func.count().label("n"),
+                sa.func.min(t.c.timestamp).label("first"),
+                sa.func.max(t.c.timestamp).label("last"),
+            )
+            .where(
+                t.c.station_id == station_id,
+                unit_read_predicate(t, self._purpose),
+            )
+            .group_by(t.c.parameter, t.c.source, t.c.qc_status, t.c.qc_rule_version)
+            .order_by(t.c.parameter, t.c.source, t.c.qc_status, t.c.qc_rule_version)
+        ).all()
+        return tuple(
+            ObservationSummaryRow(
+                parameter=r.parameter,
+                source=r.source,
+                qc_status=QcStatus(r.qc_status),
+                qc_rule_version=r.qc_rule_version,
+                count=r.n,
+                first=utc_from_row(r.first),
+                last=utc_from_row(r.last),
+            )
+            for r in rows
+        )
 
     def fetch_observation_history(
         self, request: HistoryRead

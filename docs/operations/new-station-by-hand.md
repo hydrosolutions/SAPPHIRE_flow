@@ -299,7 +299,15 @@ Stage 1 quality checks (rule version `1.2`, no datum) and prints "N of 30 daily 
 Exit 0 ok, 2 usage/validation, 3 refused (including a refused quality check, which rolls the
 whole run back).
 
-## Step 7: readiness (no general tool yet)
+## Step 7: readiness
+
+```bash
+uv run python -m sapphire_flow.cli.station_readiness \
+  --tenant sandbox --network research --code 00001 [--model cmal_small] [--weather-scope S] [--json]
+```
+
+It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. Hand the output to the hydrologist. The SQL below is the fallback.
+
 
 `onboard_nepal qualify` accepts only the six fixed DHM gauges ("missing DHM station 447") and
 only discharge. Until the general report exists, gather these facts yourself and hand them to

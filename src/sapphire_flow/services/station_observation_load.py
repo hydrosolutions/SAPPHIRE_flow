@@ -151,9 +151,16 @@ def to_raw_observations(
     ]
 
 
+def days_with_value_set(
+    timestamps: list[UtcDatetime], zone: tzinfo, *, end: date, lookback_days: int
+) -> set[date]:
+    start = end - timedelta(days=lookback_days - 1)
+    return {d for ts in timestamps if start <= (d := ts.astimezone(zone).date()) <= end}
+
+
 def days_with_value(
     timestamps: list[UtcDatetime], zone: tzinfo, *, end: date, lookback_days: int
 ) -> int:
-    start = end - timedelta(days=lookback_days - 1)
-    local = {ts.astimezone(zone).date() for ts in timestamps}
-    return sum(1 for day in local if start <= day <= end)
+    return len(
+        days_with_value_set(timestamps, zone, end=end, lookback_days=lookback_days)
+    )
