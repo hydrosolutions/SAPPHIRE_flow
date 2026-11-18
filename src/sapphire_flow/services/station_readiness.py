@@ -215,7 +215,13 @@ def check_rating_curve(
     station: StationConfig, stores: ReadinessStores
 ) -> ReadinessCheck:
     targets = station.forecast_targets or frozenset()
-    if "discharge" not in targets:
+    targets_unset = station.forecast_targets is None
+    derived_from_level = (
+        targets_unset
+        and "water_level" in station.measured_parameters
+        and "discharge" not in station.measured_parameters
+    )
+    if "discharge" not in targets and not derived_from_level:
         return _check("rating_curve", _NA, "discharge not a target")
     curve = stores.ratings.fetch_active_curve(station.id)
     if curve is None:

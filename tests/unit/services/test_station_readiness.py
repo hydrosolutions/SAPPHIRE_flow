@@ -14,6 +14,7 @@ from sapphire_flow.services.station_readiness import (
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    InterpolationMethod,
     ModelAssignmentStatus,
     ObservationSource,
     QcStatus,
@@ -26,9 +27,11 @@ from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import (
     BasinId,
     ModelId,
+    RatingCurveId,
     StationGroupId,
     StationId,
 )
+from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.station import (
     GatewayPolygonBindingRow,
     GroupModelAssignment,
@@ -461,3 +464,39 @@ class TestReviewFixes:
         )[:1]
         world.observations.hold_unit_observation(obs.id, "h1")
         assert "n=1" in world.line("observations")[1]
+
+
+class TestRatingCurveAtStepSeven:
+    def _level_station(self) -> World:
+        world = World(forecast_targets=None)
+        world.station = dataclasses.replace(
+            world.station, measured_parameters=frozenset({"water_level"})
+        )
+        return world
+
+    def test_unset_targets_level_station_without_curve_fails(self) -> None:
+        assert self._level_station().line("rating_curve")[0] is CheckStatus.FAIL
+
+    def test_unset_targets_level_station_with_curve_passes(self) -> None:
+        world = self._level_station()
+        world.ratings.store_rating_curve(
+            RatingCurve(
+                id=RatingCurveId(uuid4()),
+                station_id=world.station.id,
+                version=1,
+                valid_from=NOW - timedelta(days=100),
+                valid_to=None,
+                points=[{"stage": 1.0, "discharge": 1.0}],
+                interpolation=InterpolationMethod.LINEAR,
+                uploaded_by=None,
+                created_at=NOW,
+            )
+        )
+        assert world.line("rating_curve")[0] is CheckStatus.PASS
+
+    def test_level_target_only_is_not_applicable(self) -> None:
+        world = self._level_station()
+        world.station = dataclasses.replace(
+            world.station, forecast_targets=frozenset({"water_level"})
+        )
+        assert world.line("rating_curve")[0] is CheckStatus.NOT_APPLICABLE

@@ -2799,10 +2799,10 @@ class FakeHistoricalForcingStore:
     def fetch_station_summary(
         self, station_id: StationId
     ) -> tuple[ForcingSummaryRow, ...]:
-        groups: dict[tuple[str, str], list[UtcDatetime]] = {}
+        groups: dict[tuple[str, str], set[UtcDatetime]] = {}
         for r in self._records:
             if r.station_id == station_id:
-                groups.setdefault((r.parameter, r.source), []).append(r.valid_time)
+                groups.setdefault((r.parameter, r.source), set()).add(r.valid_time)
         return tuple(
             ForcingSummaryRow(
                 parameter=p, source=src, count=len(ts), first=min(ts), last=max(ts)
