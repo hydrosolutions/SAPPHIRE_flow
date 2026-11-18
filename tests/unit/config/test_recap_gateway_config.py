@@ -27,6 +27,7 @@ class TestLoadRecapApiKey:
     def test_env_var_fallback_when_file_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.delenv("RECAP_API_KEY_FILE", raising=False)
         monkeypatch.setenv("RECAP_API_KEY", "env-secret-key")
         missing_file = tmp_path / "does-not-exist"
         assert load_recap_api_key(secret_path=missing_file) == "env-secret-key"
@@ -35,9 +36,56 @@ class TestLoadRecapApiKey:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("RECAP_API_KEY", raising=False)
+        monkeypatch.delenv("RECAP_API_KEY_FILE", raising=False)
         missing_file = tmp_path / "does-not-exist"
         with pytest.raises(ConfigurationError, match="RECAP_API_KEY"):
             load_recap_api_key(secret_path=missing_file)
+
+    def test_reads_key_from_file_named_by_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key_file = tmp_path / "key"
+        key_file.write_text("file-key\n")
+        monkeypatch.setenv("RECAP_API_KEY_FILE", str(key_file))
+        monkeypatch.setenv("RECAP_API_KEY", "env-key")
+        assert load_recap_api_key(secret_path=tmp_path / "absent") == "file-key"
+
+    def test_empty_file_named_by_variable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key_file = tmp_path / "key"
+        key_file.write_text("\n")
+        monkeypatch.setenv("RECAP_API_KEY_FILE", str(key_file))
+        monkeypatch.setenv("RECAP_API_KEY", "env-key")
+        with pytest.raises(ConfigurationError, match="RECAP_API_KEY_FILE"):
+            load_recap_api_key(secret_path=tmp_path / "absent")
+
+    def test_missing_file_named_by_variable_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RECAP_API_KEY_FILE", str(tmp_path / "nope"))
+        monkeypatch.setenv(
+            "RECAP_API_KEY", "env-key"
+        )  # a fall-through bug would return this
+        with pytest.raises(ConfigurationError, match="RECAP_API_KEY_FILE"):
+            load_recap_api_key(secret_path=tmp_path / "absent")
+
+    def test_docker_secret_wins_over_file_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret_file = tmp_path / "secret"
+        secret_file.write_text("docker-key")
+        key_file = tmp_path / "key"
+        key_file.write_text("file-key")
+        monkeypatch.setenv("RECAP_API_KEY_FILE", str(key_file))
+        assert load_recap_api_key(secret_path=secret_file) == "docker-key"
+
+    def test_unset_file_variable_keeps_env_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("RECAP_API_KEY_FILE", raising=False)
+        monkeypatch.setenv("RECAP_API_KEY", "env-key")
+        assert load_recap_api_key(secret_path=tmp_path / "absent") == "env-key"
 
 
 class TestBuildRecapClientConfig:

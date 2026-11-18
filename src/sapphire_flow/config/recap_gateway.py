@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 DEFAULT_RECAP_API_KEY_SECRET_PATH = Path("/run/secrets/sapphire_dg_api_key")
 
 _ENV_VAR = "RECAP_API_KEY"  # noqa: S105 - env var NAME, not a secret value
+_FILE_ENV_VAR = "RECAP_API_KEY_FILE"  # noqa: S105 - env var NAME, not a secret value
 
 # Plan 151 T4 (D24-cadence-source): the walk-back candidate cadence is a
 # CONFIGURATION value, never a third Protocol member and never read off the
@@ -92,8 +93,9 @@ class RecapGatewayConfig:
 def load_recap_api_key(*, secret_path: Path | None = None) -> str:
     """Read the recap Gateway API key from a Docker secret file.
 
-    Falls back to the ``RECAP_API_KEY`` env var when the secret file is
-    absent (local dev, matching the existing ``db_password`` convention).
+    Then the file named by ``RECAP_API_KEY_FILE`` (an empty or unreadable
+    file is an error, not a fall-through), then the ``RECAP_API_KEY`` env var
+    (local dev, matching the existing ``db_password`` convention).
     Raises ``ConfigurationError`` — never returns an empty/placeholder key —
     when neither source is available. Never logs the returned value.
     """
@@ -104,11 +106,23 @@ def load_recap_api_key(*, secret_path: Path | None = None) -> str:
         key = path.read_text().strip()
         if key:
             return key
+    key_file = os.environ.get(_FILE_ENV_VAR)
+    if key_file:
+        try:
+            key = Path(key_file).read_text().strip()
+        except OSError as exc:
+            raise ConfigurationError(
+                f"{_FILE_ENV_VAR} names an unreadable file ({type(exc).__name__})"
+            ) from exc
+        if not key:
+            raise ConfigurationError(f"{_FILE_ENV_VAR} names an empty file")
+        return key
     env_key = os.environ.get(_ENV_VAR)
     if env_key:
         return env_key
     raise ConfigurationError(
-        f"recap Gateway API key not found: neither {path} nor {_ENV_VAR} is set"
+        f"recap Gateway API key not found: none of {path}, {_FILE_ENV_VAR} "
+        f"or {_ENV_VAR} is set"
     )
 
 

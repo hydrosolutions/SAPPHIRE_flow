@@ -16,8 +16,8 @@ anyone should read.
 
 - Do this in a **sandbox first**, never against a shared host without the owner's go-ahead.
 - Keep the evidence folder, API key file and delivered data **outside any Git checkout**.
-  Load the Gateway key from its mode-600 file into the environment; never type it into a
-  command or message: `export RECAP_API_KEY="$(cat /path/to/key_file)"`.
+  Point the tools at the Gateway key's mode-600 file; never type the key into a
+  command or message: `export RECAP_API_KEY_FILE=/path/to/key_file` (the path, not the key).
 - One station at a time. Write down every manual step you ran in the evidence folder.
 - Run everything from a checkout of this repository (`uv sync` once). All Python snippets
   below use `uv run python - <<'EOF' ... EOF`.
@@ -98,7 +98,7 @@ EOF
 ```
 
 Start one worker per pool (`ingest` and `default`) in the environment the jobs need:
-`DATABASE_URL`, `SAPPHIRE_CONFIG`, `RECAP_API_KEY`, `SAPPHIRE_DATA_DIR` and
+`DATABASE_URL`, `SAPPHIRE_CONFIG`, `RECAP_API_KEY_FILE` (the path to the key file), `SAPPHIRE_DATA_DIR` and
 `SAPPHIRE_INCOMING_DIR` (both folders outside the checkout):
 `uv run prefect worker start --pool ingest --type process` (and `--pool default`).
 
