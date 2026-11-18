@@ -75,6 +75,7 @@ _SAFE_FAILURE_CODES = frozenset(
         "compose_version_unsupported",
         "postgres_platform_mismatch",
         "image_scenario_differs_from_checkout",
+        "expected_result_hash_mismatch",
         "report_directory_must_be_new_and_absolute",
         "unsupported_path_characters",
         "unsafe_cleanup_record",
@@ -646,7 +647,14 @@ def run_smoke(docker: Docker, image: str, path: Path) -> int:
             raise SmokeError("api_authentication_not_enforced")
         if response["forecast_status"] != 200:
             raise SmokeError("api_authorized_request_failed")
-        expected = json.loads((_DATA / "expected-result.json").read_text())
+        expected_bytes = (_DATA / "expected-result.json").read_bytes()
+        manifest = json.loads((_DATA / "manifest.json").read_bytes())
+        if (
+            hashlib.sha256(expected_bytes).hexdigest()
+            != manifest["sha256"]["expected-result.json"]
+        ):
+            raise SmokeError("expected_result_hash_mismatch")
+        expected = json.loads(expected_bytes)
         count = verify_api(response["forecast"], evidence, expected)
         if (
             response["station_status"] != 200
@@ -749,7 +757,13 @@ def main(argv: list[str] | None = None) -> int:
         if report_path.exists():
             report = json.loads(report_path.read_text())
             report["cleanup_verified"] = True
-            report.pop("remaining_resources", None)
+            for key in (
+                "remaining_resources",
+                "cleanup_reason",
+                "cleanup_command",
+                "next_action",
+            ):
+                report.pop(key, None)
             report_path.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({"cleanup_verified": True}))
         return 0

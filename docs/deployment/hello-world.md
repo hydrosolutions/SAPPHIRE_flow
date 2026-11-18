@@ -9,6 +9,8 @@ For development qualification, prepare the normal application image using the
 [existing image build and release-identity instructions](../standards/cicd.md#release-identity-tags-and-receipts).
 Its release target, source revision, smoke code and resources must match the
 checkout. The command never pulls, builds or retrieves dependency credentials.
+Use a clean checkout for qualification: the identity checks compare the recorded
+revision and smoke files, not every uncommitted application change.
 Preload the exact PostGIS and Prefect images pinned in `docker-compose.smoke.yml`.
 PostGIS uses `linux/amd64`, including emulation on an ARM Docker host; native ARM
 PostGIS support is not claimed by this scenario. Use a local Unix-socket Docker
@@ -62,6 +64,8 @@ It refuses foreign resources. Never substitute a production project or run a glo
 Docker prune. Setup failures name a bounded stage such as observation loading/QC,
 artifact import or registration; check the matching prerequisite, then retry with a
 new report directory. A missing worker or malformed API response is a failure.
+For a preflight `docker_command_failed`, first check that the local Docker daemon
+is running and all three required images are already present.
 
 For the opted-in integration test, set `SAPPHIRE_SMOKE_IMAGE` to the prepared image
 and run `uv run pytest -m deployment tests/integration/test_deployment_smoke.py`.

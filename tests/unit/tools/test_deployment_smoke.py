@@ -349,6 +349,56 @@ class TestSmokeController:
         assert report["cleanup_command"][-3:] == ["cleanup", "--report-dir", str(path)]
         assert not (path / "secrets").exists()
 
+    def test_successful_cleanup_retry_clears_stale_recovery_guidance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        docker = FakeDocker(failure="cleanup")
+        _prepare(monkeypatch, docker)
+        path = tmp_path / "report"
+        assert smoke.run_smoke(docker, "prepared", path) == 1
+        before = json.loads((path / "report.json").read_text())
+        stale_keys = {
+            "remaining_resources",
+            "cleanup_reason",
+            "cleanup_command",
+            "next_action",
+        }
+        assert stale_keys <= before.keys()
+        docker.failure = ""
+
+        def runner(environment: dict[str, str], deadline: float) -> FakeDocker:
+            return docker
+
+        monkeypatch.setattr(smoke, "Docker", runner)
+        assert smoke.main(["cleanup", "--report-dir", str(path)]) == 0
+        after = json.loads((path / "report.json").read_text())
+        assert after["cleanup_verified"] is True
+        assert not stale_keys & after.keys()
+        assert after["forecast_verified"] == before["forecast_verified"]
+        assert after["forecast_id"] == before["forecast_id"]
+        assert not any(docker.resources.values())
+
+    def test_changed_checkout_oracle_cannot_pass_even_when_values_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        docker = FakeDocker()
+        _prepare(monkeypatch, docker)
+        data = tmp_path / "data"
+        data.mkdir()
+        original = _ROOT / "src/sapphire_flow/data/deployment_smoke"
+        (data / "manifest.json").write_bytes((original / "manifest.json").read_bytes())
+        (data / "expected-result.json").write_bytes(
+            (original / "expected-result.json").read_bytes() + b"\n"
+        )
+        monkeypatch.setattr(smoke, "_DATA", data)
+        path = tmp_path / "report"
+        assert smoke.run_smoke(docker, "prepared", path) == 1
+        report = json.loads((path / "report.json").read_text())
+        assert report["reason"] == "expected_result_hash_mismatch"
+        assert report["forecast_verified"] is False
+        assert report["worker_evidence_verified"] is True
+        assert report["cleanup_verified"] is True
+
     def test_missing_image_refuses_before_creating_report(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
