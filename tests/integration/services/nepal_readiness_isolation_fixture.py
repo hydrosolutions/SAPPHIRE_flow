@@ -5177,6 +5177,8 @@ def _check_writes(
             "altitude_masl": location["altitude_masl"],
             "water_level_datum_masl": literal["water_level_datum_masl"],
             "water_level_unit": literal["water_level_unit"],
+            "water_level_gauge_type": None,
+            "water_level_sensor_masl": None,
             "updated_at": _time_field(case, "station_updated_at"),
         }
     return [
@@ -5367,7 +5369,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0086"
+                assert revision == "0087"
 
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now

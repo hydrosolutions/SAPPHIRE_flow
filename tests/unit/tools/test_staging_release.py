@@ -267,6 +267,33 @@ class TestReleaseBuilder:
         assert calls == ["default", "aquacast"]
         assert all((evidence / (v + "-gate-result.json")).exists() for v in ids)
 
+    def test_aborted_image_build_records_default_smoke_block_and_updated_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evidence = tmp_path / "evidence"
+        evidence.mkdir()
+        budgets: list[int] = []
+
+        def gate(
+            command: list[str], *, timeout_seconds: int, **kwargs: object
+        ) -> object:
+            budgets.append(timeout_seconds)
+            return collector.verification.Outcome.FAILED
+
+        monkeypatch.setattr(collector.verification, "run_private", gate)
+        results = dict.fromkeys(transfer.GATE_NAMES, "blocked")
+        with pytest.raises(
+            collector.release.ReleaseIdentityError, match="gates failed"
+        ):
+            collector.ReleaseBuilder(tmp_path, tmp_path, {}, results).build(
+                tmp_path, "1.2.3", "a" * 40
+            )
+        assert budgets == [4800, 1200]
+        assert json.loads(
+            (evidence / "default-deployment-smoke-result.json").read_text()
+        ) == {"outcome": "blocked", "reason": "image_gate_aborted"}
+        assert not (evidence / "aquacast-deployment-smoke-result.json").exists()
+
     def test_tag_drift_cannot_make_receipt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

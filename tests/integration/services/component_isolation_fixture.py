@@ -1815,6 +1815,8 @@ def _station_values(literal: dict[str, Any], ids: dict[str, UUID]) -> dict[str, 
     expected = expected_row(literal, ids)
     location = expected.pop("location")
     expected["altitude_masl"] = location["altitude_masl"]
+    expected.setdefault("water_level_gauge_type", None)
+    expected.setdefault("water_level_sensor_masl", None)
     return expected
 
 

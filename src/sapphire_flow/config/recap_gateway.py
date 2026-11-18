@@ -157,10 +157,13 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
         load_merged_toml,
     )
 
-    data = cast(
-        "dict[str, Any]",
-        load_merged_toml(config_path, _resolve_overlay_paths()),
+    return parse_recap_gateway_config(
+        load_merged_toml(config_path, _resolve_overlay_paths())
     )
+
+
+def parse_recap_gateway_config(raw: dict[str, object]) -> RecapGatewayConfig:
+    data = cast("dict[str, Any]", raw)
 
     adapters = data.get("adapters", {})
     section = cast(

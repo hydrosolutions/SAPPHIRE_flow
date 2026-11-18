@@ -1,0 +1,32 @@
+# Fixed hourly discharge rules from builtin_default 1.0.0 at source commit.
+# Synthetic scenario only; no agency configuration inheritance.
+[qc_rules]
+version = "deployment-smoke-hourly-1"
+
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0, value_max = 100000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { max_rate = 50.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { tolerance = 0.75 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { k_sigma = 5.0 }

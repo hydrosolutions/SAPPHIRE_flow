@@ -1,3 +1,8 @@
+# Private profile selection, file precedence and safe offline preview:
+# docs/deployment/profiles.md; administrator entry: docs/deployment-quickstart.md.
+# This reference owns application fields, not installation/secret delivery inputs.
+# Typed neutral calendar/disabled-alert defaults may be omitted; scientific
+# choices and audited provider capabilities must be explicit in private deployments.
 # SAPPHIRE Flow — config.toml reference
 #
 # This file documents every config.toml field with its purpose, default value,
@@ -98,6 +103,10 @@ enable_skill_generations = false
 
 # --- Display ---
 # Source: types-and-protocols.md § DeploymentConfig
+# Deployment preparation requires an explicit valid named display timezone;
+# normally choose local operational time, or explicitly UTC. Named zones handle DST.
+# The legacy runtime UTC default remains unchanged; incomplete preview fallback
+# is provisional and does not satisfy the required deployment choice.
 default_display_timezone = "Europe/Zurich"
 
 # Fixed daily boundary in UTC, strict HH:MM; independent of display timezone.
@@ -119,6 +128,15 @@ calendar = "gregorian"                # Nepal v1: "bikram_sambat"
 # DeploymentConfig — array-of-tables / table sections
 # (Must follow all scalar fields due to TOML parsing rules)
 # =============================================================================
+
+# --- Selected operational weather retention ---
+[operational_weather]
+route = "stored_reanalysis"                  # opt in to "recap_combined" for Nepal
+rollover_buffer_days = 15                    # retain consecutive complete supplied tail days, 0..15
+max_retained_past_lead_hours = 72             # original IFS support-end minus source run, 1..360
+# Retention does not extend eligibility. Future use keeps nwp_max_fallback_age_hours.
+# An ineligible past IFS sample refuses use; it is not converted into a fillable gap.
+# Cache remains one bounded paired product per station/binding, not an archive.
 
 # --- Short daily past-weather gaps ---
 # Shared station/group preparation; applies per assignment before model validation.

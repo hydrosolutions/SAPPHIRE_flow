@@ -30,6 +30,7 @@ from sapphire_flow.types.rating_reference import (
 )
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
+from tests.integration.legacy_stations import legacy_station_columns
 from tests.unit.services.test_provisional_discharge import NOW, convert, inputs
 
 if TYPE_CHECKING:
@@ -82,7 +83,8 @@ def seed(
         measurement=measurement_snapshot(obs),
     )
     proof = replace(proof, tenant_id=station.tenant_id)
-    PgStationStore(conn).store_station(station)
+    with legacy_station_columns(conn):
+        PgStationStore(conn).store_station(station)
     PgRatingCurveStore(conn).store_rating_curve(curve)
     PgObservationStore(conn).store_observations([obs])
     seed_reference(conn, measurement_feed_evidence, feed)

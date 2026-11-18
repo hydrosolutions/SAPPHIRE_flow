@@ -48,6 +48,8 @@ from sapphire_flow.types.gateway_preparation import (
     ForecastScope,
     HistoryScope,
     PreparationState,
+    PrepareFailureReason,
+    PrepareHeld,
     ProductContract,
     RegistrationAttempt,
     RegistrationStatus,
@@ -262,7 +264,10 @@ def preparation_workspace(directory: Path, *, handover: Path) -> Iterator[Path]:
         raise ValueError("workspace symbolic links are forbidden")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     if directory.stat().st_mode & 0o077:
-        raise ValueError("evidence workspace must have private 0700 permissions")
+        raise PrepareHeld(
+            PrepareFailureReason.EVIDENCE_DIR_NOT_PRIVATE,
+            "evidence workspace must have private 0700 permissions",
+        )
     lock_path = directory / ".preparation.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
@@ -631,7 +636,10 @@ def confirm_proposal(
     if not state.proposals or proposal_revision(state.proposals[-1]) != revision:
         raise ValueError("proposal changed; inspect and confirm its exact revision")
     if state.proposals[-1].holds:
-        raise ValueError("proposal contains unresolved required inputs")
+        raise PrepareHeld(
+            PrepareFailureReason.SCOPE_INCOMPLETE,
+            "proposal contains unresolved required inputs",
+        )
     state = replace(state, confirmed_proposal=revision)
     save_preparation_state(directory, state)
     return state
@@ -1009,7 +1017,9 @@ class _CoverageRequest:
 
 def _coverage_requests(proposal: DataProposal) -> tuple[_CoverageRequest, ...]:
     if proposal.holds:
-        raise ValueError("coverage scope remains unresolved")
+        raise PrepareHeld(
+            PrepareFailureReason.SCOPE_INCOMPLETE, "coverage scope remains unresolved"
+        )
     contracts = {contract.stream: contract for contract in proposal.contracts}
     requests: list[_CoverageRequest] = []
     for variable in proposal.variables:

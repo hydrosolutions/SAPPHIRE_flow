@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import replace
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
@@ -40,8 +41,13 @@ if TYPE_CHECKING:
     from sapphire_flow.types.forecast import OperationalForecast
 
 
-def selected(forecast: OperationalForecast, *, seed: int = 1) -> OperationalForecast:
-    use = WeatherUse(
+def selected(
+    forecast: OperationalForecast,
+    *,
+    seed: int = 1,
+    weather_use: WeatherUse | None = None,
+) -> OperationalForecast:
+    use = weather_use or WeatherUse(
         station_id=forecast.station_id,
         issue_time=forecast.issued_at,
         used_at=forecast.issued_at,
@@ -90,6 +96,108 @@ def stored_case(
 
 
 class TestSelectedWeatherPersistence:
+    @pytest.mark.parametrize("change", ["quality", "source_cycle"])
+    def test_new_weather_supersedes_equal_values_and_identical_retry_keeps_evidence(
+        self,
+        stored_case: tuple[PgForecastStore, OperationalForecast],
+        change: str,
+    ) -> None:
+        from sapphire_flow.store.operational_weather_codec import make_past_snapshot
+        from sapphire_flow.types.operational_weather import (
+            PastWeatherRequirement,
+            PastWeatherUse,
+            WeatherCacheAttempt,
+            WeatherCacheKey,
+            WeatherFailureReason,
+            WeatherFreshness,
+            WeatherLegOutcome,
+            WeatherLegState,
+        )
+        from tests.fakes.operational_weather import make_operational_window
+
+        store, base = stored_case
+        window = make_operational_window(base.station_id, issue_time=base.issued_at)
+        snapshot = make_past_snapshot(
+            window=window,
+            retrieved_at=base.issued_at,
+            snapshot_id=uuid4(),
+            max_bytes=2 * 1024 * 1024,
+        )
+        past = PastWeatherUse(
+            freshness=WeatherFreshness.STALE,
+            refresh_outcome=WeatherLegOutcome(
+                state=WeatherLegState.UNAVAILABLE, reason=WeatherFailureReason.TRANSPORT
+            ),
+            retrieved_at=base.issued_at,
+            requirement=PastWeatherRequirement(
+                start=window.start,
+                end=window.end,
+                parameters=("precipitation", "temperature"),
+            ),
+            snapshot_id=snapshot.id,
+            snapshot_sha256=snapshot.payload_sha256,
+            snapshot_issue_time=base.issued_at,
+            binding_fingerprint=window.binding_fingerprint,
+            days=window.days,
+        )
+        use = WeatherUse(
+            station_id=base.station_id,
+            issue_time=base.issued_at,
+            used_at=base.issued_at,
+            attempt=WeatherCacheAttempt(
+                key=WeatherCacheKey(
+                    station_id=base.station_id,
+                    binding_fingerprint=window.binding_fingerprint,
+                ),
+                generation=1,
+                id=uuid4(),
+                issue_time=base.issued_at,
+                started_at=base.issued_at,
+            ),
+            refresh_finished_at=base.issued_at,
+            past=past,
+            future=WeatherUnused(),
+        )
+        stored = selected(base, weather_use=use)
+        store.store_forecast(stored)
+        original = store.fetch_evidence(stored.id)
+        changed = (
+            replace(
+                past,
+                freshness=WeatherFreshness.CURRENT,
+                refresh_outcome=WeatherLegOutcome(state=WeatherLegState.SUCCESS),
+            )
+            if change == "quality"
+            else replace(
+                past,
+                days=tuple(
+                    replace(
+                        day,
+                        samples=tuple(
+                            replace(
+                                sample, source_run=sample.source_run - timedelta(days=1)
+                            )
+                            for sample in day.samples
+                        ),
+                    )
+                    for day in past.days
+                ),
+            )
+        )
+        replacement = selected(
+            replace(base, id=ForecastId(uuid4())),
+            weather_use=replace(use, past=changed),
+        )
+        assert store.store_forecast(replacement) == replacement.id
+        assert store.fetch_evidence(stored.id) == original
+        assert store.fetch_forecasts_for_cycle(base.issued_at)[0].id == replacement.id
+        retry = selected(
+            replace(base, id=ForecastId(uuid4())),
+            seed=2,
+            weather_use=replace(use, past=replace(changed, snapshot_id=uuid4())),
+        )
+        assert store.store_forecast(retry) == replacement.id
+
     def test_typed_round_trip(
         self, stored_case: tuple[PgForecastStore, OperationalForecast]
     ) -> None:

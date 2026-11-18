@@ -22,7 +22,8 @@ class OperationalWeatherConfig(BaseModel):
     automatic_issue_timezone: ZoneInfo | None = None
     provider_min_history_days: int = Field(default=14, ge=1, le=370, strict=True)
     provider_max_history_days: int = Field(default=370, ge=1, le=370, strict=True)
-    rollover_buffer_days: int = Field(default=1, ge=0, le=1, strict=True)
+    rollover_buffer_days: int = Field(default=15, ge=0, le=15, strict=True)
+    max_retained_past_lead_hours: int = Field(default=72, ge=1, le=360, strict=True)
     max_response_bytes: int = Field(default=64 * 1024 * 1024, gt=0, strict=True)
     max_cache_bytes: int = Field(default=2 * 1024 * 1024, gt=0, strict=True)
     max_evidence_bytes: int = Field(

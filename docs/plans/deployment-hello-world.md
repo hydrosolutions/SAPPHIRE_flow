@@ -1,0 +1,528 @@
+---
+status: READY
+created: 2026-11-18
+owner: deployment orchestrator
+scope: Disposable synthetic forecast through a real Prefect worker and authenticated API
+baseline: 7f4eed38c9f983e1447c09705a72388dd1339d69
+---
+
+# Deployment hello world
+
+## Outcome and boundaries
+
+An administrator with a prepared application image runs one command and sees
+whether this installation can start its services, initialize an empty database,
+execute one forecast through a worker, and return that forecast through the API.
+The command removes its disposable resources and retains a small safe report.
+It proves this synthetic path, not agency readiness or forecast skill.
+
+The owner authorized planning/review, HW1a package/model/fixture qualification,
+and subsequently **HW1b** on 2026-11-18 after #555 and #557 merged, followed by
+**HW1c** after #558 merged. HW1b includes
+disposable local container validation with generated smoke-only credentials.
+Normal loader/QC integration and runtime qualification remain mandatory HW1b
+acceptance gates. Operational deployment/configuration/secret changes and later
+target-server runs remain undispatched.
+The merged profile increment (#544) remains preparation-only. This smoke command
+does not turn its pending checks into PASS or implement profile-driven launching.
+
+Smallest scenario: one generic tenant/network/station, hourly discharge history,
+one point-weather precipitation trace, one diagnostic FI model, one cycle, three
+hourly forecast steps and twenty output members. No basin geometry, rating curve,
+Gateway, trained Aquacast artifact, dashboard, Caddy, ingest/backup workers,
+recurring schedules, notification delivery or publication workflow. No migrations.
+Operational configs and scientific behavior remain untouched.
+
+## Evidence and reuse
+
+Read against the baseline above, not inferred from the other session's account:
+
+| Existing capability | Reuse and limit |
+| --- | --- |
+| `cli/create_station.py` (#551), migration `0087` | Use the public command with explicit tenant/network/timezone and `--apply`. It creates an ONBOARDING station; it does not establish weather bindings, an active model or operational readiness. `--gateway-name` currently remains required; supply a synthetic label, make no Gateway request. |
+| `tests/fakes/fake_fi_models.py`, `tests/integration/test_fi_adapter_smoke.py` | Reference for FI requirements, serialization, adaptation, twenty-member floor and failure tests. The reference model ignores weather values and lives outside the image; do not ship/import the tests package or claim it proves input consumption. |
+| `adapters/replay/nwp.py` | Existing replay serves gridded data through `NwpGridStore`. Reusing it would add grid/basin extraction to this point scenario; use a bounded point fixture adapter instead, through the existing `WeatherForecastSource` protocol. |
+| `flows/run_forecast_cycle.py` | Accepts injected `adapter`, `models`, `clock`, `rng`, `cycle_time`, while omitted stores use real production PostgreSQL stores. Its point-forecast branch persists weather and reads it back through normal input assembly. No second forecast engine or `.fn` test shortcut. |
+| `services/model_registry.py`, `services/model_import.py`, `services/model_onboarding.py` | Existing registration, audited artifact import and assignment services. Smoke setup supplies the fixture model explicitly; do not add it to automatic operational model discovery. |
+| `cli/register_deployments.py` | Source-root and ONLY/SKIP settings are preserved. It still registers operational schedules; the smoke setup registers only its own unscheduled wrapper deployment using the same Prefect source/deploy API, without modifying this shared registrar. |
+| `docker-compose.yml`, `docker/entrypoint.sh`, `docker/bootstrap-roles.*`, `docker-entrypoint-initdb.d/` | Reuse image, initialization and scoped DB-role conventions. Base Compose includes operational services, secrets and country config; a small standalone smoke Compose file is safer and simpler than subtracting these through overlays. |
+| `api/routes/api_forecasts.py`, `cli/access_tokens.py` | Verify `/api/v1/forecasts/{id}` with a newly generated station-scoped token. Normal authentication remains enabled. No reliance on dashboard JSON or health alone. |
+| `tests/integration/test_e2e_pipeline.py` | Reuse assertions/service setup ideas, not its country fixtures or in-process execution as proof of worker wiring. |
+
+The local ForecastInterface checkout was also inspected. SAP3 pins **v0.1.20**
+(`pyproject.toml`, `uv.lock`); its protocol, input requirements and result types
+are the implementation contract. The checkout's newer HEAD includes time-grid
+extensions not in that pin. Do not upgrade FI or introduce those extensions here.
+Re-read the pinned `interface/protocol.py`, `input/requirement.py`,
+`interface/result.py`, `docs/model_interface.md`, `docs/input_requirement.md`
+before model implementation/review. Anticipated failures return `ModelFailure`;
+`max_nan` is not a replacement for model shape/coverage checks.
+
+Consulted scope, architecture, security, CI/CD and orchestration standards, plus
+the FI/model, forecast-cycle and Prefect/Docker touchpoint maps. Their current
+runtime safeguards override obsolete v0 simplifications such as unauthenticated
+API access. Shared entrypoint privileges, role grants, release identity and
+hydrological-grid activation restrictions are not relaxed for smoke execution.
+
+## Coordination contract and gates
+
+Station onboarding owns creation, observation loading/QC, ratings, readiness,
+its generator and `docs/operations/new-station-by-hand.md`. Do not edit that guide,
+its uncommitted rewrite, their worktrees or their command implementations.
+Deployment owns this scenario, model/weather packaging, runtime orchestration,
+API assertions, cleanup and its own guide.
+
+The owner relayed the handoff; local Plans 540/541 were read in
+`/Users/bea/Documents/GitHub/sapphire-plan-540`. They and the guide rewrite are
+unmerged coordination evidence, not shipped capabilities. Refresh their state at
+dispatch; do not copy their plans into this branch.
+
+| Dependency | Current state / dispatch condition |
+| --- | --- |
+| M2 station creation | Merged #551. Preserve new defaulted station fields and legacy migration-test helper. |
+| M3a observation loader | Merged #552 at `4cf5684dc894ec0d39e04e11e8ad0b98b8b2977a`; its initial RAW-only behavior is superseded by M3b below. Preserve the config/tenant/CSV/`--apply` contract. |
+| M3b Stage 1 QC on load | Merged #557 at `a7717bb0d1185c5012adca2c2d2b73a447a0eade`. Its integration test loads our exact packaged fixture and pinned rules: 72 `QC_PASSED`, persisted QC version `1.2`, all three model-lookback hours present. Dry run writes nothing. HW1b must reproduce this through the container command; never bypass QC or use `--allow-unchecked`. |
+| Fixed discharge fixture | Merged #554 at `3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`; packaged and qualified in #555 at `d81a52f96167cfbdd3bc001d01b53b27c74fa93c`. Exact-byte CSV/station metadata, pinned rules and 60-value numerical reference are available. Worker/API proof remains HW1b. |
+| M3c/M3d | Not dependencies of this direct-discharge scenario. M3d outputs water-level/rating files; that alternative needs M3c as well to produce discharge. No request to accelerate them. |
+| M5 Gateway bindings / M7 promotion | Not reused as general commands here. A narrowly scoped smoke bootstrap seeds its own point binding and active diagnostic assignment through existing services/stores in the newly created smoke DB only. This is test setup, not a general onboarding/promotion command. |
+
+M3a/M3b do not block planning or pure model/weather development. They do block
+end-to-end qualification. Do not start a runtime substitute if they are late.
+There is no claimed migration number; if a future need appears, stop and reconcile
+scope. Other workstreams allocate the next free revision at integration time.
+
+## Scenario and packaging contract
+
+- Scenario id `hello-world-v1`; tenant `smoke` supplied at setup, network
+  `synthetic`, station code `SYN001`, from packaged `scenario.json`. Reuse the
+  station team's generic identity instead of the initial `demo-001` proposal; this
+  avoids conflicting fixture metadata and changes no scientific behavior. Resolve the
+  created UUID normally and retain it in the report; UUIDs need not be identical
+  across installations.
+- Fixed cycle `2025-01-03T00:00:00Z`, hourly grid aligned to UTC, no daily aggregation.
+  Target history must cover the three complete hourly buckets before that issue.
+  The last three input stamps are 2025-01-02 21:00Z, 22:00Z and 23:00Z.
+  The adopted fixture supplies 72 hourly readings beginning 2024-12-31 00:00Z
+  as its pinned QC-support window. All CSV timestamps
+  carry explicit UTC offsets; pin first/last timestamps, columns and units in the
+  manifest. Include only the necessary history after qualification with M3b.
+- Smoke configuration explicitly selects UTC display and UTC station timezone.
+  These are fixture choices, not defaults for agencies. Keep display, input grid
+  and artifact training conventions distinct; no new hydrological-day logic.
+- Forecast valid times: issue + 1h, + 2h, + 3h. With the last observation at
+  issue - 1h, FI v0.1.20 output `offset=2`; assert this against delivered inputs.
+  Future precipitation uses **start-labelled** hourly totals in mm: the value at
+  issue + 1h represents [issue + 1h, issue + 2h), and likewise for the next two.
+  These synthetic labels deliberately match the existing hourly LEGACY assembly;
+  do not apply the daily ICON end-label shift or change that production policy.
+  `PointForecast.values` columns are `valid_time,parameter,member_id,value`, with
+  stored parameter and FI future variable both `precipitation`, control member 0.
+  The model declares one hourly branch, `future_steps=3`, exact horizon, `max_nan=0`
+  and SINGLE forcing mode; config explicitly allows `precipitation`. The model
+  produces twenty output members from the single trace; weather is not broadcast
+  to twenty input members. Test through `build_future_dynamic_frame` and the FI
+  adapter, not just model-direct frames.
+- The fixture binding uses existing routing tag `icon_ch2_eps`, role FORECAST,
+  extraction POINT and status ACTIVE, written with
+  `PgStationStore.store_weather_source`. This tag is needed by the unchanged
+  injected-adapter staleness probe, which still defaults to ICON. All values and
+  the adapter are synthetic; the manifest/report must say so, never claim provider
+  acquisition. No live provider is constructed and no agency profile inherits this
+  tag. A separate synthetic-source routing feature is outside this increment.
+  Assert one binding and verify the point branch persists all three records.
+- A tiny FI station model consumes the last delivered discharge and each future
+  precipitation value. Proposed diagnostic equation is
+  `Q[k,m] = Q_last + a * P[k] + b * m`, members `m=0..19`, with versioned constants
+  `a=0.1 (m³/s)/mm`, `b=0.01 m³/s`. It is wiring evidence, not a scientific model.
+  Twenty members preserve the existing minimum; no operational floor is lowered.
+  It declares discharge targets with TRAJECTORIES output and precipitation
+  requirements/units explicitly,
+  checks timestamps/lengths/finite values, and returns `ModelFailure` for invalid
+  input. Serialize a small self-contained artifact with the constants, schema
+  version and configuration hash; no pickle, remote artifact or file paths.
+  Expose `config_hash` as the SHA-256 of the exact packaged model-configuration
+  bytes; the FI adapter proxies it. Test equality with the manifest's
+  `expected_config_hash` and reject an artifact carrying a different hash.
+  Resource loading belongs in setup/the wrapper; model train/predict remain pure.
+- Packaging: `src/sapphire_flow/data/deployment_smoke/` contains README/manifest,
+  fixed discharge CSV, fixed weather CSV, artifact and expected-result JSON.
+  Add explicit package-data patterns in `pyproject.toml`. Load via
+  `importlib.resources`; tests consume these same resources. An installed wheel
+  and the prepared image must work without `tests/` or a checkout bind mount.
+- Proposed code: `models/deployment_smoke.py` (FI model),
+  `adapters/deployment_smoke_weather.py` (fixed `PointForecast` adapter),
+  `flows/deployment_smoke.py` (thin wrapper), `cli/deployment_smoke.py` (setup,
+  registration and result verification). The root host tool below only runs
+  Compose and handles safe reports; keep application logic in existing layers.
+- Use model id `deployment_smoke`, explicitly passed through the FI adapter with
+  `ModelTier.SKILL` and `AlertEligibility.NO_EVENT_INFORMATION`. SKILL here is the
+  existing routing/API tier, not scientific qualification. Do not extend
+  `FALLBACK_MODEL_IDS` or add a climatology artifact: API tier is `skill`, station
+  `no_floor=true`. Pin these facts in tests/report rather than claiming operational
+  readiness. All three
+  alert enablement flags are explicitly false in smoke config. No global
+  plugin registration or new scientific classification enum. The wrapper passes
+  no fake stores; normal PostgreSQL weather, observation, artifact and forecast
+  reads/writes must be exercised. The point adapter is injected inside the worker,
+  not serialized as an object through Prefect parameters. No monkeypatches.
+
+HW1a freezes the exact manifest/artifact/CSV contract and records source hashes,
+not a generic scenario schema or new plugin framework. If this route requires
+changes to the live forecast/FI boundary, pause that expansion for reconciliation.
+
+## Administrator command and execution
+
+Administrator interface implemented in HW1b; automated qualification and the
+released guide are HW1c:
+
+```bash
+uv run --no-project --no-python-downloads python tools/deployment_smoke.py run --image sapphire-flow:<prepared-version> --report-dir /absolute/path/smoke-report
+uv run --no-project --no-python-downloads python tools/deployment_smoke.py cleanup --report-dir /absolute/path/smoke-report
+```
+
+Prerequisites: uv and an installed compatible Python interpreter, local
+Docker/Compose, the checkout matching the prepared image,
+and preloaded application/PostGIS/Prefect images. Reuse the existing build recipe
+and release identity verifier. Private dependency/build credentials may be needed
+in that separate preparation step; the smoke runtime neither retrieves nor reads
+them. Use the standard application image, not the Aquacast image. Do not pull,
+build, install packages or contact providers from `run`. Fail preflight with a
+specific preparation instruction if anything is missing/mismatched.
+
+1. Verify local Docker endpoint, compatible Compose, image/release identity and
+   packaged scenario. Create an exclusive run directory (0700) and unique Compose
+   project `sapphire-smoke-<random>`. Refuse an existing report/run identity.
+   Reject conflicting ambient Compose selectors; construct a minimal child env
+   without inherited SAPPHIRE/DATABASE/PREFECT/provider settings. Do not load the
+   checkout's `.env` or private profile. Remote Docker execution is out of MVP scope.
+2. Render only `docker-compose.smoke.yml`, with the generated env file and project.
+   It defines PostGIS, Prefect server, init, one process worker and API; setup is a
+   one-shot command using the same app image. No base/agency overlay composition.
+   Reuse pinned infrastructure images and current security settings. Publish no
+   host ports; the HTTP probe runs from the worker container to the API container.
+   Internal network has no provider egress; no host network, Docker socket,
+   operational bind mounts, external volumes or fixed container names.
+3. Generate disposable DB-role passwords and API pepper inside the private run
+   directory, mounted through existing secret-file conventions. Reuse first-boot
+   database initialization, migrations to the image's head, tenant provisioning and
+   role bootstrap. API and worker retain their distinct scoped DB roles; owner
+   credentials are setup-only. No secret values in command arguments or reports.
+4. Setup invokes `create_station` and the merged M3a/M3b discharge/QC command with
+   explicit fixture/config paths and identity. Require `QC_PASSED` coverage of the
+   model lookback. Register/import the fixture artifact using existing audited
+   services (`register_models`, `import_external_artifact`, real audited writer,
+   principal and audit store); create its assignment via `create_station_assignment`.
+   Establish the point binding with `PgStationStore.store_weather_source`. After
+   verifying loaded/QC-qualified inputs, artifact and assignment, explicitly call
+   `PgStationStore.update_station_status` to transition this fixture station from
+   ONBOARDING to OPERATIONAL. This sole smoke-only transition happens in setup,
+   after confirming the new DB/project and exact tenant/network/station identity;
+   it never accepts an existing/shared database or arbitrary station argument.
+   Do not weaken
+   readiness/promotion controls on existing paths. HW1b verifies grants needed by
+   setup and uses owner authority only in its one-shot setup container.
+5. Register one unscheduled `deployment-smoke` flow in one isolated process pool,
+   sourced from the installed image's `/app` code. Disable Prefect telemetry.
+   Enqueue once via Prefect API with serializable fixture identity only. The real
+   worker calls the decorated `run_forecast_cycle_flow` as a nested flow with the
+   fixture adapter/model, parsed smoke `DeploymentConfig`, real forecast-QC rule
+   set, `data_use=STANDARD`, fixed cycle/clock and seeded RNG. Keep omitted stores
+   on the production bootstrap, including rejected-forecast capture. The normal
+   entrypoint constructs worker `DATABASE_URL` from its scoped role secret. Use
+   a project-owned artifact named volume shared setup/worker RW and API RO. No
+   ordinary deployment registration or schedules. Assert wrapper and child run
+   IDs and their parent relationship in Prefect; direct/in-process execution is
+   insufficient. Publication activation remains empty in smoke configuration.
+6. Poll that flow run with bounded timeout, then resolve its forecast by exact
+   station/model/cycle/data-use identity. Mint a short-lived station-scoped API
+   token with `create_token`; keep raw credentials out of logs and Prefect results.
+   Probe `http://api:8000` from the worker container with normal authentication
+   and assert the returned
+   forecast identity, units, issue/valid times, 20×3 shape, acceptable QC and every
+   expected value (absolute tolerance `1e-8`). Pass the token through captured
+   stdin to the fixed-route HTTP client, never arguments, environment, logs or
+   Prefect results. Disable ambient HTTP proxies. Require 401 without the token
+   and 200 with it. This proves internal HTTP service wiring, not host-port access.
+   Require exactly one station attempted
+   and succeeded, zero failed, and one diagnostic-model forecast. A skipped station
+   is failure, even if Prefect itself completed. Require input coverage and weather
+   freshness for this fixed clock; do not confuse fixture time with wall-clock
+   token expiry. HW1a pins numerical expectations; HW1b must pin and verify
+   expected health/input-quality codes and API response shape before acceptance;
+   no blanket acceptance of degraded outcomes. `no_floor=true` is an explicit
+   scope limitation, not missing required fixture input. Also assert no pre-existing forecast
+   existed before enqueue and worker/flow-run provenance matches this run.
+7. In `finally`, stop only this project's services and remove its volumes/network
+   and generated credentials on success, failure or interrupt. Preserve safe
+   summary/report only. Cleanup verifies ownership labels and recorded project
+   identity; never prune globally or delete resources by name prefix alone.
+   A cleanup failure is nonzero even if forecast verification passed; report
+   remaining resource IDs and the exact retry command. Forced termination may
+   leave resources: the explicit cleanup command handles this from the run record.
+
+Report: schema/scenario version, image id/release, fixture/config hashes, named
+stage results, timings, station/flow/forecast IDs, comparison counts, cleanup
+status and next action. No environment dump, connection URLs, tokens, raw
+subprocess logs or confidential data. Print allowlisted failure summaries; support
+diagnostics must undergo the same redaction. Do not retain secret files as evidence.
+Exit 0 only for verified forecast **and** verified cleanup; 2 for preflight refusal,
+1 for runtime/assertion/cleanup failure. Interrupts still attempt cleanup.
+
+Budget: initial runtime timeout 10 minutes plus at most 2 minutes for cleanup;
+CI qualification timeout 20 minutes including image preparation and cleanup.
+The qualification gate uses a four-minute runtime budget per run, preserving
+the existing two-minute cleanup reserve. The shared image job retains its other
+checks and increases its ceiling from 60 to 80 minutes to accommodate this gate.
+Target a host with 8 GiB available RAM,
+2 CPUs and 10 GiB free disk after image preparation. These are proposed qualification
+budgets, not measured performance claims. HW1b measures peak memory/disk and elapsed
+time on supported Linux/macOS Docker hosts before documenting supported minima.
+No automatic keep-running option in the MVP.
+
+## Dispatch milestones
+
+Run sequentially under one implementation owner. Each code PR updates its affected
+docs, receives one independent relevant patch review, and passes the full final-code
+suite locally or in CI. Use current release-target policy once per code PR. The
+owner approves/merges; no auto-merge, host deployment or extra review loop.
+
+| Milestone | Owned paths / dependency | Acceptance and meaningful tests |
+| --- | --- | --- |
+| HW0 — this plan | `docs/plans/deployment-hello-world.md`; owner authorized planning | Evidence reconciled, ownership/dependencies explicit, one bounded independent Claude plan review covering administrator, developer, FI and isolation concerns. Orchestrator sets READY only after findings are resolved; material owner decisions are escalated. |
+| HW1a — qualify/package the scenario | Proposed model, adapter and package-data paths above; `tests/unit/models/test_deployment_smoke.py`, `tests/unit/adapters/test_deployment_smoke_weather.py`; accepted station-side discharge fixture gates fixture completion | Freeze UTC timestamps/offsets, QC support, exact variable mapping, model classification, artifact config hash and expected values. Test FI contract/floors; artifact round trip; missing/short/nonfinite inputs return typed failure; mutate observation and weather independently and require the specified output change. Wrong cycle/source/coverage must refuse; an hourly gap or skipped station cannot satisfy the fixture contract. Verify installed wheel contains all resources and has no tests-package imports. No services or complete-pass claim. |
+| HW1b — worker-to-API path | `docker-compose.smoke.yml`, `tools/deployment_smoke.py`, smoke CLI/flow modules; `tests/unit/tools/test_deployment_smoke.py`, `tests/integration/test_deployment_smoke.py`; depends HW1a + merged M3a/M3b and qualified fixture | Complete steps 1–7 through actual process worker, real DB roles and real HTTP API. Assert no model/provider substitution, no fixture weather inserted behind the forecast flow, no SQL bypass of observation QC. Check missing image/unsafe selector before writes; cleanup on setup/worker/API failure and interrupt; no credential canary in any output/report. Mutation tests verify controller refuses cleanup of a foreign project and missing worker/malformed API output cannot pass. Measure resource/runtime budgets. |
+| HW1c — release qualification and guide | `.github/workflows/ci.yml` (one mandatory smoke step in the existing image job), smoke qualification helper/controller, CI attestation inventory and private image-gate parity, `docs/deployment/hello-world.md`, links from quick-start/profile guide, affected standards/touchpoint maps | Reuse the built app image and pinned infrastructure images; execute the same command, not a direct flow invocation. Run twice from clean state; exercise alongside an unrelated sentinel project and prove it is unchanged. Verify API 401 without token and expected authorized response. CLI help matches docs. Independent patch review, full suite, image checks and smoke gate pass on final commit before PR ready. |
+| HW2 — target-server proof | No dispatch from this plan | After HW1c merge, explicit owner server-run authorization. Run same versioned scenario and record cleanup. Real-station onboarding/scientific acceptance remain the station team's work. |
+
+Documentation is short and task-oriented: prerequisites/build link, one run command,
+what success proves, failure-stage actions and cleanup retry. Link profile/config
+references rather than duplicating them. Preserve this plan as implementation
+history. Do not advertise unimplemented commands in the administrator quick-start.
+
+```json
+{
+  "planning_authorized": ["HW0"],
+  "implementation_authorized": ["HW1a", "HW1b", "HW1c"],
+  "milestones": [
+    {"id": "HW0", "depends_on": [], "gate": "independent_plan_review"},
+    {"id": "HW1a", "depends_on": ["HW0"], "external": ["owner_dispatch", "station_fixture_contract"]},
+    {"id": "HW1b", "depends_on": ["HW1a"], "external": ["M3a_merged", "M3b_merged", "fixture_QC_qualified", "owner_dispatch"]},
+    {"id": "HW1c", "depends_on": ["HW1b"], "external": ["owner_dispatch", "independent_patch_review", "final_code_full_CI", "smoke_CI"]},
+    {"id": "HW2", "depends_on": ["HW1c"], "external": ["owner_merge", "explicit_server_run_authorization"]}
+  ]
+}
+```
+
+## Review record
+
+One bounded independent Claude review completed on 2026-11-18. The initial verdict
+required three design corrections: explicit station activation; model/API tier
+agreement; precise hourly weather labeling/mapping. All were folded into the plan
+against the cited source. Also clarified hash ownership/artifact volume, production
+store/bootstrap wiring, nested-flow provenance, skipped-station failure, named
+binding writer and inactive publication gate. No new owner decision or live-path
+change is needed. M3a/M3b and the fixture remain external execution gates.
+
+The orchestrator sets READY for this phased design after that revision. This is
+not implementation dispatch or evidence of a successful smoke run. Full review
+report remains local at `/private/tmp/sapphire-hello-world-plan-review.txt`; no
+automatic additional review round. Dependency-graph/metadata/whitespace checks
+passed. No container, application test or forecast ran during this planning pass.
+
+## Initial HW1a implementation checkpoint — 2026-11-18
+
+Partial implementation independently reviewed; **HW1a is not
+complete**. Added the explicitly supplied FI model, fixed point-weather adapter,
+packaged configuration/artifact/weather/manifest/README and focused unit tests.
+The manifest marks the scenario `pending_discharge_fixture`. Unit-test discharge
+values exercise arithmetic and boundary contracts; they are not a replacement
+station fixture. No runtime CLI, flow, Compose file or administrator run command
+is delivered by this increment.
+
+Validation on Python 3.12 with pinned FI 0.1.20:
+
+- Both new test modules: 28 passed, including independent observation/weather
+  mutations, malformed coverage and finite-input overflow returning `ModelFailure`.
+  The real point-weather assembly and FI adapter produce a public
+  `ForecastEnsemble` with three hourly steps and twenty members; its member count
+  satisfies the configured operational minimum. This is a configured-floor
+  assertion, not a pass of the generic onboarding qualification helpers.
+- Ruff lint/format and changed-source-module strict Pyright pass. Repository
+  Pyright scope is `src`; an exploratory test-file run reports only four existing
+  pytest `approx` annotation gaps, not application-module errors.
+- Built and installed a wheel in an isolated scratch environment. Outside the
+  checkout, verified all five resources, manifest hashes, artifact loading and
+  fixed weather fetch, with no `tests` package imported or shipped in the wheel.
+  Dependencies came from the existing environment; no service or provider ran.
+
+Generic helper qualification is **unavailable**, not waived: both
+`assert_model_conforms` and `assert_operational_floors` reject prediction inputs
+generated by `services/model_onboarding.py` with "exact three hourly timestamps".
+That helper reuses historical timestamps as future weather (lines 361–375 and
+630–644) and sets issue time to the final observation (lines 666–675). This model
+requires history ending at issue minus one hour and future weather at issue plus
+one through three hours. Keep those strict checks and shared helpers unchanged in
+HW1a. The planned audited external-artifact import path does not depend on this
+generic synthetic-input qualification; no generic `onboard_model` compatibility
+is claimed. Reconcile the helper separately before claiming that compatibility.
+
+One independent Claude patch review found no blockers for this bounded increment.
+The generic-helper limitation was confirmed as correctly bounded. Low-severity
+notes concern import layering, permissive CSV datetime parsing, an intentionally
+temporary pending-fixture assertion and automating the wheel check. They do not
+change the fixed fixture contract or authorize unrelated hardening. On fixture
+completion, replace that pending-status assertion with qualified fixture evidence;
+HW1c must run the wheel/image resource checks in CI. Full-source type ratchet:
+344 errors against the existing ceiling of 400. Full report stays local at
+`/private/tmp/sapphire-hw1a-implementation-review.txt`.
+
+Remaining gates: station-supported generic discharge CSV; normal loader/QC
+qualification; pinned expected runtime values and health/input-quality codes;
+final-code full suite in CI. Worker/API execution,
+cleanup and administrator instructions remain HW1b/HW1c. No operational files,
+station-onboarding files, migrations, secrets or live services changed.
+
+
+## HW1a fixture adoption checkpoint — 2026-11-18
+
+Owner authorized adopting the merged station fixture on fresh main
+`3ea1c2ec752faf916e8aa64023a6190cb0b7ec65`. Packaged exact copies of
+`tests/fixtures/synthetic_station/discharge_hourly.csv` and `scenario.json`;
+source files, generator, loader and QC implementation remain unchanged. The
+manifest records source paths/commit and SHA-256 hashes. Its current status is
+`pending_loader_qc_integration`, superseding the initial pending-fixture status.
+
+The loadable `qc-rules.toml` snapshot contains only the existing four hourly
+discharge rules: range 0–100000, rate max 50, spike tolerance 0.75, gross-outlier
+k_sigma 5, all rule version 1.0.0. No implicit agency configuration or new rule
+schema. Pure checker tests parse actual CSV timestamps and prove 72 contiguous
+UTC readings, all judged with zero flags. Per-rule judged counts are 72 range,
+71 rate, 70 spike and zero gross outlier (no baseline); hourly frozen sensor is
+not configured. This does not establish loaded GOOD observations or complete M3b.
+
+`expected-result.json` contains the independent Decimal reference for all twenty
+members at each of the three forecast hours, using last discharge 19.737592 and
+packaged precipitation 1, 2, 4. Real point-weather assembly and FI adaptation must
+match every value with absolute tolerance 1e-8. Runtime health/input-quality codes,
+API shape, normal loader/QC integration and worker execution remain pending.
+The packaged README explains these limits and provenance; later administrator
+instructions remain HW1c. No runtime module or operational configuration changed.
+
+
+Phase boundary clarified during fixture adoption: HW1a supplies qualified
+package/model/fixture contracts and numerical expectations; it does not depend on
+running HW1b. Normal loader/QC integration, runtime health/input-quality codes and
+API delivery remain mandatory HW1b gates, not waived checks. Independent Claude
+review found no blockers; HW1a awaits final-code CI before completion can be recorded.
+The whole scenario remains incomplete and its manifest remains pending.
+
+Review follow-up makes timestamp offsets explicit and independently recomputes
+the numerical oracle in tests. The QC snapshot deliberately stays fixed to its
+recorded source revision rather than tracking future agency-default changes.
+M3a (#552) stores RAW observations and reports that QC has not run; the pure
+checker qualification does not replace M3b. Full review evidence remains local.
+
+Validation: 37 focused smoke model/fixture/weather tests pass, including actual
+per-rule QC coverage and all 60 reference values. Ruff lint/format pass. The new
+fixture test module passes strict Pyright; no runtime Python module changed.
+The full-source Pyright ratchet passes with 344 diagnostics against baseline 400.
+Built and installed a wheel in isolated scratch space, then outside the checkout
+verified all nine packaged resources and seven recorded hashes, parsed the QC
+TOML, ran actual CSV observations through the real checker (72 judged, zero flags),
+loaded the artifact and 60-value oracle, and confirmed no tests package was imported
+or shipped. No database, Docker, provider or secret access was used. Full final-code
+suite remains the PR's CI gate.
+
+## HW1b dispatch checkpoint — 2026-11-18
+
+HW1a completed in merged #553 and #555. Final #555 CI passed on
+`0d896fa6840c89e9415914362475d1dd406680f9` after one same-commit retry of an
+unrelated station-history 503 failure; the PR retains both outcomes. Independent
+Claude review found no blockers. This supersedes the earlier pending-CI checkpoint.
+
+Owner dispatched HW1b after #557 merged. Implementation starts from remote main
+`a7717bb0d1185c5012adca2c2d2b73a447a0eade` in an isolated worktree. #556's
+retained operational-weather changes are included in that baseline and must not
+be bypassed or duplicated. The hourly synthetic path continues to use the normal
+forecast cycle with explicit model/weather injection.
+
+The merged M3b integration test already proves dry-run/apply semantics with our
+packaged CSV and `deployment-smoke-hourly-1` rule snapshot: 72 `QC_PASSED` rows,
+persisted QC evaluation version `1.2`, one audit row and the required three input
+hours. That service-level evidence clears the dependency, not the worker/API gate.
+Runtime verification, isolation, cleanup and measured budgets remain outstanding.
+HW1c's dedicated CI smoke job/administrator guide and HW2 server runs are not
+dispatched by this checkpoint.
+
+### Accepted runtime correction — internal HTTP probe
+
+Local Docker Engine 29.8.2 accepted the requested localhost port binding but
+reported `:0` for the API attached only to the internal network. Six diagnostic
+runs left no owned resources behind; after correcting the smoke-only PostgreSQL
+healthcheck to wait for TCP, runs reached the API stage with worker/child-flow,
+72-row observation QC and three-row weather persistence checks passed.
+The first complete API proof is still pending.
+
+On 2026-11-18 the owner chose to retain the offline network and verify real
+authenticated HTTP from another container inside it. The worker-side client
+therefore calls the API service directly; no host ports, extra proxy or external
+network are added. Authentication, forecast identity, every expected value and
+cleanup remain required. Host-port access is explicitly outside this increment's
+pass claim and requires a later separately scoped check. This supersedes the
+initial localhost-port design; final independent patch review must cover it.
+
+Docker's [internal-network documentation](https://docs.docker.com/reference/cli/docker/network/create/#network-internal-mode---internal)
+describes inter-container access without routes to other networks. The local
+qualification keeps that boundary instead of changing the host daemon or
+operational networking settings.
+
+### Local runtime qualification — 2026-11-18
+
+The corrected internal HTTP path passed on source
+`bd9e34ecf267293199a463a430f4eff263da110f` with its exact-source standard image.
+The real process worker and nested forecast flow loaded 72 `QC_PASSED` readings,
+persisted three weather records and one forecast, and delivered all 60 expected
+values through authenticated HTTP. The unauthenticated request returned 401.
+Cleanup verified removal of every owned container, network and volume and erased
+temporary credentials. No host-port check is claimed.
+
+This local run took 79.089 seconds including cleanup. Observed per-container
+memory peaks were approximately 350 MiB Postgres, 273 MiB Prefect, 424 MiB worker
+and 345 MiB API; persistent volume usage was approximately 124 MiB plus 20 KiB
+of artifacts. These are observations on an ARM Docker Desktop host with emulated
+PostGIS, not minimum resource guarantees. Exact-source final qualification,
+independent patch review and full final-code CI remain gates for this PR.
+HW1c's dedicated CI gate and released administrator instructions remain separate.
+
+## HW1c dispatch — 2026-11-18
+
+Owner authorized HW1c after #558 merged as
+`4c38a2fc7e755eeba86e08c0c0d5cc7774fd9847`. Its final CI passed on
+`9a54e4386bdb43813a8cfc18ef99bd8a1cdda195`; the unchanged application code at
+`f7a7538ec7ee39c5d4dcd8e4d327290b9c1b02e8` passed real worker/internal-API
+qualification, including 72 QC-accepted readings, all 60 values and cleanup.
+Independent patch review found no blockers; the follow-up inventory correction
+changed only tests and the maintained touchpoint reference.
+
+HW1c uses an independent clone from this merged baseline. Investigation found
+that CI builds a source-derived `0.dev0+g<commit>` image, while the administrator
+command defaults to `RELEASE_TARGET`. An explicit CI identity choice will accept
+only that exact checkout-derived version, retaining revision/resource checks and
+the strict administrator default. It is not a general image-identity override.
+
+Implement one named, mandatory smoke step inside `build-image-and-scan`, reusing
+its loaded image. This replaces the earlier standalone-job wording: a new job
+would require another build or transfer of an image containing private package
+code. Update the full-CI attestation step inventory and mirror the qualification
+in the existing private default-image gate; do not weaken either admission path.
+
+A small qualification helper runs the normal CLI twice with fresh report paths,
+checks a separate synthetic sentinel's container/network/volume identity and
+volume content after each run, and tears down only owned resources. Public CI
+uploads only an explicitly safe summary, never raw logs, secret directories or
+application image bytes. The administrator guide stays focused on the single-run
+command, its exact proof limits, preparation, diagnosis and cleanup.
+
+HW2 target-server runs, host-port verification, profile launching and scientific
+acceptance remain outside this dispatch. Final patch review, full CI and the new
+smoke gate must pass before the PR is ready for owner review.

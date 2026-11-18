@@ -1,4 +1,4 @@
-"""Digests measured against main d777d8b2 before adding period evidence."""
+"""V1 weather bytes stay stable; full evidence also records deployment policy."""
 
 import hashlib
 import json
@@ -146,5 +146,6 @@ def test_retained_v1_window_completion_and_captured_source_bytes_stay_identical(
         "157310a6a6654d3b822f7d30422101c160e91f6672d9cdcc3f2f4f6d5f8a18e6",
         "dc2fda0352c8c00a3e2b6af88adaf930779863aca402cb6b49143fc5bf0fce6d",
         "8d31bdbed445fadfe8ffd69c2d4dbc8f9c823b1800afbb63d407cb04e1e96314",
-        "4d361fe00d576a8c81ad9ca1430c2d744f578590e68b90c4dabbbad3cf5cf783",
+        # Only deployment_config and its hash changed with the retained policy.
+        "3987a388c1f0e2a8ab13a3f5e2a70b900e737f304f07aafd8d3a179ff3f3e9ea",
     )
