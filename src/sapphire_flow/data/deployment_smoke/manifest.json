@@ -1,0 +1,24 @@
+{
+  "scenario_id": "hello-world-v1",
+  "status": "pending_discharge_fixture",
+  "cycle_time": "2025-01-03T00:00:00Z",
+  "display_timezone": "UTC",
+  "station_timezone": "UTC",
+  "weather_label": "start",
+  "weather_interval_hours": 1,
+  "weather_unit": "mm",
+  "weather_source_tag": "icon_ch2_eps",
+  "weather_origin": "synthetic; no provider acquisition",
+  "expected_config_hash": "ff07706460ee64ab0ef82d46eba96dfafdf80790d4751f9c1cad47320e7f2dc2",
+  "sha256": {
+    "model-config.json": "ff07706460ee64ab0ef82d46eba96dfafdf80790d4751f9c1cad47320e7f2dc2",
+    "artifact.json": "53a152621a70a728c3f06bfdf1ef561005ba619ff37b4b9605e8967a0d717fc6",
+    "weather.csv": "f0b807ce1c4a852cf8b3a22e6fead3640401a118364d43f14e90f0527d6d7f39"
+  },
+  "pending": [
+    "station-supported discharge CSV",
+    "normal loader/QC qualification",
+    "expected runtime forecast values",
+    "worker/API execution"
+  ]
+}
