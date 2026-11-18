@@ -67,6 +67,17 @@ class DeploymentSpec:
 
 
 _SKIP_ENV_VAR = "SAPPHIRE_SKIP_DEPLOYMENTS"
+_ONLY_ENV_VAR = "SAPPHIRE_ONLY_DEPLOYMENTS"
+_SOURCE_ROOT_ENV_VAR = "SAPPHIRE_FLOW_SOURCE_ROOT"
+
+
+def _flow_source_root() -> str:
+    return os.environ.get(_SOURCE_ROOT_ENV_VAR) or FLOW_SOURCE_ROOT
+
+
+def _only_deployments() -> frozenset[str]:
+    raw = os.environ.get(_ONLY_ENV_VAR, "")
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
 
 
 def _skipped_deployments() -> frozenset[str]:
@@ -79,11 +90,18 @@ def _build_specs() -> list[DeploymentSpec]:
     """Build the deployment specs, minus any the host opts out of."""
     specs = _all_specs()
     skipped = _skipped_deployments()
-    unknown = skipped - {spec.deployment_name for spec in specs}
-    if unknown:
-        raise ValueError(
-            f"{_SKIP_ENV_VAR} names unknown deployments: {sorted(unknown)}"
-        )
+    only = _only_deployments()
+    if skipped and only:
+        raise ValueError(f"{_SKIP_ENV_VAR} and {_ONLY_ENV_VAR} cannot both be set")
+    known = {spec.deployment_name for spec in specs}
+    for env_var, names in ((_SKIP_ENV_VAR, skipped), (_ONLY_ENV_VAR, only)):
+        if names - known:
+            raise ValueError(
+                f"{env_var} names unknown deployments: {sorted(names - known)}"
+            )
+    if only:
+        log.info("deployments.subset", only=sorted(only))
+        return [spec for spec in specs if spec.deployment_name in only]
     if "forecast-cycle" in skipped and any(
         spec.forecast_config_overlay is not None for spec in specs
     ):
@@ -271,7 +289,7 @@ async def _register_one(spec: DeploymentSpec) -> None:
 
     entrypoint = f"src/{spec.flow_module.replace('.', '/')}.py:{spec.flow_attr}"
     sourced_flow = await flow_fn.afrom_source(
-        source=FLOW_SOURCE_ROOT,
+        source=_flow_source_root(),
         entrypoint=entrypoint,
     )
 

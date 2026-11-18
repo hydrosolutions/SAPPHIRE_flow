@@ -75,26 +75,12 @@ uv run prefect server start --host 127.0.0.1 --port 4299 &
 ```
 
 Register the deployments you need. The registrar assumes the Docker image path `/app`; in a
-sandbox point it at your checkout:
+sandbox point it at your checkout and register only the two deployments this runbook uses:
 
 ```bash
-uv run python - <<'EOF'
-import asyncio, os
-from prefect.client.orchestration import get_client
-from prefect.client.schemas.actions import WorkPoolCreate
-from prefect.exceptions import ObjectAlreadyExists
-import sapphire_flow.cli.register_deployments as r
-r.FLOW_SOURCE_ROOT = os.getcwd()
-names = {"ingest-operational-era5-history", "import-model-artifact"}
-specs = [s for s in r._build_specs() if s.deployment_name in names]
-async def main():
-    async with get_client() as c:
-        for p in {s.work_pool_name for s in specs}:
-            try: await c.create_work_pool(WorkPoolCreate(name=p, type="process"))
-            except ObjectAlreadyExists: pass
-    for s in specs: await r._register_one(s)
-asyncio.run(main())
-EOF
+SAPPHIRE_FLOW_SOURCE_ROOT=$PWD \
+SAPPHIRE_ONLY_DEPLOYMENTS=ingest-operational-era5-history,import-model-artifact \
+uv run python -m sapphire_flow.cli.register_deployments
 ```
 
 Start one worker per pool (`ingest` and `default`) in the environment the jobs need:
