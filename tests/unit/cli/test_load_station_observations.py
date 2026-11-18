@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 
 from sapphire_flow.cli import load_station_observations as lso
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
+from sapphire_flow.config.qc_rules import resolve_qc_rules
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType, WaterLevelGaugeType
 from sapphire_flow.types.ids import TenantId
@@ -14,6 +16,7 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE
 from tests.conftest import make_station_config
 from tests.fakes.fake_stores import (
     FakeAuditLogStore,
+    FakeClimBaselineStore,
     FakeObservationStore,
     FakeStationStore,
     FakeTenantStore,
@@ -54,14 +57,26 @@ class Rig:
 
     def run(self, command: str, extra: list[str], text: str = CSV) -> int:
         args = lso._parse_args([command, *ARGS, *extra])  # pyright: ignore[reportPrivateUsage]
+        before = copy.deepcopy((self.observations.__dict__, self.audit.__dict__))
+        try:
+            return self._run_load(args, text)
+        except lso.LoadRolledBack:
+            # What the real transaction does on rollback.
+            self.observations.__dict__.update(before[0])
+            self.audit.__dict__.update(before[1])
+            return lso.EXIT_REFUSED
+
+    def _run_load(self, args: object, text: str) -> int:
         return lso.run_load(
-            args,
+            args,  # pyright: ignore[reportArgumentType]
             text=text,
             identity=SCOPED,
             tenants=self.tenants,
             stations=self.stations,
             observations=self.observations,
             audit=self.audit,
+            baselines=FakeClimBaselineStore(),
+            qc_rules=resolve_qc_rules()[0],
             clock=lambda: NOW,
         )
 
@@ -99,7 +114,9 @@ class TestRun:
         out = capsys.readouterr().out
         assert "DRY RUN" in out
         assert "reading 2 m -> stored 1482 m a.s.l. (staff gauge, datum 1480.0)" in out
-        assert "2 of 30 days have a value (QC not run yet)" in out
+        assert "2 of 30 daily values usable (passed or unchecked)" in out
+        assert "history-based check not run: no baseline yet" in out
+        assert "QC rule version: 1.2-datum" in out
 
     def test_apply_writes_rows_and_exactly_one_audit_row(self) -> None:
         station = _station()
@@ -147,7 +164,8 @@ class TestRun:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         text = "t,v\n2026-11-01 06:00,1481.0\n"
-        assert Rig(_station()).run("water-level", [], text=text) == 0
+        allow = ["--allow-unchecked"]
+        assert Rig(_station()).run("water-level", allow, text=text) == 0
         assert "level-masl" in capsys.readouterr().out
         assert Rig(_station()).run("water-level", ["--strict"], text=text) == 2
 
@@ -156,7 +174,12 @@ class TestRun:
         rig = Rig(station)
         text = "t,v\n2026-11-01 06:00,1481.0\n"
         assert (
-            rig.run("water-level", ["--value-kind", "level-masl", "--apply"], text) == 0
+            rig.run(
+                "water-level",
+                ["--value-kind", "level-masl", "--apply", "--allow-unchecked"],
+                text,
+            )
+            == 0
         )
         (obs,) = rig.observations.fetch_observations(
             station.id, "water_level", ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)), NOW
@@ -169,4 +192,57 @@ class TestRun:
         Rig(_station()).run(
             "water-level", ["--as-of", "2026-11-10", "--lookback-days", "5"]
         )
-        assert "0 of 5 days have a value" in capsys.readouterr().out
+        assert "0 of 5 daily values usable" in capsys.readouterr().out
+
+
+class TestQcOnLoad:
+    def test_apply_records_qc_status_and_rule_version(self) -> None:
+        station = _station()
+        rig = Rig(station)
+        assert rig.run("water-level", ["--apply"]) == 0
+        stored = rig.observations.fetch_observations(
+            station.id, "water_level", ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)), NOW
+        )
+        assert {o.qc_rule_version for o in stored} == {"1.2-datum"}
+        assert all(o.qc_status.value != "raw" for o in stored)
+
+    def test_no_datum_is_refused_unless_allowed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = Rig(make_station_config(code="00001", network="research"))
+        args = ["--value-kind", "level-masl", "--apply"]
+        assert rig.run("water-level", args) == 3
+        assert "has no datum" in capsys.readouterr().out
+        assert rig.run("water-level", [*args, "--allow-unchecked"]) == 0
+
+    def test_refused_apply_saves_nothing_and_keeps_refusing_until_allowed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        station = _station()
+        rig = Rig(station)
+        sparse = "t,v\n2026-11-01 06:00,2.0\n2026-11-08 06:00,2.5\n"
+        window = (ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)), NOW)
+
+        for _ in range(2):
+            assert rig.run("water-level", ["--apply"], text=sparse) == 3
+            out = capsys.readouterr().out
+            assert "no quality rule applies" in out
+            assert "NOTHING WAS SAVED" in out
+            assert rig.audit.entries == []
+            assert (
+                rig.observations.fetch_observations(station.id, "water_level", *window)
+                == []
+            )
+
+        assert rig.run("water-level", ["--apply", "--allow-unchecked"], sparse) == 0
+        stored = rig.observations.fetch_observations(station.id, "water_level", *window)
+        assert {o.qc_status.value for o in stored} == {"qc_unchecked"}
+        assert len(rig.audit.entries) == 1
+
+    def test_dry_run_refusal_does_not_claim_a_rollback(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = Rig(_station())
+        sparse = "t,v\n2026-11-01 06:00,2.0\n2026-11-08 06:00,2.5\n"
+        assert rig.run("water-level", [], text=sparse) == 3
+        assert "NOTHING WAS SAVED" not in capsys.readouterr().out

@@ -599,6 +599,8 @@ def _observation_read_inventory() -> dict[str, tuple[str, ...]]:
 # endpoint, which returns each row's own `qc_status` alongside it.
 _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
     "src/sapphire_flow/api/routes/api_stations.py": ("qc",),
+    # Plan 540 M3b: the QC-on-load read is the QC-context cohort (unfiltered).
+    "src/sapphire_flow/cli/load_station_observations.py": ("<unfiltered>",),
     "src/sapphire_flow/flows/compute_skills.py": ("QcStatus.QC_PASSED",),
     "src/sapphire_flow/flows/ingest_observations.py": ("<unfiltered>", "<unfiltered>"),
     "src/sapphire_flow/services/calculated_station_onboarding.py": ("<unfiltered>",),

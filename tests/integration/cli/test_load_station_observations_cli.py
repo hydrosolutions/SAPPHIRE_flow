@@ -7,7 +7,9 @@ import sqlalchemy as sa
 
 from sapphire_flow.cli import load_station_observations as lso
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
+from sapphire_flow.config.qc_rules import resolve_qc_rules
 from sapphire_flow.store.audit_log_store import PgAuditLogStore
+from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
@@ -39,6 +41,8 @@ def _load(conn: sa.Connection, code: str) -> int:
         stations=PgStationStore(conn),
         observations=PgObservationStore(conn),
         audit=PgAuditLogStore(conn),
+        baselines=PgClimBaselineStore(conn),
+        qc_rules=resolve_qc_rules()[0],
         clock=lambda: NOW,
     )
 
