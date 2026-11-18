@@ -11,6 +11,7 @@ from sapphire_flow.cli.register_deployments import (
     WORK_POOL,
     DeploymentSpec,
     _build_specs,
+    _flow_source_root,
     _register_one,
     register_all,
 )
@@ -627,6 +628,96 @@ class TestSkippedDeployments:
             overlay["services"]["init"]["environment"]["SAPPHIRE_SKIP_DEPLOYMENTS"],
         )
         assert not [s for s in _build_specs() if "bafu" in s.deployment_name]
+
+
+class TestOnlyDeployments:
+    def test_unset_returns_every_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SAPPHIRE_ONLY_DEPLOYMENTS", raising=False)
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        assert {s.deployment_name for s in _build_specs()} == DEPLOYMENT_NAMES
+
+    def test_returns_exactly_the_named_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv(
+            "SAPPHIRE_ONLY_DEPLOYMENTS",
+            "ingest-operational-era5-history, import-model-artifact",
+        )
+        assert {s.deployment_name for s in _build_specs()} == {
+            "ingest-operational-era5-history",
+            "import-model-artifact",
+        }
+
+    def test_an_unknown_name_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "no-such-deployment")
+        with pytest.raises(ValueError, match="SAPPHIRE_ONLY_DEPLOYMENTS"):
+            _build_specs()
+
+    def test_only_together_with_skip_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "train-models")
+        monkeypatch.setenv("SAPPHIRE_SKIP_DEPLOYMENTS", "run-hindcast")
+        with pytest.raises(ValueError, match="cannot both be set"):
+            _build_specs()
+
+    @pytest.mark.asyncio
+    async def test_register_all_creates_pools_only_for_selected_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_SKIP_DEPLOYMENTS", raising=False)
+        monkeypatch.setenv("SAPPHIRE_ONLY_DEPLOYMENTS", "import-model-artifact")
+        mock_client = AsyncMock()
+        with (
+            patch("prefect.client.orchestration.get_client") as mock_get_client,
+            patch(
+                "sapphire_flow.cli.register_deployments._register_one",
+                AsyncMock(),
+            ) as mock_register,
+        ):
+            mock_get_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client
+            )
+            mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+            await register_all()
+
+        created = {c.args[0].name for c in mock_client.create_work_pool.call_args_list}
+        assert created == {WORK_POOL}
+        assert mock_register.await_count == 1
+
+
+class TestFlowSourceRoot:
+    def test_defaults_to_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SAPPHIRE_FLOW_SOURCE_ROOT", raising=False)
+        assert _flow_source_root() == "/app"
+
+    def test_env_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/checkout")
+        assert _flow_source_root() == "/tmp/checkout"
+
+    @pytest.mark.asyncio
+    async def test_register_one_passes_env_source_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SAPPHIRE_FLOW_SOURCE_ROOT", "/tmp/checkout")
+        spec = DeploymentSpec(
+            flow_module="sapphire_flow.flows.import_model_artifact",
+            flow_attr="import_model_artifact_flow",
+            deployment_name="import-model-artifact",
+        )
+        sourced = MagicMock()
+        sourced.adeploy = AsyncMock(return_value="id")
+        flow = MagicMock()
+        flow.afrom_source = AsyncMock(return_value=sourced)
+        module = MagicMock()
+        module.import_model_artifact_flow = flow
+        with patch("importlib.import_module", return_value=module):
+            await _register_one(spec)
+        assert flow.afrom_source.call_args[1]["source"] == "/tmp/checkout"
 
 
 class TestForecastConfigOverlay:

@@ -1030,7 +1030,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 
 **Core implementation touchpoints:**
 
-- **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. It, not the standards tables, is the source of truth for what is deployed.
+- **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. Env options: `SAPPHIRE_SKIP_DEPLOYMENTS` (opt out; unknown name is an error), `SAPPHIRE_ONLY_DEPLOYMENTS` (register only these; unknown name is an error; rejected together with the skip list; logs `deployments.subset`), `SAPPHIRE_FLOW_SOURCE_ROOT` (flow source path, default `/app`; set to a checkout for sandbox registration). It, not the standards tables, is the source of truth for what is deployed.
 - **Work pools**: `default` and `ingest` only. The `ops`/`training`/`hindcast` split in `orchestration.md` is **aspirational**; conversely `ingest_weather_history_flow` and (Plan 146) `ingest_recap_reanalysis_flow` are implemented + scheduled but **absent from the main Flow-to-Prefect mapping table** — both are documented in their own `orchestration.md` § "Rolling-window ingest flows" subsection instead — drift runs both ways; verify which table you're reading before depending on it.
 - **Schedules / concurrency**: cron + env overrides + `concurrency_limit` in `register_deployments`; the only implemented named-resource slot is `model_training:{model_id}`. The `db_bulk_write` / `observation_write` slots, `retries=`, and `ThreadPoolTaskRunner(max_workers=)` in `orchestration.md` are **aspirational** — Prefect 3 defaults apply.
 - **Docker build**: two-stage `Dockerfile` (builder + slim non-root runtime; rationale in `cicd.md`). Net-new facts: **`git` is required in the builder** for the git-pinned `forecastinterface`; the current base image is **`python:3.14.8-slim`** in both stages; `Dockerfile` holds the authoritative digest and active standards describe that same base. **Plan 218**: the runtime stage also ships a CURATED set of operator scripts at `/app/scripts` (`import_caravan_attributes.py`, `onboard.py`, `backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`, `validate_forcing_reference.py`, `create_station_group.py`) — **not** all of `scripts/`; adding a new operator script to that set is a deliberate Dockerfile edit, not automatic (`tests/unit/deploy/test_dockerfile_operator_scripts.py` locks the curated list).
@@ -2650,3 +2650,26 @@ integration API `test_access_token_auth.py` for the real-token route inventory,
 in-scope/out-of-scope reads and ordinary consumer/reviewer parity.
 Overview output, legacy Swiss history and forecast-specific rating history remain
 independent and unchanged; overview integration is a later scoped change.
+
+
+### Declared-grid weather evidence (M2a3)
+
+When changing selected-weather temporal identity, trace both persisted versions:
+`types/operational_weather{,_v2}` → `store/weather_period_wire` and
+`operational_weather_codec` → cache/refresh → proof/projection →
+`selected_weather_inputs` → capture/restore → forecast store/API summary. Include
+`weather_gap_fill`, `input_quality`, candidate walk-back and future-frame bucketing.
+The v1 dataclasses (including nested attempt/key fields) are hashed recursively;
+adding a default field changes old bytes. Keep v2 decoding at the boundary and
+reuse shared algorithms. Do not activate a nonzero grid in model preparation.
+
+Verify `test_weather_v1_compatibility`, `test_weather_period_wire`,
+`test_period_weather_evidence` and the PostgreSQL `test_weather_period_pipeline`,
+alongside existing selected-weather regressions. Candidate acceptance must cover
+the entire declared period/member/feature scope before persistence. Retained gap
+donors must still verify their original receipts; longer snapshots may project
+exact subwindows but future issue/cutoff evidence must not leak backward.
+Explicit-grid gap filling validates every supplied timestamp before its no-fill
+return; empty frames remain empty, while off-grid rows are rejected, never shifted.
+The PostgreSQL route fixture covers complete and short-gap 18:00 windows, including
+zero artificial fills and persisted/restored quality flags for complete input.

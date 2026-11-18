@@ -1,5 +1,6 @@
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
@@ -21,6 +22,7 @@ from sapphire_flow.types.ids import ModelId
 from sapphire_flow.types.weather_gap import WeatherGapMethod, WeatherGapMode
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.operational_weather import ISSUE
+from tests.fakes.weather_periods import FIRST, GRID
 from tests.unit.adapters.test_forecast_interface_adapter_nan_gate import (
     RecordingFIForecastModel,
 )
@@ -39,6 +41,109 @@ def frame(values: list[float | None], parameter: str = "temperature") -> pl.Data
     return pl.DataFrame(
         {"timestamp": [day(i) for i in range(len(values), 0, -1)], parameter: values}
     )
+
+
+class TestFillPeriodWeather:
+    @pytest.mark.parametrize("lookback", [0, 1])
+    def test_refuses_off_grid_rows_even_outside_the_requested_lookback(
+        self, lookback: int
+    ) -> None:
+        original = pl.DataFrame(
+            {
+                "timestamp": [FIRST - 3 * GRID.step + timedelta(hours=6)],
+                "temperature": [1.0],
+            }
+        )
+        with pytest.raises(ValueError, match="does not match the declared grid"):
+            fill_daily_weather(
+                original,
+                issue_time=FIRST,
+                lookbacks={"temperature": lookback} if lookback else {},
+                max_gap_days=1,
+                grid=GRID,
+                past_end=FIRST,
+            )
+
+    @pytest.mark.parametrize("lookback", [0, 3])
+    def test_empty_columnless_frame_remains_empty(self, lookback: int) -> None:
+        original = pl.DataFrame()
+        result = fill_daily_weather(
+            original,
+            issue_time=FIRST,
+            lookbacks={"temperature": lookback} if lookback else {},
+            max_gap_days=1,
+            grid=GRID,
+            past_end=FIRST,
+        )
+        assert result.frame is original
+        assert result.fills == ()
+
+    @pytest.mark.parametrize(
+        "columns, message",
+        [
+            ({"temperature": [1.0]}, "requires a timestamp column"),
+            ({"timestamp": [None]}, "requires datetime timestamps"),
+        ],
+    )
+    def test_nonempty_frame_requires_datetime_timestamps(
+        self, columns: dict[str, list[float | None]], message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            fill_daily_weather(
+                pl.DataFrame(columns),
+                issue_time=FIRST,
+                lookbacks={},
+                max_gap_days=1,
+                grid=GRID,
+                past_end=FIRST,
+            )
+
+    def test_aligned_missing_row_is_filled_without_changing_original(self) -> None:
+        original = pl.DataFrame(
+            {
+                "timestamp": [FIRST - 3 * GRID.step, FIRST - GRID.step],
+                "temperature": [0.0, 6.0],
+            }
+        )
+        result = fill_daily_weather(
+            original,
+            issue_time=FIRST,
+            lookbacks={"temperature": 3},
+            max_gap_days=1,
+            grid=GRID,
+            past_end=FIRST,
+        )
+        assert result.frame["timestamp"].to_list() == [
+            FIRST - offset * GRID.step for offset in (3, 2, 1)
+        ]
+        assert result.frame["temperature"].to_list() == [0.0, 3.0, 6.0]
+        assert len(result.fills) == 1
+        assert original.height == 2
+
+    @pytest.mark.parametrize(
+        "stamp, message",
+        [
+            (FIRST.replace(tzinfo=None), "timezone-aware UTC"),
+            (
+                FIRST.astimezone(ZoneInfo("Asia/Kathmandu")),
+                "timezone-aware UTC",
+            ),
+            (FIRST.date(), "requires datetime timestamps"),
+        ],
+        ids=["naive", "non-utc", "date-only"],
+    )
+    def test_rejects_non_utc_or_date_only_timestamps(
+        self, stamp: datetime | date, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            fill_daily_weather(
+                pl.DataFrame({"timestamp": [stamp], "temperature": [1.0]}),
+                issue_time=FIRST,
+                lookbacks={},
+                max_gap_days=1,
+                grid=GRID,
+                past_end=FIRST,
+            )
 
 
 class TestFillDailyWeather:

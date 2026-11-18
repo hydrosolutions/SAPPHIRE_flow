@@ -14,6 +14,12 @@ from sapphire_flow.types.operational_weather import (
     PastWeatherUse,
     WeatherUse,
 )
+from sapphire_flow.types.operational_weather_v2 import (
+    DerivedWeatherUseV2,
+    FutureWeatherUseV2,
+    PastWeatherUseV2,
+    WeatherUseV2,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import ForecastStore
@@ -62,15 +68,19 @@ class WeatherUseResponse(BaseModel):
     future: WeatherLegResponse
 
 
-def _leg(use: WeatherUse | None, leg: Literal["past", "future"]) -> WeatherLegResponse:
+def _leg(
+    use: WeatherUse | WeatherUseV2 | None, leg: Literal["past", "future"]
+) -> WeatherLegResponse:
     if use is None:
         return WeatherLegResponse(freshness="unknown", uses=[])
     fact = use.past if leg == "past" else use.future
-    if isinstance(fact, PastWeatherUse):
+    if isinstance(fact, (PastWeatherUse, PastWeatherUseV2)):
         source_runs = sorted(
             {
                 (row.source.value, row.source_run)
-                for day in fact.days
+                for day in (
+                    fact.periods if isinstance(fact, PastWeatherUseV2) else fact.days
+                )
                 for row in day.samples
             }
             | {
@@ -85,7 +95,7 @@ def _leg(use: WeatherUse | None, leg: Literal["past", "future"]) -> WeatherLegRe
             fact.snapshot_sha256,
             fact.retrieved_at,
         )
-    elif isinstance(fact, FutureWeatherUse):
+    elif isinstance(fact, (FutureWeatherUse, FutureWeatherUseV2)):
         source_runs = [(fact.receipt.scope.source, fact.receipt.cycle_time)]
         reason = fact.refresh_attempt.outcome.reason
         snapshot_id, digest, retrieved = (
@@ -115,10 +125,12 @@ def _leg(use: WeatherUse | None, leg: Literal["past", "future"]) -> WeatherLegRe
     )
 
 
-def _summary(use: WeatherUse | DerivedWeatherUse) -> WeatherUseResponse:
+def _summary(
+    use: WeatherUse | DerivedWeatherUse | WeatherUseV2 | DerivedWeatherUseV2,
+) -> WeatherUseResponse:
     facts = (
         [item.weather_use for item in use.contributors]
-        if isinstance(use, DerivedWeatherUse)
+        if isinstance(use, (DerivedWeatherUse, DerivedWeatherUseV2))
         else [use]
     )
 
@@ -155,7 +167,7 @@ def read_weather_summary(
     if version is None:
         return None
     try:
-        if type(version) is not int or version != 1:
+        if type(version) is not int or version not in (1, 2):
             raise ValueError("unsupported weather evidence version")
         evidence = store.fetch_evidence(forecast_id)
         if evidence is None:
@@ -165,7 +177,8 @@ def read_weather_summary(
             raise ValueError("selected weather manifest is not an object")
         manifest = cast("dict[str, object]", manifest)
         if (
-            manifest.get("forecast_id") != str(forecast_id)
+            manifest.get("weather_evidence_version") != version
+            or manifest.get("forecast_id") != str(forecast_id)
             or manifest.get("station_id") != str(station_id)
             or manifest.get("issued_at") != issue_time.isoformat()
             or manifest.get("data_use") != data_use.value

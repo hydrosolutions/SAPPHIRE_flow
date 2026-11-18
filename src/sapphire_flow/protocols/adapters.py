@@ -12,8 +12,10 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import HydroScraperBatchResult, RawObservation
     from sapphire_flow.types.operational_weather import OperationalWeatherWindow
+    from sapphire_flow.types.operational_weather_v2 import OperationalWeatherWindowV2
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import (
         GriddedForecast,
         SnowForecastFetchResult,
@@ -171,3 +173,17 @@ class OperationalWeatherSource(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> dict[StationId, OperationalWeatherWindow]: ...
+
+
+@runtime_checkable
+class OperationalWeatherPeriodSource(Protocol):
+    def fetch_period_windows(
+        self,
+        *,
+        sources: list[StationWeatherSource],
+        issue_time: UtcDatetime,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        grid: TimeGrid,
+        eligibility_cutoff: UtcDatetime,
+    ) -> dict[StationId, OperationalWeatherWindowV2]: ...

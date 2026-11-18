@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.operational_weather import WeatherUse
+    from sapphire_flow.types.operational_weather_v2 import WeatherUseV2
     from sapphire_flow.types.weather import WeatherForecastRecord
     from sapphire_flow.types.weather_gap import WeatherGapFill
 
@@ -25,7 +26,7 @@ class StationSourceEvidence:
     historical_forcing: tuple[RawHistoricalForcing, ...] = ()
     future_weather: tuple[WeatherForecastRecord, ...] = ()
     tail_weather: tuple[WeatherForecastRecord, ...] = ()
-    weather_use: WeatherUse | None = None
+    weather_use: WeatherUse | WeatherUseV2 | None = None
     weather_gap_fills: tuple[WeatherGapFill, ...] = ()
 
 
@@ -39,7 +40,7 @@ class ForecastEvidence:
     artifact_sha256: str | None
     reason: str | None = None
     thresholds: tuple[StationThreshold, ...] | None = None
-    weather_evidence_version: Literal[1] | None = None
+    weather_evidence_version: Literal[1, 2] | None = None
 
     def __post_init__(self) -> None:
         if self.status is EvidenceStatus.COMPLETE and (

@@ -671,6 +671,9 @@ The recap API-key secret is **Nepal-only**, provided by the
   file). No `./secrets/sapphire_dg_api_key` file is needed at all — the base
   compose declares no such secret, and the Recap adapters are never
   constructed on a Swiss deployment (`type` selector stays `meteoswiss_nwp`).
+- Outside Docker: `RECAP_API_KEY_FILE` names a mode-600 file holding the key
+  (read after the Docker secret path; an empty or unreadable file is a
+  `ConfigurationError`, not a fall-through).
 - Local dev fallback: `RECAP_API_KEY` env var (same pattern as
   `DB_PASSWORD`/`db_password`).
 - Rotation (Nepal / overlay in use): per Gateway operator schedule; rotate by

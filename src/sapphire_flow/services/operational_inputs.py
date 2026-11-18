@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 log = structlog.get_logger(__name__)
@@ -169,6 +170,8 @@ def _member_records_to_wide(records: list[WeatherForecastRecord]) -> pl.DataFram
 def _aggregate_nwp_records_to_time_step(
     records: list[WeatherForecastRecord],
     time_step: timedelta,
+    *,
+    grid: TimeGrid | None = None,
 ) -> list[_AggregatedNwpPoint]:
     """Aggregate hourly per-member NWP records to the model's ``time_step``.
 
@@ -187,7 +190,13 @@ def _aggregate_nwp_records_to_time_step(
     aggregated: list[_AggregatedNwpPoint] = []
     for member_id, member_records in by_member.items():
         wide = _member_records_to_wide(member_records)
+        if grid is not None:
+            if grid.step != time_step:
+                raise ValueError("weather aggregation grid differs from time step")
+            wide = wide.with_columns(pl.col("timestamp") - grid.phase)
         daily = resample_to_time_step(wide, time_step, aggregation_methods=None)
+        if grid is not None:
+            daily = daily.with_columns(pl.col("timestamp") + grid.phase)
         param_cols = [c for c in daily.columns if c != "timestamp"]
         for row in daily.iter_rows(named=True):
             ts = ensure_utc(row["timestamp"])
@@ -364,6 +373,9 @@ def build_future_dynamic_frame(
     ensemble_mode: EnsembleMode,
     feature_horizons: dict[str, int] | None = None,
     weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
+    grid: TimeGrid | None = None,
+    first_period_start: UtcDatetime | None = None,
+    eligibility_cutoff: UtcDatetime | None = None,
 ) -> pl.DataFrame:
     """Public: the shared hourly-to-model-time_step reduction (aggregate,
     broadcast deterministic features across members, drop backdated buckets,
@@ -384,7 +396,34 @@ def build_future_dynamic_frame(
     legacy scalar-cap behaviour byte-for-byte — the superset assembler below
     never passes it.
     """
-    if weather_policy is FutureWeatherPolicy.COMPLETE_DAILY:
+    if grid is not None:
+        from sapphire_flow.services.recap_daily_weather import (
+            recap_complete_period_records,
+        )
+        from sapphire_flow.types.operational_weather_v2 import require_context
+
+        if first_period_start is None or eligibility_cutoff is None:
+            raise ValueError("period weather requires explicit start and cutoff")
+        require_context(grid, issue_time, eligibility_cutoff)
+        if (
+            weather_policy is not FutureWeatherPolicy.RECAP_COMPLETE_DAILY
+            or time_step != grid.step
+        ):
+            raise ValueError("period weather requires qualified daily Recap support")
+        records = recap_complete_period_records(
+            records,
+            first_period_start=first_period_start,
+            cycle_ceiling=eligibility_cutoff,
+            grid=grid,
+            ensemble_mode=ensemble_mode,
+            feature_horizons={
+                feature: (feature_horizons or {}).get(feature, forecast_horizon_steps)
+                for feature in future_dynamic_features
+            },
+        )
+    elif first_period_start is not None or eligibility_cutoff is not None:
+        raise ValueError("period bounds require an explicit grid")
+    elif weather_policy is FutureWeatherPolicy.COMPLETE_DAILY:
         if (
             time_step != timedelta(days=1)
             or floor_to_time_step(issue_time, time_step) != issue_time
@@ -416,11 +455,13 @@ def build_future_dynamic_frame(
             },
             ensemble_mode=ensemble_mode,
         )
-    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(
+        records, time_step, grid=grid
+    )
     daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
     kept_daily_records = _filter_and_cap_daily_records(
         daily_nwp_records,
-        issue_time=issue_time,
+        issue_time=first_period_start if first_period_start is not None else issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
         feature_horizons=feature_horizons,
     )

@@ -89,7 +89,7 @@ def _combined_contributor_gap(
     if evidence.snapshot is None:
         return "contributor_snapshot_unavailable"
     try:
-        if evidence.weather_evidence_version == 1:
+        if evidence.weather_evidence_version in (1, 2):
             from sapphire_flow.services.selected_weather_evidence import (
                 MAX_WEATHER_EVIDENCE_BYTES,
                 restore_bounded_weather_snapshot,
@@ -151,8 +151,12 @@ def _validate_combined_weather_contributors(
         restore_selected_weather,
     )
     from sapphire_flow.types.operational_weather import DerivedWeatherUse
+    from sapphire_flow.types.operational_weather_v2 import DerivedWeatherUseV2
 
-    if forecast.weather_evidence_version != 1 or forecast.combination_strategy is None:
+    if (
+        forecast.weather_evidence_version not in (1, 2)
+        or forecast.combination_strategy is None
+    ):
         return
     assert forecast.evidence is not None
     use = restore_selected_weather(
@@ -160,7 +164,7 @@ def _validate_combined_weather_contributors(
         model_id=forecast.model_id,
         issue_time=forecast.issued_at,
     )[forecast.station_id]
-    if not isinstance(use, DerivedWeatherUse):
+    if not isinstance(use, (DerivedWeatherUse, DerivedWeatherUseV2)):
         raise WeatherEvidenceCaptureError(
             "combined forecast requires derived weather facts"
         )
@@ -185,6 +189,8 @@ def _validate_combined_weather_contributors(
             raise WeatherEvidenceCaptureError(
                 "combined weather contributor is not persisted in scope"
             )
+        if forecast.weather_evidence_version == 2 and row.weather_evidence_version != 2:
+            raise WeatherEvidenceCaptureError("combined weather versions differ")
         if row.weather_evidence_version is None:
             if item.weather_use is not None:
                 raise WeatherEvidenceCaptureError(

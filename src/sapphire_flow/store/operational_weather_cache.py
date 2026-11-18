@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, overload
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
@@ -39,8 +39,27 @@ from sapphire_flow.types.operational_weather import (
     WeatherFailureReason,
     WeatherLegOutcome,
     WeatherLegState,
+    WeatherPastSnapshot,
     require_utc,
 )
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherAttemptV2,
+    FutureWeatherReceiptV2,
+    FutureWeatherRequestV2,
+    FutureWeatherScopeV2,
+    WeatherCacheAttemptV2,
+    WeatherCacheCompletionV2,
+    WeatherCacheEntryV2,
+    WeatherPastSnapshotV2,
+)
+
+AnyAttempt = WeatherCacheAttempt | WeatherCacheAttemptV2
+AnyCompletion = WeatherCacheCompletion | WeatherCacheCompletionV2
+AnyEntry = WeatherCacheEntry | WeatherCacheEntryV2
+AnyRequest = FutureWeatherRequest | FutureWeatherRequestV2
+AnyReceipt = FutureWeatherReceipt | FutureWeatherReceiptV2
+AnyFutureAttempt = FutureWeatherAttempt | FutureWeatherAttemptV2
+AnyScope = FutureWeatherScope | FutureWeatherScopeV2
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -49,6 +68,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.protocols.stores import AuditLogStore
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
@@ -107,22 +127,16 @@ class PgOperationalWeatherCache:
         )
 
     def fetch(self, key: WeatherCacheKey) -> WeatherCacheEntry | None:
-        row = (
-            self._conn.execute(sa.select(cache).where(_key_predicate(key)))
-            .mappings()
-            .first()
-        )
-        return self._decode(row) if row is not None else None
+        entry = self._fetch(key)
+        assert entry is None or isinstance(entry, WeatherCacheEntry)
+        return entry
 
-    def _locked(self, key: WeatherCacheKey) -> WeatherCacheEntry | None:
-        row = (
-            self._conn.execute(
-                sa.select(cache).where(_key_predicate(key)).with_for_update()
-            )
-            .mappings()
-            .first()
-        )
-        return self._decode(row) if row is not None else None
+    def fetch_period(
+        self, key: WeatherCacheKey, *, grid: TimeGrid
+    ) -> WeatherCacheEntryV2 | None:
+        entry = self._fetch(key, grid)
+        assert entry is None or isinstance(entry, WeatherCacheEntryV2)
+        return entry
 
     def begin(
         self,
@@ -134,6 +148,110 @@ class PgOperationalWeatherCache:
         started_at: UtcDatetime,
         future_scopes: tuple[FutureWeatherRequest, ...] = (),
     ) -> WeatherCacheAttempt:
+        attempt = self._begin(
+            key=key,
+            principal=principal,
+            attempt_id=attempt_id,
+            issue_time=issue_time,
+            started_at=started_at,
+            future_scopes=future_scopes,
+        )
+        assert isinstance(attempt, WeatherCacheAttempt)
+        return attempt
+
+    def begin_period(
+        self,
+        *,
+        key: WeatherCacheKey,
+        principal: WritePrincipal,
+        attempt_id: UUID,
+        issue_time: UtcDatetime,
+        started_at: UtcDatetime,
+        grid: TimeGrid,
+        eligibility_cutoff: UtcDatetime,
+        future_scopes: tuple[FutureWeatherRequestV2, ...] = (),
+    ) -> WeatherCacheAttemptV2:
+        attempt = self._begin(
+            key=key,
+            principal=principal,
+            attempt_id=attempt_id,
+            issue_time=issue_time,
+            started_at=started_at,
+            future_scopes=future_scopes,
+            grid=grid,
+            eligibility_cutoff=eligibility_cutoff,
+        )
+        assert isinstance(attempt, WeatherCacheAttemptV2)
+        return attempt
+
+    def finish(
+        self,
+        *,
+        attempt: WeatherCacheAttempt,
+        principal: WritePrincipal,
+        completion: WeatherCacheCompletion,
+        earliest_cycle: UtcDatetime,
+    ) -> WeatherCacheEntry:
+        entry = self._finish(
+            attempt=attempt,
+            principal=principal,
+            completion=completion,
+            earliest_cycle=earliest_cycle,
+        )
+        assert isinstance(entry, WeatherCacheEntry)
+        return entry
+
+    def finish_period(
+        self,
+        *,
+        attempt: WeatherCacheAttemptV2,
+        principal: WritePrincipal,
+        completion: WeatherCacheCompletionV2,
+        earliest_cycle: UtcDatetime,
+    ) -> WeatherCacheEntryV2:
+        entry = self._finish(
+            attempt=attempt,
+            principal=principal,
+            completion=completion,
+            earliest_cycle=earliest_cycle,
+        )
+        assert isinstance(entry, WeatherCacheEntryV2)
+        return entry
+
+    def _fetch(
+        self, key: WeatherCacheKey, grid: TimeGrid | None = None
+    ) -> AnyEntry | None:
+        row = (
+            self._conn.execute(sa.select(cache).where(_key_predicate(key)))
+            .mappings()
+            .first()
+        )
+        return self._decode(row, grid=grid) if row is not None else None
+
+    def _locked(
+        self, key: WeatherCacheKey, grid: TimeGrid | None = None
+    ) -> AnyEntry | None:
+        row = (
+            self._conn.execute(
+                sa.select(cache).where(_key_predicate(key)).with_for_update()
+            )
+            .mappings()
+            .first()
+        )
+        return self._decode(row, grid=grid) if row is not None else None
+
+    def _begin(
+        self,
+        *,
+        key: WeatherCacheKey,
+        principal: WritePrincipal,
+        attempt_id: UUID,
+        issue_time: UtcDatetime,
+        started_at: UtcDatetime,
+        future_scopes: tuple[AnyRequest, ...] = (),
+        grid: TimeGrid | None = None,
+        eligibility_cutoff: UtcDatetime | None = None,
+    ) -> AnyAttempt:
         self._authorize(key, principal, started_at)
         if any(
             scope.station_id != key.station_id or scope.issue_time != issue_time
@@ -141,21 +259,47 @@ class PgOperationalWeatherCache:
         ):
             raise ValueError("weather refresh scope does not match station/issue")
         pending = WeatherLegOutcome(state=WeatherLegState.PENDING)
-        attempt = WeatherCacheAttempt(
-            key=key,
-            generation=1,
-            id=attempt_id,
-            issue_time=issue_time,
-            started_at=started_at,
-        )
-        entry = WeatherCacheEntry(
+        if grid is None:
+            if eligibility_cutoff is not None or any(
+                not isinstance(scope, FutureWeatherRequest) for scope in future_scopes
+            ):
+                raise ValueError("v1 cache cannot accept period context")
+            attempt: AnyAttempt = WeatherCacheAttempt(
+                key=key,
+                generation=1,
+                id=attempt_id,
+                issue_time=issue_time,
+                started_at=started_at,
+            )
+            futures: tuple[AnyFutureAttempt, ...] = tuple(
+                FutureWeatherAttempt(scope=scope, outcome=pending)
+                for scope in cast("tuple[FutureWeatherRequest, ...]", future_scopes)
+            )
+        else:
+            if eligibility_cutoff is None or any(
+                not isinstance(scope, FutureWeatherRequestV2) for scope in future_scopes
+            ):
+                raise ValueError(
+                    "v2 cache requires explicit cutoff and period requests"
+                )
+            attempt = WeatherCacheAttemptV2(
+                key=key,
+                generation=1,
+                id=attempt_id,
+                issue_time=issue_time,
+                started_at=started_at,
+                grid=grid,
+                eligibility_cutoff=eligibility_cutoff,
+            )
+            futures = tuple(
+                FutureWeatherAttemptV2(scope=scope, outcome=pending)
+                for scope in cast("tuple[FutureWeatherRequestV2, ...]", future_scopes)
+            )
+        entry = _cache_entry(
             attempt=attempt,
             state=WeatherAttemptState.PENDING,
             past_outcome=pending,
-            future_attempts=tuple(
-                FutureWeatherAttempt(scope=scope, outcome=pending)
-                for scope in future_scopes
-            ),
+            future_attempts=futures,
         )
         created = self._conn.execute(
             insert(cache)
@@ -167,7 +311,7 @@ class PgOperationalWeatherCache:
         ).scalar_one_or_none()
         if created is not None:
             return attempt
-        prior = self._locked(key)
+        prior = self._locked(key, grid=grid)
         if prior is None:
             raise WeatherCacheConflictError("weather cache vanished during refresh")
         attempt = replace(attempt, generation=prior.attempt.generation + 1)
@@ -182,16 +326,19 @@ class PgOperationalWeatherCache:
         )
         return attempt
 
-    def finish(
+    def _finish(
         self,
         *,
-        attempt: WeatherCacheAttempt,
+        attempt: AnyAttempt,
         principal: WritePrincipal,
-        completion: WeatherCacheCompletion,
+        completion: AnyCompletion,
         earliest_cycle: UtcDatetime,
-    ) -> WeatherCacheEntry:
+    ) -> AnyEntry:
         self._authorize(attempt.key, principal, completion.finished_at)
-        current = self._locked(attempt.key)
+        current = self._locked(
+            attempt.key,
+            grid=attempt.grid if isinstance(attempt, WeatherCacheAttemptV2) else None,
+        )
         entry = complete_weather_entry(
             current,
             attempt=attempt,
@@ -217,13 +364,19 @@ class PgOperationalWeatherCache:
             raise WeatherCacheConflictError("weather refresh lost pending-state CAS")
         return entry
 
-    def _values(self, entry: WeatherCacheEntry) -> dict[str, object]:
+    def _values(self, entry: AnyEntry) -> dict[str, object]:
         payload = encode_cache_entry(entry, max_past_bytes=self._max_past_bytes)
         fields = cast("dict[str, object]", payload["entry"])
         return {
             "station_id": entry.attempt.key.station_id,
             "binding_fingerprint": entry.attempt.key.binding_fingerprint,
-            "payload_version": 1,
+            "payload_version": payload["version"],
+            "temporal_context": {
+                "grid": cast("dict[str, object]", fields["attempt"])["grid"],
+                "eligibility_cutoff": entry.attempt.eligibility_cutoff.isoformat(),
+            }
+            if isinstance(entry.attempt, WeatherCacheAttemptV2)
+            else None,
             "attempt_generation": entry.attempt.generation,
             "attempt_id": entry.attempt.id,
             "issue_time": entry.attempt.issue_time,
@@ -237,12 +390,26 @@ class PgOperationalWeatherCache:
             "completion_sha256": entry.completion_sha256,
         }
 
-    def _decode(self, row: sa.RowMapping) -> WeatherCacheEntry:
-        return decode_cache_entry(
+    def _decode(self, row: sa.RowMapping, *, grid: TimeGrid | None = None) -> AnyEntry:
+        expected_version = 1 if grid is None else 2
+        if row["payload_version"] != expected_version:
+            raise ValueError("weather cache version differs from requested binding")
+        context = row["temporal_context"]
+        if expected_version == 1:
+            if context is not None:
+                raise ValueError("v1 cache cannot carry temporal context")
+            context = {}
+        elif not isinstance(context, dict) or set(context) != {
+            "grid",
+            "eligibility_cutoff",
+        }:
+            raise ValueError("v2 cache temporal context is missing or malformed")
+        entry = decode_cache_entry(
             {
                 "version": row["payload_version"],
                 "entry": {
                     "attempt": {
+                        **context,
                         "key": {
                             "station_id": str(row["station_id"]),
                             "binding_fingerprint": row["binding_fingerprint"],
@@ -265,8 +432,64 @@ class PgOperationalWeatherCache:
             },
             max_past_bytes=self._max_past_bytes,
         )
+        if isinstance(entry, WeatherCacheEntryV2) and entry.attempt.grid != grid:
+            raise ValueError("weather cache grid differs from requested binding")
+        return entry
 
 
+def _cache_entry(
+    *,
+    attempt: AnyAttempt,
+    state: WeatherAttemptState,
+    past_outcome: WeatherLegOutcome,
+    future_attempts: tuple[AnyFutureAttempt, ...],
+    past_snapshot: WeatherPastSnapshot | WeatherPastSnapshotV2 | None = None,
+    future_receipts: tuple[AnyReceipt, ...] = (),
+    finished_at: UtcDatetime | None = None,
+    completion_sha256: str | None = None,
+) -> AnyEntry:
+    if isinstance(attempt, WeatherCacheAttemptV2):
+        if (
+            (
+                past_snapshot is not None
+                and not isinstance(past_snapshot, WeatherPastSnapshotV2)
+            )
+            or any(not isinstance(a, FutureWeatherAttemptV2) for a in future_attempts)
+            or any(not isinstance(r, FutureWeatherReceiptV2) for r in future_receipts)
+        ):
+            raise ValueError("mixed weather cache versions")
+        return WeatherCacheEntryV2(
+            attempt=attempt,
+            state=state,
+            past_outcome=past_outcome,
+            future_attempts=cast("tuple[FutureWeatherAttemptV2, ...]", future_attempts),
+            past_snapshot=past_snapshot,
+            future_receipts=cast("tuple[FutureWeatherReceiptV2, ...]", future_receipts),
+            finished_at=finished_at,
+            completion_sha256=completion_sha256,
+        )
+    if (
+        (
+            past_snapshot is not None
+            and not isinstance(past_snapshot, WeatherPastSnapshot)
+        )
+        or any(not isinstance(a, FutureWeatherAttempt) for a in future_attempts)
+        or any(not isinstance(r, FutureWeatherReceipt) for r in future_receipts)
+    ):
+        raise ValueError("mixed weather cache versions")
+    return WeatherCacheEntry(
+        attempt=attempt,
+        state=state,
+        past_outcome=past_outcome,
+        future_attempts=cast("tuple[FutureWeatherAttempt, ...]", future_attempts),
+        past_snapshot=past_snapshot,
+        future_receipts=cast("tuple[FutureWeatherReceipt, ...]", future_receipts),
+        finished_at=finished_at,
+        completion_sha256=completion_sha256,
+    )
+
+
+@overload
 def complete_weather_entry(
     current: WeatherCacheEntry | None,
     *,
@@ -275,7 +498,46 @@ def complete_weather_entry(
     earliest_cycle: UtcDatetime,
     max_past_bytes: int,
     max_receipts: int,
-) -> WeatherCacheEntry:
+) -> WeatherCacheEntry: ...
+
+
+@overload
+def complete_weather_entry(
+    current: WeatherCacheEntryV2 | None,
+    *,
+    attempt: WeatherCacheAttemptV2,
+    completion: WeatherCacheCompletionV2,
+    earliest_cycle: UtcDatetime,
+    max_past_bytes: int,
+    max_receipts: int,
+) -> WeatherCacheEntryV2: ...
+
+
+@overload
+def complete_weather_entry(
+    current: AnyEntry | None,
+    *,
+    attempt: AnyAttempt,
+    completion: AnyCompletion,
+    earliest_cycle: UtcDatetime,
+    max_past_bytes: int,
+    max_receipts: int,
+) -> AnyEntry: ...
+
+
+def complete_weather_entry(
+    current: AnyEntry | None,
+    *,
+    attempt: AnyAttempt,
+    completion: AnyCompletion,
+    earliest_cycle: UtcDatetime,
+    max_past_bytes: int,
+    max_receipts: int,
+) -> AnyEntry:
+    if isinstance(attempt, WeatherCacheAttemptV2) != isinstance(
+        completion, WeatherCacheCompletionV2
+    ):
+        raise ValueError("cache attempt/completion versions differ")
     require_utc(earliest_cycle)
     if earliest_cycle > completion.finished_at:
         raise ValueError("receipt expiry boundary follows completion time")
@@ -339,7 +601,7 @@ def complete_weather_entry(
             if receipt.scope not in refused
         ),
     )
-    entry = WeatherCacheEntry(
+    entry = _cache_entry(
         attempt=attempt,
         state=effective.state,
         past_outcome=effective.past_outcome,
@@ -353,17 +615,17 @@ def complete_weather_entry(
 
 
 def _retain_receipts(
-    prior: tuple[FutureWeatherReceipt, ...],
-    incoming: tuple[FutureWeatherReceipt, ...],
+    prior: tuple[AnyReceipt, ...],
+    incoming: tuple[AnyReceipt, ...],
     earliest_cycle: UtcDatetime,
     max_receipts: int,
-) -> tuple[tuple[FutureWeatherReceipt, ...], frozenset[FutureWeatherScope]]:
+) -> tuple[tuple[AnyReceipt, ...], frozenset[AnyScope]]:
     retained = {
         (receipt.scope, receipt.cycle_time): receipt
         for receipt in prior
         if receipt.cycle_time >= earliest_cycle
     }
-    refused: set[FutureWeatherScope] = set()
+    refused: set[AnyScope] = set()
     for receipt in incoming:
         key = (receipt.scope, receipt.cycle_time)
         old = retained.get(key)
@@ -455,6 +717,52 @@ class PgCommittedOperationalWeatherCache:
     ) -> WeatherCacheEntry:
         with self._transaction() as store:
             return store.finish(
+                attempt=attempt,
+                principal=principal,
+                completion=completion,
+                earliest_cycle=earliest_cycle,
+            )
+
+    def fetch_period(
+        self, key: WeatherCacheKey, *, grid: TimeGrid
+    ) -> WeatherCacheEntryV2 | None:
+        with self._transaction() as store:
+            return store.fetch_period(key, grid=grid)
+
+    def begin_period(
+        self,
+        *,
+        key: WeatherCacheKey,
+        principal: WritePrincipal,
+        attempt_id: UUID,
+        issue_time: UtcDatetime,
+        started_at: UtcDatetime,
+        grid: TimeGrid,
+        eligibility_cutoff: UtcDatetime,
+        future_scopes: tuple[FutureWeatherRequestV2, ...] = (),
+    ) -> WeatherCacheAttemptV2:
+        with self._transaction() as store:
+            return store.begin_period(
+                key=key,
+                principal=principal,
+                attempt_id=attempt_id,
+                issue_time=issue_time,
+                started_at=started_at,
+                grid=grid,
+                eligibility_cutoff=eligibility_cutoff,
+                future_scopes=future_scopes,
+            )
+
+    def finish_period(
+        self,
+        *,
+        attempt: WeatherCacheAttemptV2,
+        principal: WritePrincipal,
+        completion: WeatherCacheCompletionV2,
+        earliest_cycle: UtcDatetime,
+    ) -> WeatherCacheEntryV2:
+        with self._transaction() as store:
+            return store.finish_period(
                 attempt=attempt,
                 principal=principal,
                 completion=completion,

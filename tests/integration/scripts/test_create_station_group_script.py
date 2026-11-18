@@ -207,7 +207,17 @@ class TestTheWriteIsAtomic:
         )
 
         exit_code = cli_main(
-            ["--name", name, "--station-code", code, "--network", "bafu", "--apply"]
+            [
+                "--tenant",
+                "sapphire",
+                "--network",
+                "bafu",
+                "--name",
+                name,
+                "--station-code",
+                code,
+                "--apply",
+            ]  # fmt: skip
         )
 
         assert exit_code == 1, "the CLI must report failure"
@@ -294,6 +304,101 @@ def committed_cli_seed(
             conn.execute(sa.delete(tenants).where(tenants.c.id == tenant_id))
 
 
+@pytest.fixture
+def foreign_station_codes(
+    db_engine: sa.Engine, committed_cli_seed: tuple[str, str, str, TenantId]
+) -> Iterator[tuple[str, str]]:
+    """Two committed stations in the foreign tenant (network `research`), removed
+    with their group memberships before `committed_cli_seed` drops the tenant.
+    """
+    from sapphire_flow.db.metadata import (
+        station_group_members,
+        station_groups,
+        stations,
+    )
+
+    _, _, _, foreign_id = committed_cli_seed
+    codes = (f"f-{uuid4().hex[:8]}", f"f-{uuid4().hex[:8]}")
+    ids = [StationId(uuid4()) for _ in codes]
+    with db_engine.begin() as conn:
+        for sid, code in zip(ids, codes, strict=True):
+            PgStationStore(conn).store_station(
+                make_station_config(
+                    station_id=sid, code=code, network="research", tenant_id=foreign_id
+                )
+            )
+    try:
+        yield codes
+    finally:
+        with db_engine.begin() as conn:
+            group_ids = sa.select(station_groups.c.id).where(
+                station_groups.c.tenant_id == foreign_id
+            )
+            conn.execute(
+                sa.delete(station_group_members).where(
+                    station_group_members.c.group_id.in_(group_ids)
+                )
+            )
+            conn.execute(
+                sa.delete(station_groups).where(
+                    station_groups.c.tenant_id == foreign_id
+                )
+            )
+            conn.execute(
+                sa.delete(stations).where(stations.c.id.in_([str(i) for i in ids]))
+            )
+
+
+class TestCliTenantOptionAgainstPostgres:
+    def test_group_is_created_then_joined_in_a_non_default_tenant(
+        self,
+        db_engine: sa.Engine,
+        monkeypatch: pytest.MonkeyPatch,
+        deployment_config: Path,
+        committed_cli_seed: tuple[str, str, str, TenantId],
+        foreign_station_codes: tuple[str, str],
+    ) -> None:
+        from sapphire_flow.db.metadata import audit_log, station_groups
+        from scripts.create_station_group import main
+
+        name, _, foreign_code, foreign_id = committed_cli_seed
+        code_a, code_b = foreign_station_codes
+        deployment_config.write_text(
+            f'[deployment]\nwritable_tenants = ["{foreign_code}"]\n'
+        )
+        monkeypatch.setenv(
+            "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
+        )
+        base = ["--tenant", foreign_code, "--network", "research", "--name", name]
+
+        assert main([*base, "--station-code", code_a, "--apply"]) == 0
+        assert main([*base, "--station-code", code_b, "--apply"]) == 0
+
+        with db_engine.connect() as conn:
+            group = PgStationGroupStore(conn).fetch_group_by_name(foreign_id, name)
+            assert group is not None
+            members = {
+                PgStationStore(conn).fetch_station_by_code(c, "research").id  # pyright: ignore[reportOptionalMemberAccess]
+                for c in (code_a, code_b)
+            }
+            assert group.station_ids == members
+            audit_rows = conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(audit_log)
+                .where(audit_log.c.detail["name"].astext == name)
+            )
+            default_groups = conn.scalar(
+                sa.select(sa.func.count())
+                .select_from(station_groups)
+                .where(
+                    station_groups.c.name == name,
+                    station_groups.c.tenant_id == DEFAULT_TENANT_ID,
+                )
+            )
+        assert audit_rows == 2
+        assert default_groups == 0
+
+
 class TestCliAuthorizationAgainstPostgres:
     @pytest.mark.parametrize("authority", ["scoped", "global_admin", "foreign"])
     @pytest.mark.parametrize("apply", [False, True])
@@ -314,7 +419,7 @@ class TestCliAuthorizationAgainstPostgres:
         )
         from scripts.create_station_group import main
 
-        name, code, foreign_code, foreign_id = committed_cli_seed
+        name, code, foreign_code, _foreign_id = committed_cli_seed
         identity = {
             "scoped": 'writable_tenants = ["sapphire"]',
             "global_admin": "global_admin = true",
@@ -338,11 +443,14 @@ class TestCliAuthorizationAgainstPostgres:
                 .where(station_group_members.c.group_id.in_(group_ids))
             )
 
-        args = ["--name", name, "--station-code", code, "--operator", "cli-operator"]
+        args = [
+            "--tenant", "sapphire", "--network", "bafu",
+            "--name", name, "--station-code", code, "--operator", "cli-operator",
+        ]  # fmt: skip
         exit_code = main(args + (["--apply"] if apply else []))
         assert exit_code == (1 if authority == "foreign" else 0)
         if authority == "foreign":
-            assert "not authorized" in capsys.readouterr().err
+            assert "writable_tenants" in capsys.readouterr().err
 
         # A fresh connection proves rejection auditing survived the CLI return.
         with db_engine.connect() as conn:
@@ -360,7 +468,10 @@ class TestCliAuthorizationAgainstPostgres:
             )
             station = PgStationStore(conn).fetch_station_by_code(code, "bafu")
             assert station == original_station
-            assert len(entries) == int(apply)
+            # A foreign-only host is refused while resolving the principal, before
+            # any audit row exists; the tenant-mismatch rejection row is now only
+            # reachable through apply_station_group called directly.
+            assert len(entries) == int(apply and authority != "foreign")
             if apply and authority != "foreign":
                 assert group is not None and station is not None
                 assert group.station_ids == frozenset({station.id})
@@ -375,9 +486,5 @@ class TestCliAuthorizationAgainstPostgres:
                     )
                     == memberships_before
                 )
-            if apply:
+            if apply and authority != "foreign":
                 assert entries[0]["operator"] == "cli-operator"
-            if apply and authority == "foreign":
-                assert entries[0]["outcome"] == "rejected_tenant_mismatch"
-                assert entries[0]["principal_tenant_id"] == str(foreign_id)
-                assert entries[0]["target_tenant_id"] == str(DEFAULT_TENANT_ID)

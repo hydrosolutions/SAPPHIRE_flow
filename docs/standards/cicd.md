@@ -1173,7 +1173,7 @@ A missing overlay file raises `FileNotFoundError` at startup. There is no silent
 
 ### Docker Compose pattern
 
-Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). `docker-compose.nepal-cloud.yml` (Plan 511) does the same for `nepal-cloud.toml` on all four services, sets `SAPPHIRE_SKIP_DEPLOYMENTS` on `init` (a comma-separated list of deployment names `register_deployments` does not register; an unknown name is an error), and gives Caddy `SAPPHIRE_DOMAIN` and `Caddyfile.nepal`. `docker-compose.macmini.yml` likewise passes `mac-mini.toml` to `init` (Plan 513): that overlay declares `[tenants.chwrr]`, which the `init` tenant step creates — an overlay-less `init` on a host that declares tenants would silently skip them. The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
+Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). `docker-compose.nepal-cloud.yml` (Plan 511) does the same for `nepal-cloud.toml` on all four services, sets `SAPPHIRE_SKIP_DEPLOYMENTS` on `init` (a comma-separated list of deployment names `register_deployments` does not register; an unknown name is an error; `SAPPHIRE_ONLY_DEPLOYMENTS` is the inverse allowlist, rejected together with the skip list, and `SAPPHIRE_FLOW_SOURCE_ROOT` overrides the default `/app` flow source path for sandbox registration; none of the three is set by default compose), and gives Caddy `SAPPHIRE_DOMAIN` and `Caddyfile.nepal`. `docker-compose.macmini.yml` likewise passes `mac-mini.toml` to `init` (Plan 513): that overlay declares `[tenants.chwrr]`, which the `init` tenant step creates — an overlay-less `init` on a host that declares tenants would silently skip them. The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
 
 ```
 docker compose -f docker-compose.yml -f docker-compose.staging.yml up
@@ -2159,3 +2159,14 @@ readiness does not prove live provider identity, real-model readiness or scienti
 acceptance. Deployment and activation need their existing authority; this note
 grants none. See [configured operational daily weather](../spec/types-and-protocols.md#configured-operational-daily-weather)
 and the [storage privilege boundary](security.md#selected-operational-weather-storage-boundary).
+
+
+### Weather evidence version 2 (time MVP M2a3)
+
+Migration 0086 widens the selected cache/forecast version constraints and adds
+nullable JSONB attempt context to the existing cache table. Existing v1 rows keep
+NULL context and unchanged payloads/hashes. It grants no privileges and changes
+no primary key. Downgrade refuses while any v2 cache or forecast parent remains;
+never delete retained evidence to force a downgrade. Normal preparation still
+writes v1. This migration is a prerequisite for later qualified-grid activation,
+not authorization to switch Nepal models or deploy this branch.

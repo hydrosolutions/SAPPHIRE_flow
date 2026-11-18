@@ -16,8 +16,8 @@ anyone should read.
 
 - Do this in a **sandbox first**, never against a shared host without the owner's go-ahead.
 - Keep the evidence folder, API key file and delivered data **outside any Git checkout**.
-  Load the Gateway key from its mode-600 file into the environment; never type it into a
-  command or message: `export RECAP_API_KEY="$(cat /path/to/key_file)"`.
+  Point the tools at the Gateway key's mode-600 file; never type the key into a
+  command or message: `export RECAP_API_KEY_FILE=/path/to/key_file` (the path, not the key).
 - One station at a time. Write down every manual step you ran in the evidence folder.
 - Run everything from a checkout of this repository (`uv sync` once). All Python snippets
   below use `uv run python - <<'EOF' ... EOF`.
@@ -75,30 +75,16 @@ uv run prefect server start --host 127.0.0.1 --port 4299 &
 ```
 
 Register the deployments you need. The registrar assumes the Docker image path `/app`; in a
-sandbox point it at your checkout:
+sandbox point it at your checkout and register only the two deployments this runbook uses:
 
 ```bash
-uv run python - <<'EOF'
-import asyncio, os
-from prefect.client.orchestration import get_client
-from prefect.client.schemas.actions import WorkPoolCreate
-from prefect.exceptions import ObjectAlreadyExists
-import sapphire_flow.cli.register_deployments as r
-r.FLOW_SOURCE_ROOT = os.getcwd()
-names = {"ingest-operational-era5-history", "import-model-artifact"}
-specs = [s for s in r._build_specs() if s.deployment_name in names]
-async def main():
-    async with get_client() as c:
-        for p in {s.work_pool_name for s in specs}:
-            try: await c.create_work_pool(WorkPoolCreate(name=p, type="process"))
-            except ObjectAlreadyExists: pass
-    for s in specs: await r._register_one(s)
-asyncio.run(main())
-EOF
+SAPPHIRE_FLOW_SOURCE_ROOT=$PWD \
+SAPPHIRE_ONLY_DEPLOYMENTS=ingest-operational-era5-history,import-model-artifact \
+uv run python -m sapphire_flow.cli.register_deployments
 ```
 
 Start one worker per pool (`ingest` and `default`) in the environment the jobs need:
-`DATABASE_URL`, `SAPPHIRE_CONFIG`, `RECAP_API_KEY`, `SAPPHIRE_DATA_DIR` and
+`DATABASE_URL`, `SAPPHIRE_CONFIG`, `RECAP_API_KEY_FILE` (the path to the key file), `SAPPHIRE_DATA_DIR` and
 `SAPPHIRE_INCOMING_DIR` (both folders outside the checkout):
 `uv run prefect worker start --pool ingest --type process` (and `--pool default`).
 
@@ -142,30 +128,18 @@ This one has a tool: `uv run python -m sapphire_flow.cli.import_basin_package --
 
 ## Step 5: group, weather scope, weather history
 
-**5a. Create a group (no tool for a non-Swiss tenant yet).** `scripts/create_station_group.py`
-writes only to the Swiss default tenant. A group can also be reused: to add a new station to an
-existing group, add its station id with `add_station_to_group` and list **all** members in the
-scope below (the scope must match the group exactly).
+**5a. Create a group, or add the station to an existing one.** One command, any tenant your
+host may write (`--tenant` and `--network` are required, there is no default). Dry run is the
+default; add `--apply` to write. Re-running with an existing group name adds only the missing
+members. Keep listing **all** members in the scope below (the scope must match the group exactly).
 
 ```bash
-uv run python - <<'EOF'
-import os
-from datetime import UTC, datetime
-from uuid import uuid4
-import sqlalchemy as sa
-from sapphire_flow.store.station_group_store import PgStationGroupStore
-from sapphire_flow.types.station import StationGroup
-from sapphire_flow.types.ids import StationGroupId, StationId, TenantId
-CODE, NAME = "00001", "my-group"
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    tid, sid = c.execute(sa.text("select tenant_id,id from stations where code=:c"), {"c": CODE}).one()
-    g = StationGroupId(uuid4()); st = PgStationGroupStore(c)
-    st.store_group(StationGroup(id=g, name=NAME, station_ids=frozenset(), description="onboarding",
-        created_at=datetime.now(UTC), tenant_id=TenantId(tid)))
-    st.add_station_to_group(g, StationId(sid))
-    print("GROUP", g, "STATION", sid)
-EOF
+SAPPHIRE_CONFIG=sandbox-config.toml uv run python scripts/create_station_group.py \
+    --tenant chwrr --network research --name my-group --station-code 00001 --apply
 ```
+
+It prints the group id and the station codes it added; look up the station id in the database
+for 5b. An unknown code prints the networks that have stations in the tenant.
 
 **5b. Weather scope.** Add to the config file (ids from 5a):
 

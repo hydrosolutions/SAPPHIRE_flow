@@ -101,6 +101,12 @@ if TYPE_CHECKING:
         WeatherCacheEntry,
         WeatherCacheKey,
     )
+    from sapphire_flow.types.operational_weather_v2 import (
+        FutureWeatherRequestV2,
+        WeatherCacheAttemptV2,
+        WeatherCacheCompletionV2,
+        WeatherCacheEntryV2,
+    )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -123,6 +129,7 @@ if TYPE_CHECKING:
         StationWeatherSource,
     )
     from sapphire_flow.types.tenant import Tenant
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
     from sapphire_flow.types.write_principal import WritePrincipal
 
@@ -1367,3 +1374,32 @@ class OperationalWeatherCacheStore(Protocol):
         completion: WeatherCacheCompletion,
         earliest_cycle: UtcDatetime,
     ) -> WeatherCacheEntry: ...
+
+
+@runtime_checkable
+class OperationalWeatherPeriodCacheStore(Protocol):
+    def fetch_period(
+        self, key: WeatherCacheKey, *, grid: TimeGrid
+    ) -> WeatherCacheEntryV2 | None: ...
+
+    def begin_period(
+        self,
+        *,
+        key: WeatherCacheKey,
+        principal: WritePrincipal,
+        attempt_id: UUID,
+        issue_time: UtcDatetime,
+        started_at: UtcDatetime,
+        grid: TimeGrid,
+        eligibility_cutoff: UtcDatetime,
+        future_scopes: tuple[FutureWeatherRequestV2, ...] = (),
+    ) -> WeatherCacheAttemptV2: ...
+
+    def finish_period(
+        self,
+        *,
+        attempt: WeatherCacheAttemptV2,
+        principal: WritePrincipal,
+        completion: WeatherCacheCompletionV2,
+        earliest_cycle: UtcDatetime,
+    ) -> WeatherCacheEntryV2: ...

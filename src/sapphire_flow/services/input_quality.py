@@ -9,6 +9,12 @@ from sapphire_flow.services.training_data import (
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherUseV2,
+    PastWeatherUseV2,
+    WeatherUseV2,
+)
+from sapphire_flow.types.weather_gap_v2 import WeatherGapFillV2
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -270,7 +276,7 @@ def past_forcing_flags(
     lookback_steps: int,
     recent_steps: int,
     declared_lookbacks: Mapping[str, int] | None = None,
-    filled: Sequence[WeatherGapFill] = (),
+    filled: Sequence[WeatherGapFill | WeatherGapFillV2] = (),
 ) -> list[InputQualityFlag]:
     """One flag per declared past-forcing series that has gaps (Plan 239 T1b).
 
@@ -311,7 +317,13 @@ def past_forcing_flags(
                 stamp
                 for stamp in missing_buckets(past_dynamic, series, expected)
                 if (series, stamp)
-                not in {(fill.parameter, fill.day) for fill in filled}
+                not in {
+                    (
+                        fill.parameter,
+                        fill.start if isinstance(fill, WeatherGapFillV2) else fill.day,
+                    )
+                    for fill in filled
+                }
             ],
             anchor=anchor,
             time_step=time_step,
@@ -342,20 +354,32 @@ def selected_weather_quality_flags(
         if use is None
         else use.issue_time
     )
+    if isinstance(use, WeatherUseV2) and isinstance(use.past, PastWeatherUseV2):
+        anchor = use.past.requirement.end
     if anchor is not None:
         from datetime import timedelta
 
-        cutoff = anchor.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
-            days=5
-        )
+        cutoff = (
+            anchor
+            if isinstance(use, WeatherUseV2)
+            else anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+        ) - timedelta(days=5)
         recent = [
             fill
             for fill in source_weather_gap_fills(source)
-            if cutoff < fill.day < anchor
+            if cutoff
+            < (fill.start if isinstance(fill, WeatherGapFillV2) else fill.day)
+            < anchor
         ]
         if recent:
             shown = ", ".join(
-                f"{fill.parameter} {fill.day.date()} ({fill.method.value})"
+                (
+                    f"{fill.parameter} [{fill.start.isoformat()}, "
+                    f"{fill.end.isoformat()}) "
+                    f"({fill.method.value})"
+                    if isinstance(fill, WeatherGapFillV2)
+                    else f"{fill.parameter} {fill.day.date()} ({fill.method.value})"
+                )
                 for fill in recent[:5]
             )
             flags.append(
@@ -371,7 +395,7 @@ def selected_weather_quality_flags(
     if use is None:
         return tuple(flags)
     if (
-        isinstance(use.past, PastWeatherUse)
+        isinstance(use.past, (PastWeatherUse, PastWeatherUseV2))
         and use.past.freshness is WeatherFreshness.STALE
     ):
         flags.append(
@@ -385,7 +409,7 @@ def selected_weather_quality_flags(
             )
         )
     if (
-        isinstance(use.future, FutureWeatherUse)
+        isinstance(use.future, (FutureWeatherUse, FutureWeatherUseV2))
         and use.future.freshness is WeatherFreshness.STALE
     ):
         flags.append(
@@ -403,7 +427,7 @@ def selected_weather_quality_flags(
 
 def source_weather_gap_fills(
     source: StationSourceEvidence | None,
-) -> tuple[WeatherGapFill, ...]:
+) -> tuple[WeatherGapFill | WeatherGapFillV2, ...]:
     from sapphire_flow.types.operational_weather import PastWeatherUse
 
     if source is None:
@@ -411,7 +435,7 @@ def source_weather_gap_fills(
     use = source.weather_use
     selected = (
         use.past.gap_fills
-        if use is not None and isinstance(use.past, PastWeatherUse)
+        if use is not None and isinstance(use.past, (PastWeatherUse, PastWeatherUseV2))
         else ()
     )
     return (*source.weather_gap_fills, *selected)
