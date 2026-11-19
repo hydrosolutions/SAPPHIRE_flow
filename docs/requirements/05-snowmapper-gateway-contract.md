@@ -258,7 +258,7 @@ and the [SnowMapper data gateway page](https://apps.mountainfutures.ch/snowmappe
 | Missing cycle | SnowMapper docs: a cycle that cannot be produced gets no manifest and is not replaced by an older one. Client README: missing source data raises `ApiDataUnavailableError` | Does the gateway report a missing cycle per cycle, and does it never serve an older one in its place |
 | Complete upload and recovery | SnowMapper docs: a day or cycle is complete only when its manifest exists; reanalysis retried at 14:30 | **No procedure for missed ingests or revised history** (Joel with Vatro) |
 | Serving times | None | Snow reanalysis, snow forecast and weather serving times; ERA5-Land lag; IFS fill window |
-| Possible one-hour offset, legacy Nepal stream | None | Under investigation; take a demonstrated mismatch to Vatro |
+| Timestamp convention of served ERA5-Land values | Measured 19 Nov, HRU 12300, 30 Oct–1 Nov: 2 m temperature matches ERA5-Land at the same stamp. Hourly precipitation matches the ERA5-Land increment that *ends* one hour later, so the gateway stamps precipitation at the interval start (ERA5-Land natively stamps at the end). One basin, three days | Vatro to confirm the convention (start-stamped increments for accumulated variables) and document it in the client README. Consumers must not treat precipitation stamps as interval ends |
 
 ### Open items
 
