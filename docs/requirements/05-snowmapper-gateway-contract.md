@@ -99,6 +99,45 @@ The gateway already serves 0.1° IFS weather (confirmed, 19 Nov); SnowMapper sno
 (not started on 18 Nov). Until then SnowMapper deliveries are about 2 hours earlier
 (18 Nov, 0.25°: 00Z ≈ 08:25, 12Z ≈ 20:25). A cycle counts as delivered only when its manifest exists on S3.
 
+### Data flow
+
+```mermaid
+flowchart LR
+  subgraph SRC["Sources"]
+    ARCO["ERA5T on ARCO<br/>SnowMapper only"]
+    IFS25["ECMWF IFS control<br/>0.25° now, 0.1° planned"]
+    IFS["ECMWF IFS 0.1°<br/>00Z 06Z 12Z 18Z"]
+    E5L["ERA5-Land<br/>backend not stated"]
+  end
+  subgraph SM["SnowMapper (Joel)"]
+    SMR["Snow reanalysis day D<br/>D+7 about 06:00-06:30<br/>promise 09:00<br/>retry 14:30 via CDS"]
+    SMF["Snow forecast 00Z / 12Z<br/>0.1°: about 10:20 / 22:20<br/>0.25°: about 08:25 / 20:25"]
+  end
+  subgraph S3["S3 (manifest = complete)"]
+    S3R["reanalysis/<br/>kept from 2025-09"]
+    S3F["forecasts/<br/>kept 14 days"]
+  end
+  subgraph GW["Gateway (Vatro)"]
+    GSR["Snow reanalysis<br/>served when?"]
+    GSF["Snow forecast + stitched series<br/>served when? max tail?"]
+    GWF["Weather forecast<br/>about 10:10 / 22:10 estimate<br/>tails 11 d / 4 d to confirm"]
+    GWR["Weather reanalysis<br/>lag? IFS fills recent gap"]
+  end
+  subgraph SAP["SAPPHIRE Flow"]
+    FC["Forecast cycle<br/>starts when weather and snow<br/>for the same cycle exist<br/>40 min budget<br/>ready about 11:00 / 23:00"]
+  end
+  ARCO --> SMR --> S3R --> GSR --> FC
+  IFS25 --> SMF --> S3F --> GSF --> FC
+  IFS --> GWF --> FC
+  E5L --> GWR --> FC
+  classDef open stroke:#b4561b,stroke-width:2px,stroke-dasharray:5 3
+  class GSR,GSF,GWF,GWR open
+```
+
+Dashed boxes are gateway behaviour Vatro has still to state or confirm. Snow takes two
+hops (SnowMapper, then S3) before the gateway; weather goes straight to the gateway.
+Edit this diagram as answers arrive.
+
 ### Delivery chain
 
 | Step | Reanalysis day D | 00Z cycle | 12Z cycle |
@@ -204,6 +243,23 @@ delivery times.
   Do not rely on the scheduler's cron time for the cycle.
 - Alert once at init + 14 h if the cycle is still missing, and once on recovery.
 - The next scheduled cycle proceeds independently; one late cycle never blocks it.
+
+### Gaps to settle with Vatro
+
+What the gateway documentation and the SnowMapper documentation already say, and what
+is still missing. Sources: the
+[gateway client README](https://github.com/hydrosolutions/recap-dg-client/blob/main/README.md)
+and the [SnowMapper data gateway page](https://apps.mountainfutures.ch/snowmapper/docs/operational/data-gateway/).
+
+| Topic | Already documented | Gap for Vatro |
+| --- | --- | --- |
+| Polygon values and missing cells | Client README, “Data semantics”: raw values, caller chooses the daily aggregation; `allow_missing_data` option. SnowMapper docs: files use fill value −32768 (int16; −9999 for Central Asia) and NaN outside the domains | **No statement of the spatial statistic or how missing cells enter it.** We need the same statistic and policy for history and forecasts, and missing never zero |
+| History joined to forecasts | Client README, “Provenance”: `source` and `source_run` per row; IFS fills the recent ERA5 gap. SnowMapper docs: the gateway stitches successive cycles for `snow.operational` | Selected tail, maximum age of fallback data, and the gateway's snow tail (SnowMapper keeps 14 days) |
+| New-format files | Not documented | Confirm the gateway ingests the new mosaic format without change |
+| Missing cycle | SnowMapper docs: a cycle that cannot be produced gets no manifest and is not replaced by an older one. Client README: missing source data raises `ApiDataUnavailableError` | Does the gateway report a missing cycle per cycle, and does it never serve an older one in its place |
+| Complete upload and recovery | SnowMapper docs: a day or cycle is complete only when its manifest exists; reanalysis retried at 14:30 | **No procedure for missed ingests or revised history** (Joel with Vatro) |
+| Serving times | None | Snow reanalysis, snow forecast and weather serving times; ERA5-Land lag; IFS fill window |
+| Possible one-hour offset, legacy Nepal stream | None | Under investigation; take a demonstrated mismatch to Vatro |
 
 ### Open items
 
