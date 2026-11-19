@@ -8,6 +8,32 @@ baseline: 7f4eed38c9f983e1447c09705a72388dd1339d69
 
 # Deployment hello world
 
+## Current status — 2026-11-19
+
+HW1a, HW1b and HW1c are merged. HW2 completed on an owner-authorized Linux
+amd64 staging target using release `0.1.1154`, source
+`bcb06eaf3cc3a9682cda2edd7aca7c35a229ca45`. The successful run took 172.98 seconds:
+72 observations passed normal QC, three weather records were persisted, one
+forecast was stored and all 60 expected values passed authenticated internal API
+comparison. Unauthenticated access was rejected. The expected synthetic alert
+suppression/cold-start classifications were checked, not waived.
+
+Independent after-run verification found no owned containers, volumes, networks,
+probe containers or temporary credentials. The temporary host workspace and its
+isolated uv binary were removed. All 20 pre-existing containers, including the
+seven operational containers, retained their identities, images, start times,
+restart counts and states; operational API/Prefect health checks passed. The
+operational stack was not upgraded. Host-specific records remain private.
+
+The first attempt failed before initialization because extracting the temporary
+checkout under a restrictive umask removed the bootstrap script's non-owner read
+permissions. Cleanup passed. Restoring its tracked mode resolved the issue; no
+application change was needed. The administrator guide records this prerequisite.
+
+The installation-smoke milestone is complete. Profile validation, profile-driven
+launching, live station/model readiness and scientific acceptance remain separate.
+The checkpoints below retain the original sequence and dispatch boundaries.
+
 ## Outcome and boundaries
 
 An administrator with a prepared application image runs one command and sees
@@ -22,7 +48,8 @@ and subsequently **HW1b** on 2026-11-18 after #555 and #557 merged, followed by
 disposable local container validation with generated smoke-only credentials.
 Normal loader/QC integration and runtime qualification remain mandatory HW1b
 acceptance gates. Operational deployment/configuration/secret changes and later
-target-server runs remain undispatched.
+target-server runs were not part of that initial dispatch; the subsequent HW2
+authorization and completion are recorded above.
 The merged profile increment (#544) remains preparation-only. This smoke command
 does not turn its pending checks into PASS or implement profile-driven launching.
 

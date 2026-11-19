@@ -1,0 +1,117 @@
+# Synthetic configuration-consistency scenario only; never agency defaults.
+# Station/model DB state and scientific readiness are deliberately unverified.
+max_retention_days = 365
+weather_hot_days = 30
+forecast_hot_days = 60
+default_display_timezone = "UTC"
+daily_grid_origin = "00:00"
+reanalysis_source = "single"
+danger_levels = []
+seasons = []
+available_nwp_parameters = []
+available_past_only_nwp_parameters = []
+[operational_weather]
+route = "stored_reanalysis"
+[deployment]
+global_admin = false
+writable_tenants = ["example"]
+[tenants.example]
+name = "Synthetic offline fixture"
+[onboarding]
+tenant = "example"
+data_source = "camels-ch"
+basin_ids = []
+[paths]
+data_dir = "/data"
+[adapters.river_stations]
+type = "hydro_scraper"
+[adapters.weather_forecast]
+enabled = false
+[adapters.weather_reanalysis]
+type = "era5_land"
+[adapters.weather_stations]
+type = "meteoswiss"
+# Fixed hourly discharge rules from builtin_default 1.0.0 at source commit.
+# Synthetic scenario only; no agency configuration inheritance.
+[qc_rules]
+version = "deployment-smoke-hourly-1"
+
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0, value_max = 100000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { max_rate = 50.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { tolerance = 0.75 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { k_sigma = 5.0 }
+
+[forecast_qc_rules]
+version = "deployment-smoke-hourly-1"
+
+[[forecast_qc_rules.rules]]
+rule_id = "negative_value"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { value_min = 0.0, value_max = 100000.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "flat_ensemble"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { tolerance = 0.001 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "ensemble_spread"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { min_spread_ratio = 0.01, max_spread_ratio = 10.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "climatology_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { k_sigma = 6.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "temporal_consistency"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = { max_rate = 500.0 }
+
+[[forecast_qc_rules.rules]]
+rule_id = "quantile_crossing"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 3600
+thresholds = {}

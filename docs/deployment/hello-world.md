@@ -13,6 +13,10 @@ scenario requires no agency or provider credentials. The run command never pulls
 builds or retrieves dependency credentials.
 Use a clean checkout for qualification: the identity checks compare the recorded
 revision and smoke files, not every uncommitted application change.
+Preserve checkout file permissions when copying to another host. In particular,
+`docker/init-db.sh` must retain its tracked mode `0755`: the disposable database
+container reads this bind-mounted script as a non-root user. A restrictive archive
+extraction that changes it to `0700` prevents database initialization.
 Before running, preload the infrastructure pins from `docker-compose.smoke.yml`:
 
 ```sh

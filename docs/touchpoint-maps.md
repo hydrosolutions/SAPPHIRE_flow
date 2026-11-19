@@ -134,6 +134,13 @@ fake transports, including encoded key echoes and locally invalid HRU names.
   exact CLI forms and safe failures in `tests/unit/tools/test_deployment_profile.py`.
   `cli/register_deployments.py::build_deployment_specs(environment)` is the pure
   schedule source; retain ambient behavior for runtime registration callers.
+  Complete offline coverage is limited to the stored-data forecast/backup path
+  documented in the profile reference. Compare a separately rendered standard
+  recipe, including backup and shared-storage identity; never clear an unrelated
+  pending obligation. Keep live station/model state and registered job overrides
+  unverified. `config/weather_forecast.py` and `config/cors.py` share pure runtime
+  parsing without API startup, client construction or credential lookup; preserve
+  runtime-loader parity and test the actual CLI with real Compose rendering.
 
 - Agency-profile offline evaluation uses the same merge traversal with optional
   provenance and an explicitly injected interpolation environment. Pure

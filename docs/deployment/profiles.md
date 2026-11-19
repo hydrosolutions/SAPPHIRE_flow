@@ -5,7 +5,8 @@ repository. The repository provides only generic examples and tooling. There is
 no built-in catalogue, name-based lookup or legacy validation exemption.
 
 The feature remains preparation-only: missing inputs fail; unchecked evidence is
-PENDING. Complete offline PASS and profile-driven launching require follow-up work.
+PENDING. The supported path below can earn PASS_OFFLINE for configuration
+consistency. Profile-driven launching remains separate work.
 It never inspects a live server, opens credential files or retrieves manager secrets.
 
 The [synthetic deployment smoke test](hello-world.md) independently checks generic
@@ -78,6 +79,10 @@ Omitted values have their reader origin and `default_status = neutral`; explicit
 overrides show file origin and `default_status = explicit`. Other previewed
 inherited defaults have `default_status = review` and aggregate into developer-owned
 `DEFAULT_REVIEW_PENDING`. They are visible evidence, not endorsed deployment choices.
+An inherited preview field proven unused by the selected configuration is labelled
+`default_status = inactive`, with its original reader provenance. This is not a
+neutral default endorsement: enabling its consumer restores the review obligation.
+Invalid supplied values still fail their reader even when a feature is disabled.
 
 Identity/write authority, sources, hydrological grid and scientific policy remain
 explicit. Model training conventions must be documented independently. The closed
@@ -100,7 +105,8 @@ not appends to, the manifest recipe. It describes desired configuration only.
 
 `environment` permits non-secret `VERSION`, `SAPPHIRE_RELEASE_VERSION`,
 `SAPPHIRE_SOURCE_REVISION`, `SAPPHIRE_DOMAIN`, `SAPPHIRE_CORS_ORIGINS`,
-`SAPPHIRE_REQUIRE_NWP`, `SAPPHIRE_SKIP_DEPLOYMENTS`, `SAPPHIRE_DHM_DELIVERY_DIR`,
+`SAPPHIRE_REQUIRE_NWP`, `SAPPHIRE_ONLY_DEPLOYMENTS`, `SAPPHIRE_SKIP_DEPLOYMENTS`,
+`SAPPHIRE_BACKUP_DUMP_TIMEOUT_S`, `SAPPHIRE_DHM_DELIVERY_DIR`,
 `NHS_PROVIDER_CONFIG_SOURCE`, `NHS_FORECAST_JOB_OVERLAYS` and `SCHEDULE_*` names.
 Actual schedule-name/cron/forwarding checks use the existing registrar. Obtain
 release inputs from the reviewed build record, not invented placeholders.
@@ -126,11 +132,20 @@ Any service `env_file` declaration stops at preflight with `ENV_FILES_UNCHECKED`
 before Compose invocation. Some Compose versions read those files despite the flag;
 contents are never read here. Includes/extends retain unsupported evidence.
 
-Checks compare init/API/forecast/ingest config chains and read-only binds, secret
-consumer grants/targets, schedule forwarding and worker pools. Different checkout
-config contents must match the evaluated files; absent/different files remain
-pending. Backup has its separate credential/pool contract. Extra recipe execution
-semantics still require developer review.
+Checks compare init/API/forecast/ingest/backup config chains and read-only binds,
+secret consumer grants/targets, schedule forwarding and worker pools. Backup is
+checked for wiring, including its backup credential, database environment and
+storage; its flow does not parse application TOML. The standard Compose recipe is
+rendered separately as execution evidence rather than copying its defaults into
+the checker. Shared named-volume replacements must point all consumers at the
+same storage while preserving each consumer's access mode.
+
+External manifests may live anywhere, but `project_directory` must identify the
+same source checkout as the running checker for complete execution coverage.
+Another checkout remains pending: run the checker from the matching checkout.
+Actual host files and image contents remain unverified. A runbook reference is
+checked only for bounded, readable nonempty text; this does not approve its
+instructions. Extra recipe execution semantics still require developer review.
 
 Supported compatibility scopes are tightly constrained to the existing checkout:
 `chwrr_import` retains root config, the sole operator overlay and its fixed metadata
@@ -141,7 +156,7 @@ Their declarations do not activate files or jobs. See the existing
 ## Results and diagnostics
 
 `check`: FAIL/1 for invalid or unresolved required inputs; PENDING/2 for evidence
-not established; PASS_OFFLINE/0 is reserved for completed coverage. `show` returns
+not established; PASS_OFFLINE/0 for completed supported offline coverage. `show` returns
 0 for a parseable incomplete profile with missing-input diagnostics, 1 for invalid
 selection/TOML/supplied typed fields. Neither is launch approval.
 
@@ -157,6 +172,10 @@ Text additionally prints local desired paths and unverified host, credentials,
 providers, build credentials and registered jobs/pools. Job selections show
 active/skipped state; skips do not deregister existing jobs. Registrar defaults
 are review-required, and differing overridden cron values are redacted per job.
+Station/model database state, scientific readiness, preserved registered-job
+overrides and actual installed image identity remain unverified offline. The
+registrar preserves existing job parameters; a desired preview does not inspect
+or replace those server-side values.
 
 | Code | Action |
 | --- | --- |
@@ -175,6 +194,56 @@ Remaining developer coverage includes adapter/flow/API/model policy parity,
 roster/station/rating/provider reference semantics, selected external registry
 validation and scientific model/training evidence. Clearing a gap requires actual
 reader/validator evidence or demonstrated non-applicability, never a flag override.
-Full offline validation, launching, manager integration and a runtime forecast smoke
-test remain follow-ups. Existing operational recipes are compatibility material;
-their migration is separate from this generic preparation feature.
+Broader offline coverage, launching and manager integration remain follow-ups.
+The separate [synthetic smoke test](hello-world.md) now checks installation and
+internal worker/API wiring; it does not clear profile diagnostics. Existing
+operational recipes are compatibility material; their migration is separate from
+this generic preparation feature.
+
+## Supported offline path
+
+The first complete path uses the ordinary repository Compose topology and
+administrator-owned configuration mounted through a private overlay:
+
+- Stored-data forecasting: `operational_weather.route = "stored_reanalysis"`
+  and `adapters.weather_forecast.enabled = false`. Station observations, weather
+  and model artifacts are provisioned separately. Their presence and suitability
+  are not checked offline.
+- Exactly `forecast-cycle` and `backup-database` selected through explicit
+  `SAPPHIRE_ONLY_DEPLOYMENTS`, forwarded by the private overlay to init. Do not
+  combine it with a skip list. The ingest worker may remain idle. Re-registration
+  does not remove jobs already installed on a server.
+- A common ordered config chain across all application consumers; standard
+  commands, images, entrypoints, networks, dependencies and credential roles.
+  Changing these requires corresponding coverage. Image declarations are
+  compared; actual installed image identity is still a runtime check.
+- The base file is mounted at `/app/config.toml`; overlay targets are direct
+  `.toml` files under `/app/config/overlays/`, in the declared order. These are
+  container paths, not restrictions on the private files' host location.
+- Explicit public route and API-origin inputs, with no additional human-auth,
+  operator/provider scope, registry, roster/overview or provisional-rating
+  integration. Per-job config overlays and additional selected jobs stay pending.
+  Supply `SAPPHIRE_CORS_ORIGINS` explicitly; an empty string selects same-origin
+  use. `SAPPHIRE_DOMAIN = ":80"` declares a plain HTTP test route, not loopback
+  isolation. Neither option proves DNS, TLS or host-port access. An optional backup dump timeout
+  must be a positive finite number of seconds.
+- No declared station/rating/provider input files in this first path. Adding one
+  restores its validation obligation. The historical station-file readers are
+  specific to their workflows; a filename or parser label alone is not evidence
+  of generic validation.
+
+The four neutral defaults remain available. Choose retention periods and the
+stored-weather route explicitly, alongside the required identity, source and
+scientific declarations. Other typed options retain their existing readers and
+defaults; do not copy every application field into a private config.
+
+`PASS_OFFLINE` certifies these supplied declarations and wiring only. It always
+lists actual host/credential/provider state, station/model database state,
+scientific readiness, registered job overrides and installed image identity as
+unverified. The separate onboarding and deployment workflows resolve those facts.
+
+To exercise the checker without agency inputs, use the
+[synthetic offline scenario](../../tests/fixtures/deployment_profile/README.md).
+It demonstrates copying files outside the checkout and running the actual command.
+Its scientific values, release identity and secret references are test data;
+never launch it or use it as an agency's configuration.
