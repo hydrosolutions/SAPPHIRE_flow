@@ -270,6 +270,16 @@ including actual external CLI acceptance, passed on Compose 2.38.2. Existing API
 CORS tests, focused Pyright, Ruff, formatting and documentation links passed.
 Full final-code CI remains the last delivery gate and is recorded in the PR.
 
+### Completion — 2026-11-19
+
+PR #565 merged as `813313697fcad1cd150d0bcbb01a38376e1923cb` after full
+[final-code CI](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/runs/44487698094)
+passed, including both integration suites and deployment smoke qualification.
+V0–V4 are complete. No cloud server was created and no live deployment changed.
+The next proposed increment is the separately reviewed
+[profile launch rehearsal](2026-11-19-profile-launch-rehearsal.md); offline success
+retains its configuration-consistency-only meaning.
+
 ```json
 {"phases":[{"id":"V0","depends_on":[]},{"id":"V1","depends_on":["V0"]},{"id":"V2","depends_on":["V1"]},{"id":"V3","depends_on":["V2"]},{"id":"V4","depends_on":["V3"]}]}
 ```
