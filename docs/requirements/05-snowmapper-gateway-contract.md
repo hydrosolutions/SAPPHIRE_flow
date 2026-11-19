@@ -119,21 +119,25 @@ flowchart LR
   subgraph GW["Gateway (Vatro)"]
     GSR["Snow reanalysis<br/>served when?"]
     GSF["Snow forecast + stitched series<br/>served when? max tail?"]
-    GWF["Weather forecast<br/>00Z 10:30 / 12Z 22:30<br/>(Vatro, 19 Nov; IFS ready 10:20)<br/>tails 11 d / 4 d to confirm"]
-    GWR["Weather reanalysis<br/>lag? IFS fills recent gap"]
+    GWF["Weather forecast<br/>00Z 10:30 / 12Z 22:30<br/>(Vatro, 19 Nov; IFS ready 10:20)<br/>tails 11 d / 4 d to confirm<br/>accumulations stamped at hour START"]
+    GWR["Weather reanalysis ERA5-Land<br/>lag? IFS fills recent gap<br/>= exactextract mean of CDS (checked 19 Nov)<br/>precipitation stamped at hour START"]
   end
   subgraph SAP["SAPPHIRE Flow"]
+    TR["Training package (Sandro)<br/>ERA5-Land precipitation stamped at hour END<br/>1 h skew against gateway: decide one rule"]
     FC["Forecast cycle<br/>starts when weather and snow<br/>for the same cycle exist<br/>40 min budget<br/>ready about 11:10 / 23:10"]
   end
   ARCO --> SMR --> S3R --> GSR --> FC
   IFS25 --> SMF --> S3F --> GSF --> FC
   IFS --> GWF --> FC
   E5L --> GWR --> FC
+  GWR -.->|"1 h precipitation skew"| TR
   classDef open stroke:#b4561b,stroke-width:2px,stroke-dasharray:5 3
-  class GSR,GSF,GWF,GWR open
+  class GSR,GSF,GWF,GWR,TR open
 ```
 
-Dashed boxes are gateway behaviour Vatro has still to state or confirm. Snow takes two
+Dashed boxes are open: gateway behaviour Vatro has still to state or confirm, and the
+precipitation timestamp skew between the gateway (start of hour) and the training package
+(end of hour, the ERA5 convention). Snow takes two
 hops (SnowMapper, then S3) before the gateway; weather goes straight to the gateway.
 Edit this diagram as answers arrive.
 
