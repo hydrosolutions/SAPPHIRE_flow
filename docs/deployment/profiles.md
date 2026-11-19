@@ -175,6 +175,8 @@ Remaining developer coverage includes adapter/flow/API/model policy parity,
 roster/station/rating/provider reference semantics, selected external registry
 validation and scientific model/training evidence. Clearing a gap requires actual
 reader/validator evidence or demonstrated non-applicability, never a flag override.
-Full offline validation, launching, manager integration and a runtime forecast smoke
-test remain follow-ups. Existing operational recipes are compatibility material;
-their migration is separate from this generic preparation feature.
+Full offline validation, launching and manager integration remain follow-ups.
+The separate [synthetic smoke test](hello-world.md) now checks installation and
+internal worker/API wiring; it does not clear profile diagnostics. Existing
+operational recipes are compatibility material; their migration is separate from
+this generic preparation feature.
