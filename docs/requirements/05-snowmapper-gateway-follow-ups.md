@@ -61,8 +61,9 @@ selection. Bea follows up separately:
 | 00Z and 12Z | 11 days | Bea's request; Vatro to confirm |
 | 06Z and 18Z | 4 days | Reported confirmed by Vatro, 13 Nov |
 
-The reported 00Z availability is about 10:00 UTC. Its horizon needs reconciliation
-(10 days observed versus about 15 documented); 12Z timing is unconfirmed. The goal
+The reported 00Z availability is about 10:00 UTC; 12Z is expected about 22:00 UTC
+by the same lag (Bea's estimate, Vatro to confirm; see the Schedule in the agreement).
+The 00Z horizon needs reconciliation (10 days observed versus about 15 documented). The goal
 is an export at any hour when an eligible complete cycle covers the requested
 period, showing its actual cycle, or a clear unavailable response otherwise.
 

@@ -37,6 +37,14 @@ class TestOperationalWeatherConfig:
             is OperationalPastWeatherRoute.STORED_REANALYSIS
         )
 
+    def test_retention_and_original_lead_are_separate_bounded_settings(self) -> None:
+        config = OperationalWeatherConfig()
+        assert config.rollover_buffer_days == 15
+        assert config.max_retained_past_lead_hours == 72
+        assert (
+            OperationalWeatherConfig(rollover_buffer_days=2).rollover_buffer_days == 2
+        )
+
     def test_evidence_budget_uses_measured_32_mib_ceiling(self) -> None:
         assert OperationalWeatherConfig().max_evidence_bytes == 32 * 1024 * 1024
         assert (
@@ -53,7 +61,10 @@ class TestOperationalWeatherConfig:
             {"provider_min_history_days": True},
             {"provider_max_history_days": 371},
             {"provider_min_history_days": 15, "provider_max_history_days": 14},
-            {"rollover_buffer_days": 2},
+            {"rollover_buffer_days": 16},
+            {"max_retained_past_lead_hours": 0},
+            {"max_retained_past_lead_hours": 361},
+            {"max_retained_past_lead_hours": True},
             {"max_future_receipts": 33},
             {"max_response_bytes": 0},
             {"max_evidence_bytes": 32 * 1024 * 1024 + 1},

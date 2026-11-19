@@ -876,6 +876,18 @@ def _resolve_retry(
         )
         return None
     row = classify_forecast_retry(stored=stored, recomputed=forecast)
+    if row is ForecastRetryRow.IDENTICAL and forecast.weather_evidence_version == 1:
+        from sapphire_flow.services.selected_weather_evidence import (
+            selected_weather_retry_key,
+        )
+
+        prior_evidence = PgForecastStore(
+            txn, data_use=forecast.data_use
+        ).fetch_evidence(existing_id)
+        if selected_weather_retry_key(
+            prior_evidence, forecast=stored
+        ) != selected_weather_retry_key(forecast.evidence, forecast=forecast):
+            row = ForecastRetryRow.WEATHER_INPUT_DIFFERS
     if row is ForecastRetryRow.IDENTICAL:
         log.info(
             "forecast_store.retry_identical",

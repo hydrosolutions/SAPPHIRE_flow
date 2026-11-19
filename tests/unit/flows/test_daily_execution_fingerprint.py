@@ -1,5 +1,7 @@
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.config.evaluation_forecasts import EvaluationForecastsConfig
 from sapphire_flow.flows.daily_forecast_execution import execution_configuration_sha256
 from tests.unit.flows.test_run_forecast_cycle import _make_config
@@ -86,9 +88,9 @@ class TestExecutionFingerprint:
                 route=OperationalPastWeatherRoute.RECAP_COMBINED
             ),
         )
-        # Reference projection predates the opt-in calendar key.
+        # Retained weather policy is included; the unset calendar key is omitted.
         assert execution_configuration_sha256(config) == (
-            "5552754bc20010529e6f9c8c8ee80cdaab5b3e19c0f2fd6d9143a4382aff58fb"
+            "be4943a8e9a7c82264c77bf0d67ad3a6c9ff8139131aaabb2978b2de69197330"
         )
         configured = config.model_copy(
             update={
@@ -113,6 +115,32 @@ class TestExecutionFingerprint:
         assert execution_configuration_sha256(
             other_zone
         ) != execution_configuration_sha256(configured)
+
+    @pytest.mark.parametrize(
+        "policy", [{"rollover_buffer_days": 1}, {"max_retained_past_lead_hours": 48}]
+    )
+    def test_retained_weather_policy_changes_execution_identity(
+        self, policy: dict[str, int]
+    ) -> None:
+        from sapphire_flow.config.operational_weather import OperationalWeatherConfig
+
+        config = _make_config().model_copy(
+            update={
+                "operational_weather": OperationalWeatherConfig.model_validate(
+                    {"route": "recap_combined"}
+                )
+            }
+        )
+        changed = config.model_copy(
+            update={
+                "operational_weather": OperationalWeatherConfig.model_validate(
+                    {"route": "recap_combined", **policy}
+                )
+            }
+        )
+        assert execution_configuration_sha256(config) != execution_configuration_sha256(
+            changed
+        )
 
     def test_inactive_route_calendar_does_not_change_execution_hash(self) -> None:
         from sapphire_flow.config.operational_weather import OperationalWeatherConfig

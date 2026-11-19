@@ -564,7 +564,12 @@ def complete_weather_entry(
         for future in completion.future_attempts
     ):
         raise ValueError("future outcome does not belong to current weather attempt")
-    for receipt in completion.future_receipts:
+    incoming = completion.future_receipts + (
+        completion.retained_future_receipts
+        if isinstance(completion, WeatherCacheCompletion)
+        else ()
+    )
+    for receipt in incoming:
         if (
             receipt.scope.station_id != attempt.key.station_id
             or receipt.scope.issue_time != attempt.issue_time
@@ -576,7 +581,7 @@ def complete_weather_entry(
             )
     receipts, refused = _retain_receipts(
         current.future_receipts,
-        completion.future_receipts,
+        incoming,
         earliest_cycle,
         max_receipts,
     )

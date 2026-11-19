@@ -46,6 +46,20 @@ def pending_entry() -> WeatherCacheEntry:
 
 
 class TestOperationalWeatherCodec:
+    def test_empty_retained_channel_preserves_legacy_completion_digest(self) -> None:
+        from sapphire_flow.store.operational_weather_codec import completion_digest
+        from sapphire_flow.types.operational_weather import WeatherCacheCompletion
+
+        completion = WeatherCacheCompletion(
+            finished_at=ISSUE,
+            past_outcome=WeatherLegOutcome(state=WeatherLegState.UNUSED),
+            future_attempts=(),
+        )
+        assert (
+            completion_digest(completion, max_past_bytes=2 * 1024 * 1024)
+            == "b1c27c47b929157021775510d3afeeb9ca9f2d67c0e54ea54bff1f27fc147539"
+        )
+
     def test_v1_window_bytes_remain_unchanged_after_grid_helpers(self) -> None:
         payload = window_bytes(
             make_operational_window(StationId(UUID(int=1))), max_bytes=2 * 1024 * 1024

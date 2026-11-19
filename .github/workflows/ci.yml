@@ -905,7 +905,8 @@ jobs:
   # The e2e job gates on this job succeeding (see `needs:` below).
   build-image-and-scan:
     runs-on: ubuntu-latest
-    # 60: the BOUNDED steps alone sum to 47 minutes plus 10 of retry sleeps, so 30
+    # Existing bounded scan/build/retry budget (~57m) + smoke qualification (20m).
+    # The original 60-minute budget: bounded steps sum to 47 minutes plus 10 of retry sleeps; 30
     # could not hold this job's own retries and would cancel mid-chain, skipping
     # the enforcement steps that exist to explain the failure (independent review
     # 2026-09-22, medium). Runner minutes are free on a public repo, so the only
@@ -923,7 +924,7 @@ jobs:
     # step. *(Independent review 2026-09-22 caught this pointer overstating what
     # 310 covers.)* Bounding those steps, or admitting on elapsed time more
     # broadly, would be its own piece of work.
-    timeout-minutes: 60
+    timeout-minutes: 80
     # security-events: write is required by github/codeql-action/upload-sarif
     # (T2, Plan 180). contents: read is the checkout minimum. Declared
     # explicitly rather than relying on the repo's ambient
@@ -1362,6 +1363,23 @@ jobs:
           docker run --rm --network none -e DB_PASSWORD=ci-smoke-only \
             "sapphire-flow:ci-${{ github.sha }}" python -I -c \
             "import sys, sapphire_flow, prefect; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"
+
+      - name: Qualify deployment smoke twice
+        id: deployment-smoke
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          python3 tools/qualify_deployment_smoke.py run \
+            --image sapphire-flow:ci-${{ github.sha }} --image-identity ci-development \
+            --report-dir "$RUNNER_TEMP/deployment-smoke"
+      - name: Upload deployment smoke qualification
+        if: ${{ !cancelled() && steps.deployment-smoke.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        timeout-minutes: 1
+        with:
+          name: deployment-smoke-qualification
+          path: ${{ runner.temp }}/deployment-smoke/qualification.json
+          if-no-files-found: error
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest

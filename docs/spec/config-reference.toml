@@ -129,6 +129,15 @@ calendar = "gregorian"                # Nepal v1: "bikram_sambat"
 # (Must follow all scalar fields due to TOML parsing rules)
 # =============================================================================
 
+# --- Selected operational weather retention ---
+[operational_weather]
+route = "stored_reanalysis"                  # opt in to "recap_combined" for Nepal
+rollover_buffer_days = 15                    # retain consecutive complete supplied tail days, 0..15
+max_retained_past_lead_hours = 72             # original IFS support-end minus source run, 1..360
+# Retention does not extend eligibility. Future use keeps nwp_max_fallback_age_hours.
+# An ineligible past IFS sample refuses use; it is not converted into a fillable gap.
+# Cache remains one bounded paired product per station/binding, not an archive.
+
 # --- Short daily past-weather gaps ---
 # Shared station/group preparation; applies per assignment before model validation.
 # strict_models: only declared weather inputs with FI max_nan=0.

@@ -19,6 +19,7 @@ from sapphire_flow.types.operational_weather import (
     WeatherCacheAttempt,
     WeatherCacheEntry,
     WeatherCoverage,
+    WeatherFailureReason,
     WeatherFreshness,
     WeatherLegState,
     WeatherUnused,
@@ -105,6 +106,8 @@ def project_past_weather(
     ):
         return WeatherBlocked(reason=WeatherUseBlockReason.UNKNOWN_ATTEMPT)
     state = entry.past_outcome.state
+    if entry.past_outcome.reason is WeatherFailureReason.NO_USABLE_PRODUCT:
+        return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
     if state in (WeatherLegState.FATAL, WeatherLegState.NOT_ATTEMPTED):
         return WeatherBlocked(reason=WeatherUseBlockReason.FATAL_REFRESH)
     if state not in (WeatherLegState.SUCCESS, WeatherLegState.UNAVAILABLE):

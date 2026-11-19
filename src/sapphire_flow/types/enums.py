@@ -402,6 +402,10 @@ class AuditEventType(Enum):
     plain text with no check constraint (only `actor_type` is constrained), so a new
     member needs NO migration. DELIVERY_IMPORTED is additive too (Plan 510 T2) —
     one system-actor row per successful DHM delivery import command.
+    OBSERVATIONS_LOADED is additive too (Plan 540 M3a) — one system-actor row
+    per applied `load_station_observations` run; plain-text column, no migration.
+    RATING_CURVE_STORED is additive too (Plan 540 M3c) — one system-actor row per
+    applied `rating` command; plain-text column, no migration.
     """
 
     LOGIN = "login"
@@ -427,6 +431,8 @@ class AuditEventType(Enum):
     STATION_ONBOARDED = "station_onboarded"
     MODEL_ASSIGNED = "model_assigned"
     DELIVERY_IMPORTED = "delivery_imported"
+    OBSERVATIONS_LOADED = "observations_loaded"
+    RATING_CURVE_STORED = "rating_curve_stored"
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"
 
 

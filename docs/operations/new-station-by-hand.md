@@ -198,6 +198,29 @@ Three facts decide whether this works:
    derive discharge from water level. A sandbox may invent a table (the Trishuli rehearsal used
    `Q = 60 * (h + 0.2) ** 1.8`, h = gauge height in m, labelled SYNTHETIC in `rating_type_label`).
 
+**Loading observations (Plan 540 M3a).** `load_station_observations` replaces the load part of
+the script below. It reads the station's gauge type and datum (set at station creation), converts
+the reading (staff gauge: `datum + value`; bridge sensor: `sensor elevation - value`), stores it
+and writes one audit row, then runs the same Stage 1 quality checks as live ingest (in memory on
+a dry run). Dry run by default; `--apply` writes; exit 3 means refused: the station has no datum
+(range and outlier checks would be skipped), no quality rule applies to the series (too few
+readings per day), or the stored data changed while the checks ran. `--allow-unchecked` accepts
+the first two:
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations water-level \
+  --tenant sandbox --station-code 00001 --network research --csv gauge_heights.csv \
+  --time-column timestamp_npt --value-column water_level_m   # add --apply to write
+uv run python -m sapphire_flow.cli.load_station_observations discharge ...   # same flags
+```
+
+It prints one worked example (`reading 2 m -> stored 1482 m a.s.l. ...`), the first and last UTC
+instant, the QC rule version and counts (passed, failed, suspect, unchecked), and "N of 30 daily
+values usable (passed or unchecked)". A new station has no history baseline yet, so it prints
+"history-based check not run: no baseline yet" (that check is not counted as passed). The time zone defaults to the station's; override with
+`--utc-offset-minutes 345` or `--zone Asia/Kathmandu`. If the values already are metres above sea
+level, pass `--value-kind level-masl`.
+
 Set the datum, then load and check the observations (CSV with a local-time column and a gauge
 height column; adjust `CSV`, `OFFSET_MIN`, `DATUM`):
 
@@ -246,11 +269,35 @@ EOF
 Check the result: `select qc_rule_version, qc_status, count(*) from observations group by 1,2`
 must show `1.2-datum`, not `1.2-datum-skip`.
 
-**Rating curve and discharge.** Store the table with `PgRatingCurveStore.store_rating_curve`
-(points are `{"water_level": <m a.s.l.>, "discharge": <m3/s>}`, linear interpolation, no gaps in
-stage order) and derive discharge with `RatingConverter.from_curve(curve).convert(level).discharge`,
-writing `RawObservation(parameter="discharge", source=ObservationSource.RATING_CURVE_DERIVED,
-rating_curve_id=<curve id>)`, then run the same Stage 1 QC without the datum arguments.
+**Rating curve and discharge (Plan 540 M3c).** The same command family stores the table and
+derives discharge. Both dry run by default; `--apply` writes. The table's stage column is read like
+the observations (`--level-kind gauge-reading`, the default, uses the station's gauge type and
+datum; `level-masl` takes metres above sea level as they are) and is validated (at least 2
+points, strictly increasing stage, non-decreasing discharge, discharge above 0 for `log_linear`).
+A sandbox may invent a table: label it so (`--label SYNTHETIC`):
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations rating \
+  --tenant sandbox --station-code 00001 --network research --csv rating.csv \
+  --level-column stage_m --discharge-column q_m3s --label SYNTHETIC   # add --apply
+uv run python -m sapphire_flow.cli.load_station_observations derive-discharge \
+  --tenant sandbox --station-code 00001 --network research             # add --apply
+```
+
+An active curve is refused (exit 3) unless you pass `--supersede` (the old curve ends at
+`--valid-from`, default now; the new one is the next version). `rating` prints the curve's stage
+range next to the stored water-level range and warns when they do not overlap at all (usually a
+wrong datum). For a bridge sensor a larger reading means a lower level, so discharge must fall
+as the reading rises (the error names the file line). `derive-discharge` converts every stored
+measured water level in `--start`/`--end` whose quality status is passed or unchecked (the same
+"usable" rule as the forecast cycle) with the active curve (or `--curve-id`), stores it as
+`rating_curve_derived` with the curve id, **skips and counts** levels that failed or are
+suspect, levels not quality-checked yet (raw), and levels outside the table (never stores a
+clamped value). It applies the active curve to every level in the window, so re-running it
+after `--supersede` rewrites the derived values. Then runs the same
+Stage 1 quality checks (rule version `1.2`, no datum) and prints "N of 30 daily values usable".
+Exit 0 ok, 2 usage/validation, 3 refused (including a refused quality check, which rolls the
+whole run back).
 
 ## Step 7: readiness (no general tool yet)
 
@@ -302,9 +349,16 @@ station into the forecast cycle, and demoting it later can lose observations.
    against the source, and read the six provenance values from the source host's
    `model_artifact_provenance` record. Run the `import-model-artifact` deployment with
    `group_id` set to your group.
-2. **Assign the model to the group:** `create_group_assignment(group_id, ModelId("cmal_small"),
-   timedelta(days=1), 1, PgStationGroupStore(conn), clock)` from
-   `sapphire_flow.services.model_onboarding`.
+2. **Assign the model to the group** (after the artifact import; dry run first, then `--apply`):
+
+   ```bash
+   uv run python -m sapphire_flow.cli.assign_group_model --tenant chwrr \
+     --group-name my-group --model cmal_small --time-step-hours 24 [--priority 1] [--apply]
+   ```
+
+   It refuses a model without a `models` row (import the artifact first), an unknown group
+   and an INACTIVE assignment. Re-running an identical ACTIVE assignment changes nothing; an
+   ACTIVE one that differs is overwritten (time step, priority, `created_at`).
 3. **Forecast configuration (not in the guide before):** run with the base `config.toml`, the
    overlays `nepal-cloud.toml` and `nepal-daily-weather.toml`, and a last overlay of your own:
 

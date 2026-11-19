@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sapphire_flow.services.training_data import (
@@ -18,7 +19,6 @@ from sapphire_flow.types.weather_gap_v2 import WeatherGapFillV2
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-    from datetime import timedelta
 
     import polars as pl
 
@@ -357,8 +357,6 @@ def selected_weather_quality_flags(
     if isinstance(use, WeatherUseV2) and isinstance(use.past, PastWeatherUseV2):
         anchor = use.past.requirement.end
     if anchor is not None:
-        from datetime import timedelta
-
         cutoff = (
             anchor
             if isinstance(use, WeatherUseV2)
@@ -398,13 +396,51 @@ def selected_weather_quality_flags(
         isinstance(use.past, (PastWeatherUse, PastWeatherUseV2))
         and use.past.freshness is WeatherFreshness.STALE
     ):
+        from sapphire_flow.services.retained_operational_weather import past_sample_lead
+        from sapphire_flow.types.operational_weather import OperationalWeatherSource
+
+        samples = [
+            sample
+            for day in (
+                use.past.days
+                if isinstance(use.past, PastWeatherUse)
+                else use.past.periods
+            )
+            for sample in day.samples
+            if sample.source is OperationalWeatherSource.IFS
+        ]
+        provenance = ""
+        supports = [(sample.source_run, past_sample_lead(sample)) for sample in samples]
+        supports.extend(
+            (
+                row.cycle_time,
+                row.valid_time
+                + timedelta(
+                    hours=3
+                    if row.valid_time - row.cycle_time < timedelta(hours=144)
+                    else 6
+                )
+                - row.cycle_time,
+            )
+            for fill in use.past.gap_fills
+            for row in fill.donor_records
+        )
+        if supports:
+            runs = [run for run, _lead in supports]
+            lead = max(duration.total_seconds() / 3600 for _run, duration in supports)
+            provenance = (
+                f"; IFS runs {min(runs).isoformat()} to {max(runs).isoformat()}, "
+                f"maximum original support lead {lead:g} hours"
+            )
         flags.append(
             InputQualityFlag(
                 category=InputQualityCategory.FORCING,
                 level=InputQualityLevel.DEGRADED,
                 detail=(
-                    "Past operational weather STALE: retained complete support "
-                    "after refresh failure"
+                    "Past operational weather STALE: "
+                    "using retained operational weather; latest usable product "
+                    f"retrieved {use.past.retrieved_at.isoformat()}"
+                    f"{provenance}"
                 ),
             )
         )
