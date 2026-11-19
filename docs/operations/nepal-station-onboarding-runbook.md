@@ -591,6 +591,16 @@ ones; an existing row with a different role, extraction or status, or another fo
 operational source on the station, is refused and nothing is written. The command logs
 `nepal_onboarding.weather_bindings` per station with the Gateway runtime name and the
 sources it would add. It is chwrr-tenant only until the tenant generalisation (M5b).
+The CLI logs only the error type on a refusal. To diagnose, re-run the dry run and
+inspect the existing rows (read-only):
+
+```sql
+SELECT s.code, w.nwp_source, w.role, w.extraction_type, w.status
+FROM station_weather_sources w JOIN stations s ON s.id = w.station_id
+WHERE s.code IN ('447', '450', '604.5', '647', '670', '684')
+ORDER BY s.code, w.role;
+```
+
 It preserves geometry, package provenance, station status, observations, model
 assignments and unrelated sources. Repeating exact admission is a no-op. Group
 membership writers share the tenant advisory lock; direct privileged SQL requires

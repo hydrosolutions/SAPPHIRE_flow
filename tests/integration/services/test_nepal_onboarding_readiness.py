@@ -569,6 +569,7 @@ class TestWeatherAdmission:
             "partial",
             "second_forecast",
             "wrong_operational_role",
+            "identical_plus_second_forecast",
         ],
     )
     def test_worker_admission_preserves_package_and_converges(
@@ -636,15 +637,29 @@ class TestWeatherAdmission:
             PgStationStore(db_connection).store_weather_source(
                 operational_binding(cohort[0].id)
             )
-        if mode in ("second_forecast", "wrong_operational_role"):
-            seeded = (
-                replace(weather_bindings(cohort[0].id)[1], nwp_source="icon_ch2_eps")
-                if mode == "second_forecast"
-                else replace(
-                    operational_binding(cohort[0].id), role=WeatherSourceRole.FORECAST
-                )
+        refused_modes = (
+            "second_forecast",
+            "wrong_operational_role",
+            "identical_plus_second_forecast",
+        )
+        if mode in refused_modes:
+            last = cohort[-1].id
+            other_forecast = replace(
+                weather_bindings(last)[1], nwp_source="icon_ch2_eps"
             )
-            PgStationStore(db_connection).store_weather_source(seeded)
+            wrong_role = replace(
+                operational_binding(last), role=WeatherSourceRole.FORECAST
+            )
+            seeded = {
+                "second_forecast": [other_forecast],
+                "wrong_operational_role": [wrong_role],
+                "identical_plus_second_forecast": [
+                    weather_bindings(last)[1],
+                    other_forecast,
+                ],
+            }[mode]
+            for binding in seeded:
+                PgStationStore(db_connection).store_weather_source(binding)
         with db_connection.begin_nested() as transaction:
             db_connection.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
             if mode == "conflict":
@@ -654,15 +669,22 @@ class TestWeatherAdmission:
                     admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
                 assert polygons.fetch_bindings_for_station(cohort[0].id)[0] == before[0]
                 return
-            if mode in ("second_forecast", "wrong_operational_role"):
-                with pytest.raises(ConfigurationError, match="forecast|operational"):
+            if mode in refused_modes:
+                with pytest.raises(
+                    ConfigurationError, match="(?i)forecast|operational"
+                ):
                     admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                if mode == "identical_plus_second_forecast":
+                    # Caught by the post-write lookup, so earlier stations were
+                    # written; the caller's transaction rolls them back.
+                    transaction.rollback()
+                    return
                 assert [
                     polygons.fetch_bindings_for_station(s.id)[0] for s in cohort
                 ] == before
                 assert all(
                     PgStationStore(db_connection).fetch_weather_sources(s.id) == []
-                    for s in cohort[1:]
+                    for s in cohort[:-1]
                 )
                 return
             admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)

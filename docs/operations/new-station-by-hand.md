@@ -144,7 +144,7 @@ station_polygons = [{station_id = "<station id>", polygon_name = "g_00001"}]
 
 The package may carry a different Gateway name from the one you registered; the runtime name
 is what every later tool uses, so keep it identical in the Gateway, the scope and your notes.
-Then run `weather-bindings` (a dry run unless you add `--apply`; run it without first and
+Then run `weather-bindings` (a dry run unless you add `--apply`; run it without `--apply` first and
 read the per-station `nepal_onboarding.weather_bindings` lines, which show the Gateway name
 and the bindings it would add). It creates all three weather bindings the cycle needs:
 reanalysis `era5_land`, forecast `ifs_ecmwf`, operational `recap_ecmwf_operational`.
