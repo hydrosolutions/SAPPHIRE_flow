@@ -307,6 +307,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 | `model.onboarding_started` | INFO | Flow entry; bind `model_id` at this point |
 | `model.onboarding_unit_started` | INFO | Per-unit; with `station_id` (station-scoped) or `group_id` (group-scoped) |
 | `model.onboarding_unit_completed` | INFO | Per-unit timing summary |
+| `model.onboarding_unit_result` | INFO | Prefect model-onboarding final summary, once per returned unit: `model_id`, `station_id` or `group_id`, `outcome`, nullable `artifact_id`. Includes skipped and failed units. Detailed events carry reasons; a fatal run emits no complete final summary. Existing promotion events are unchanged. |
 | `model.compatibility_completed` | INFO | Expected outcome; include `is_compatible` field |
 | `model.compatibility_failed` | INFO | Expected per-unit skip (incompatible station) — not an error condition |
 | `model.smoke_test_completed` | INFO | Function returned normally |
@@ -315,7 +316,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 | `model.skill_gate_failed` | ERROR | Unexpected exception during gate evaluation; use `error=str(exc)` |
 | `model.promotion_completed` | INFO | Artifact transitioned TRAINING → ACTIVE |
 | `model.assignment_skipped_inactive` | WARNING | Operator deliberately disabled this model for station/group |
-| `model.onboarding_completed` | INFO | Flow exit; include `promoted_count`, `failed_count`, `skipped_count` |
+| `model.onboarding_completed` | INFO | Flow exit; include `promoted_count`, `failed_count`, `skipped_count`, `gate_rejected_count`. Completion does not mean every unit succeeded. |
 
 Rules:
 

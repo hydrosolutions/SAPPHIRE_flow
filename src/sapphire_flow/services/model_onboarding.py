@@ -537,7 +537,8 @@ def _run_synthetic_train_predict(
     # Past needs lookback + horizon rows; future forcing is delivered aligned to
     # these same past_ts rows (see _make_synthetic_*_training_data).
     smoke_horizon = max(req.forecast_horizon_steps, 10)
-    n_past = req.lookback_steps + smoke_horizon + 10
+    # A daily fixture must cover all ordinal-day bins for climatology training.
+    n_past = max(req.lookback_steps + smoke_horizon + 10, 366)
     time_step = resolve_synthetic_time_step(
         req, context="synthetic train/predict smoke test"
     )

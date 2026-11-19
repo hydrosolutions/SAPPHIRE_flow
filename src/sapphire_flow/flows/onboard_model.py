@@ -1259,6 +1259,27 @@ def onboard_model_flow(
         model_id=typed_model_id,
         units=tuple(unit_results),
     )
+    for unit_result in result.units:
+        log.info(
+            "model.onboarding_unit_result",
+            model_id=str(result.model_id),
+            station_id=(
+                str(unit_result.unit.station_id)
+                if unit_result.unit.station_id is not None
+                else None
+            ),
+            group_id=(
+                str(unit_result.unit.group_id)
+                if unit_result.unit.group_id is not None
+                else None
+            ),
+            outcome=unit_result.outcome.value,
+            artifact_id=(
+                str(unit_result.artifact_id)
+                if unit_result.artifact_id is not None
+                else None
+            ),
+        )
     log.info(
         "model.onboarding_completed",
         promoted_count=result.promoted_count(),
