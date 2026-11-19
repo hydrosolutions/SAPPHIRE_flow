@@ -108,6 +108,11 @@ the positive fixture. Each is explicit, one of the four neutral typed defaults,
 or demonstrated inactive for the supported route. An inactive inherited field
 must be labelled as such in provenance, never as an endorsed neutral default.
 Keep pending for any unaudited applicable field; no broad new defaults allowlist.
+This default-review rule applies to the existing preview fields. Covering other
+typed fields means reusing their authoritative validation, not expanding the
+administrator checklist to every internal default. Add a new explicit choice
+only for a demonstrated uncovered deployment decision; do not copy the entire
+application config into the example to manufacture coverage.
 The external registry is inapplicable only if its selection is absent from both
 config and every rendered service/job environment. Check the runbook reference
 in `check_wiring` with bounded local read/size handling and no content execution;
@@ -131,6 +136,13 @@ behavior tests. No implementation agent executes this plan while it is DRAFT.
 | V2 — complete bounded wiring | `tools/deployment_profile.py`; environment boundary in `config/deployment_profile.py`; `tests/unit/tools/test_deployment_profile.py` | Full supported topology and each selected job use the same intended config. Missing/reordered mount, backup drift, wrong image/command/entrypoint, unforwarded subset/schedule, conflicting only/skip, unexpected service/job/environment and unknown extension cannot pass. No registrar or Compose runtime behavior change. | V1 |
 | V3 — reachable command-level pass and administrator walkthrough | `tests/fixtures/deployment_profile/` (synthetic only); config/tool tests; `docs/deployment-quickstart.md`, `docs/deployment/profiles.md`; touchpoint/reference links only where affected | Copy complete fixture outside checkout; actual CLI + real Compose render exits 0 and reports no offline gaps. Mutating each material obligation produces actionable FAIL/PENDING. Incomplete starter still fails appropriately. Runtime caveats visible in text/JSON on success. Guide explains scope, checking and next handoff without claiming launch approval. | V2 |
 | V4 — review and delivery | Independent patch review; local report only; PR with concise evidence | One independent Claude patch review; resolve concrete findings without automatic review loops. Ruff, relevant types and full final-code suite locally or CI. Current release-target policy once per code PR; owner approves/merges. | V3 |
+
+V2 reuses `api/cors.py::parse_exact_origin` through a minimal move to
+`config/cors.py`, retaining its API-module export and unchanged behavior. This
+avoids importing the API package during offline checking; no middleware/auth
+policy changes are included. Add it to config-reader coverage and test the
+no-API-import boundary. Compare execution fields against a separately rendered
+standard Compose recipe instead of copying its defaults into another table.
 
 V1 may leave the overall result pending while V2 is incomplete. Only V3 provides
 the administrator-reachable success claim. Keep the old pending behavior until
@@ -199,6 +211,64 @@ Inspection also confirmed preserved server-side job parameters: they are now
 explicitly unverified. No material owner decision remains. The orchestrator sets
 READY for these sequential milestones; launcher and live-stack changes remain
 outside this plan. Full reports stay local; concise outcomes belong in the PR.
+The same review's omitted documentation portion was completed separately with
+public repository material and the sanitized smoke summary; it found no blockers.
+
+### V1 checkpoint — 2026-11-19
+
+Shared forecast parsing and runtime delegation are implemented. The config-unset
+runtime branch remains; disabled adapters retain their existing validation.
+Preview uses explicit environment inputs, limited inactive-field evidence,
+authoritative typed readers and finite QC rule-key coverage. Unknown extensions
+remain pending. Database/scientific state, registered overrides and actual image
+identity are explicitly unverified. No station or model implementation changed.
+
+`EXECUTION_COVERAGE_PENDING` prevents the older partial wiring checker from
+exposing a premature pass; V2 must clear it with complete evidence.
+`CONFIG_EXTENSION_PENDING` survives independently of profile-file references,
+so an absent reference list cannot waive a configured integration.
+
+Focused validation: 586 tests passed, Ruff/format passed and changed-module
+Pyright reported zero errors. The broader forecast test file attempted to start
+an ephemeral Prefect server and hit the sandbox port restriction; it was stopped.
+The full final-code suite remains a delivery gate. V2 is dispatched; independent
+patch review and V3's real command-level pass are still outstanding.
+
+### V2/V3 checkpoint — 2026-11-19
+
+The checker now compares a real selected Compose render with a separate standard
+recipe render. It checks backup roles/storage, all application config chains,
+service execution/environment, exact forecast/backup subset and public API
+configuration. Shared-volume substitutions must retain one storage identity
+across consumers. External profiles are supported; a different source checkout
+is explicitly pending rather than being treated as equivalent.
+
+The complete synthetic fixture lives in `tests/fixtures/deployment_profile/` with
+a standalone external-copy walkthrough. Actual CLI subprocesses, without mocked
+evaluation or wiring, demonstrated PASS_OFFLINE and the expected FAIL/PENDING
+mutations. Runtime caveats and safe JSON remain. No cloud server was needed or
+created: the acceptance path uses real Compose configuration rendering without
+starting services. Final validation and independent patch review remain gates.
+
+### Independent patch review and corrections — 2026-11-19
+
+One independent Claude patch review identified a false pass when an installation
+declared an optional provider/delivery setting that no selected consumer used.
+Actual CLI reproduction confirmed it; all three nonempty declarations now retain
+pending coverage. The review's nested-mapping concern led to a second reproduced
+false pass for an unknown key in a dataclass-backed skill threshold. Traversal
+now uses existing dictionary/dataclass field metadata. Already-strict weather
+model validation is preserved. No model-onboarding types were changed.
+
+Runbook `.env` references and their aliases are rejected before reading. The
+optional import-weight refactor was deferred: the documented full project
+environment remains required. No automatic review loop or additional reviewer
+was used; full review reports remain local.
+
+After corrections: 804 focused tests passed on Compose 5.6.0; all 116 tool tests,
+including actual external CLI acceptance, passed on Compose 2.38.2. Existing API
+CORS tests, focused Pyright, Ruff, formatting and documentation links passed.
+Full final-code CI remains the last delivery gate and is recorded in the PR.
 
 ```json
 {"phases":[{"id":"V0","depends_on":[]},{"id":"V1","depends_on":["V0"]},{"id":"V2","depends_on":["V1"]},{"id":"V3","depends_on":["V2"]},{"id":"V4","depends_on":["V3"]}]}

@@ -1,0 +1,22 @@
+# Desired wiring only. Fake release identity and absent secret delivery files
+# are intentional; this fixture must never be used to launch services.
+schema_version = 1
+agency_profile = "profile.toml"
+project_name = "synthetic-offline"
+project_directory = "@CHECKOUT@"
+compose_files = ["@CHECKOUT@/docker-compose.yml", "@PROFILE_DIR@/compose.yml"]
+
+[environment]
+VERSION = "1.2.3"
+SAPPHIRE_RELEASE_VERSION = "1.2.3"
+SAPPHIRE_SOURCE_REVISION = "0000000000000000000000000000000000000000"
+SAPPHIRE_ONLY_DEPLOYMENTS = "forecast-cycle,backup-database"
+SAPPHIRE_CORS_ORIGINS = "https://example.invalid"
+SAPPHIRE_DOMAIN = "example.invalid"
+
+[secret_bindings]
+db_password = "@PROFILE_DIR@/secret-delivery/db_password"
+sapphire_api_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_api_db_password"
+sapphire_worker_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_worker_db_password"
+sapphire_backup_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_backup_db_password"
+access_token_pepper = "@PROFILE_DIR@/secret-delivery/access_token_pepper"

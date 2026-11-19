@@ -779,7 +779,7 @@ class TestGenericDefaults:
             "available_past_only_nwp_parameters",
             "reanalysis_source",
         } <= missing
-        assert settings["nwp_cycle_min_age_minutes"].default_status == "review"
+        assert settings["nwp_cycle_min_age_minutes"].default_status == "inactive"
         assert settings["reanalysis_source"].default_status == "review"
         assert settings["reanalysis_source"].value == typed["reanalysis_source"]
         assert any(
@@ -989,3 +989,155 @@ class TestExplicitDisplayTimezone:
         assert settings["default_display_timezone"].default_status == "explicit"
         assert settings["daily_grid_origin"].value == "00:00"
         assert settings["daily_grid_origin"].source == "base"
+
+
+def stored_configuration() -> str:
+    return (REPO / "tests/fixtures/deployment_profile/application.toml").read_text()
+
+
+class TestStoredConfigurationCoverage:
+    def test_known_nonempty_rules_clear_config_gaps_but_not_wiring(
+        self, tmp_path: Path
+    ) -> None:
+        import tomllib
+
+        from sapphire_flow.config.deployment import parse_deployment_config
+
+        raw = stored_configuration()
+        result = evaluate_deployment_profile(evaluation_selection(tmp_path, raw))
+        assert result.diagnostics == ()
+        codes = {p.code for p in result.pending_checks}
+        assert codes == {
+            "COMPOSE_EVIDENCE_PENDING",
+            "EXECUTION_COVERAGE_PENDING",
+            "INSTALLATION_REQUIRED",
+            "BAFU_REGISTRY_PENDING",
+        }
+        assert result.summary is EvaluationSummary.PENDING
+        assert {
+            "station_model_database_state",
+            "registered_job_overrides",
+            "scientific_readiness",
+            "actual_image_identity",
+        } <= set(result.unverified_runtime)
+        settings = {p.field: p for p in result.provenance}
+        typed = parse_deployment_config(tomllib.loads(raw))
+        assert settings["nwp_cycle_min_age_minutes"].default_status == "inactive"
+        assert (
+            settings["nwp_cycle_min_age_minutes"].value
+            == typed.nwp_cycle_min_age_minutes
+        )
+        assert settings["adapters.weather_forecast.type"].source.startswith(
+            "WeatherForecastAdapterConfig."
+        )
+
+    @pytest.mark.parametrize(
+        "overlay",
+        [
+            "[input_quality]\nprivate-canary-key = 42\n",
+            "[adapters.weather_forecast]\nprivate-canary-key = true\n",
+            '[onboarding]\nprivate-canary-key = "private-path-canary"\n',
+            '[paths]\nprivate-canary-key = "private-path-canary"\n',
+        ],
+    )
+    def test_unknown_nested_keys_remain_pending_without_echo(
+        self, tmp_path: Path, overlay: str
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(tmp_path, stored_configuration(), overlay)
+        )
+        assert any(p.code == "UNCHECKED_SECTIONS" for p in result.pending_checks)
+        assert "canary" not in json.dumps(asdict(result))
+
+    def test_unknown_forecast_rule_threshold_stays_pending(
+        self, tmp_path: Path
+    ) -> None:
+        raw = stored_configuration().replace(
+            "thresholds = { value_min = 0.0 }",
+            "thresholds = { value_min = 0.0, unknown_canary = 1.0 }",
+        )
+        result = evaluate_deployment_profile(evaluation_selection(tmp_path, raw))
+        assert any(
+            p.field == "qc_rules" and p.code == "UNCHECKED_SECTIONS"
+            for p in result.pending_checks
+        )
+        assert "unknown_canary" not in json.dumps(asdict(result))
+
+    @pytest.mark.parametrize(
+        "overlay",
+        [
+            '[adapters.weather_forecast]\ntype = "invalid-canary"\n',
+            'nwp_cycle_min_age_minutes = "invalid-canary"\n',
+            "daily_grid_origin_overrides = { "
+            '"00000000-0000-0000-0000-000000000001" = "01:00" }\n',
+        ],
+    )
+    def test_inactive_values_still_run_authoritative_validation(
+        self, tmp_path: Path, overlay: str
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(tmp_path, stored_configuration(), overlay)
+        )
+        assert result.summary is EvaluationSummary.FAIL
+        assert any(p.code == "CONFIG_READER_INVALID" for p in result.diagnostics)
+        assert "invalid-canary" not in json.dumps(asdict(result))
+
+    def test_require_nwp_uses_only_explicit_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        selection = evaluation_selection(tmp_path, stored_configuration())
+        monkeypatch.setenv("SAPPHIRE_REQUIRE_NWP", "true")
+        assert evaluate_deployment_profile(selection).diagnostics == ()
+        explicit = evaluate_deployment_profile(
+            selection, environment={"SAPPHIRE_REQUIRE_NWP": "true"}
+        )
+        assert any(p.field == "adapters.weather_forecast" for p in explicit.diagnostics)
+
+    def test_enabled_provider_and_unsupported_sections_restore_pending(
+        self, tmp_path: Path
+    ) -> None:
+        overlay = """nwp_cycle_min_age_minutes = 90
+[adapters.weather_forecast]
+enabled = true
+type = "meteoswiss_nwp"
+stac_base_url = "https://example.invalid"
+stac_collection = "synthetic"
+scratch_path = "/tmp/never-created"
+[weather_history]
+extra = "private-canary"
+"""
+        result = evaluate_deployment_profile(
+            evaluation_selection(tmp_path, stored_configuration(), overlay)
+        )
+        assert result.diagnostics == ()
+        codes = {p.code for p in result.pending_checks}
+        assert {"ADAPTER_POLICY_PENDING", "UNCHECKED_SECTIONS"} <= codes
+        assert "private-canary" not in json.dumps(asdict(result))
+
+    def test_config_extension_is_distinct_from_absent_profile_references(
+        self, tmp_path: Path
+    ) -> None:
+        selection = evaluation_selection(
+            tmp_path, stored_configuration(), "swiss_observation_history = true\n"
+        )
+        assert selection.profile.inputs == ()
+        result = evaluate_deployment_profile(selection)
+        assert any(
+            item.code == "CONFIG_EXTENSION_PENDING" and item.owner == "developer"
+            for item in result.pending_checks
+        )
+
+    def test_disabled_gateway_does_not_require_unconsumed_gateway_section(
+        self, tmp_path: Path
+    ) -> None:
+        result = evaluate_deployment_profile(
+            evaluation_selection(
+                tmp_path,
+                stored_configuration(),
+                '[adapters.weather_forecast]\ntype = "recap_gateway"\n',
+            )
+        )
+        assert result.diagnostics == ()
+        assert not any(
+            p.code == "ADAPTER_POLICY_PENDING" for p in result.pending_checks
+        )

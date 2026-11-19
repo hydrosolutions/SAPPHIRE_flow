@@ -4,7 +4,7 @@ import math
 import os
 import re
 import tomllib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.config._overlay import TomlProvenance
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.config.weather_forecast import WeatherForecastAdapterConfig
 
 _REPOSITORY = Path(__file__).resolve().parents[3]
 _ENVIRONMENT_NAMES = frozenset(
@@ -35,6 +36,8 @@ _ENVIRONMENT_NAMES = frozenset(
         "SAPPHIRE_CORS_ORIGINS",
         "SAPPHIRE_REQUIRE_NWP",
         "SAPPHIRE_SKIP_DEPLOYMENTS",
+        "SAPPHIRE_ONLY_DEPLOYMENTS",
+        "SAPPHIRE_BACKUP_DUMP_TIMEOUT_S",
         "SAPPHIRE_DHM_DELIVERY_DIR",
         "NHS_PROVIDER_CONFIG_SOURCE",
         "NHS_FORECAST_JOB_OVERLAYS",
@@ -176,7 +179,9 @@ class EffectiveSetting:
     value: str | int | float | bool | None
     visibility: Literal["value", "redacted", "absent"]
     environment: tuple[EnvironmentReference, ...] = ()
-    default_status: Literal["explicit", "neutral", "review", "fallback"] = "explicit"
+    default_status: Literal["explicit", "neutral", "review", "fallback", "inactive"] = (
+        "explicit"
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -191,12 +196,14 @@ class ProfileEvaluation:
 # Each module has an explicit disposition. No dynamic imports/discovery at runtime.
 CONFIG_READER_COVERAGE: dict[str, str] = {
     "deployment": "checked with parse_deployment_config, including nested models",
+    "weather_forecast": "shared mapping parser; enabled providers remain pending",
+    "cors": "pure exact-origin parser used by the API and wiring checker",
     "onboarding": "checked with parse_onboarding_config",
     "qc_rules": "checked with parse_qc_rules; legacy defaults labelled",
     "forecast_qc_rules": "checked with parse_forecast_qc_rules",
     "deployment_identity": "checked with parse_deployment_identity_config",
     "declared_tenants": "checked independently using raw TOML loader",
-    "river_stations": "checked by parser; NHS lifecycle pending DP3",
+    "river_stations": "checked by parser; optional provider lifecycle remains pending",
     "dhm": "nested in river_stations when selected",
     "recap_gateway": "checked if declared or selected; no API-key loader invoked",
     "nepal_weather": "named weather scopes checked when declared",
@@ -207,8 +214,8 @@ CONFIG_READER_COVERAGE: dict[str, str] = {
     "provisional_rating": "nested model; delivery files pending",
     "weather_gap": "nested in DeploymentConfig",
     "swiss_overview": "nested model; packaged roster check pending if selected",
-    "bafu_units": "worker-selected external JSON registry/quota; pending DP3",
-    "paths": "excluded: helpers create directories",
+    "bafu_units": "external registry remains pending unless worker selection is absent",
+    "paths": "data_dir parsed by DeploymentConfig; directory helpers never invoked",
     "_overlay": "shared merge/interpolation and provenance helper",
     "deployment_profile": "profile/installation boundary and this evaluator",
     "__init__": "package helper; no independent configuration reader",
@@ -686,6 +693,8 @@ def _diagnostic(
             "UNCHECKED_SECTIONS",
             "ROSTER_PENDING",
             "SCOPED_INPUTS_PENDING",
+            "CONFIG_EXTENSION_PENDING",
+            "EXECUTION_COVERAGE_PENDING",
             "BAFU_REGISTRY_PENDING",
             "AGENCY_EVIDENCE_PENDING",
         }
@@ -877,9 +886,9 @@ def _validate_runtime_readers(
                     "Correct the named section using its maintained reference.",
                 )
             )
-    if (
-        _lookup(raw, "adapters.recap_gateway") is not None
-        or _lookup(raw, "adapters.weather_forecast.type") == "recap_gateway"
+    if _lookup(raw, "adapters.recap_gateway") is not None or (
+        _lookup(raw, "adapters.weather_forecast.enabled") is True
+        and _lookup(raw, "adapters.weather_forecast.type") == "recap_gateway"
     ):
         try:
             parse_recap_gateway_config(raw)
@@ -924,6 +933,284 @@ def _validate_runtime_readers(
     return config
 
 
+def _check_forecast_policy(
+    raw: dict[str, object],
+    environment: Mapping[str, str],
+    diagnostics: list[ProfileDiagnostic],
+    pending: list[ProfileDiagnostic],
+) -> WeatherForecastAdapterConfig | None:
+    from sapphire_flow.config.weather_forecast import (
+        parse_require_nwp,
+        parse_weather_forecast_adapter_config,
+    )
+    from sapphire_flow.exceptions import ConfigurationError
+
+    try:
+        forecast = parse_weather_forecast_adapter_config(
+            raw, require_nwp=parse_require_nwp(environment.get("SAPPHIRE_REQUIRE_NWP"))
+        )
+        if forecast.require_nwp and not forecast.enabled:
+            raise ConfigurationError("NWP is required but disabled")
+    except (ConfigurationError, ValueError, TypeError, KeyError, OverflowError):
+        diagnostics.append(
+            _diagnostic(
+                "CONFIG_READER_INVALID",
+                "adapters.weather_forecast",
+                "Forecast settings failed their reader or NWP requirement.",
+                "Correct the forecast adapter and explicit SAPPHIRE_REQUIRE_NWP input.",
+            )
+        )
+        return None
+    if forecast.enabled:
+        pending.append(
+            _diagnostic(
+                "ADAPTER_POLICY_PENDING",
+                "adapters.weather_forecast",
+                "Enabled forecast-provider execution is outside the supported path.",
+                "Obtain coverage for the selected provider before offline approval.",
+            )
+        )
+    return forecast
+
+
+def _inactive_preview_fields(
+    config: DeploymentConfig, forecast_disabled: bool
+) -> set[str]:
+    inactive: set[str] = set()
+    if not config.daily_grid_origin_overrides:
+        inactive.add("daily_grid_origin_overrides")
+    if forecast_disabled:
+        inactive.add("nwp_cycle_min_age_minutes")
+    if config.operational_weather.route == "stored_reanalysis":
+        inactive.add("operational_weather.automatic_issue_timezone")
+    if not config.enable_forecast_alerts and not config.enable_observation_alerts:
+        inactive.add("threshold_check_mode")
+    return inactive
+
+
+def _unknown_model_keys(raw: object, parsed: object) -> bool:
+    # Compare the actual reader's model fields, never a copied schema. Values and
+    # arbitrary input keys are not returned in diagnostics/provenance.
+    names: set[str] | None = None
+    if isinstance(parsed, BaseModel):
+        names = set(type(parsed).model_fields)
+    elif is_dataclass(parsed) and not isinstance(parsed, type):
+        names = {field.name for field in fields(parsed)}
+    if names is not None and isinstance(raw, dict):
+        table = cast("dict[str, object]", raw)
+        if table.keys() - names:
+            return True
+        return any(
+            _unknown_model_keys(value, getattr(parsed, name))
+            for name, value in table.items()
+        )
+    if isinstance(raw, dict) and isinstance(parsed, dict):
+        parsed_map = cast("dict[object, object]", parsed)
+        return any(
+            _unknown_model_keys(value, parsed_map.get(key))
+            for key, value in cast("dict[str, object]", raw).items()
+        )
+    if isinstance(raw, list) and isinstance(parsed, (list, tuple)):
+        return any(
+            _unknown_model_keys(value, model)
+            for value, model in zip(
+                cast("list[object]", raw),
+                cast("list[object] | tuple[object, ...]", parsed),
+                strict=False,
+            )
+        )
+    return False
+
+
+def _check_configuration_coverage(
+    raw: dict[str, object],
+    config: DeploymentConfig,
+    pending: list[ProfileDiagnostic],
+) -> None:
+    from sapphire_flow.types.enums import ProvisionalIfsTailMode
+
+    auxiliary = {
+        "adapters",
+        "onboarding",
+        "qc_rules",
+        "forecast_qc_rules",
+        "deployment",
+        "tenants",
+        "paths",
+    }
+    derived = {
+        "paths_data_dir",
+        "nwp_grid_archive_base_path",
+        "bafu_forecast_archive_path",
+        "bafu_observation_archive_path",
+    }
+    model_input = {key: value for key, value in raw.items() if key not in auxiliary}
+    unknown = bool(set(model_input) & derived) or _unknown_model_keys(
+        model_input, config
+    )
+    # These non-model readers accept more legacy keys than this initial path
+    # covers. Unknown keys and selected references remain pending, even if inert.
+    supported_sections = {
+        "deployment": {"global_admin", "writable_tenants", "operator"},
+        "onboarding": {"tenant", "data_source", "basin_ids"},
+        "paths": {"data_dir"},
+        "adapters": {
+            "river_stations",
+            "weather_forecast",
+            "weather_reanalysis",
+            "weather_stations",
+        },
+        "adapters.river_stations": {"type", "endpoint"},
+        "adapters.weather_reanalysis": {"type"},
+        "adapters.weather_stations": {"type"},
+        "adapters.weather_forecast": {
+            "enabled",
+            "type",
+            "stac_base_url",
+            "stac_collection",
+            "scratch_path",
+            "max_files",
+            "grid_extractor",
+            "archive_base_path",
+            "disk_guard_scratch_soft_gb",
+            "disk_guard_scratch_hard_gb",
+            "disk_guard_archive_soft_gb",
+            "disk_guard_archive_hard_gb",
+            "monitoring",
+        },
+        "adapters.weather_forecast.monitoring": {"expected_delivery_offset_hours"},
+        "qc_rules": {"version", "rules"},
+        "forecast_qc_rules": {"version", "rules"},
+    }
+    for field, allowed in supported_sections.items():
+        value = _lookup(raw, field)
+        if value is not None and (
+            not isinstance(value, dict)
+            or set(cast("dict[str, object]", value)) - allowed
+        ):
+            unknown = True
+    if unknown:
+        pending.append(
+            _diagnostic(
+                "UNCHECKED_SECTIONS",
+                "configuration",
+                "Additional or unknown configuration keys lack consumer coverage.",
+                "Have support cover declared extensions; retain required inputs.",
+            )
+        )
+    selected_extensions = (
+        config.swiss_overview is not None
+        or config.swiss_observation_history
+        or bool(config.network_overview.freshness_policies)
+        or bool(config.provisional_ratings)
+        or config.provisional_ifs_tail_mode is not ProvisionalIfsTailMode.DISABLED
+        or config.evaluation_forecasts is not None
+        or config.daily_evaluation is not None
+        or config.bafu_forecast_archive_path is not None
+        or config.bafu_observation_archive_path is not None
+        or _lookup(raw, "adapters.river_stations.type") == "dhm"
+    )
+    if selected_extensions:
+        pending.append(
+            _diagnostic(
+                "CONFIG_EXTENSION_PENDING",
+                "inputs",
+                "A selected integration or reference lacks offline coverage.",
+                "Validate the selected integration and its local references.",
+            )
+        )
+    if config.operational_weather.route != "stored_reanalysis":
+        pending.append(
+            _diagnostic(
+                "ADAPTER_POLICY_PENDING",
+                "operational_weather.route",
+                "The selected weather route is outside stored-data coverage.",
+                "Obtain provider-route coverage before offline approval.",
+            )
+        )
+    if _unchecked_rule_keys(raw):
+        pending.append(
+            _diagnostic(
+                "UNCHECKED_SECTIONS",
+                "qc_rules",
+                "QC rule fields or threshold shapes lack consumer coverage.",
+                "Check rule fields against the existing QC consumer; "
+                "scientific calibration remains unverified.",
+            )
+        )
+
+
+def _unchecked_rule_keys(raw: dict[str, object]) -> bool:
+    from sapphire_flow.types.domain import ForecastQcRuleParams, QcRuleParams
+
+    # Key coverage only, from services/qc.py and services/forecast_qc.py.
+    # Threshold magnitudes/calibration are not certified by an offline check.
+    thresholds: dict[str, set[str]] = {
+        "range_check": {"value_min", "value_max"},
+        "rate_of_change": {"max_rate"},
+        "frozen_sensor": {"tolerance", "min_consecutive", "exclude_at_or_below"},
+        "spike": {"max_delta", "tolerance"},
+        "gross_outlier": {"k_sigma"},
+        "negative_value": {"value_min"},
+        "flat_ensemble": {"tolerance"},
+        "ensemble_spread": {"min_spread_ratio", "max_spread_ratio"},
+        "climatology_outlier": {"k_sigma"},
+        "temporal_consistency": {"max_rate"},
+        "quantile_crossing": set(),
+    }
+    required = {
+        "rate_of_change": {"max_rate"},
+        "frozen_sensor": {"tolerance", "min_consecutive"},
+        "gross_outlier": {"k_sigma"},
+        "negative_value": {"value_min"},
+        "flat_ensemble": {"tolerance"},
+        "ensemble_spread": {"min_spread_ratio", "max_spread_ratio"},
+        "climatology_outlier": {"k_sigma"},
+        "temporal_consistency": {"max_rate"},
+    }
+    for section, rule_type in (
+        ("qc_rules", QcRuleParams),
+        ("forecast_qc_rules", ForecastQcRuleParams),
+    ):
+        rules = _lookup(raw, f"{section}.rules")
+        if rules is None:
+            continue
+        if not isinstance(rules, list):
+            return True
+        allowed = {item.name for item in fields(rule_type)} - {"time_step"} | {
+            "time_step_seconds"
+        }
+        for item in cast("list[object]", rules):
+            if not isinstance(item, dict):
+                return True
+            rule = cast("dict[str, object]", item)
+            name = rule.get("rule_id")
+            values = rule.get("thresholds")
+            if (
+                set(rule) - allowed
+                or not isinstance(name, str)
+                or not isinstance(values, dict)
+            ):
+                return True
+            keys = set(cast("dict[str, object]", values))
+            if (
+                name not in thresholds
+                or keys - thresholds[name]
+                or required.get(name, set()) - keys
+            ):
+                return True
+            if name == "spike" and not keys & {"tolerance", "max_delta"}:
+                return True
+            if any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                for value in cast("dict[str, object]", values).values()
+            ):
+                return True
+    return False
+
+
 def evaluate_deployment_profile(
     selection: ProfileSelection, *, environment: Mapping[str, str] | None = None
 ) -> ProfileEvaluation:
@@ -951,6 +1238,14 @@ def evaluate_deployment_profile(
             "Run the later service-wiring checker with explicit installation inputs.",
         )
     ]
+    pending.append(
+        _diagnostic(
+            "EXECUTION_COVERAGE_PENDING",
+            "execution",
+            "Complete service execution and selected-job applicability are unchecked.",
+            "Validate the supported topology and job subset before offline approval.",
+        )
+    )
     if selection.installation is None:
         pending.append(
             _diagnostic(
@@ -1108,14 +1403,6 @@ def evaluate_deployment_profile(
                     "Select a supported source with the agency's data owner.",
                 )
             )
-        pending.append(
-            _diagnostic(
-                "AGENCY_EVIDENCE_PENDING",
-                "agency_inputs",
-                "Station, model and training-time evidence has not been checked.",
-                "Complete the separate agency data/model handoff.",
-            )
-        )
         if (
             _lookup(raw, "adapters.weather_forecast.enabled") is True
             and _lookup(raw, "adapters.weather_forecast.type") == "meteoswiss_nwp"
@@ -1132,13 +1419,22 @@ def evaluate_deployment_profile(
                 )
             )
         config = _validate_runtime_readers(raw, diagnostics)
+        forecast = _check_forecast_policy(
+            raw, supplied_environment, diagnostics, pending
+        )
+        forecast_disabled = forecast is not None and not forecast.enabled
+        if config is not None:
+            _check_configuration_coverage(raw, config, pending)
         if config is not None:
             parsed = config.model_dump(mode="json")
-            provenance.extend(
-                _setting(field, _lookup(parsed, field), trace, supplied_names)
-                for field in _PREVIEW_FIELDS
-                if field != "default_display_timezone" or timezone_valid
-            )
+            inactive = _inactive_preview_fields(config, forecast_disabled)
+            for field in _PREVIEW_FIELDS:
+                if field == "default_display_timezone" and not timezone_valid:
+                    continue
+                setting = _setting(field, _lookup(parsed, field), trace, supplied_names)
+                if setting.default_status == "review" and field in inactive:
+                    setting = replace(setting, default_status="inactive")
+                provenance.append(setting)
             if config.swiss_overview is not None:
                 pending.append(
                     _diagnostic(
@@ -1261,25 +1557,6 @@ def evaluate_deployment_profile(
                     reader,
                 )
             )
-        covered = set(DeploymentConfig.model_fields) | {
-            "adapters",
-            "onboarding",
-            "qc_rules",
-            "forecast_qc_rules",
-            "deployment",
-            "tenants",
-            "weather_history",
-            "paths",
-        }
-        if set(raw) - covered:
-            pending.append(
-                _diagnostic(
-                    "UNCHECKED_SECTIONS",
-                    "configuration",
-                    "Additional sections are not covered by these config readers.",
-                    "Review the remaining flow/API/model-owned sections.",
-                )
-            )
         if "adapters" in raw:
             for field in (
                 "adapters.river_stations.type",
@@ -1288,23 +1565,19 @@ def evaluate_deployment_profile(
                 "adapters.weather_reanalysis.type",
                 "adapters.weather_stations.type",
             ):
-                provenance.append(
-                    _setting(
-                        field,
-                        _lookup(raw, field),
-                        trace,
-                        supplied_names,
-                        "unchecked_adapter_default",
-                    )
-                )
-            pending.append(
-                _diagnostic(
-                    "ADAPTER_POLICY_PENDING",
-                    "adapters",
-                    "Flow-owned weather adapter settings remain unchecked.",
-                    "Check applicable adapter policy without constructing clients.",
-                )
-            )
+                value = _lookup(raw, field)
+                reader = "unchecked_adapter_default"
+                if forecast is not None and field == "adapters.weather_forecast.type":
+                    value = forecast.type
+                    reader = "WeatherForecastAdapterConfig"
+                setting = _setting(field, value, trace, supplied_names, reader)
+                if (
+                    forecast_disabled
+                    and field == "adapters.weather_forecast.type"
+                    and setting.operation == "default"
+                ):
+                    setting = replace(setting, default_status="inactive")
+                provenance.append(setting)
         if profile.inputs or profile.scopes:
             pending.append(
                 _diagnostic(
@@ -1342,6 +1615,10 @@ def evaluate_deployment_profile(
             "actual_host_configuration",
             "credential_availability",
             "registered_jobs_and_pools",
+            "registered_job_overrides",
+            "station_model_database_state",
+            "scientific_readiness",
+            "actual_image_identity",
             "provider_access",
             "build_credentials",
         ),

@@ -1,0 +1,58 @@
+# Synthetic overlay: only private config paths, subset and public route.
+services:
+  init:
+    volumes:
+      - type: bind
+        source: "@PROFILE_DIR@/application.toml"
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      SAPPHIRE_ONLY_DEPLOYMENTS: "${SAPPHIRE_ONLY_DEPLOYMENTS}"
+  api:
+    volumes:
+      - type: bind
+        source: "@PROFILE_DIR@/application.toml"
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+  prefect-worker:
+    volumes:
+      - type: bind
+        source: "@PROFILE_DIR@/application.toml"
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+  prefect-worker-ingest:
+    volumes:
+      - type: bind
+        source: "@PROFILE_DIR@/application.toml"
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+  prefect-worker-backup:
+    volumes:
+      - type: bind
+        source: "@PROFILE_DIR@/application.toml"
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+  caddy:
+    environment:
+      SAPPHIRE_DOMAIN: "${SAPPHIRE_DOMAIN}"
+secrets:
+  db_password:
+    file: "@PROFILE_DIR@/secret-delivery/db_password"
+  sapphire_api_db_password:
+    file: "@PROFILE_DIR@/secret-delivery/sapphire_api_db_password"
+  sapphire_worker_db_password:
+    file: "@PROFILE_DIR@/secret-delivery/sapphire_worker_db_password"
+  sapphire_backup_db_password:
+    file: "@PROFILE_DIR@/secret-delivery/sapphire_backup_db_password"
+  access_token_pepper:
+    file: "@PROFILE_DIR@/secret-delivery/access_token_pepper"

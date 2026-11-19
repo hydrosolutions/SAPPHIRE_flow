@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Offline desired-configuration preview. Never starts services."""
+"""Offline config and service-wiring consistency checks. Never starts services."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import selectors
 import shutil
@@ -21,6 +22,7 @@ import yaml
 from cronsim import CronSim, CronSimError
 
 from sapphire_flow.cli.register_deployments import build_deployment_specs
+from sapphire_flow.config.cors import parse_exact_origin
 from sapphire_flow.config.deployment_profile import (
     EffectiveSetting,
     EvaluationSummary,
@@ -34,6 +36,7 @@ from sapphire_flow.config.deployment_profile import (
     evaluate_deployment_profile,
     select_deployment_profile,
 )
+from sapphire_flow.exceptions import ConfigurationError
 
 SELECTION_GUIDANCE = {
     "PROFILE_AMBIENT_CONFLICT": (
@@ -87,7 +90,16 @@ SELECTION_GUIDANCE = {
 
 ROOT = Path(__file__).resolve().parents[1]
 LIMIT = 8 * 1024 * 1024
-CONSUMERS = ("init", "api", "prefect-worker", "prefect-worker-ingest")
+CONSUMERS = (
+    "init",
+    "api",
+    "prefect-worker",
+    "prefect-worker-ingest",
+)
+_CONFIG_CONSUMERS = (*CONSUMERS, "prefect-worker-backup")
+_STANDARD_SERVICES = frozenset(
+    (*_CONFIG_CONSUMERS, "postgres", "prefect-server", "caddy")
+)
 
 
 def diagnostic(code: str, field: str, cause: str, action: str) -> ProfileDiagnostic:
@@ -103,6 +115,7 @@ def diagnostic(code: str, field: str, cause: str, action: str) -> ProfileDiagnos
             "FORECAST_PROVIDER_PENDING",
             "OPERATOR_METADATA_PENDING",
             "CUSTOM_COMPOSE_PENDING",
+            "EXECUTION_EXTENSION_PENDING",
             "ENV_FILES_UNCHECKED",
             "RUNBOOK_PENDING",
         }
@@ -383,7 +396,10 @@ class _ObservedEnvironment(Mapping[str, str]):
 
 
 def check_wiring(
-    selection: ProfileSelection, evaluation: ProfileEvaluation, rendered: dict[str, Any]
+    selection: ProfileSelection,
+    evaluation: ProfileEvaluation,
+    rendered: dict[str, Any],
+    reference: dict[str, Any] | None = None,
 ) -> ProfileEvaluation:
     errors: list[ProfileDiagnostic] = []
     pending = [
@@ -392,14 +408,16 @@ def check_wiring(
         if item.code != "COMPOSE_EVIDENCE_PENDING"
     ]
     settings: list[EffectiveSetting] = []
-    if selection.profile.runbook is None or not selection.profile.runbook.is_file():
+    bindings = (
+        dict(selection.installation.secret_bindings) if selection.installation else {}
+    )
+    if not _readable_runbook(selection.profile.runbook, tuple(bindings.values())):
         pending.append(
             diagnostic(
                 "RUNBOOK_PENDING",
                 "runbook",
-                "Matching operational instructions are unavailable.",
-                "Supply reviewed instructions for the complete selected recipe "
-                "before handoff.",
+                "A readable nonempty local handoff reference is missing.",
+                "Supply a readable local runbook; its instructions are not approved.",
             )
         )
     services = rendered["services"]
@@ -526,7 +544,452 @@ def check_wiring(
         pending = [item for item in pending if item.code != "BAFU_REGISTRY_PENDING"]
     _check_secrets(selection, rendered, errors)
     _check_schedules(selection, services, errors, settings)
+    if _check_execution(selection, rendered, reference, errors, pending):
+        pending = [
+            item for item in pending if item.code != "EXECUTION_COVERAGE_PENDING"
+        ]
+        pending = [item for item in pending if item.code != "CUSTOM_COMPOSE_PENDING"]
+    elif not any(item.code == "EXECUTION_COVERAGE_PENDING" for item in pending):
+        pending.append(
+            diagnostic(
+                "EXECUTION_COVERAGE_PENDING",
+                "execution",
+                "Complete standard-topology execution has not been established.",
+                "Use the supported service recipe and forecast/backup job subset.",
+            )
+        )
     return result(evaluation, errors, pending, settings)
+
+
+def _readable_runbook(path: Path | None, secrets: tuple[Path, ...]) -> bool:
+    if path is None or any(same_path(path, secret) for secret in secrets):
+        return False
+    try:
+        names = (path.name, path.resolve().name)
+        if any(name == ".env" or name.startswith(".env.") for name in names):
+            return False
+        if not 0 < path.stat().st_size <= 256 * 1024 or not path.is_file():
+            return False
+        with path.open("rb") as stream:
+            content = stream.read(256 * 1024 + 1)
+        return len(content) <= 256 * 1024 and bool(content.decode("utf-8").strip())
+    except (OSError, UnicodeError, RuntimeError):
+        return False
+
+
+def _execution_issue(pending: list[ProfileDiagnostic], field: str, cause: str) -> None:
+    pending.append(
+        diagnostic(
+            "EXECUTION_EXTENSION_PENDING",
+            field,
+            cause,
+            "Use the checked recipe or obtain coverage for this extension.",
+        )
+    )
+
+
+def _check_execution(
+    selection: ProfileSelection,
+    rendered: dict[str, Any],
+    reference: dict[str, Any] | None,
+    errors: list[ProfileDiagnostic],
+    pending: list[ProfileDiagnostic],
+) -> bool:
+    installation = selection.installation
+    if reference is None or installation is None:
+        return False
+    if not same_path(installation.project_directory, ROOT):
+        _execution_issue(
+            pending,
+            "project_directory",
+            "Run the checker from the same source checkout as the installation.",
+        )
+        return False
+    initial = (len(errors), len(pending))
+    services = rendered["services"]
+    supplied = dict(installation.environment)
+    if any(
+        supplied.get(name)
+        for name in (
+            "NHS_FORECAST_JOB_OVERLAYS",
+            "NHS_PROVIDER_CONFIG_SOURCE",
+            "SAPPHIRE_DHM_DELIVERY_DIR",
+        )
+    ):
+        _execution_issue(
+            pending,
+            "environment",
+            "An optional provider or delivery declaration requires separate coverage.",
+        )
+    _check_selected_jobs(services, supplied, errors, pending)
+    if len(pending) != initial[1] or errors:
+        return False
+    canonical = reference.get("services", {})
+    if set(canonical) != set(_STANDARD_SERVICES) or set(services) != set(
+        _STANDARD_SERVICES
+    ):
+        _execution_issue(
+            pending,
+            "services",
+            "Additional or missing services prevent standard-topology coverage.",
+        )
+        return False
+    if any(
+        installed(scope.when_compose, selection) in selection.compose_files
+        for scope in selection.profile.scopes
+    ):
+        _execution_issue(
+            pending,
+            "scopes",
+            "Exceptional execution scopes remain outside standard-topology coverage.",
+        )
+    for key in ("networks", "volumes"):
+        if rendered.get(key) != reference.get(key):
+            _execution_issue(
+                pending,
+                key,
+                "Network or volume definitions differ from the checked recipe.",
+            )
+    if any(
+        rendered.get(key) != reference.get(key)
+        for key in (set(rendered) | set(reference))
+        - {"services", "networks", "volumes", "secrets"}
+    ):
+        _execution_issue(
+            pending,
+            "compose",
+            "Additional Compose execution declarations remain unchecked.",
+        )
+    if set(rendered.get("secrets", {})) != set(reference.get("secrets", {})):
+        _execution_issue(
+            pending,
+            "secrets",
+            "Secret declarations differ from the standard credential roles.",
+        )
+    supplied = dict(installation.environment)
+    for name in sorted(_STANDARD_SERVICES):
+        service, expected = services[name], canonical[name]
+        for key in set(service) | set(expected):
+            if key in {"environment", "volumes"}:
+                continue
+            if service.get(key) == expected.get(key):
+                continue
+            if key in {"image", "command", "entrypoint"}:
+                errors.append(
+                    diagnostic(
+                        "EXECUTION_WIRING_INVALID",
+                        name,
+                        "Image, command or entrypoint differs from the checked recipe.",
+                        "Restore the intended image and reviewed execution.",
+                    )
+                )
+            else:
+                _execution_issue(
+                    pending,
+                    name,
+                    "A service execution setting differs from the checked recipe.",
+                )
+        _check_execution_environment(name, service, expected, supplied, errors, pending)
+        if not _standard_mounts(name, service, expected):
+            _execution_issue(
+                pending, name, "Mounts differ from the bounded config/data layout."
+            )
+    if not _shared_storage_consistent(services, canonical):
+        errors.append(
+            diagnostic(
+                "SHARED_STORAGE_INVALID",
+                "volumes",
+                "Consumers of a shared data volume resolve to different storage.",
+                "Use one source and mount type per shared volume.",
+            )
+        )
+    expected_chain = (selection.profile.base_config, *selection.profile.overlays)
+    if not _chain(services["prefect-worker-backup"], expected_chain, selection):
+        errors.append(
+            diagnostic(
+                "CONFIG_WIRING_INVALID",
+                "prefect-worker-backup",
+                "The backup mount does not preserve the selected config chain.",
+                "Restore the mount; backup does not parse application TOML.",
+            )
+        )
+    _check_api_inputs(services, supplied, errors, pending)
+    return not errors and initial[1] == len(pending)
+
+
+def _check_execution_environment(
+    name: str,
+    service: dict[str, Any],
+    expected: dict[str, Any],
+    supplied: dict[str, str],
+    errors: list[ProfileDiagnostic],
+    pending: list[ProfileDiagnostic],
+) -> None:
+    actual, baseline = _environment(service), _environment(expected)
+    if len(actual) != len(service.get("environment", {})):
+        _execution_issue(
+            pending,
+            name,
+            "Environment inputs include unresolved or unsupported values.",
+        )
+    allowed: dict[str, str] = {}
+    if name in _CONFIG_CONSUMERS:
+        allowed.update(
+            {
+                key: actual[key]
+                for key in ("SAPPHIRE_CONFIG", "SAPPHIRE_CONFIG_OVERLAY")
+                if key in actual
+            }
+        )
+    if name == "init":
+        allowed.update(
+            {
+                key: value
+                for key, value in supplied.items()
+                if key.startswith("SCHEDULE_")
+                or key in {"SAPPHIRE_ONLY_DEPLOYMENTS", "SAPPHIRE_SKIP_DEPLOYMENTS"}
+            }
+        )
+        if actual.get("SAPPHIRE_FLOW_SOURCE_ROOT") == "/app":
+            allowed["SAPPHIRE_FLOW_SOURCE_ROOT"] = "/app"
+    for consumer, key in (
+        ("prefect-worker", "SAPPHIRE_REQUIRE_NWP"),
+        ("prefect-worker-backup", "SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"),
+        ("caddy", "SAPPHIRE_DOMAIN"),
+    ):
+        if name == consumer and key in supplied:
+            allowed[key] = supplied[key]
+            if actual.get(key) != supplied[key]:
+                errors.append(
+                    diagnostic(
+                        "ENVIRONMENT_FORWARDING_INVALID",
+                        name,
+                        "A declared service input is not forwarded unchanged.",
+                        "Forward the declared nonsecret setting into its consumer.",
+                    )
+                )
+    for key in set(actual) | set(baseline):
+        if actual.get(key) == allowed.get(key, baseline.get(key)):
+            continue
+        if key in baseline:
+            errors.append(
+                diagnostic(
+                    "SERVICE_ENVIRONMENT_INVALID",
+                    name,
+                    "A service setting differs from its role or declared inputs.",
+                    "Restore standard role, database, Prefect and service settings.",
+                )
+            )
+        else:
+            _execution_issue(
+                pending,
+                name,
+                "Additional environment-selected behavior lacks coverage.",
+            )
+    if name == "prefect-worker-backup" and "SAPPHIRE_BACKUP_DUMP_TIMEOUT_S" in actual:
+        try:
+            timeout = float(actual["SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"])
+            valid = math.isfinite(timeout) and timeout > 0
+        except ValueError:
+            valid = False
+        if not valid:
+            errors.append(
+                diagnostic(
+                    "BACKUP_TIMEOUT_INVALID",
+                    name,
+                    "The explicit backup dump timeout is not a positive finite number.",
+                    "Supply a positive timeout in seconds or omit the override.",
+                )
+            )
+
+
+def _standard_mounts(
+    name: str, service: dict[str, Any], reference: dict[str, Any]
+) -> bool:
+    env = _environment(service)
+    targets = (
+        [
+            env.get("SAPPHIRE_CONFIG", ""),
+            *filter(None, env.get("SAPPHIRE_CONFIG_OVERLAY", "").split(",")),
+        ]
+        if name in _CONFIG_CONSUMERS
+        else []
+    )
+    if targets and (
+        targets[0] != "/app/config.toml"
+        or any(
+            Path(target).parent != Path("/app/config/overlays")
+            or Path(target).suffix != ".toml"
+            for target in targets[1:]
+        )
+    ):
+        return False
+    mounts = service.get("volumes", [])
+    baseline = {mount["target"]: mount for mount in reference.get("volumes", [])}
+    if len({item.get("target") for item in mounts}) != len(mounts):
+        return False
+    remaining = dict(baseline)
+    for mount in mounts:
+        target = mount.get("target")
+        if target in targets:
+            if set(mount) - {"type", "source", "target", "read_only", "bind"} or set(
+                mount.get("bind", {})
+            ) - {"create_host_path"}:
+                return False
+            remaining.pop("/app/config.toml", None)
+            continue  # Complete file identity/order/read-only checked by _chain.
+        expected = remaining.pop(target, None)
+        if expected is None:
+            return False
+        if mount == expected:
+            continue
+        # Permit host data storage replacing standard named volumes, preserving
+        # target, access mode and no propagation/driver-specific behavior.
+        if expected.get("type") != "volume" or not target.startswith("/data/"):
+            return False
+        if (
+            mount.get("type") != "bind"
+            or not Path(mount.get("source", "")).is_absolute()
+        ):
+            return False
+        if mount.get("read_only", False) != expected.get("read_only", False):
+            return False
+        if set(mount) - {"type", "source", "target", "read_only", "bind"} or set(
+            mount.get("bind", {})
+        ) - {"create_host_path"}:
+            return False
+    return not remaining
+
+
+def _shared_storage_consistent(
+    services: dict[str, Any], canonical: dict[str, Any]
+) -> bool:
+    sources: dict[str, set[tuple[str, str]]] = {}
+    for name, service in canonical.items():
+        for expected in service.get("volumes", []):
+            if expected.get("type") != "volume":
+                continue
+            actual = _mount(services[name], expected["target"])
+            if actual is None:
+                return False
+            kind = actual.get("type", "")
+            source = actual.get("source", "")
+            if kind == "bind":
+                source = str(Path(source).resolve())
+            sources.setdefault(expected["source"], set()).add((kind, source))
+    return all(len(bindings) == 1 for bindings in sources.values())
+
+
+def _check_selected_jobs(
+    services: dict[str, Any],
+    supplied: dict[str, str],
+    errors: list[ProfileDiagnostic],
+    pending: list[ProfileDiagnostic],
+) -> None:
+    environment = _environment(services.get("init", {}))
+    selected = {"forecast-cycle", "backup-database"}
+    try:
+        actual = build_deployment_specs(environment)
+        expected = build_deployment_specs(
+            {"SAPPHIRE_ONLY_DEPLOYMENTS": ",".join(sorted(selected))}
+        )
+    except ValueError:
+        return  # _check_schedules supplies the invalid-input diagnostic.
+    if (
+        not supplied.get("SAPPHIRE_ONLY_DEPLOYMENTS")
+        or {item.deployment_name for item in actual} != selected
+    ):
+        _execution_issue(
+            pending,
+            "jobs",
+            "Only explicit forecast-cycle and backup-database jobs have coverage.",
+        )
+        return
+    if (
+        environment.get("SAPPHIRE_ONLY_DEPLOYMENTS")
+        != supplied["SAPPHIRE_ONLY_DEPLOYMENTS"]
+    ):
+        errors.append(
+            diagnostic(
+                "SCHEDULE_FORWARDING_INVALID",
+                "jobs",
+                "The desired subset is not forwarded to init.",
+                "Forward SAPPHIRE_ONLY_DEPLOYMENTS unchanged into init.",
+            )
+        )
+    baseline = {item.deployment_name: item for item in expected}
+    for spec in actual:
+        standard = baseline[spec.deployment_name]
+        if (
+            spec.flow_module,
+            spec.flow_attr,
+            spec.work_pool_name,
+            spec.concurrency_limit,
+            spec.forecast_config_overlay,
+        ) != (
+            standard.flow_module,
+            standard.flow_attr,
+            standard.work_pool_name,
+            standard.concurrency_limit,
+            None,
+        ):
+            _execution_issue(
+                pending,
+                "jobs",
+                "A selected job differs from its fresh-registration specification.",
+            )
+    if environment.get("SAPPHIRE_FLOW_SOURCE_ROOT", "/app") != "/app" or any(
+        _environment(service).get(key)
+        for service in services.values()
+        for key in ("SAPPHIRE_FORECAST_CONFIG_OVERLAY", "NHS_FORECAST_JOB_OVERLAYS")
+    ):
+        _execution_issue(
+            pending,
+            "jobs",
+            "Job source-root or config overrides require separate coverage.",
+        )
+
+
+def _check_api_inputs(
+    services: dict[str, Any],
+    supplied: dict[str, str],
+    errors: list[ProfileDiagnostic],
+    pending: list[ProfileDiagnostic],
+) -> None:
+    api = _environment(services["api"])
+    if any(value for key, value in api.items() if key.startswith("SAPPHIRE_HUMAN_")):
+        _execution_issue(
+            pending,
+            "api",
+            "Named-human authentication is outside the supported offline path.",
+        )
+    try:
+        if (
+            "SAPPHIRE_CORS_ORIGINS" not in supplied
+            or api.get("SAPPHIRE_CORS_ORIGINS") != supplied["SAPPHIRE_CORS_ORIGINS"]
+        ):
+            raise ValueError("Explicit origin declaration required")
+        for value in supplied["SAPPHIRE_CORS_ORIGINS"].split(","):
+            if value.strip():
+                parse_exact_origin(value.strip())
+        domain = supplied.get("SAPPHIRE_DOMAIN", "")
+        if domain != ":80":
+            parse_exact_origin("https://" + domain)
+            if not domain or any(
+                not char.isascii() or not (char.isalnum() or char in ".-")
+                for char in domain
+            ):
+                raise ValueError("Named public route required")
+    except (ConfigurationError, ValueError):
+        errors.append(
+            diagnostic(
+                "API_ROUTE_INVALID",
+                "api",
+                "Explicit allowed origins or the public route are missing or invalid.",
+                "Declare exact origins (empty means same-origin), and a named domain "
+                "or explicit :80 HTTP test route.",
+            )
+        )
 
 
 def _check_forecast_scope(
@@ -722,9 +1185,10 @@ def _check_schedules(
         dict(selection.installation.environment) if selection.installation else {}
     )
     for key, value in supplied.items():
-        if (key.startswith("SCHEDULE_") or key == "SAPPHIRE_SKIP_DEPLOYMENTS") and (
-            key not in env.accessed or env.entries.get(key) != value
-        ):
+        if (
+            key.startswith("SCHEDULE_")
+            or key in {"SAPPHIRE_SKIP_DEPLOYMENTS", "SAPPHIRE_ONLY_DEPLOYMENTS"}
+        ) and (key not in env.accessed or env.entries.get(key) != value):
             errors.append(
                 diagnostic(
                     "SCHEDULE_FORWARDING_INVALID",
@@ -850,7 +1314,10 @@ def check_profile(
         )
     try:
         rendered = render_compose(selection)
-        return check_wiring(selection, evaluation, rendered)
+        reference = render_compose(
+            replace(selection, compose_files=(ROOT / "docker-compose.yml",))
+        )
+        return check_wiring(selection, evaluation, rendered, reference)
     except ProfileError as exc:
         if exc.code == "ENV_FILES_UNCHECKED":
             return result(
@@ -990,6 +1457,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "actual_host_configuration",
                 "credential_availability",
                 "registered_jobs_and_pools",
+                "registered_job_overrides",
+                "station_model_database_state",
+                "scientific_readiness",
+                "actual_image_identity",
                 "provider_access",
                 "build_credentials",
             ),
@@ -1024,6 +1495,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": 1,
         "evidence_scope": "desired_configuration_unverified_against_host",
         "launching": "not_available",
+        "offline_validation": "bounded_standard_stored_data_forecast_and_backup",
+        "pass_meaning": "configuration_and_service_wiring_consistency_only",
         "support": support,
         **asdict(evaluation),
     }
@@ -1032,6 +1505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         sys.stdout.write(
             f"{evaluation.summary}: desired configuration, unverified against host.\n"
+            "PASS_OFFLINE means configuration and service-wiring consistency only.\n"
+            "Runtime readiness and launch approval require separate evidence.\n"
             "Profile-driven launching is not available.\n"
         )
         if selection is not None:
