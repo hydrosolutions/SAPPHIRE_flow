@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -29,14 +30,19 @@ from sapphire_flow.types.ids import (
     StationGroupId,
     StationId,
 )
-from sapphire_flow.types.model import ModelDataRequirements
+from sapphire_flow.types.model import (
+    ModelArtifact,
+    ModelDataRequirements,
+    ModelParams,
+    StationTrainingData,
+)
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import (
     make_deployment_config,
     make_station_config,
     make_training_unit,
 )
-from tests.fakes.fake_models import FakeStationForecastModel
+from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeSkillStore,
     FakeStationGroupStore,
@@ -370,6 +376,28 @@ class TestResolveSingleSupportedTimeStep:
 
 
 class TestSmokeTestModel:
+    def test_group_model_completes_round_trip(self) -> None:
+        smoke_test_model(FakeGroupForecastModel(), random.Random(7))
+
+    @pytest.mark.parametrize("hours", [1, 24])
+    def test_longer_required_history_is_preserved(self, hours: int) -> None:
+        class LongHistoryModel(FakeStationForecastModel):
+            data_requirements = replace(
+                FakeStationForecastModel.data_requirements,
+                lookback_steps=800,
+                supported_time_steps=frozenset({timedelta(hours=hours)}),
+            )
+
+            def train(
+                self, data: StationTrainingData, params: ModelParams, rng: random.Random
+            ) -> ModelArtifact:
+                if len(data.past_targets) < self.data_requirements.lookback_steps:
+                    raise ValueError("insufficient history for training")
+                assert data.time_step == timedelta(hours=hours)
+                return super().train(data, params, rng)
+
+        smoke_test_model(LongHistoryModel(), random.Random(7))
+
     def test_passes_for_valid_model(self) -> None:
         model = FakeStationForecastModel()
         rng = random.Random(7)
@@ -427,6 +455,11 @@ class TestSmokeTestModel:
         rng = random.Random(7)
         with pytest.raises(ModelSmokeTestError, match="training exploded"):
             smoke_test_model(model=model, rng=rng)
+
+    def test_climatology_completes_synthetic_training_round_trip(self) -> None:
+        from sapphire_flow.models.climatology_fallback import ClimatologyFallbackModel
+
+        smoke_test_model(ClimatologyFallbackModel(), random.Random(7))
 
 
 class TestAssertModelConformsFutureForcing:
