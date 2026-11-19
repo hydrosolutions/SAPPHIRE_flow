@@ -18,12 +18,10 @@ the reasoning): SAP3 does have `area`, so the unit conversion could live in the 
 adapter. Keeping it here keeps `adapters/forecast_interface.py` — the single
 SAP3<->FI boundary — free of per-model special cases.
 
-**Not fixed here, deliberately:** `cmal_pool_PT` declares `future_steps=15` even
-though the modeller relaxed the trained horizon to a *maximum*. The FI contract has no
-"at most" form, so a strict provider still refuses a short horizon. The shim must NOT
-paper over that by declaring a smaller number — that would silently claim a capability
-the artifact does not advertise. See
-`docs/fi-issues/002-future-steps-at-most-semantics.md`.
+Horizon semantics come from the installed model's FI declaration, including
+`AT_MOST` where supported. Preserve its trained maximum and minimum; never
+shorten the declaration to hide missing forcing. See
+`docs/fi-issues/002-future-steps-at-most-semantics.md` for the original issue.
 
 **Plan 181 design note — why the shim converts numerically, not just relabels.**
 Aquacast's OWN `InMemoryDataSource` (`aquacast/operational/datasource.py`) already
@@ -873,5 +871,13 @@ class CmalSmall(AquacastShim):
 
     CONFIG_FILENAME = "cmal_small.yaml"
     FINETUNE_STRATEGIES = frozenset({"static_only", "last_layer"})
+    model_tier = ModelTier.SKILL
+    alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION
+
+
+class CmalNepalStaticEncoder(AquacastShim):
+    """Supplied daily CMAL static encoder; requires both net radiation inputs."""
+
+    CONFIG_FILENAME = "cmal_nepal_static_encoder.yaml"
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION

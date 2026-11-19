@@ -165,6 +165,7 @@ def test_default_payload_checks_resources_and_forbidden_specs() -> None:
     assert 'root / "py.typed"' in payload
     assert 'root / "models" / "aquacast" / "configs" / "cmal_pool_pt.yaml"' in payload
     assert 'root / "models" / "aquacast" / "configs" / "cmal_small.yaml"' in payload
+    assert '"cmal_nepal_static_encoder.yaml"' in payload
     assert "find_spec(module_name) is not None" in payload
     assert "import sapphire_flow.models.aquacast" not in payload
 
@@ -233,6 +234,9 @@ def _write_required_resources(root: Path) -> None:
         "x: 1\n"
     )
     (root / "models" / "aquacast" / "configs" / "cmal_small.yaml").write_text("x: 1\n")
+    (
+        root / "models" / "aquacast" / "configs" / "cmal_nepal_static_encoder.yaml"
+    ).write_text("x: 1\n")
 
 
 def test_default_payload_rejects_missing_package_resource(

@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-from forecast_interface import HorizonSemantics
+from forecast_interface import AggregationMethod, HorizonSemantics, Unit
 
 from sapphire_flow.types.enums import AlertEligibility, ModelTier, StaticNaming
 
@@ -230,6 +230,80 @@ class TestCmalSmallDeclaration:
         from sapphire_flow.models.aquacast import CmalPoolPT, CmalSmall
 
         assert CmalPoolPT().config_hash != CmalSmall().config_hash
+
+
+class TestCmalNepalStaticEncoder:
+    def test_is_discovered_as_a_separate_group_model(self) -> None:
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder
+        from sapphire_flow.services.model_registry import discover_models
+
+        assert "cmal_nepal_static_encoder" in discover_models()
+        assert CmalNepalStaticEncoder().artifact_scope.value == "group"
+
+    def test_preserves_static_namespace_without_enabling_alerts_or_finetuning(
+        self,
+    ) -> None:
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder
+
+        model = CmalNepalStaticEncoder()
+        assert model.model_tier is ModelTier.SKILL
+        assert model.alert_eligibility is AlertEligibility.NO_EVENT_INFORMATION
+        assert model.static_naming is StaticNaming.CARAVAN
+        assert not model.FINETUNE_STRATEGIES
+        assert len(model.input_requirement.static) == 78
+
+    def test_binds_the_supplied_configuration(self) -> None:
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder
+
+        assert CmalNepalStaticEncoder().config_hash == (
+            "c171b2bc26a3cd11eec64378322fae443a113a86d1fcfb2fe6f5edd2e1e296d9"
+        )
+
+    def test_requires_full_year_weather_but_permits_missing_discharge(self) -> None:
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder
+
+        req = CmalNepalStaticEncoder().input_requirement
+        spec = next(iter(req.dynamic[timedelta(days=1)].data.values()))
+        past = {name: v for ns in spec.past_known.values() for name, v in ns.items()}
+
+        assert {name: v.lookback for name, v in past.items()} == {
+            "discharge": 365,
+            "precipitation": 365,
+            "temperature": 365,
+            "thermal_net_radiation": 365,
+            "solar_net_radiation": 365,
+        }
+        assert {name: v.max_nan for name, v in past.items()} == {
+            "discharge": 365,
+            "precipitation": 0,
+            "temperature": 0,
+            "thermal_net_radiation": 0,
+            "solar_net_radiation": 0,
+        }
+        assert req.targets["discharge"].unit is Unit.M3_PER_S
+        assert past["discharge"].unit is Unit.M3_PER_S
+        assert past["discharge"].aggregation is AggregationMethod.MEAN
+
+    def test_future_weather_retains_distinct_units_and_flexible_horizon(self) -> None:
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder
+
+        req = CmalNepalStaticEncoder().input_requirement
+        spec = next(iter(req.dynamic[timedelta(days=1)].data.values()))
+        future = {
+            name: v for ns in spec.future_known.values() for name, v in ns.items()
+        }
+
+        assert {name: v.unit.value for name, v in future.items()} == {
+            "precipitation": "mm",
+            "temperature": "°C",
+            "thermal_net_radiation": "W/m²",
+            "solar_net_radiation": "W/m²",
+        }
+        for variable in future.values():
+            assert variable.future_steps == 15
+            assert variable.horizon_semantics is HorizonSemantics.AT_MOST
+            assert variable.min_future_steps == 1
+            assert variable.max_nan == 0
 
 
 class TestCmalSmallFineTuneAllowlist:

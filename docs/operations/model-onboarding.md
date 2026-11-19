@@ -26,6 +26,18 @@ is an evaluation-only preview.
 
 ## Check the right kind of readiness
 
+`cmal_nepal_static_encoder` registers the supplied daily CMAL configuration via
+the existing Aquacast extra. It has group scope, 78 Caravan static attributes,
+365 past daily steps and a declared forecast maximum of 15 days (minimum one).
+Weather inputs are precipitation, temperature, `thermal_net_radiation` and
+`solar_net_radiation`; all weather channels require complete supplied values.
+Missing discharge is permitted within its declared 365-value budget. Both net
+radiation components are distinct mean fluxes in W/m², not generic radiation.
+This registration enables neither assignments nor alerts. Its input coverage,
+physical daily periods, import provenance and artifact suitability must still
+be qualified. Do not invent training dates to satisfy the current import API;
+the FI provenance contract and consumer policy must be coordinated first.
+
 | Question | Check |
 |---|---|
 | Can an existing model run now? | The station guide's [readiness report](new-station-by-hand.md#step-7-readiness), including current input availability and model lookback. Read the checks: exit 0 means the report ran, not that every check passed. |
