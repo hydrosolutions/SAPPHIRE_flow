@@ -82,5 +82,14 @@ def parse_deployment_identity_config(
         writable_tenants=writable_tenants,
         global_admin=global_admin,
         operator=operator,
-        promotion_allowed=bool(section.get("promotion_allowed", False)),
+        promotion_allowed=_toml_bool(section, "promotion_allowed"),
     )
+
+
+def _toml_bool(section: dict[str, Any], key: str) -> bool:
+    value = section.get(key, False)
+    if not isinstance(value, bool):
+        raise ConfigurationError(
+            f"[deployment] {key} must be a TOML boolean (true or false), got {value!r}"
+        )
+    return value

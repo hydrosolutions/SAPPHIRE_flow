@@ -9,6 +9,7 @@ computed here from the shared fact readers, never from a readiness verdict.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.enums import (
     AuditEventType,
     ModelAssignmentStatus,
+    ObservationSource,
     StationStatus,
     WaterLevelGaugeType,
 )
@@ -121,15 +123,36 @@ def _weather_condition(
     return _cond(5, "weather_bindings", ok, f"{bindings.detail}; {naming.detail}")
 
 
+def _needs_rating_curve(
+    station: StationConfig, stores: ReadinessStores, target: str, now: UtcDatetime
+) -> bool:
+    if "water_level" not in station.measured_parameters:
+        return False
+    if target == "discharge" or "discharge" not in station.measured_parameters:
+        return True
+    return bool(
+        stores.observations.fetch_observations(
+            station.id,
+            "discharge",
+            now - timedelta(days=60),
+            now + timedelta(days=1),
+            source=ObservationSource.RATING_CURVE_DERIVED,
+        )
+    )
+
+
 def _model_conditions(
     station: StationConfig,
     stores: ReadinessStores,
     models: list[ModelId],
     resolve_model: Callable[[ModelId], ForecastModel | None],
+    target: str,
     now: UtcDatetime,
 ) -> list[PromotionCondition]:
     statics: list[str] = []
     lookback: list[str] = []
+    statics_ok: list[str] = []
+    lookback_ok: list[str] = []
     for model_id in models:
         model = resolve_model(model_id)
         if model is None:
@@ -138,28 +161,43 @@ def _model_conditions(
             continue
         s = check_statics(station, model, stores)
         lb = check_discharge_lookback(station, model, stores.observations, now=now)
-        statics += [f"{model_id}: {s.detail}"] if s.status is CheckStatus.FAIL else []
-        lookback += (
-            [f"{model_id}: {lb.detail}"] if lb.status is CheckStatus.FAIL else []
+        (statics if s.status is CheckStatus.FAIL else statics_ok).append(
+            f"{model_id}: {s.detail}"
         )
-    derived = (
-        "water_level" in station.measured_parameters
-        and "discharge" not in station.measured_parameters
-    )
-    if derived and stores.ratings.fetch_active_curve(station.id) is None:
+        (lookback if lb.status is CheckStatus.FAIL else lookback_ok).append(
+            f"{model_id}: {lb.detail}"
+        )
+    needs_curve = _needs_rating_curve(station, stores, target, now)
+    if needs_curve and stores.ratings.fetch_active_curve(station.id) is None:
         lookback.append("discharge is derived from level but no active rating curve")
     no_model = "no model to check"
     return [
         _cond(
-            6, "statics", bool(models) and not statics, "; ".join(statics) or no_model
+            6,
+            "statics",
+            bool(models) and not statics,
+            "; ".join(statics or statics_ok) or no_model,
         ),
         _cond(
             7,
             "discharge_lookback",
             bool(models) and not lookback,
-            "; ".join(lookback) or no_model,
+            "; ".join(lookback or lookback_ok) or no_model,
         ),
     ]
+
+
+def _datum_condition(station: StationConfig) -> PromotionCondition:
+    datum = check_datum(station)
+    missing_type = (
+        "water_level" in station.measured_parameters
+        and station.water_level_gauge_type is None
+    )
+    if missing_type:
+        return _cond(
+            2, "datum", False, f"{datum.detail}; water_level_gauge_type is not set"
+        )
+    return _cond(2, "datum", _passed(datum.status), datum.detail)
 
 
 def plan_promotion(
@@ -198,7 +236,6 @@ def plan_promotion(
             warnings=(),
         )
     models = _active_models(station, stores)
-    datum = check_datum(station)
     basin = check_basin(station, stores.basins)
     conditions = (
         _cond(
@@ -207,7 +244,7 @@ def plan_promotion(
             station.station_status is StationStatus.ONBOARDING,
             f"status is {station.station_status.value}; only onboarding is promoted",
         ),
-        _cond(2, "datum", _passed(datum.status), datum.detail),
+        _datum_condition(station),
         _cond(3, "basin", _passed(basin.status), basin.detail),
         _cond(
             4,
@@ -218,7 +255,7 @@ def plan_promotion(
             else "station is in no group with an ACTIVE model assignment",
         ),
         _weather_condition(station, stores, scope_hru_name, scope_polygon_name),
-        *_model_conditions(station, stores, models, resolve_model, clock()),
+        *_model_conditions(station, stores, models, resolve_model, target, clock()),
     )
     warnings = (
         (BRIDGE_SENSOR_WARNING,)

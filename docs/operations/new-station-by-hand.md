@@ -329,13 +329,15 @@ the package's HydroATLAS names).
 
 ## Step 8: switch the station on
 
-Collection and the forecast cycle pick up only `operational` stations. Dry run first (always
-allowed, writes nothing), then `--apply`:
+Collection and the forecast cycle pick up only `operational` stations. ⛔ Do this step AFTER
+"Model and first forecast" items 1 and 2 below (import the artifact, assign the model to the
+group): conditions 4, 6 and 7 need the ACTIVE model assignment, so before it the command always
+refuses. Dry run first (always allowed, writes nothing), then `--apply`:
 
 ```bash
 uv run python -m sapphire_flow.cli.promote_station \
-  --tenant sandbox --network research --code 00001 --operator "admin test" \
-  --weather-scope S [--target discharge] [--apply]
+  --tenant chwrr --network research --code 00001 --operator "admin test" \
+  --weather-scope trishuli [--target discharge] [--apply]
 ```
 
 It prints seven blocking conditions, all of which must hold, and lists every failing one:
@@ -360,7 +362,9 @@ a warning that the live feed must already deliver converted values (m a.s.l.).
 ⛔ On a shared host, promotion is the owner's decision: it starts live collection and puts the
 station into the forecast cycle, and demoting it later can lose observations. `--apply` is
 refused unless the host config says `[deployment] promotion_allowed = true` (default false; the
-sandbox config above adds it, a shared host's owner turns it on for one run). The dry run says
+sandbox config above adds it, a shared host's owner turns it on for one run). It is read from
+the config file (`--config` or `SAPPHIRE_CONFIG`), so it is only as strong as control over who
+can write that file. The dry run says
 when `--apply` would be refused for this reason.
 
 ## Model and first forecast

@@ -64,8 +64,15 @@ def _out(text: str) -> None:
 
 def render(plan: PromotionPlan, *, allowed: bool, applied: bool) -> str:
     station = plan.station
+    header = (
+        "NO CHANGE"
+        if plan.action is PromotionAction.ALREADY_OPERATIONAL
+        else "APPLIED"
+        if applied
+        else "DRY RUN (nothing written)"
+    )
     lines = [
-        "APPLIED" if applied else "DRY RUN (nothing written)",
+        header,
         f"  station {station.code} ({station.network}) [{station.id}]",
     ]
     if plan.action is PromotionAction.ALREADY_OPERATIONAL:
@@ -151,7 +158,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--network", required=True)
     parser.add_argument("--code", required=True)
     parser.add_argument("--operator", required=True)
-    parser.add_argument("--target", default="discharge")
+    parser.add_argument(
+        "--target", default="discharge", choices=["discharge", "water_level"]
+    )
     parser.add_argument("--weather-scope", default=None)
     parser.add_argument("--apply", action="store_true")
     return parser

@@ -77,6 +77,10 @@ class TestParser:
                 ["--tenant", "t", "--network", "n", "--code", "c"]
             )
 
+    def test_target_typo_is_rejected(self) -> None:
+        with pytest.raises(SystemExit):
+            cli._build_parser().parse_args([*BASE, "--target", "dischage"])  # pyright: ignore[reportPrivateUsage]
+
     @pytest.mark.parametrize("flag", ["--dry-run", "--confirm-shared-host", "--model"])
     def test_has_no_dry_run_confirm_or_model_flag(self, flag: str) -> None:
         with pytest.raises(SystemExit):
@@ -127,6 +131,15 @@ class TestRun:
         _run(world, [*BASE, "--apply"], allowed=True, audit=audit)
         assert _run(world, [*BASE, "--apply"], allowed=True, audit=audit) == 0
         assert len(audit.entries) == 1
+
+    def test_already_operational_header_is_not_dry_run(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        world, audit = _ready(), FakeAuditLogStore()
+        _run(world, [*BASE, "--apply"], allowed=True, audit=audit)
+        capsys.readouterr()
+        _run(world, [*BASE, "--apply"], allowed=True, audit=audit)
+        assert "DRY RUN" not in capsys.readouterr().out
 
     def test_unknown_station_exits_2(self) -> None:
         argv = [*BASE[:5], "nope", *BASE[6:]]
