@@ -70,8 +70,11 @@ avoid repeating provenance on every point.
 Implemented shape: `segments[].source` carries units/cadence and provenance;
 `segments[].points` carries values and states. `generation_time` and valid interval
 bounds remain null; `stored_at` is explicitly first storage time only.
-`segments[].gaps` marks spacing beyond recorded cadence using `after`/`before`,
-without inventing expected timestamps. Empty periods under an active publication
+`time_step_seconds` is the forecast timestep, not the frequency of issues at a
+fixed lead. No authoritative expected issue cadence is stored, so `segments[].gaps`
+is empty: neither a schedule nor missing issues are inferred from timestamp spacing.
+Stored missing/null points remain explicit; an empty gap list does not promise
+continuous or complete coverage. Empty periods under an active publication
 gate have generic `withheld` state, not hidden issue metadata. QC_FAILED and
 QC_SUSPECT values are nulled. Current non-superseded operational rows are selected
 when the gate is inactive; active gates use authoritative selected IDs.

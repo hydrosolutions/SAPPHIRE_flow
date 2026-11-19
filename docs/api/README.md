@@ -176,6 +176,9 @@ and 2 MiB. See the [event-review contract](../spec/event-review-draft.md).
 
 ### Read a period at one lead
 
+See the [frontend handoff and measured limits](event-review-handoff.md) for the
+immutable implementation snapshot, year-sized payloads and three-request timing.
+
 The same branch adds `/stations/{station_id}/review-series` in contract **2.15**;
 not yet deployed. Supply `model_id`, `lead_hours` (integer 0–8784), `start`, `end`
 and `source_mode=operational` or `source_mode=hindcast`. Bounds are aware timestamps
@@ -200,9 +203,10 @@ hindcasts are labelled `qc_unchecked`, not QC-passed. See the
 `temporal_support` is currently `unknown`: display the labelled timestamps, but do
 not infer daily means, score these values or automatically combine sources.
 `operational_with_hindcast` therefore returns 422 `review_source_unsupported`.
-Cadence is retained metadata; gap markers identify spacing beyond that cadence
-without fabricating missing timestamps or claiming complete coverage. Preserve
-those breaks and null points when drawing lines. Series source bounds describe
+The recorded forecast timestep is not the cadence of issues at a fixed lead.
+Expected issue cadence is unknown, so `gaps` is empty: no missing issue or schedule
+is inferred from timestamp spacing. An empty gap list does not promise continuity
+or completeness. Preserve stored missing/null points when drawing lines. Series source bounds describe
 recorded values at the selected lead inside the requested period; options provides
 the wider stored bounds. Neither establishes an evaluation period or expected count.
 

@@ -1,7 +1,7 @@
 # ruff: noqa: TC001, TC003 -- Pydantic resolves database boundary annotations.
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -119,7 +119,10 @@ def _series_header_columns(
     )
     offered = stored.where(
         value_table.c.lead_time_hours == query.lead_hours,
-        value_table.c.valid_time == issue + timedelta(hours=query.lead_hours),
+        value_table.c.valid_time
+        == issue
+        + sa.literal_column("INTERVAL '1 hour'", type_=sa.Interval())
+        * query.lead_hours,
     )
     return [
         table.c.representation,
@@ -163,8 +166,8 @@ def _catalog_statement(
     )
     if series:
         operational = operational.where(f.model_id == series.model_id)
-        if query.policy is ReviewPolicy.ORDINARY:
-            operational = operational.where(f.status != "superseded")
+    if query.policy is ReviewPolicy.ORDINARY:
+        operational = operational.where(f.status != "superseded")
     if query.policy is ReviewPolicy.PUBLISHED_ONLY:
         selection = forecast_publication_selections.c
         operational = operational.join(
@@ -271,7 +274,9 @@ def _catalog_statement(
                         table.c.valid_time < series.end,
                         table.c.lead_time_hours == series.lead_hours,
                         table.c.valid_time
-                        == headers.c.issue_time + timedelta(hours=series.lead_hours),
+                        == headers.c.issue_time
+                        + sa.literal_column("INTERVAL '1 hour'", type_=sa.Interval())
+                        * series.lead_hours,
                     ]
                     if series
                     else []
@@ -361,7 +366,11 @@ def _catalog_statement(
     )
     if series is None:
         return statement
-    valid_time = headers.c.issue_time + timedelta(hours=series.lead_hours)
+    valid_time = (
+        headers.c.issue_time
+        + sa.literal_column("INTERVAL '1 hour'", type_=sa.Interval())
+        * series.lead_hours
+    )
     selected = (
         sa.select(*headers.c, valid_time.label("valid_time"))
         .where(

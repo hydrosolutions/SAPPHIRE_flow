@@ -11,7 +11,6 @@ from sapphire_flow.types.event_review import (
     MAX_REVIEW_SOURCES,
     ReviewAvailability,
     ReviewCatalogLimitError,
-    ReviewGap,
     ReviewKind,
     ReviewOptions,
     ReviewPoint,
@@ -177,14 +176,8 @@ def read_review_series(
         points = tuple(
             sorted(grouped.get(source, []), key=lambda point: point.valid_time)
         )
-        gaps = tuple(
-            ReviewGap(after=previous.valid_time, before=current.valid_time)
-            for previous, current in zip(points, points[1:], strict=False)
-            if source.time_step_seconds is not None
-            and current.valid_time - previous.valid_time
-            > timedelta(seconds=source.time_step_seconds)
-        )
-        segments.append(ReviewSegment(source=source, points=points, gaps=gaps))
+        # Forecast timestep does not establish the cadence of issues at a fixed lead.
+        segments.append(ReviewSegment(source=source, points=points, gaps=()))
     has_values = any(
         p.state is ReviewPointState.AVAILABLE for s in segments for p in s.points
     )

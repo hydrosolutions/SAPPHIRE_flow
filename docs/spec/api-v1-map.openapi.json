@@ -6255,6 +6255,7 @@
       "ReviewSegmentResponse": {
         "properties": {
           "gaps": {
+            "description": "Empty while expected issue cadence is unknown; no schedule is inferred.",
             "items": {
               "$ref": "#/components/schemas/ReviewGapResponse"
             },
@@ -6524,7 +6525,7 @@
                 "type": "null"
               }
             ],
-            "description": "Recorded cadence, or null. Does not establish interval support.",
+            "description": "Recorded forecast timestep, or null; not issue cadence or interval support.",
             "title": "Time Step Seconds"
           },
           "training_period_end": {

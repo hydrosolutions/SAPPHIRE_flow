@@ -49,7 +49,10 @@ class ReviewSourceResponse(BaseModel):
     )
     time_step_seconds: int | None = Field(
         gt=0,
-        description="Recorded cadence, or null. Does not establish interval support.",
+        description=(
+            "Recorded forecast timestep, or null; "
+            "not issue cadence or interval support."
+        ),
     )
     units: str
     lead_hours: tuple[int, ...] = Field(
@@ -149,7 +152,11 @@ class ReviewGapResponse(BaseModel):
 class ReviewSegmentResponse(BaseModel):
     source: ReviewSourceResponse
     points: tuple[ReviewPointResponse, ...]
-    gaps: tuple[ReviewGapResponse, ...]
+    gaps: tuple[ReviewGapResponse, ...] = Field(
+        description=(
+            "Empty while expected issue cadence is unknown; no schedule is inferred."
+        )
+    )
     generation_time: None = None
 
 

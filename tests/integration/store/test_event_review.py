@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -135,11 +135,27 @@ class TestPgReviewSeries:
         assert point.state is ReviewPointState.UNAVAILABLE
         assert point.median is None
 
-    def test_daily_non_midnight_hindcast_preserves_exact_lead(
-        self, db_connection: sa.Connection, hindcast: HindcastForecast
+    @pytest.mark.parametrize(
+        ("session_zone", "issue_text"),
+        [
+            ("UTC", "2020-03-28T06:15:00+00:00"),
+            ("Europe/Zurich", "2020-03-28T06:15:00+00:00"),
+            ("Europe/Zurich", "2020-10-24T06:15:00+00:00"),
+        ],
+    )
+    def test_48_elapsed_hours_across_dst_in_database_session(
+        self,
+        db_connection: sa.Connection,
+        hindcast: HindcastForecast,
+        session_zone: str,
+        issue_text: str,
     ) -> None:
-        # Real daily timestamps at a non-midnight phase; timezone is display metadata.
-        issue = hindcast.hindcast_step + timedelta(hours=6, minutes=15)
+        from sapphire_flow.types.datetime import ensure_utc
+
+        db_connection.execute(
+            sa.select(sa.func.set_config("TimeZone", session_zone, True))
+        )
+        issue = ensure_utc(datetime.fromisoformat(issue_text))
         values = hindcast.ensemble.values.with_columns(
             (
                 pl.lit(issue) + (pl.col("valid_time") - hindcast.hindcast_step) * 24
@@ -202,6 +218,14 @@ class TestPgReviewSeries:
         store = PgEventReviewStore(db_connection)
         assert store.fetch_series(q).records == ()
         _publish(publication, principal, fid)
+        from sapphire_flow.db.metadata import forecasts
+
+        db_connection.execute(
+            sa.update(forecasts)
+            .where(forecasts.c.id == fid)
+            .values(status="superseded")
+        )
+        assert len(store.fetch_options(q.scope)) == 1
         selected = store.fetch_series(q)
         assert len(selected.records) == 1
         assert selected.records[0].forecast_id == fid
@@ -232,12 +256,14 @@ class TestPgReviewSeries:
         )
         store = PgEventReviewStore(db_connection)
         assert len(store.fetch_series(q).records) == 1
+        assert len(store.fetch_options(q.scope)) == 1
         db_connection.execute(
             sa.update(forecasts)
             .where(forecasts.c.id == fid)
             .values(status="superseded")
         )
         assert store.fetch_series(q).records == ()
+        assert store.fetch_options(q.scope) == ()
 
     def test_exact_lead_bulk_values_and_provenance(
         self, db_connection: sa.Connection, hindcast: HindcastForecast
@@ -330,6 +356,35 @@ class TestPgReviewSeries:
 
 
 class TestPgEventReviewStore:
+    @pytest.mark.parametrize("kind", [ReviewKind.HINDCAST, ReviewKind.OPERATIONAL])
+    def test_database_disallows_null_values_and_nonpositive_steps(
+        self, db_connection: sa.Connection, kind: ReviewKind
+    ) -> None:
+        inspector = sa.inspect(db_connection)
+        header_table, value_table = (
+            ("forecasts", "forecast_values")
+            if kind is ReviewKind.OPERATIONAL
+            else ("hindcast_forecasts", "hindcast_values")
+        )
+        columns = {
+            column["name"]: column for column in inspector.get_columns(value_table)
+        }
+        assert columns["value"]["nullable"] is False
+        header_columns = {
+            column["name"]: column for column in inspector.get_columns(header_table)
+        }
+        assert header_columns["time_step_seconds"]["nullable"] is (
+            kind is ReviewKind.OPERATIONAL
+        )
+        checks = {
+            check["name"]: check["sqltext"]
+            for check in inspector.get_check_constraints(header_table)
+        }
+        assert (
+            "time_step_seconds > 0"
+            in checks[f"ck_{header_table}_time_step_seconds_positive"]
+        )
+
     def test_cancelled_query_rolls_back_only_savepoint(
         self,
         db_connection: sa.Connection,

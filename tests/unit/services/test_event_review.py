@@ -141,21 +141,26 @@ class TestReadReviewSeries:
         assert point.state is ReviewPointState.QC_REJECTED
         assert point.median is point.p25 is point.p75 is None
 
-    def test_sparse_period_marks_gap_without_fabricating_points(self) -> None:
-        query = series_query()
+    @pytest.mark.parametrize("spacing_days", [1, 10])
+    def test_unknown_issue_cadence_does_not_infer_gaps(self, spacing_days: int) -> None:
+        query = replace(series_query(), time_step_seconds=3600)
         first = record(query)
+        first = replace(first, source=replace(first.source, time_step_seconds=3600))
         last = replace(
             first,
             forecast_id=uuid4(),
-            issued_at=first.issued_at + timedelta(days=10),
-            valid_time=first.valid_time + timedelta(days=10),
+            issued_at=first.issued_at + timedelta(days=spacing_days),
+            valid_time=first.valid_time + timedelta(days=spacing_days),
         )
         store = series_store(first)
         store.series = replace(store.series, records=(first, last))
         segment = read_review_series(store, query).segments[0]
         assert len(segment.points) == 2
-        assert segment.gaps[0].after == first.valid_time
-        assert segment.gaps[0].before == last.valid_time
+        assert [point.valid_time for point in segment.points] == [
+            first.valid_time,
+            last.valid_time,
+        ]
+        assert segment.gaps == ()
 
     def test_missing_values_remain_explicit_null_point(self) -> None:
         query = series_query()
