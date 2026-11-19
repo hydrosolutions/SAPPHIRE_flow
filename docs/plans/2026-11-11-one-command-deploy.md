@@ -10,11 +10,15 @@ DRAFT. Not executable until independently reviewed and set READY by the orchestr
 CI test-run duration is out of scope here: see [faster-ci-feedback](faster-ci-feedback.md).
 
 Reconciliation note, 2026-11-19: deployment profiles and installation files are
-administrator-owned, outside the public application repository. The implemented
-profile checker is preparation-only; its next offline-validation increment and
-the completed installation smoke test do not authorize this launcher. Reconcile
-this draft with those contracts before implementation; no duplicate profile
-schema or repository-owned agency catalogue is approved.
+administrator-owned, outside the public application repository. #565 now provides
+complete offline consistency checking for a bounded stored-data profile; it does
+not authorize launch. The next bounded increment is the separate
+[disposable profile rehearsal](2026-11-19-profile-launch-rehearsal.md), with fresh
+storage, generated test credentials, paused jobs and mandatory cleanup. This
+older draft concerns **updates to persistent deployments**, remains DRAFT, and is
+not dispatched by that rehearsal. Its host-specific observations/owner decisions
+below are historical inputs, not a generic administrator quick-start. No duplicate
+profile schema, repository-owned agency catalogue or new release identity is approved.
 
 ## Outcome
 
@@ -91,7 +95,10 @@ stay in scope because they protect existing gates, not because they are hardenin
 
 ## Design
 
-1. **Profile.** An administrator-owned external installation file; proposed fields: host, compose file list, build mode
+1. **Profile.** Reuse the implemented external profile/installation schema and
+   complete offline checker. Any update-only schema extension needs a new review;
+   the fields below are historical proposals, not approved additions.
+   An administrator-owned external installation file; proposed fields: host, compose file list, build mode
    (`host-build` only in the MVP), health URL, profile-specific checks (e.g. overlay path
    resolved, backup-worker memory), required PR checks, allowed tracks.
    Reuse or explicitly extend the existing installation schema after review;
@@ -163,7 +170,8 @@ stay in scope because they protect existing gates, not because they are hardenin
   no automatic tagging: the test track uses a sha-based test identity (I2), the release track uses
   an owner-published tag, and a hotfix deploys a merged commit with a provisional receipt (I4).
   No repository workflow uses an LLM, so none spends agent tokens.
-- **T1** Profile schema, mini profile, `tools/deploy.py` dry-run, fake-host executor, tests for
+- **T1** Reconcile update-specific inputs with the existing external schema; keep
+  any actual host profile outside this public repository. Then `tools/deploy.py` dry-run, fake-host executor, tests for
   I1-I5 including the I2 identity proof.
 - **T2** Execute path: lock, anchor, verify, rollback, receipt, abort; failure-branch tests.
 - **T3** Hotfix track and obligation mechanism, including the runbook check (before any real-host

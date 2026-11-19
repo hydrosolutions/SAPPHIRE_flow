@@ -12,14 +12,19 @@ import structlog.testing
 from sapphire_flow.exceptions import ModelSmokeTestError
 from sapphire_flow.flows.onboard_model import onboard_model_flow
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import OnboardingOutcome
+from sapphire_flow.types.enums import ModelArtifactStatus, OnboardingOutcome
 from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     ArtifactId,
     ModelId,
+    StationGroupId,
     StationId,
 )
-from tests.conftest import make_deployment_config, make_station_config
+from tests.conftest import (
+    make_deployment_config,
+    make_station_config,
+    make_training_unit,
+)
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeArtifactLineageWriter,
@@ -307,6 +312,173 @@ class TestSmokeTest:
 
 
 class TestTraining:
+    @pytest.mark.parametrize(
+        "first_outcome",
+        [
+            OnboardingOutcome.FAILED_TRAINING,
+            OnboardingOutcome.SKIPPED_NO_DATA,
+            OnboardingOutcome.GATE_REJECTED,
+            OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL,
+        ],
+    )
+    def test_station_shortfall_does_not_block_next_station(
+        self, monkeypatch: pytest.MonkeyPatch, first_outcome: OnboardingOutcome
+    ) -> None:
+        import sapphire_flow.flows.onboard_model as onboarding
+
+        class FirstTrainingFails(FakeStationForecastModel):
+            training_calls = 0
+
+            def train(self, data: object, params: object, rng: random.Random) -> bytes:
+                self.training_calls += 1
+                if (
+                    self.training_calls == 1
+                    and first_outcome is OnboardingOutcome.FAILED_TRAINING
+                ):
+                    raise ValueError("insufficient station training data")
+                return b"fake_artifact"
+
+        failed_sid, successful_sid = StationId(_uuid()), StationId(_uuid())
+        model_id = ModelId(_MODEL_ID)
+        stores = _make_stores(station_id=failed_sid)
+        stores["station_store"].store_station(
+            make_station_config(station_id=successful_sid)
+        )
+        units = tuple(
+            make_training_unit(model_id=model_id, station_id=sid)
+            for sid in (failed_sid, successful_sid)
+        )
+        # Exercise the real training, storage, promotion and assignment bodies;
+        # Prefect scheduling and evaluation are outside this control-flow test.
+        for name in (
+            "_train_onboarding_model_task",
+            "_store_onboarding_artifact_task",
+            "_record_onboarding_lineage_task",
+            "_promote_artifact_task",
+            "_create_assignment_task",
+        ):
+            monkeypatch.setattr(onboarding, name, getattr(onboarding, name).fn)
+        hindcast = MagicMock(return_value=[])
+        skills = MagicMock()
+        skills.map.return_value = []
+        monkeypatch.setattr(onboarding, "run_hindcast_flow", hindcast)
+        monkeypatch.setattr(onboarding, "compute_skills_task", skills)
+        gate_calls = 0
+
+        def evaluate_gate(*, artifact_id: ArtifactId, **kwargs: object) -> MagicMock:
+            nonlocal gate_calls
+            gate_calls += 1
+            if gate_calls == 1 and first_outcome in {
+                OnboardingOutcome.GATE_REJECTED,
+                OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL,
+            }:
+                gate = _failing_skill_gate(artifact_id)
+                if first_outcome is OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL:
+                    gate.metric_scores = ()
+                return gate
+            return _passing_skill_gate(artifact_id)
+
+        with (
+            structlog.testing.capture_logs() as logs,
+            patch.object(onboarding, "concurrency", return_value=_noop_concurrency()),
+            patch(
+                "sapphire_flow.services.model_registry.discover_models",
+                return_value={model_id: FirstTrainingFails()},
+            ),
+            patch("prefect.runtime.flow_run", MagicMock(id=uuid4())),
+            patch.object(
+                onboarding, "_determine_onboarding_scope_task", return_value=units
+            ),
+            patch.object(
+                onboarding, "_validate_compatibility_task", return_value=_compat_ok()
+            ),
+            patch.object(onboarding, "_smoke_test_model_task"),
+            patch.object(
+                onboarding,
+                "_assemble_onboarding_data_task",
+                side_effect=[
+                    None
+                    if first_outcome is OnboardingOutcome.SKIPPED_NO_DATA
+                    else MagicMock(),
+                    MagicMock(),
+                ],
+            ),
+            patch.object(
+                onboarding,
+                "_evaluate_skill_gate_task",
+                side_effect=evaluate_gate,
+            ),
+        ):
+            result = onboard_model_flow.fn(
+                model_id=_MODEL_ID,
+                station_ids=[str(failed_sid), str(successful_sid)],
+                clock=_fixed_clock,
+                rng=random.Random(0),
+                **stores,
+            )
+
+        failed, successful = result.units
+        assert failed.outcome is first_outcome
+        if first_outcome is OnboardingOutcome.FAILED_TRAINING:
+            assert failed.error == "insufficient station training data"
+        evaluated = first_outcome in {
+            OnboardingOutcome.GATE_REJECTED,
+            OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL,
+        }
+        training_artifacts = stores["artifact_store"].fetch_artifacts_by_status(
+            model_id, ModelArtifactStatus.TRAINING
+        )
+        assert training_artifacts == ([failed.artifact_id] if evaluated else [])
+        assert (failed.artifact_id is not None) == evaluated
+        assert successful.outcome is OnboardingOutcome.PROMOTED
+        active = stores["artifact_store"].fetch_artifacts_by_status(
+            model_id, ModelArtifactStatus.ACTIVE
+        )
+        assert active == [successful.artifact_id]
+        assert (
+            stores["artifact_store"].fetch_artifact_record(active[0]).station_id
+            == successful_sid
+        )
+        assert [call.kwargs["station_id"] for call in hindcast.call_args_list] == (
+            [failed_sid, successful_sid] if evaluated else [successful_sid]
+        )
+        assert stores["station_store"].fetch_model_assignments(failed_sid) == []
+        assignments = stores["station_store"].fetch_model_assignments(successful_sid)
+        assert len(assignments) == 1
+        assert assignments[0].model_id == model_id
+        summaries = [e for e in logs if e["event"] == "model.onboarding_unit_result"]
+        assert [
+            (e["station_id"], e["outcome"], e["artifact_id"]) for e in summaries
+        ] == [
+            (
+                str(failed_sid),
+                first_outcome.value,
+                str(failed.artifact_id) if evaluated else None,
+            ),
+            (str(successful_sid), "promoted", str(successful.artifact_id)),
+        ]
+        assert all(
+            e["model_id"] == _MODEL_ID and e["group_id"] is None for e in summaries
+        )
+        total = next(e for e in logs if e["event"] == "model.onboarding_completed")
+        assert (
+            total["promoted_count"],
+            total["failed_count"],
+            total["skipped_count"],
+            total["gate_rejected_count"],
+        ) == (
+            1,
+            int(first_outcome is OnboardingOutcome.FAILED_TRAINING),
+            int(
+                first_outcome
+                in {
+                    OnboardingOutcome.SKIPPED_NO_DATA,
+                    OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL,
+                }
+            ),
+            int(first_outcome is OnboardingOutcome.GATE_REJECTED),
+        )
+
     def test_failed_training_returns_failed_outcome(self) -> None:
         # Plan 130 Part B: a raise during training (the reanalysis-tail
         # missing-value crash class, or the existing insufficient-data
@@ -350,7 +522,10 @@ class TestTraining:
         artifact_id = ArtifactId(_uuid())
         stores = _make_stores(station_id=sid)
 
-        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        with (
+            structlog.testing.capture_logs() as logs,
+            pytest.raises(ValueError, match="SHA-256 mismatch"),
+        ):
             _run_flow(
                 sid,
                 artifact_id,
@@ -359,6 +534,11 @@ class TestTraining:
                     "SHA-256 mismatch for artifact simulated-store-failure"
                 ),
             )
+
+        assert not any(
+            e["event"] in {"model.onboarding_unit_result", "model.onboarding_completed"}
+            for e in logs
+        )
 
 
 class TestSkillGate:
@@ -397,6 +577,51 @@ class TestIdempotency:
 
 
 class TestStructuredLogging:
+    @pytest.mark.parametrize("scope", ["station", "group", "empty"])
+    def test_refused_or_empty_run_never_reports_activation(self, scope: str) -> None:
+        sid = StationId(_uuid())
+        gid = StationGroupId(_uuid())
+        unit = (
+            make_training_unit(
+                model_id=ModelId(_MODEL_ID),
+                station_id=sid if scope == "station" else None,
+                group_id=gid if scope == "group" else None,
+            )
+            if scope != "empty"
+            else None
+        )
+        with (
+            structlog.testing.capture_logs() as logs,
+            patch(
+                "sapphire_flow.flows.onboard_model._determine_onboarding_scope_task",
+                return_value=() if unit is None else (unit,),
+            ),
+        ):
+            result, promote, assign = _run_flow(
+                sid, ArtifactId(_uuid()), _make_stores(sid), compat=_compat_fail()
+            )
+        promote.assert_not_called()
+        assign.assert_not_called()
+        assert result.promoted_count() == 0
+        summaries = [e for e in logs if e["event"] == "model.onboarding_unit_result"]
+        assert len(summaries) == (0 if scope == "empty" else 1)
+        if summaries:
+            assert summaries[0]["outcome"] == "skipped_compat"
+            assert summaries[0]["artifact_id"] is None
+            assert summaries[0]["station_id"] == (
+                str(sid) if scope == "station" else None
+            )
+            assert summaries[0]["group_id"] == (str(gid) if scope == "group" else None)
+        total = next(e for e in logs if e["event"] == "model.onboarding_completed")
+        assert (
+            total["promoted_count"]
+            == total["failed_count"]
+            == total["gate_rejected_count"]
+            == 0
+        )
+        assert total["skipped_count"] == len(summaries)
+        assert not any(e["event"] == "model.onboarding_unit_completed" for e in logs)
+
     def test_skill_gate_completed_warning_emitted_when_failed(self) -> None:
         sid = StationId(_uuid())
         artifact_id = ArtifactId(_uuid())
