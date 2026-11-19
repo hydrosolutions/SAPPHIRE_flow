@@ -352,7 +352,8 @@ It prints seven blocking conditions, all of which must hold, and lists every fai
    equals the `--weather-scope` Gateway name (without `--weather-scope` this condition fails);
 6. the model's static features all resolve;
 7. every day of the model's lookback has a usable discharge value (window ends yesterday, like
-   the cycle), and an active rating curve exists when discharge is derived from level.
+   the cycle), and an active rating curve exists when water level is measured and the target is discharge
+   (or discharge derived from level appears in the last 60 days).
 
 `--apply` writes `forecast_targets`, the `operational` status and one `STATION_STATUS_CHANGE`
 audit row in one transaction. Exit 0 ok, 2 usage / unknown station, 3 refused (blocking condition,
