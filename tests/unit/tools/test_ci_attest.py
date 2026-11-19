@@ -127,7 +127,7 @@ class TestEveryPredicate:
             for step in steps
         ],
     )
-    @pytest.mark.parametrize("mutation", ["missing", "skipped"])
+    @pytest.mark.parametrize("mutation", ["missing", "skipped", "failure"])
     def test_each_enforcing_predicate_is_required(
         self, full_jobs: list[dict], job_name: str, step_name: str, mutation: str
     ) -> None:
@@ -136,7 +136,7 @@ class TestEveryPredicate:
         if mutation == "missing":
             job["steps"].remove(step)
         else:
-            step["conclusion"] = "skipped"
+            step["conclusion"] = mutation
         assert attest.qualified_jobs(full_jobs, run_id=1, attempt=2) is None
 
 

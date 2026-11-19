@@ -287,7 +287,7 @@ class TestExternalPreview:
         assert report["codes"] == ["SOURCE_IDENTITY_MISMATCH"]
         assert report["identity_kind"] == "ci-development"
 
-    def test_run_command_is_unavailable(self, tmp_path: Path, checkout: Path) -> None:
+    def test_run_requires_explicit_inputs(self, tmp_path: Path, checkout: Path) -> None:
         completed = command(
             [
                 sys.executable,
@@ -298,7 +298,7 @@ class TestExternalPreview:
             ],
             tmp_path,
         )
-        assert completed.returncode == 1
+        assert completed.returncode == 2
         assert json.loads(completed.stdout)["codes"] == ["CLI_INPUT_INVALID"]
 
 
@@ -706,3 +706,756 @@ class TestSelectionBoundary:
         output = capsys.readouterr().out
         assert json.loads(output)["status"] == "FAIL"
         assert "PRIVATE_CANARY" not in output
+
+
+class DockerFake:
+    def __init__(self, record: Any) -> None:
+        self.record = record
+        self.daemon = record.daemon
+        self.resources: dict[tuple[str, str], dict[str, Any]] = {}
+        self.calls: list[list[str]] = []
+
+    def add(self, kind: str, identifier: str, name: str | None = None) -> None:
+        labels = {
+            tool._LABEL: self.record.run_id,
+            tool._PROJECT_LABEL: self.record.project,
+        }
+        self.resources[kind, identifier] = {
+            "Name": name or self.record.names(kind)[0],
+            "Id": identifier,
+            "Config": {"Labels": labels},
+            "Labels": labels,
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+        }
+
+    def __call__(
+        self,
+        command: list[str],
+        environment: dict[str, str],
+        timeout: float,
+        stdin: str | None = None,
+    ) -> Any:
+        self.calls.append(command)
+        assert set(environment) == {"PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST"}
+        assert environment["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+        args = command[3:]
+        output = ""
+        if args[0] == "info":
+            output = self.daemon
+        elif "inspect" in args:
+            item = self.resources[args[0], args[-1]]
+            output = json.dumps([item])
+        elif "rm" in args:
+            del self.resources[args[0], args[-1]]
+        else:
+            kind = "container" if args[0] == "ps" else args[0]
+            filters = [
+                args[index + 1] for index, word in enumerate(args) if word == "--filter"
+            ]
+            matches: list[str] = []
+            for (resource_kind, identifier), item in self.resources.items():
+                if kind != resource_kind:
+                    continue
+
+                def matches_filter(
+                    value: str,
+                    item: dict[str, Any] = item,
+                    identifier: str = identifier,
+                ) -> bool:
+                    if value.startswith("label="):
+                        key, expected = value[6:].split("=", 1)
+                        return item["Labels"].get(key) == expected
+                    if value.startswith("name="):
+                        return item["Name"].lstrip("/") == value[5:].strip("^$")
+                    return value == "id=" + identifier
+
+                if all(matches_filter(value) for value in filters):
+                    matches.append(identifier)
+            output = "\n".join(matches)
+        return tool.CommandOutput(stdout=output, stderr="", returncode=0)
+
+
+def fake_runtime(tmp_path: Path) -> tuple[Any, DockerFake]:
+    tmp_path.chmod(0o700)
+    record = tool.Recovery(run_id="a" * 32, daemon="daemon-1")
+    fake = DockerFake(record)
+    runtime = tool.Runtime(
+        directory=tmp_path,
+        deadline=100,
+        clock=lambda: 0.0,
+        executor=fake,
+        docker="docker",
+        record=record,
+    )
+    tool.save_recovery(tmp_path, record)
+    return runtime, fake
+
+
+class TestRecovery:
+    def test_cleanup_is_idempotent_without_source_or_secret_files(
+        self, tmp_path: Path
+    ) -> None:
+        runtime, fake = fake_runtime(tmp_path)
+        for kind in ("container", "network", "volume"):
+            fake.add(kind, kind + "-id")
+        runtime.checkpoint()
+        readback = tool.read_recovery(tmp_path)
+        assert len(readback.known) == 3
+        result = tool.cleanup_runtime(runtime)
+        assert result == {"container": 1, "network": 1, "volume": 1}
+        assert not fake.resources
+        assert tool.cleanup_runtime(runtime) == {
+            "container": 0,
+            "network": 0,
+            "volume": 0,
+        }
+        assert not tool.read_recovery(tmp_path).known
+
+    @pytest.mark.parametrize(
+        "mutation", ["daemon", "run_label", "project_label", "name"]
+    )
+    def test_changed_ownership_never_authorizes_removal(
+        self, tmp_path: Path, mutation: str
+    ) -> None:
+        runtime, fake = fake_runtime(tmp_path)
+        fake.add("container", "container-id")
+        runtime.checkpoint()
+        if mutation == "daemon":
+            fake.daemon = "another-daemon"
+        elif mutation == "name":
+            fake.resources["container", "container-id"]["Name"] = "foreign"
+        else:
+            label = tool._LABEL if mutation == "run_label" else tool._PROJECT_LABEL
+            fake.resources["container", "container-id"]["Labels"].pop(label)
+        secret_directory = tmp_path / "secrets"
+        secret_directory.mkdir(mode=0o700)
+        (secret_directory / "db_password").write_text("CANARY")
+        with pytest.raises(
+            tool.RehearsalRuntimeError, match="daemon_changed|foreign_resource_refused"
+        ):
+            tool.cleanup_runtime(runtime)
+        assert fake.resources
+        assert not any("rm" in args for args in fake.calls)
+        assert not secret_directory.exists()
+        assert (tmp_path / "recovery.json").exists()
+
+    def test_recorded_network_id_cannot_disappear_through_relabelling(
+        self, tmp_path: Path
+    ) -> None:
+        runtime, fake = fake_runtime(tmp_path)
+        fake.add("network", "network-id")
+        runtime.checkpoint()
+        item = fake.resources["network", "network-id"]
+        item["Name"] = "different-name"
+        item["Labels"].clear()
+        with pytest.raises(
+            tool.RehearsalRuntimeError, match="foreign_resource_refused"
+        ):
+            tool.cleanup_runtime(runtime)
+        assert fake.resources
+        assert not any("rm" in command for command in fake.calls)
+
+    def test_stopped_probe_is_discovered_without_recorded_id(
+        self, tmp_path: Path
+    ) -> None:
+        runtime, fake = fake_runtime(tmp_path)
+        fake.add("container", "probe-id", runtime.record.project + "-probe-default")
+        fake.resources["container", "probe-id"]["State"]["Status"] = "exited"
+        assert not runtime.record.known
+        assert tool.cleanup_runtime(runtime)["container"] == 1
+
+    @pytest.mark.parametrize("kind", ["symlink", "fifo", "mode", "malformed"])
+    def test_unsafe_recovery_record_refuses_before_read(
+        self, tmp_path: Path, kind: str
+    ) -> None:
+        runtime, _ = fake_runtime(tmp_path)
+        path = tmp_path / "recovery.json"
+        if kind == "mode":
+            path.chmod(0o644)
+        elif kind == "malformed":
+            path.write_text('{"run_id": "PRIVATE_CANARY"}')
+        else:
+            path.unlink()
+            if kind == "symlink":
+                path.symlink_to(tmp_path / "outside")
+            else:
+                os.mkfifo(path, 0o600)
+        with pytest.raises(
+            (tool.RehearsalRuntimeError, KeyError),
+            match="unsafe_recovery_record|schema_version",
+        ):
+            tool.read_recovery(runtime.directory)
+
+
+class TestRuntimeChannels:
+    @pytest.mark.parametrize(
+        "stream,status", [("stdout", 0), ("stderr", 0), ("stderr", 1), ("stdout", 1)]
+    )
+    def test_secret_canary_is_detected_before_command_failure(
+        self, tmp_path: Path, stream: str, status: int
+    ) -> None:
+        def executor(
+            command: list[str],
+            environment: dict[str, str],
+            timeout: float,
+            stdin: str | None = None,
+        ) -> Any:
+            return tool.CommandOutput(
+                stdout="PRIVATE_CANARY" if stream == "stdout" else "",
+                stderr="PRIVATE_CANARY" if stream == "stderr" else "",
+                returncode=status,
+            )
+
+        runtime = tool.Runtime(
+            directory=tmp_path,
+            deadline=1,
+            clock=lambda: 0.0,
+            executor=executor,
+            canaries=("PRIVATE_CANARY",),
+        )
+        with pytest.raises(tool.RehearsalRuntimeError, match="secret_output_detected"):
+            runtime.command(["ignored"])
+
+    def test_real_subprocess_keeps_failed_output_private(self) -> None:
+        output = tool.execute(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('synthetic-out'); "
+                "sys.stderr.write('synthetic-error'); sys.exit(3)",
+            ],
+            {"PATH": os.defpath},
+            10,
+        )
+        assert output.returncode == 3
+        assert output.stdout == "synthetic-out"
+        assert output.stderr == "synthetic-error"
+        assert "synthetic" not in repr(output)
+
+    def test_runtime_binding_roundtrip_with_literal_shell_values(
+        self, selected_recipe: tuple[Any, dict[str, Any]], tmp_path: Path
+    ) -> None:
+        selection, original = selected_recipe
+        snapshots = tool.restrict_recipe(selection, original, ROOT)
+        original["services"]["api"]["environment"]["LITERAL"] = "$${UNEXPANDED} $$HOME"
+        original["services"]["api"]["command"] = ["sh", "-c", "echo $$HOME"]
+        images = tuple(
+            (value["image"], "sha256:" + str(index) * 64)
+            for index, value in enumerate(original["services"].values())
+        )
+        bindings = tool.RecipeBindings(
+            project="sapphire-rehearsal-" + "a" * 32,
+            run_id="a" * 32,
+            workspace=tmp_path / "path with $dollars",
+            images=images,
+        )
+        candidate = tool.transform_recipe(original, snapshots, bindings)
+        executable = tool.compose_executable(selection)
+        bindings.workspace.mkdir(mode=0o700)
+        recipe_file = bindings.workspace / "recipe.json"
+        recipe_file.write_text(json.dumps(candidate))
+        before = recipe_file.read_bytes()
+
+        class RenderOnlyRuntime:
+            directory = bindings.workspace
+
+            def guard_daemon(self) -> Any:
+                from types import SimpleNamespace
+
+                return SimpleNamespace(project=bindings.project)
+
+            def command(self, arguments: list[str]) -> str:
+                assert "config" in arguments
+                assert arguments[arguments.index("-f") + 1] == str(recipe_file)
+                completed = subprocess.run(
+                    arguments,
+                    env={
+                        "PATH": os.defpath,
+                        "HOME": "/dev/null",
+                        "DOCKER_CONFIG": "/dev/null",
+                    },
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                assert completed.returncode == 0
+                return completed.stdout
+
+        prepared = tool.Prepared(
+            preview=tool.Preview(status="PLAN_READY", codes=()),
+            recipe=original,
+            snapshots=tuple(snapshots.items()),
+        )
+        tool.render_runtime_recipe(RenderOnlyRuntime(), executable, prepared, bindings)
+        assert recipe_file.read_bytes() == before
+
+    @pytest.mark.parametrize("replacement", [None, True])
+    def test_executable_snapshot_bind_must_explicitly_disable_directory_creation(
+        self, selected_recipe: tuple[Any, dict[str, Any]], replacement: bool | None
+    ) -> None:
+        selection, original = selected_recipe
+        snapshots = tool.restrict_recipe(selection, original, ROOT)
+        candidate = tool.transform_recipe(original, snapshots)
+        mount = next(
+            item
+            for item in candidate["services"]["api"]["volumes"]
+            if item["type"] == "bind"
+        )
+        if replacement is None:
+            mount["bind"].pop("create_host_path")
+        else:
+            mount["bind"]["create_host_path"] = replacement
+        with pytest.raises(ProfileError, match="TRANSFORM_INVALID"):
+            tool.verify_transform(original, candidate, snapshots)
+        if replacement is True:
+            with pytest.raises(ProfileError, match="TRANSFORM_INVALID"):
+                tool.verify_transform(
+                    original, candidate, snapshots, representation="rendered"
+                )
+
+    def test_execute_kills_and_reaps_after_eof_wait_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        events: list[str] = []
+
+        class Process:
+            stdin = SimpleNamespace(fileno=lambda: 0, close=lambda: None)
+            stdout = SimpleNamespace(fileno=lambda: 1)
+            stderr = SimpleNamespace(fileno=lambda: 2)
+            returncode = None
+
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                assert "reaped" in events
+
+            def wait(self, timeout: float) -> int:
+                if "killed" not in events:
+                    raise subprocess.TimeoutExpired("private command", timeout)
+                events.append("reaped")
+                return 0
+
+            def poll(self) -> None:
+                return None
+
+            def kill(self) -> None:
+                events.append("killed")
+
+        class Selector:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                pass
+
+            def register(self, *args: Any) -> None:
+                pass
+
+            def get_map(self) -> dict[str, Any]:
+                return {}
+
+        def popen(*args: Any, **kwargs: Any) -> Process:
+            return Process()
+
+        def blocking(*args: Any) -> None:
+            pass
+
+        monkeypatch.setattr(tool.subprocess, "Popen", popen)
+        monkeypatch.setattr(tool.selectors, "DefaultSelector", Selector)
+        monkeypatch.setattr(tool.os, "set_blocking", blocking)
+        with pytest.raises(
+            tool.RehearsalRuntimeError, match="command_unavailable_or_timeout"
+        ):
+            tool.execute(["unused"], {}, 1)
+        assert events == ["killed", "reaped"]
+
+
+class TestLifecycleFaults:
+    @pytest.mark.parametrize(
+        "stage",
+        [
+            "image_preflight",
+            "init",
+            "workers_and_api",
+            "api",
+            "unexpected_flow_execution",
+            "command_timeout",
+            "interrupted",
+            "cleanup_failure",
+            "unexpected_exception",
+            "profile_drift",
+        ],
+    )
+    def test_failure_always_cleans_generated_inputs_and_owned_objects(
+        self,
+        selected_recipe: tuple[Any, dict[str, Any]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stage: str,
+    ) -> None:
+        selection, recipe = selected_recipe
+        record = tool.Recovery(run_id="a" * 32, daemon="daemon-1")
+        fake = DockerFake(record)
+        snapshot_paths = tool.restrict_recipe(selection, recipe, ROOT)
+        frozen = tool.capture(tuple(Path(path) for path in snapshot_paths), ())
+        prepared = tool.Prepared(
+            preview=tool.Preview(status="PLAN_READY", codes=(), revision="0" * 40),
+            recipe=recipe,
+            frozen=frozen,
+            snapshots=tuple(snapshot_paths.items()),
+        )
+
+        def prepare(*args: Any, **kwargs: Any) -> Any:
+            return prepared
+
+        def images(*args: Any) -> tuple[tuple[str, str], ...]:
+            if stage == "image_preflight":
+                raise tool.RehearsalRuntimeError("image_identity_invalid")
+            return tuple(
+                (item["image"], "sha256:" + "1" * 64)
+                for item in recipe["services"].values()
+            )
+
+        def identity(*args: Any) -> str:
+            return "0" * 40
+
+        def render(*args: Any) -> None:
+            pass
+
+        def start(
+            runtime: Any,
+            executable: str,
+            prepared: Any,
+            bindings: Any,
+            tenant: str,
+            sleep: Any,
+            mark: Any,
+            checks: list[str],
+        ) -> None:
+            fake.add("container", "owned-container")
+            mark(stage)
+            if stage == "cleanup_failure":
+                fake.resources["container", "owned-container"]["Labels"].pop(
+                    tool._LABEL
+                )
+                raise tool.RehearsalRuntimeError("unexpected_flow_execution")
+            if stage == "unexpected_exception":
+                raise RuntimeError("private-exception-canary")
+            if stage == "profile_drift":
+                raise tool.ProfileError("INPUT_DRIFT", "private-exception-canary")
+            raise tool.RehearsalRuntimeError(stage)
+
+        def compose(*args: Any) -> str:
+            return "compose-bin"
+
+        def executable(*args: Any) -> str:
+            return "docker-bin"
+
+        monkeypatch.setattr(tool, "prepare", prepare)
+        monkeypatch.setattr(tool, "source_identity", identity)
+        monkeypatch.setattr(tool, "resolve_images", images)
+        monkeypatch.setattr(tool, "render_runtime_recipe", render)
+        monkeypatch.setattr(tool, "start_and_verify", start)
+        monkeypatch.setattr(tool, "compose_executable", compose)
+        monkeypatch.setattr(tool.shutil, "which", executable)
+        report_directory = tmp_path / "runtime-report"
+        code, report = tool.run_rehearsal(
+            selection,
+            report_directory,
+            clock=lambda: 0.0,
+            executor=fake,
+            run_id_source=lambda: "a" * 32,
+        )
+        assert code == (2 if stage == "image_preflight" else 1)
+        assert report["status"] == "FAIL_REHEARSAL"
+        assert report["forecast_executed"] == (
+            True if stage in {"unexpected_flow_execution", "cleanup_failure"} else None
+        )
+        if stage == "cleanup_failure":
+            assert fake.resources
+            assert report["cleanup_code"] == "cleanup_incomplete"
+            assert report["cleanup_cause"] == "foreign_resource_refused"
+            assert report["failure_code"] == "unexpected_flow_execution"
+        else:
+            assert not fake.resources
+        assert not (report_directory / "secrets").exists()
+        assert not (report_directory / "inputs").exists()
+        assert not (report_directory / "recipe.json").exists()
+        assert (report_directory / "recovery.json").exists()
+        assert "private-exception-canary" not in json.dumps(report)
+        if stage in {"unexpected_exception", "profile_drift"}:
+            assert report["failure_code"] == (
+                "unexpected_failure"
+                if stage == "unexpected_exception"
+                else "INPUT_DRIFT"
+            )
+        assert str(selection.profile.base_config) not in json.dumps(report)
+
+    @pytest.mark.parametrize("worker_running", [True, False])
+    def test_normal_startup_order_keeps_pools_paused_before_workers(
+        self, monkeypatch: pytest.MonkeyPatch, worker_running: bool
+    ) -> None:
+        events: list[str] = []
+
+        class Runtime:
+            directory = Path("/private/synthetic")
+            record = tool.Recovery(run_id="a" * 32, daemon="daemon")
+            deadline = 800
+
+            def clock(self) -> float:
+                return 0.0
+
+            def guard_daemon(self) -> Any:
+                return self.record
+
+            def command(self, args: list[str]) -> str:
+                assert (
+                    "--no-build" in args and args[args.index("--pull") + 1] == "never"
+                )
+                assert "--no-deps" in args
+                events.append("up:" + args[-1])
+                return ""
+
+            def checkpoint(self) -> None:
+                pass
+
+            def service(self, name: str) -> str:
+                return name
+
+            def run(self, args: list[str], *, timeout: float = 120) -> str:
+                if args[0] == "wait":
+                    assert timeout == 800
+                return "0"
+
+            def inspect_owned(self, kind: str, identifier: str) -> dict[str, Any]:
+                return {"State": {"Running": worker_running}}
+
+            def inventory(self) -> dict[str, list[str]]:
+                return {"container": []}
+
+        def checked(runtime: Any, image: str, action: str) -> None:
+            events.append(action)
+
+        def healthy(runtime: Any, names: tuple[str, ...], sleep: Any) -> None:
+            events.append("healthy:" + names[0])
+
+        def database(*args: Any) -> None:
+            events.append("database")
+
+        monkeypatch.setattr(tool, "helper", checked)
+        monkeypatch.setattr(tool, "wait_services", healthy)
+        monkeypatch.setattr(tool, "verify_database", database)
+        prepared = tool.Prepared(
+            preview=tool.Preview(status="PLAN_READY", codes=()),
+            recipe={"services": {"api": {"image": "default"}}},
+        )
+        checks: list[str] = []
+
+        def sleep(seconds: float) -> None:
+            pass
+
+        if not worker_running:
+            with pytest.raises(
+                tool.RehearsalRuntimeError, match="isolated_startup_failed"
+            ):
+                tool.start_and_verify(
+                    Runtime(),
+                    "compose",
+                    prepared,
+                    tool.RecipeBindings(images=(("default", "image-id"),)),
+                    "tenant",
+                    sleep,
+                    events.append,
+                    checks,
+                )
+            return
+        tool.start_and_verify(
+            Runtime(),
+            "compose",
+            prepared,
+            tool.RecipeBindings(images=(("default", "image-id"),)),
+            "synthetic",
+            sleep,
+            events.append,
+            checks,
+        )
+        assert events.index("prepare-pools") < events.index("up:init")
+        assert (
+            events.index("database")
+            < events.index("pause-jobs")
+            < events.index("up:prefect-worker-backup")
+        )
+        assert events[-3:] == ["workers", "api", "workers"]
+        assert "no_execution" in checks
+
+
+class TestPrivateDelivery:
+    def test_private_input_becomes_readable_snapshot_without_changing_original(
+        self, selected_recipe: tuple[Any, dict[str, Any]], tmp_path: Path
+    ) -> None:
+        selection, recipe = selected_recipe
+        selection.profile.base_config.chmod(0o600)
+        snapshots = tool.restrict_recipe(selection, recipe, ROOT)
+        frozen = tool.capture(tuple(Path(path) for path in snapshots), ())
+        prepared = tool.Prepared(
+            preview=tool.Preview(status="PLAN_READY", codes=()),
+            recipe=recipe,
+            frozen=frozen,
+            snapshots=tuple(snapshots.items()),
+        )
+        directory = tmp_path / "private"
+        directory.mkdir(mode=0o700)
+        runtime = tool.Runtime(directory=directory, deadline=1)
+        bindings = tool.RecipeBindings(workspace=directory)
+        tool.write_inputs(prepared, bindings, runtime)
+        copied = (
+            directory
+            / "inputs"
+            / snapshots[str(selection.profile.base_config.resolve())]
+        )
+        assert copied.read_bytes() == selection.profile.base_config.read_bytes()
+        assert copied.stat().st_mode & 0o777 == 0o444
+        assert selection.profile.base_config.stat().st_mode & 0o777 == 0o600
+        assert directory.stat().st_mode & 0o777 == 0o700
+        for item in frozen:
+            snapshot = directory / "inputs" / snapshots[str(item.path.resolve())]
+            assert snapshot.stat().st_mode & 0o111 == item.mode & 0o111
+        assert len(set(runtime.canaries)) == 5
+        tool.erase_private_inputs(directory)
+        assert selection.profile.base_config.exists()
+
+    def test_interrupted_atomic_recovery_write_can_be_retried(
+        self, tmp_path: Path
+    ) -> None:
+        runtime, _ = fake_runtime(tmp_path)
+        temporary = tmp_path / "recovery.json.new"
+        temporary.write_text('{"incomplete":')
+        temporary.chmod(0o600)
+        tool.save_recovery(tmp_path, runtime.record)
+        assert tool.read_recovery(tmp_path) == runtime.record
+        assert not temporary.exists()
+
+    @pytest.mark.parametrize("signal_name", ["SIGINT", "SIGTERM", "SIGHUP"])
+    def test_catchable_signal_maps_to_cleanup_failure_path_and_restores_handlers(
+        self,
+        signal_name: str,
+    ) -> None:
+        import signal
+
+        if not hasattr(signal, signal_name):
+            pytest.skip("signal not available")
+        signum = getattr(signal, signal_name)
+        previous = signal.getsignal(signum)
+        with tool.runtime_signals():
+            handler = signal.getsignal(signum)
+            assert callable(handler)
+            with pytest.raises(tool.RehearsalRuntimeError, match="interrupted"):
+                handler(signum, None)
+        assert signal.getsignal(signum) == previous
+
+
+def test_runtime_refusal_text_lists_all_actions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tool.print_runtime_result(
+        2, {"status": "REFUSED", "codes": ["SOURCE_DIRTY", "INPUT_DRIFT"]}, False, None
+    )
+    output = capsys.readouterr().out
+    for code in ("SOURCE_DIRTY", "INPUT_DRIFT"):
+        assert code + ": " + tool.action(code) in output
+
+
+def test_api_helper_prefect_home_is_exec_confined() -> None:
+    calls: list[list[str]] = []
+
+    class Runtime:
+        def guard_daemon(self) -> Any:
+            return tool.Recovery(run_id="a" * 32, daemon="daemon")
+
+        def service(self, name: str) -> str:
+            assert name == "api"
+            return "owned-api"
+
+        def run(self, args: list[str]) -> str:
+            calls.append(args)
+            return '{"status": "ok", "stage": "api"}'
+
+    tool.helper(Runtime(), "unused-image", "api")
+    assert calls[0][:6] == [
+        "exec",
+        "-e",
+        "SAPPHIRE_REHEARSAL_RUN_ID=" + "a" * 32,
+        "-e",
+        "PREFECT_HOME=/tmp/prefect",
+        "owned-api",
+    ]
+
+
+@pytest.mark.parametrize("code", ["SOURCE_DIRTY", "SOURCE_IDENTITY_MISMATCH"])
+def test_hosted_harness_retains_preflight_refusal_before_assertion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "rehearsal_acceptance_test",
+        ROOT / "tests/integration/test_deployment_rehearsal.py",
+    )
+    assert spec is not None and spec.loader is not None
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+
+    class Process:
+        returncode = 2
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def poll(self) -> int:
+            return 2
+
+        def communicate(self, **kwargs: Any) -> tuple[str, str]:
+            return json.dumps(
+                {
+                    "scope": "disposable_rehearsal",
+                    "status": "REFUSED",
+                    "codes": [code],
+                    "private_unknown": "not-exported",
+                }
+            ), ""
+
+    def popen(*args: Any, **kwargs: Any) -> Process:
+        return Process()
+
+    monkeypatch.setattr(harness.subprocess, "Popen", popen)
+    evidence: dict[str, Any] = {}
+    with pytest.raises(AssertionError, match="rehearsal did not pass"):
+        harness.launch(
+            tmp_path / "profile",
+            tmp_path / "install",
+            tmp_path / "report",
+            fault=False,
+            deadline=100,
+            canaries=(),
+            evidence=evidence,
+        )
+    assert evidence == {"status": "REFUSED", "codes": [code], "exit_code": 2}
+
+
+def test_failed_operation_uses_fixed_label_without_private_arguments(
+    tmp_path: Path,
+) -> None:
+    def fail(*args: Any) -> Any:
+        return tool.CommandOutput(stdout="", stderr="private-canary", returncode=1)
+
+    runtime = tool.Runtime(
+        directory=tmp_path, deadline=100, clock=lambda: 0, executor=fail
+    )
+    with pytest.raises(tool.RehearsalRuntimeError, match="command_failed"):
+        runtime.run(["exec", "private-container-name", "private-command"])
+    assert runtime.failed_operation == "docker_exec"

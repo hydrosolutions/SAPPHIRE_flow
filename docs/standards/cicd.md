@@ -12,6 +12,11 @@ patch from the tested base. Dependabot does not update these repository-specific
 metadata fields. Run the workflow-inventory and release-target tests before
 pushing the correction; do not disable either check.
 
+Source unit and integration matrix jobs pin Ubuntu 24.04, the supported runner
+also used by private verification, after Ubuntu 26 package-mirror failures prevented
+tests from starting. All shards, dependency checks and test gates remain enabled.
+Other source CI jobs retain their existing runner selection.
+
 ## Private configuration preparation
 
 Start with the [administrator quick-start](../deployment-quickstart.md) and
@@ -22,10 +27,22 @@ reuse neutral typed defaults; scientific inputs remain explicit and uncovered
 policies remain pending. Preserve the complete ordered
 file lists and follow the applicable host runbook for actual deployment.
 
-The [private-profile rehearsal preview](../deployment/profile-rehearsal.md)
-adds no deployment/cleanup command. Its finite in-memory changes are checked
-against the existing offline render; existing recipes and launch procedures remain
-unchanged. Runtime qualification is a separate milestone.
+The [private-profile rehearsal](../deployment/profile-rehearsal.md) preserves
+existing recipes and persistent deployment procedures. Preview remains offline;
+explicit runtime uses immutable preloaded images, fresh labelled storage and test
+credentials, paused pools before init/workers, no host ports and internal networks.
+Its finite transform is checked against the offline render. Hosted development
+qualification runs in the Aquacast image-proof job after separately building the
+default variant and preloading pinned infrastructure. Private build access absence
+retains the existing degraded path and reports rehearsal qualification unperformed.
+The 45-minute combined acceptance budget plus cleanup reserves has a 55-minute
+step limit; the job allows 114 minutes including the existing builds/scans. Only
+the allowlisted qualification summary is uploaded. The Aquacast Trivy database
+cache lives under runner temporary storage so scanning does not dirty the checked
+source used by rehearsal. No clean-source guard is bypassed. FULL source-CI attestation
+requires every rehearsal preparation, execution and safe-upload step to succeed;
+missing, skipped or failed qualification cannot produce FULL evidence. Workflow
+changes refresh both the reviewed byte hash and mandatory producer inventory.
 
 ## Docker Compose service topology
 

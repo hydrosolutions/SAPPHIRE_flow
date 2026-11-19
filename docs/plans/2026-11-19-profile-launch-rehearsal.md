@@ -46,8 +46,9 @@ clients, hotfix tracks and automatic rollback are separate work.
 
 ## Supported selection and preview
 
-Separate entry point: L1 delivers `preview`; `run` and `cleanup` below remain
-proposed L2/L3 commands and are not accepted by the current CLI:
+Separate entry point: `preview` remains offline. L2/L3 add explicit disposable
+`run` and ownership-checked `cleanup`; runtime qualification evidence is recorded
+in the implementation checkpoint, separately from command availability:
 
 ```sh
 uv run python tools/deployment_rehearsal.py --profile-file /private/deployment/profile.toml preview --installation /private/deployment/installation.toml
@@ -301,9 +302,9 @@ serialization tests preserve literal dollars and shell expressions with
 `--no-interpolate`; snapshot binds explicitly forbid implicit directory creation.
 Generated secret names are explicit; symbolic image references remain unresolved
 and preserve the original image-sharing groups.
-Focused checks and independent review are complete; full final-code CI is the
-remaining delivery gate, recorded in the implementation PR. L2–L4 are not
-implemented or qualified by this checkpoint.
+L1 merged in PR #569 (`bc698d8f`); final code `3106de799` passed CI run
+44508119916 and all 45 focused tests. L2–L4 were not implemented or qualified by
+that checkpoint.
 
 One independent Claude patch review completed. Expected config-reread and render-
 shape failures now produce sanitized fixed diagnostics; failed development
@@ -323,3 +324,98 @@ only for standalone Compose while production also supports trusted system plugin
 The test now observes the executable selected by the real production render and
 also exercises plugin-only discovery. Real rendering stays mandatory; no Docker
 wrapper, private credential configuration or daemon is used.
+
+### L2/L3 implementation checkpoint (in progress)
+
+The same finite transform now binds runtime names, private snapshots/test deliveries
+and immutable image IDs. A bounded runner retains both output streams privately;
+recovery records are fsynced before mutations and revalidated by daemon, project
+and run labels per removal. Guarded helper checks create paused pools before init,
+read back exact schedules/jobs, check bounded complete flow history and keep API
+token creation/use inside one process. Runtime reports retain original failures
+when cleanup fails and distinguish confirmed no-execution from unknown evidence.
+
+Opt-in hosted development qualification runs in the existing Aquacast image-proof
+job, adding the default build through the existing pinned action/secret boundary.
+Infrastructure preloading is separate from the no-build/no-pull launcher. The
+harness invokes the actual CLI twice and kills only the ownership-checked init
+container in a third run, with sentinel preservation and cleanup in failure paths.
+It uploads only an allowlisted summary. The existing Dependabot degraded route
+continues to report unavailable qualification as not performed. The combined
+45-minute budget plus cleanup reserve fits a 55-minute step and 114-minute job
+including existing builds/scans. No release publication or live rollout changes.
+
+Local daemon acceptance is deliberately not performed: the available daemon hosts
+unrelated services. One independent Claude patch review is complete; actual hosted Docker
+qualification and full final-code CI remain delivery gates. L4 remains separate and unperformed.
+
+Snapshot delivery preserves exact bytes and executable bits, while granting read
+bits 0444 on the copies inside the owner-only 0700 workspace. This lets standard
+container UIDs read private 0600 administrator inputs without changing originals,
+mount write access or service privileges. The hosted fixture uses 0600 inputs.
+
+Runtime serialization keeps the explicit no-host-directory-creation flag in the
+private executable recipe. Compose 2.38 may omit false only in its normalized
+output; comparison normalizes that omission solely for renderer output. Dropping
+the flag from executable input or changing it to true is still refused, and the
+renderer output is never written back as the launch recipe. The post-render
+verification and unchanged-file check pass with Compose 2.38.2 and 5.6.0.
+
+Review corrections preserve fixed diagnostic codes and separate cleanup causes,
+cover unexpected boundary failures without exposing messages, handle SIGHUP, and
+allow init only the remaining startup budget. API-helper Prefect state stays in
+its owned exec environment. Worker containers must still be running after fresh
+heartbeat verification. Hosted acceptance independently queries both ownership
+labels and each run-specific name prefix after every scenario, and derives cleanup
+counts from the standard recipe's used resources. CI contracts pin no publication,
+secret-free qualification inputs, mandatory non-skipped execution and the sole safe
+artifact. Full bounded flow history remains checked; no Scheduled/Pending filter
+was added. Raw review reports remain local. These corrections still require the
+hosted real-Docker gate; no shared local daemon was used.
+
+CI exposed stale workflow contracts: the image-identity test still expected only
+one build in the Aquacast leg, and the attestation producer retained the prior
+workflow hash/inventory. Corrections preserve separate variants and build secrets,
+bind the independently reviewed workflow bytes, and require all six rehearsal
+steps for FULL evidence. Predicate tests reject missing, skipped and failed steps.
+Actual hosted runtime qualification remains a separate pending acceptance gate.
+
+The first hosted rehearsal refused before startup; its original harness asserted
+before retaining the safe outcome, so the root diagnostic was unavailable. The
+harness now retains allowlisted refusal/failure fields before assertions, checks
+sentinel preservation on failure, and records recovery and independent absence
+status per run. Fixed operation labels expose no arguments or private paths.
+The first failure is not startup/cleanup success; actual qualification is pending.
+
+Second hosted evidence retained `SOURCE_DIRTY`, no recovery record and unverified
+run absence; sentinel preservation and cleanup were verified. The pinned Trivy
+action and CI log confirmed its default database cache under checkout `.cache/trivy`.
+The Aquacast scan now explicitly uses runner temporary storage. Its action-owned
+environment file is already removed by the action. No git cleanup, ignore rule or
+source guard exemption was introduced; workflow hash and external-cache regression
+were updated. Hosted qualification still must pass on the corrected workflow.
+
+Repeated Ubuntu 26 package-mirror failures occurred before source unit/integration
+tests. The orchestrator authorized pinning only those two matrix jobs to Ubuntu
+24.04, already used by successful private verification. All shards, dependencies,
+time bounds and enforcing checks remain unchanged; the workflow hash binds the
+final cache-location and runner-selection corrections together.
+
+### First successful hosted runtime qualification
+
+CI run `44536527853`, tested merge source
+`7b3200c8726a0b6c8a1bcb645ea8fdede2dd2d2f`, passed the real hosted gate:
+two `PASS_REHEARSAL` runs completed all seven checks with no forecast execution;
+each removed 8 containers, 2 networks and 9 volumes. The injected init failure
+returned `init_failed` and removed its 3 containers, 1 network and 2 volumes.
+Independent absence checks passed for all three runs; the sentinel was preserved
+and cleaned. This supersedes the earlier pending hosted-qualification notes, not
+the separate L4 provider/release qualification. Final full CI remains pending.
+
+The stale exact credential-guard scan assertion now includes the external cache
+path; its full module and related workflow contracts passed 164 tests locally.
+
+After the preceding PR #571 merged, the branch was rebased onto
+`573c5bfd18d0d08476cfb66601ed78e3a690ef09` and the release helper advanced the
+target to `0.1.1161`. Runtime code and workflow checks are unchanged. Fresh CI on
+this updated base is required before removing the merge-order hold.

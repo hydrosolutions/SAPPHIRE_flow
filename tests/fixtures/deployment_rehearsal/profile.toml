@@ -1,0 +1,51 @@
+# Synthetic runtime qualification only; never agency defaults.
+schema_version = 1
+name = "synthetic disposable rehearsal"
+state = "configured"
+base_config = "application.toml"
+overlays = []
+compose_files = ["@CHECKOUT@/docker-compose.yml", "compose.yml"]
+runbook = "@CHECKOUT@/docs/deployment-quickstart.md"
+required_inputs = []
+
+[secret_requirements.db_password]
+use = "runtime"
+consumers = ["postgres", "prefect-server", "init"]
+
+[secret_requirements.sapphire_api_db_password]
+use = "runtime"
+consumers = ["api", "init"]
+
+[secret_requirements.sapphire_worker_db_password]
+use = "runtime"
+consumers = ["prefect-worker", "prefect-worker-ingest", "init"]
+
+[secret_requirements.sapphire_backup_db_password]
+use = "runtime"
+consumers = ["prefect-worker-backup", "init"]
+
+[secret_requirements.access_token_pepper]
+use = "runtime"
+consumers = ["api"]
+
+[secret_requirements.recap_dg_client_token]
+use = "build"
+consumers = ["prefect-worker", "prefect-worker-ingest", "prefect-worker-backup", "api", "init"]
+environment_name = "RECAP_DG_CLIENT_TOKEN"
+
+[secret_requirements.aquacast_token]
+use = "build"
+consumers = ["prefect-worker"]
+environment_name = "AQUACAST_TOKEN"
+
+
+# Private station/rating references: choose a supported format, not just a suffix.
+# An unsupported agency format needs developer work before it can be validated.
+# [[inputs]]
+# purpose = "stations"
+# parser = "stations_toml"
+# path = "stations.toml"
+# [[inputs]]
+# purpose = "ratings"
+# parser = "rating_delivery_manifest"
+# path = "ratings/manifest.json"

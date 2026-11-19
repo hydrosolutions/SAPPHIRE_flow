@@ -106,12 +106,18 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
         "Build Aquacast app image",
         "Trivy Aquacast image scan",
         "Prove Aquacast image release identity",
+        "Build default image for disposable rehearsal",
+        "Set up rehearsal project environment",
+        "Install frozen rehearsal dependencies and remove clone credentials",
+        "Preload pinned rehearsal infrastructure",
+        "Qualify disposable private-profile rehearsal",
+        "Upload safe rehearsal qualification summary",
     ),
 }
 
 # Reviewed workflow bytes bind names to actual commands, action pins and inputs.
 # Update only with the workflow and the producer inventory drift tests.
-WORKFLOW_SHA256 = "baa2a0bcd0e5819c03f4d48e3f4befd0d2960e5b396b0c88456f7f9600060a3a"
+WORKFLOW_SHA256 = "5de36664174a61b09acad64b97a3e4ab6ebf42c9bdb51d3edecefb97848b65ce"
 
 
 def require_workflow(root: Path) -> None:

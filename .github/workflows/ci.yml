@@ -127,7 +127,7 @@ jobs:
           cache: "true"
 
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Plan 319 — one leg per shard, each on its own runner. `-n auto` (Plan 300)
     # already used every core of ONE runner; `ubuntu-latest` gives 2-4 of them
     # against 12 on a developer machine, which is why the same suite took 12-13
@@ -702,7 +702,7 @@ jobs:
           uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client
 
   integration-shard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     name: integration (${{ matrix.shard }})
     strategy:
       fail-fast: false
@@ -1383,7 +1383,7 @@ jobs:
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 114
     permissions: { contents: read, pull-requests: read }
     env:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
@@ -1640,7 +1640,7 @@ jobs:
           github.actor == 'dependabot[bot]' &&
           env.UV_LOCK_CHANGED == 'false'
         run: |
-          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof and vulnerability scan were NOT performed; do not claim both images were verified."
+          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof, vulnerability scan and disposable rehearsal qualification were NOT performed; do not claim both images were verified."
           echo "### Aquacast image proof not performed" >> "$GITHUB_STEP_SUMMARY"
           echo "Supported Dependabot degraded case: AQUACAST_TOKEN absent and uv.lock unchanged." >> "$GITHUB_STEP_SUMMARY"
       - name: Build Aquacast app image
@@ -1678,6 +1678,7 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           cache: 'true'
+          cache-dir: ${{ runner.temp }}/trivy-aquacast-cache
 
       - name: Prove Aquacast image release identity
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
@@ -1690,6 +1691,85 @@ jobs:
           docker run --rm --network none -e DB_PASSWORD=ci-smoke-only \
             "sapphire-flow-aquacast:ci-proof-${{ github.sha }}" python -I -c \
             "import sys, sapphire_flow, prefect, aquacast, torch; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"
+
+      - name: Build default image for disposable rehearsal
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        timeout-minutes: 10
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: sapphire-flow:ci-proof-${{ github.sha }}
+          build-args: |
+            WITH_AQUACAST=0
+            SAPPHIRE_RELEASE_VERSION=0.dev0+g${{ github.sha }}
+            SAPPHIRE_SOURCE_REVISION=${{ github.sha }}
+          load: true
+          push: false
+          secrets: |
+            recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+      - name: Set up rehearsal project environment
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        timeout-minutes: 3
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+      - name: Install frozen rehearsal dependencies and remove clone credentials
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 5
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SAPPHIRE_FLOW: 0.dev0+g${{ github.sha }}
+        run: |
+          set -euo pipefail
+          auth_section="url.https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git"
+          trap 'git config --global --remove-section "$auth_section" || true' EXIT
+          git config --global "${auth_section}.insteadOf" "https://github.com/hydrosolutions/recap-dg-client.git"
+          uv sync --frozen
+      - name: Preload pinned rehearsal infrastructure
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 5
+        run: |
+          uv run --no-sync python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          import yaml
+          recipe = yaml.safe_load(Path("docker-compose.yml").read_text())
+          for service in ("postgres", "prefect-server", "caddy"):
+              image = recipe["services"][service]["image"]
+              if "@sha256:" not in image:
+                  raise SystemExit("Infrastructure must be pinned before qualification")
+              subprocess.run(["docker", "pull", image], check=True, timeout=90)
+          PY
+      - name: Qualify disposable private-profile rehearsal
+        id: profile-rehearsal
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 55
+        env:
+          SAPPHIRE_REHEARSAL_ACCEPTANCE: dedicated-test-daemon
+          SAPPHIRE_REHEARSAL_IMAGE_TAG: ci-proof-${{ github.sha }}
+          SAPPHIRE_REHEARSAL_QUALIFICATION_REPORT: ${{ runner.temp }}/profile-rehearsal-qualification.json
+        run: |
+          uv run --no-sync pytest tests/integration/test_deployment_rehearsal.py -m deployment -q --junitxml "$RUNNER_TEMP/profile-rehearsal-junit.xml"
+          uv run --no-sync python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          suites = ET.parse(Path(os.environ["RUNNER_TEMP"]) / "profile-rehearsal-junit.xml").getroot().findall("testsuite")
+          if sum(int(suite.get("tests", "0")) for suite in suites) != 1 or any(int(suite.get(key, "0")) for suite in suites for key in ("failures", "errors", "skipped")):
+              raise SystemExit("Mandatory rehearsal qualification did not pass")
+          PY
+      - name: Upload safe rehearsal qualification summary
+        if: ${{ !cancelled() && steps.profile-rehearsal.outcome != 'skipped' && steps.profile-rehearsal.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        timeout-minutes: 1
+        with:
+          name: profile-rehearsal-qualification
+          path: ${{ runner.temp }}/profile-rehearsal-qualification.json
+          if-no-files-found: error
 
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).

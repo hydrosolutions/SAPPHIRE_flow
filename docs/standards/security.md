@@ -462,8 +462,13 @@ Email and SMS notifications are out of scope through v1 (see `docs/handover/data
 
 The [profile rehearsal preview](../deployment/profile-rehearsal.md) reads only
 selected nonsecret inputs, rejects `.env` and declared credential-delivery aliases,
-and emits no executable recipe. It does not probe images, start a Docker daemon
-or generate credentials. Runtime rehearsal qualification remains separate.
+and emits no executable recipe or daemon calls. Explicit runtime generates five
+independent test deliveries in a private workspace, without reading real deliveries.
+It starts only fresh owned resources on a dedicated local daemon, with no published
+ports or external networks. The tenant-scoped temporary consumer token stays inside
+one guarded API process. Recovery rechecks daemon and project/run labels per
+removal; private generated inputs are erased even when Docker cleanup fails.
+Original credentials, unrelated resources and images are never removed.
 
 ### Production (Docker Compose)
 
