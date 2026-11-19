@@ -120,11 +120,11 @@ flowchart LR
   subgraph GW["Gateway (Vatro)"]
     GSR["Snow reanalysis<br/>served when?"]
     GSF["Snow forecast + stitched series<br/>served when? max tail?"]
-    GWF["Weather forecast<br/>about 10:10 / 22:10 estimate<br/>tails 11 d / 4 d to confirm"]
+    GWF["Weather forecast<br/>00Z 10:30 / 12Z 22:30<br/>(Vatro, 19 Nov; IFS ready 10:20)<br/>tails 11 d / 4 d to confirm"]
     GWR["Weather reanalysis<br/>lag? IFS fills recent gap"]
   end
   subgraph SAP["SAPPHIRE Flow"]
-    FC["Forecast cycle<br/>starts when weather and snow<br/>for the same cycle exist<br/>40 min budget<br/>ready about 11:00 / 23:00"]
+    FC["Forecast cycle<br/>starts when weather and snow<br/>for the same cycle exist<br/>40 min budget<br/>ready about 11:10 / 23:10"]
   end
   ARCO --> SMR --> S3R --> GSR --> FC
   IFS25 --> SMF --> S3F --> GSF --> FC
@@ -145,16 +145,17 @@ Edit this diagram as answers arrive.
 | Source data complete | SnowMapper only: ERA5T on ARCO reaches D+1 at D+7, uploaded gradually 00:10–05:30 | ≈ 09:35 | ≈ 21:35 |
 | SnowMapper → S3 (usual) | ≈ 06:00–06:30 on D+7 | ≈ 10:20 | ≈ 22:20 |
 | SnowMapper → S3 (promise) | 09:00 on D+7 | 12:00 (init + 12 h) | 00:00 (init + 12 h) |
-| Gateway weather (IFS) | not applicable | ≈ 10:10 typical; plan for 12:00 | ≈ 22:10 typical; plan for 00:00 |
+| Gateway weather (IFS) | not applicable | 10:30 (Vatro, 19 Nov: IFS was ready 10:20, delay set to 10:30); plan for 12:00 | 22:30 (same delay); plan for 00:00 |
 | Gateway snow served | Vatro to state | Vatro to state | Vatro to state |
 | Gateway weather reanalysis (ERA5-Land) | Vatro to state; SnowMapper's ARCO timing does not apply | not applicable | not applicable |
 | Forecast tools run | not on critical path | see below | see below |
 | Forecast cycle budget | — | 40 min | 40 min |
-| Forecast ready for reviewers (usual / at the promise) | — | ≈ 11:00 / 12:40 | ≈ 23:00 / 00:40 |
+| Forecast ready for reviewers (usual / at the promise) | — | ≈ 11:10 / 12:40 | ≈ 23:10 / 00:40 |
 
 Weather is delivered four times a day (00Z, 06Z, 12Z, 18Z; 06Z/18Z about 6 h after
-the 00Z/12Z times above); snow twice. The weather “typical” times are Bea's
-estimate (about 10 h plus about 10 min of gateway processing); Vatro confirms.
+the 00Z/12Z times above); snow twice. The 00Z/12Z weather times (10:30 / 22:30) are
+Vatro's setting of 19 Nov: IFS was ready at 10:20 that day, and he set a 10:30 delay.
+The 06Z/18Z times were not stated; Vatro to confirm.
 The older gateway agreement assumed 7–8 h.
 SnowMapper's reanalysis day D is complete only once ERA5 for the start of D+1 is on
 ARCO, which uploads a day's files over about five hours; SnowMapper starts once the whole
@@ -258,14 +259,15 @@ and the [SnowMapper data gateway page](https://apps.mountainfutures.ch/snowmappe
 | New-format files | Not documented | Confirm the gateway ingests the new mosaic format without change |
 | Missing cycle | SnowMapper docs: a cycle that cannot be produced gets no manifest and is not replaced by an older one. Client README: missing source data raises `ApiDataUnavailableError` | Does the gateway report a missing cycle per cycle, and does it never serve an older one in its place |
 | Complete upload and recovery | SnowMapper docs: a day or cycle is complete only when its manifest exists; reanalysis retried at 14:30 | **No procedure for missed ingests or revised history** (Joel with Vatro) |
-| Serving times | None | Snow reanalysis, snow forecast and weather serving times; ERA5-Land lag; IFS fill window |
+| Serving times | Weather 00Z/12Z: 10:30 / 22:30 (Vatro, 19 Nov). Not for 06Z/18Z | Snow reanalysis and snow forecast serving times; 06Z/18Z weather times; ERA5-Land lag; IFS fill window |
+| Snow blanks | Vatro, 19 Nov: still to be checked once the mosaic is operational | Define what a blank is, and check it on the operational mosaic before first use |
 | Timestamp convention of served ERA5-Land values | Measured 19 Nov, HRU 12300 (`g_123`, 99.7 km²), 30 Oct–1 Nov, against an exactextract coverage-weighted mean of ERA5-Land from CDS: 2 m temperature matches exactly at the same stamp (RMSE 0.0001 K). Hourly precipitation matches exactly (RMSE 0) the ERA5-Land increment that *ends* one hour later, so the gateway stamps precipitation at the interval start (ERA5-Land natively stamps at the end). Spatial averaging agrees with exactextract. One basin, three days | Vatro to confirm the convention (start-stamped increments for accumulated variables) and document it in the client README. Consumers must not treat precipitation stamps as interval ends |
 
 ### Open items
 
 | Owner | Question |
 | --- | --- |
-| Vatro | Gateway weather and snow serving times; ERA5-Land reanalysis lag and IFS gap-fill window; maximum snow tail; weather tail for 00Z/12Z (11 days requested); maximum snow age for the 06Z/18Z runs; whether the gateway reports a missing cycle explicitly |
+| Vatro | Gateway snow serving times and 06Z/18Z weather times (00Z/12Z weather: 10:30 / 22:30); snow blanks check on the operational mosaic; ERA5-Land reanalysis lag and IFS gap-fill window; maximum snow tail; weather tail for 00Z/12Z (11 days requested); maximum snow age for the 06Z/18Z runs; whether the gateway reports a missing cycle explicitly |
 | Joel | Confirm times hold after SnowMapper's switch to 0.1°; announce changes in `#data-gateway` |
 | Sandro | State the time zone and daily boundary each model is trained in and expects as input, per deployment. This matters for daily models: a model trained on UTC days does not produce Nepal-day output, so Nepal daily forecasts need models trained on Nepal-day boundaries (the provisional 18:00–18:00 UTC day in section 2) |
 | Bea | Estimate reviewer hand-over lag; check the 40-minute cycle budget holds as models are onboarded; daily boundaries per deployment |
