@@ -16,6 +16,7 @@ from sapphire_flow.types.historical_forcing import (
     RawHistoricalForcing,
 )
 from sapphire_flow.types.ids import HistoricalForcingId, StationId
+from sapphire_flow.types.station_readiness import ForcingSummaryRow
 
 if TYPE_CHECKING:
     from datetime import date
@@ -144,6 +145,33 @@ class PgHistoricalForcingStore:
         )
         rows = self._conn.execute(q).all()
         return [row[0] for row in rows]
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ForcingSummaryRow, ...]:
+        t = historical_forcing
+        rows = self._conn.execute(
+            sa.select(
+                t.c.parameter,
+                t.c.source,
+                sa.func.count(sa.distinct(t.c.valid_time)).label("n"),
+                sa.func.min(t.c.valid_time).label("first"),
+                sa.func.max(t.c.valid_time).label("last"),
+            )
+            .where(t.c.station_id == station_id)
+            .group_by(t.c.parameter, t.c.source)
+            .order_by(t.c.parameter, t.c.source)
+        ).all()
+        return tuple(
+            ForcingSummaryRow(
+                parameter=r.parameter,
+                source=r.source,
+                count=r.n,
+                first=utc_from_row(r.first),
+                last=utc_from_row(r.last),
+            )
+            for r in rows
+        )
 
     def fetch_covered_days(
         self,

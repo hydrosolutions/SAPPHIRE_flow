@@ -145,6 +145,10 @@ from sapphire_flow.types.station import (  # noqa: TC001
     StationGroup,
     StationWeatherSource,
 )
+from sapphire_flow.types.station_readiness import (  # noqa: TC001
+    ForcingSummaryRow,
+    ObservationSummaryRow,
+)
 from sapphire_flow.types.tenant import (  # noqa: TC001
     DEFAULT_TENANT_CODE,
     DEFAULT_TENANT_ID,
@@ -690,6 +694,29 @@ class FakeObservationStore:
             and self._unit_visible(o)
         ]
         return max(timestamps) if timestamps else None
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ObservationSummaryRow, ...]:
+        groups: dict[tuple[str, str, QcStatus, str | None], list[UtcDatetime]] = {}
+        for o in self._observations.values():
+            if o.station_id == station_id and self._unit_visible(o):
+                key = (o.parameter, o.source.value, o.qc_status, o.qc_rule_version)
+                groups.setdefault(key, []).append(o.timestamp)
+        return tuple(
+            ObservationSummaryRow(
+                parameter=p,
+                source=src,
+                qc_status=qc,
+                qc_rule_version=v,
+                count=len(ts),
+                first=min(ts),
+                last=max(ts),
+            )
+            for (p, src, qc, v), ts in sorted(
+                groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2].value)
+            )
+        )
 
     def fetch_observations_batch(
         self,
@@ -2768,6 +2795,20 @@ class FakeHistoricalForcingStore:
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
         return sorted({r.source for r in self._records if r.station_id == station_id})
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ForcingSummaryRow, ...]:
+        groups: dict[tuple[str, str], set[UtcDatetime]] = {}
+        for r in self._records:
+            if r.station_id == station_id:
+                groups.setdefault((r.parameter, r.source), set()).add(r.valid_time)
+        return tuple(
+            ForcingSummaryRow(
+                parameter=p, source=src, count=len(ts), first=min(ts), last=max(ts)
+            )
+            for (p, src), ts in sorted(groups.items())
+        )
 
     def fetch_covered_days(
         self,

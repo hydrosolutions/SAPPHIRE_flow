@@ -3169,6 +3169,41 @@ Module: `types/onboarding.py`
 
 ---
 
+### Station readiness types
+
+Plan 540 M4a. Facts only; there is deliberately no overall "ready" field.
+
+```python
+class CheckStatus(Enum): PASS; FAIL; NOT_APPLICABLE   # values "PASS" / "FAIL" / "NOT_APPLICABLE"
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReadinessCheck:
+    name: CheckName          # Literal: station, datum, basin, statics, weather_bindings,
+                             # weather_history, observations, rating_curve, discharge_series,
+                             # group_and_model, discharge_lookback, naming
+    status: CheckStatus
+    detail: str
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationReadinessReport:
+    station_id: StationId; code: str; network: str
+    checks: tuple[ReadinessCheck, ...]
+    def failed(self) -> int: ...
+    def passed(self) -> int: ...
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ObservationSummaryRow:   # parameter, source, qc_status, qc_rule_version, count, first, last
+class ForcingSummaryRow:       # parameter, source, count, first, last
+```
+
+`--json` shape (names and status values are a contract; adding fields is allowed):
+`{"station": {"id", "code", "network"}, "checks": [{"name", "status", "detail"}], "failed": n, "passed": m}`.
+New store methods: `ObservationStore.fetch_station_summary(station_id)` and `HistoricalForcingStore.fetch_station_summary(station_id)`, both aggregate reads grouped by parameter and source (observations also by QC status and rule version).
+
+Module: `types/station_readiness.py`
+
+---
+
 ### Model onboarding types
 
 Result types for Flow 13 model onboarding.

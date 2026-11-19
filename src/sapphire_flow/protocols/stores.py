@@ -128,6 +128,10 @@ if TYPE_CHECKING:
         StationGroup,
         StationWeatherSource,
     )
+    from sapphire_flow.types.station_readiness import (
+        ForcingSummaryRow,
+        ObservationSummaryRow,
+    )
     from sapphire_flow.types.tenant import Tenant
     from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
@@ -179,6 +183,11 @@ class ObservationStore(Protocol):
     def fetch_latest_capture_timestamp(
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:
+        raise NotImplementedError
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ObservationSummaryRow, ...]:
         raise NotImplementedError
 
     def fetch_delivery_observations(
@@ -1230,6 +1239,11 @@ class HistoricalForcingStore(Protocol):
         raise NotImplementedError
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
+        raise NotImplementedError
+
+    def fetch_station_summary(
+        self, station_id: StationId
+    ) -> tuple[ForcingSummaryRow, ...]:
         raise NotImplementedError
 
     def fetch_covered_days(
