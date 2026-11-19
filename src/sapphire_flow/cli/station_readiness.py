@@ -145,7 +145,7 @@ def _config_path(override: str | None) -> str:
     return path
 
 
-def _resolve_model(name: str | None) -> ForecastModel | None:
+def resolve_model(name: str | None) -> ForecastModel | None:
     if name is None:
         return None
     from sapphire_flow.services.model_registry import discover_models
@@ -156,7 +156,7 @@ def _resolve_model(name: str | None) -> ForecastModel | None:
     return model
 
 
-def _resolve_scope(
+def resolve_scope(
     config_path: str, name: str | None, station_id: str
 ) -> tuple[str, str | None] | None:
     if name is None:
@@ -182,12 +182,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path = _config_path(args.config)
         os.environ["SAPPHIRE_CONFIG"] = config_path
         identity = load_deployment_identity_config(config_path)
-        model = _resolve_model(args.model)
+        model = resolve_model(args.model)
         with create_engine_from_env().connect() as conn:
             conn.execute(sa.text("SET TRANSACTION READ ONLY"))
             station_store = PgStationStore(conn)
             station = station_store.fetch_station_by_code(args.code, args.network)
-            scope = _resolve_scope(
+            scope = resolve_scope(
                 config_path,
                 args.weather_scope,
                 str(station.id) if station is not None else "",
