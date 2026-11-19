@@ -10253,3 +10253,82 @@ class TestPooledCombinationUnderProductionQcRules:
         assert combination.ensemble.time_step == timedelta(hours=1)
         assert combination.qc_status == QcStatus.QC_PASSED
         assert combination.qc_flags == ()
+
+
+class TestSharedWeatherForecastParsing:
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_runtime_loader_matches_pure_parser(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+    ) -> None:
+        import tomllib
+
+        from sapphire_flow.config.weather_forecast import (
+            parse_weather_forecast_adapter_config,
+        )
+
+        text = f"""[adapters.weather_forecast]
+enabled = {str(enabled).lower()}
+type = "meteoswiss_nwp"
+stac_base_url = "https://example.invalid"
+stac_collection = "synthetic"
+scratch_path = "/tmp/no-created-directory"
+max_files = 2
+[adapters.weather_forecast.monitoring]
+expected_delivery_offset_hours = 4.5
+"""
+        config = tmp_path / "config.toml"
+        config.write_text(text)
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.setenv("SAPPHIRE_REQUIRE_NWP", "true")
+        assert (
+            _load_weather_forecast_adapter_config()
+            == parse_weather_forecast_adapter_config(
+                tomllib.loads(text), require_nwp=True
+            )
+        )
+
+    def test_disabled_invalid_type_has_same_runtime_and_pure_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tomllib
+
+        from sapphire_flow.config.weather_forecast import (
+            parse_weather_forecast_adapter_config,
+        )
+
+        text = '[adapters.weather_forecast]\nenabled = false\ntype = "unsupported"\n'
+        config = tmp_path / "config.toml"
+        config.write_text(text)
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.delenv("SAPPHIRE_REQUIRE_NWP", raising=False)
+        with pytest.raises(
+            ConfigurationError, match="type must be one of"
+        ) as runtime_error:
+            _load_weather_forecast_adapter_config()
+        with pytest.raises(
+            ConfigurationError, match="type must be one of"
+        ) as pure_error:
+            parse_weather_forecast_adapter_config(
+                tomllib.loads(text), require_nwp=False
+            )
+        assert str(runtime_error.value) == str(pure_error.value)
+
+    def test_config_unset_keeps_legacy_defaults_distinct_from_empty_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.delenv("SAPPHIRE_REQUIRE_NWP", raising=False)
+        unset = _load_weather_forecast_adapter_config()
+        assert unset.enabled is False
+        assert unset.scratch_path == Path("/tmp/sapphire_nwp")
+        assert unset.stac_base_url == "https://data.geo.admin.ch/api/stac/v1"
+        config = tmp_path / "empty.toml"
+        config.write_text("")
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
+        empty = _load_weather_forecast_adapter_config()
+        assert empty.enabled is False
+        assert empty.scratch_path is None
+        assert empty.stac_base_url is None

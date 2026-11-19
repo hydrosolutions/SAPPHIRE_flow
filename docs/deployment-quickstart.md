@@ -2,13 +2,17 @@
 
 This tool previews private deployment inputs and checks desired service wiring.
 It does not launch services, migrate a host, retrieve credentials or produce a
-forecast. It remains a preparation tool: developer-owned coverage gaps prevent a
-complete `PASS_OFFLINE`. Actual deployment files belong outside the public
-application repository.
+forecast. A complete configuration can earn `PASS_OFFLINE` for the
+[supported stored-data path](deployment/profiles.md#supported-offline-path).
+Other integrations retain explicit coverage gaps. Actual deployment files belong
+outside the public application repository.
 
 For a separate check of installation and worker/API wiring, run the
 [synthetic deployment smoke test](deployment/hello-world.md). It needs no agency
 data or provider credentials and does not validate your private profile.
+To try this offline checker first, the
+[synthetic scenario](../tests/fixtures/deployment_profile/README.md) has a complete
+copy-and-check walkthrough. It is test data, not a deployment recipe.
 
 ## 1. Copy the generic examples into private storage
 
@@ -58,6 +62,12 @@ in the profile. The [configuration reference](spec/config-reference.toml) owns
 field details; the [profile reference](deployment/profiles.md) owns selection,
 precedence and diagnostic behavior.
 
+For the supported stored-data path, station/model database provisioning and
+scientific acceptance stay with the onboarding workflow. The offline pass does
+not require invented station/model files or certify that those database records
+exist. Declared local references and unresolved configuration choices still
+prevent a pass; do not remove requirements merely to silence a diagnostic.
+
 Leave `state = "incomplete"` while choices remain unresolved. Remove a
 `required_inputs` entry only when its choice/file is supplied. `configured` is a
 declaration, not validation success; it cannot waive required scientific inputs.
@@ -86,7 +96,7 @@ not replace the server's `.env` or change Compose files.
 | --- | --- | --- |
 | `FAIL` | 1 | Supply missing inputs or correct invalid/inconsistent settings using the diagnostic owner and action. |
 | `PENDING` | 2 | Supply missing administrator evidence or ask developers to complete the stated coverage gap. |
-| `PASS_OFFLINE` | 0 | Reserved for completed offline coverage in a follow-up; not currently an administrator-reachable launch approval. |
+| `PASS_OFFLINE` | 0 | Supplied configuration and supported service wiring are consistent. Review the listed runtime checks with deployment support before any launch. |
 
 A parseable incomplete `show` exits 0 with unresolved input diagnostics; invalid
 TOML or supplied typed values exit 1. It never approves a launch. JSON reports safe
@@ -105,6 +115,8 @@ and recipes remain unchanged by this tool.
 Schedule defaults remain owned by the [registrar](../src/sapphire_flow/cli/register_deployments.py).
 Skipping a job does not remove an already registered job. Use the
 [security standard](standards/security.md) and [secrets bootstrap](secrets-bootstrap.md)
-for credential/authentication details. Manager integration, profile-driven launch
-and a deployment forecast smoke test remain follow-on work; the separate station
-onboarding sandbox does not prove host readiness.
+for credential/authentication details. Broader offline coverage, manager
+integration and profile-driven launch remain follow-on work. The separate
+[synthetic smoke test](deployment/hello-world.md) checks installation and internal
+worker/API wiring; the station onboarding sandbox checks a different workflow.
+Neither validates this private profile or proves public host access.

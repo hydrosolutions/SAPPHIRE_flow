@@ -44,3 +44,24 @@ def recipe_profile(directory: Path, recipe: str = "macmini") -> Path:
         f'when_compose = "{ROOT}/docker-compose.recap.yml"\n'
     )
     return profile
+
+
+def materialize_offline_fixture(directory: Path) -> tuple[Path, Path]:
+    import json
+
+    fixture = ROOT / "tests/fixtures/deployment_profile"
+    replacements = {
+        "@CHECKOUT@": json.dumps(str(ROOT))[1:-1],
+        "@PROFILE_DIR@": json.dumps(str(directory.resolve()))[1:-1],
+    }
+    for name in (
+        "application.toml",
+        "profile.toml",
+        "installation.toml",
+        "compose.yml",
+    ):
+        text = (fixture / name).read_text()
+        for marker, value in replacements.items():
+            text = text.replace(marker, value)
+        (directory / name).write_text(text)
+    return directory / "profile.toml", directory / "installation.toml"

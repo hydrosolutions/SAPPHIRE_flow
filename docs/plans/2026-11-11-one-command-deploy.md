@@ -9,6 +9,13 @@ title: One-command, deployment-generic update with test and hotfix tracks
 DRAFT. Not executable until independently reviewed and set READY by the orchestrator.
 CI test-run duration is out of scope here: see [faster-ci-feedback](faster-ci-feedback.md).
 
+Reconciliation note, 2026-11-19: deployment profiles and installation files are
+administrator-owned, outside the public application repository. The implemented
+profile checker is preparation-only; its next offline-validation increment and
+the completed installation smoke test do not authorize this launcher. Reconcile
+this draft with those contracts before implementation; no duplicate profile
+schema or repository-owned agency catalogue is approved.
+
 ## Outcome
 
 One command updates a deployment to a given commit or release, verifies it, and rolls back
@@ -84,12 +91,12 @@ stay in scope because they protect existing gates, not because they are hardenin
 
 ## Design
 
-1. **Profile.** `deploy/profiles/<name>.toml`, minimal schema: host, compose file list, build mode
+1. **Profile.** An administrator-owned external installation file; proposed fields: host, compose file list, build mode
    (`host-build` only in the MVP), health URL, profile-specific checks (e.g. overlay path
    resolved, backup-worker memory), required PR checks, allowed tracks.
-   These future host profiles must reference the separate agency manifests in
-   `deploy/profiles/agency/` rather than reuse their schema or copy scientific
-   settings. Agency selection currently describes desired configuration only;
+   Reuse or explicitly extend the existing installation schema after review;
+   reference its external application profile rather than copying scientific
+   settings or introducing a second catalogue. Profile selection describes desired configuration only;
    it does not implement this plan's deployment command. See
    [agency profiles](../deployment/profiles.md).
 2. **Command.** `tools/deploy.py <profile> --ref <sha|tag> --track test|release|hotfix`. Phases,

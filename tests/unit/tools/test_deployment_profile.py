@@ -19,7 +19,11 @@ from sapphire_flow.config.deployment_profile import (
     evaluate_deployment_profile,
     select_deployment_profile,
 )
-from tests.unit.config.profile_support import incomplete_profile, recipe_profile
+from tests.unit.config.profile_support import (
+    incomplete_profile,
+    materialize_offline_fixture,
+    recipe_profile,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
@@ -1015,3 +1019,545 @@ def test_timezone_cli_missing_vs_invalid(
             assert rows[0]["value"] == "UTC"
         else:
             assert rows == []
+
+
+@pytest.mark.parametrize("extension", [False, True])
+def test_existing_checker_preserves_new_execution_and_config_obligations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extension: bool
+) -> None:
+    from tests.unit.config.test_deployment_profile import (
+        evaluation_selection,
+        stored_configuration,
+        write_installation,
+    )
+
+    initial = evaluation_selection(
+        tmp_path,
+        stored_configuration(),
+        "swiss_observation_history = true\n" if extension else "",
+    )
+    install = write_installation(
+        tmp_path,
+        extra=(
+            '[environment]\nVERSION = "1.2.3"\nSAPPHIRE_RELEASE_VERSION = "1.2.3"\n'
+            f'SAPPHIRE_SOURCE_REVISION = "{"0" * 40}"\n'
+        ),
+    )
+    selection = select_deployment_profile(
+        profile_file=initial.profile.manifest_path,
+        installation_file=install,
+        ambient_environment={},
+    )
+    evaluation = evaluate_deployment_profile(selection)
+    assert evaluation.diagnostics == ()
+    rendered_called = False
+
+    def render(_: object) -> dict[str, Any]:
+        nonlocal rendered_called
+        rendered_called = True
+        # Deliberately incomplete wiring: this regression checks obligation
+        # preservation, not the later real-render positive acceptance case.
+        return {"services": {}}
+
+    monkeypatch.setattr(tool, "render_compose", render)
+    checked = tool.check_profile(selection, evaluation)
+    assert rendered_called
+    codes = {item.code for item in checked.pending_checks}
+    assert "COMPOSE_EVIDENCE_PENDING" not in codes
+    assert "EXECUTION_COVERAGE_PENDING" in codes
+    if extension:
+        assert "CONFIG_EXTENSION_PENDING" in codes
+    assert checked.summary is not EvaluationSummary.PASS_OFFLINE
+
+
+@pytest.fixture
+def standard_render(
+    tmp_path: Path,
+) -> tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]]:
+    profile, install = materialize_offline_fixture(tmp_path)
+    selected = select_deployment_profile(
+        profile_file=profile, installation_file=install, ambient_environment={}
+    )
+    assert selected.installation is not None
+    evaluated = evaluate_deployment_profile(
+        selected, environment=dict(selected.installation.environment)
+    )
+    assert evaluated.diagnostics == ()
+    try:
+        actual = tool.render_compose(selected)
+        canonical = tool.render_compose(
+            replace(selected, compose_files=(ROOT / "docker-compose.yml",))
+        )
+    except tool.ProfileError as error:
+        if error.code == "COMPOSE_UNAVAILABLE" and not os.environ.get("CI"):
+            pytest.skip("Compose unavailable under isolated configuration")
+        raise
+    return selected, evaluated, actual, canonical
+
+
+class TestStandardExecutionCoverage:
+    def test_real_render_clears_only_evidenced_execution(
+        self,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        selected, evaluated, rendered, canonical = standard_render
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.diagnostics == ()
+        assert result.pending_checks == ()
+        assert result.summary is EvaluationSummary.PASS_OFFLINE
+        assert "registered_job_overrides" in result.unverified_runtime
+        assert "actual_image_identity" in result.unverified_runtime
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            "image",
+            "command",
+            "entrypoint",
+            "backup_role",
+            "backup_secret",
+            "only_and_skip",
+            "backup_mount",
+            "backup_config",
+            "subset",
+            "extra_job",
+            "job_overlay",
+            "source_root",
+            "extra_environment",
+            "extra_service",
+            "extra_network",
+            "mount_propagation",
+            "extra_mount",
+            "api_origin",
+        ],
+    )
+    def test_execution_mutations_cannot_inherit_pass(
+        self,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        change: str,
+    ) -> None:
+        selected, evaluated, original, canonical = standard_render
+        rendered = copy.deepcopy(original)
+        services = rendered["services"]
+        if change in {"image", "command", "entrypoint"}:
+            services["api"][change] = "private-canary"
+        elif change == "backup_role":
+            services["prefect-worker-backup"]["environment"][
+                "SAPPHIRE_BACKUP_PGUSER"
+            ] = "sapphire"
+        elif change == "backup_secret":
+            services["prefect-worker-backup"]["environment"]["DB_PASSWORD_SECRET"] = (
+                "/run/secrets/sapphire_api_db_password"
+            )
+        elif change == "only_and_skip":
+            services["init"]["environment"]["SAPPHIRE_SKIP_DEPLOYMENTS"] = (
+                "ingest-observations"
+            )
+        elif change == "backup_mount":
+            next(
+                m
+                for m in services["prefect-worker-backup"]["volumes"]
+                if m["target"] == "/data/backups"
+            )["read_only"] = True
+        elif change == "backup_config":
+            services["prefect-worker-backup"]["environment"].pop("SAPPHIRE_CONFIG")
+        elif change == "subset":
+            services["init"]["environment"].pop("SAPPHIRE_ONLY_DEPLOYMENTS")
+        elif change == "extra_job":
+            services["init"]["environment"]["SAPPHIRE_ONLY_DEPLOYMENTS"] += (
+                ",ingest-observations"
+            )
+        elif change == "job_overlay":
+            services["init"]["environment"]["NHS_FORECAST_JOB_OVERLAYS"] = (
+                "private-canary"
+            )
+        elif change == "source_root":
+            services["init"]["environment"]["SAPPHIRE_FLOW_SOURCE_ROOT"] = (
+                "/private-canary"
+            )
+        elif change == "extra_environment":
+            services["api"]["environment"]["UNREVIEWED_CANARY"] = "private-canary"
+        elif change == "extra_service":
+            services["private-canary"] = {"image": "private-canary"}
+        elif change == "extra_network":
+            rendered["networks"]["private-canary"] = {"driver": "bridge"}
+        elif change == "mount_propagation":
+            next(
+                m
+                for m in services["api"]["volumes"]
+                if m["target"] == "/app/config.toml"
+            )["bind"]["propagation"] = "shared"
+        elif change == "extra_mount":
+            services["api"]["volumes"].append(
+                {"type": "bind", "source": "/private-canary", "target": "/app"}
+            )
+        else:
+            services["api"]["environment"]["SAPPHIRE_CORS_ORIGINS"] = "*"
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.summary is not EvaluationSummary.PASS_OFFLINE
+        assert "private-canary" not in repr(result)
+        assert any(
+            p.code == "EXECUTION_COVERAGE_PENDING" for p in result.pending_checks
+        )
+
+    def test_config_extension_survives_complete_wiring(
+        self,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        selected, _, rendered, canonical = standard_render
+        application = selected.profile.base_config
+        application.write_text(
+            "swiss_observation_history = true\n" + application.read_text()
+        )
+        evaluated = evaluate_deployment_profile(selected)
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.summary is EvaluationSummary.PENDING
+        assert any(p.code == "CONFIG_EXTENSION_PENDING" for p in result.pending_checks)
+
+    def test_empty_runbook_is_pending(
+        self,
+        tmp_path: Path,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        selected, evaluated, rendered, canonical = standard_render
+        runbook = tmp_path / "empty.md"
+        runbook.write_text("  \n")
+        selected = replace(selected, profile=replace(selected.profile, runbook=runbook))
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert any(p.code == "RUNBOOK_PENDING" for p in result.pending_checks)
+
+    @pytest.mark.parametrize("storage", ["shared", "split", "mixed"])
+    def test_shared_artifact_bind_requires_same_storage_across_consumers(
+        self,
+        tmp_path: Path,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        storage: str,
+    ) -> None:
+        selected, evaluated, original, canonical = standard_render
+        rendered = copy.deepcopy(original)
+        consumers = ("api",) if storage == "mixed" else ("api", "prefect-worker")
+        for name in consumers:
+            mount = next(
+                m
+                for m in rendered["services"][name]["volumes"]
+                if m["target"] == "/data/artifacts"
+            )
+            mount["type"] = "bind"
+            mount["source"] = str(
+                tmp_path / (name if storage == "split" else "shared-artifacts")
+            )
+            mount.pop("volume", None)
+            mount["bind"] = {"create_host_path": False}
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        if storage != "shared":
+            assert any(p.code == "SHARED_STORAGE_INVALID" for p in result.diagnostics)
+        else:
+            assert result.summary is EvaluationSummary.PASS_OFFLINE
+
+    def test_runbook_cannot_read_declared_secret_delivery(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        selected, evaluated, rendered, canonical = standard_render
+        secret = next(iter(dict(selected.installation.secret_bindings).values()))
+        secret.parent.mkdir(parents=True)
+        secret.write_text("synthetic-secret-canary")
+        selected = replace(selected, profile=replace(selected.profile, runbook=secret))
+        original = Path.open
+
+        def guarded(path: Path, *args: Any, **kwargs: Any) -> Any:
+            assert path != secret, "Secret delivery must not be read as a runbook"
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", guarded)
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert any(p.code == "RUNBOOK_PENDING" for p in result.pending_checks)
+
+    @pytest.mark.parametrize("timeout", ["1200", "0", "nan", "secret-canary"])
+    def test_backup_timeout_is_positive_finite_and_explicit(
+        self,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        timeout: str,
+    ) -> None:
+        selected, evaluated, original, canonical = standard_render
+        rendered = copy.deepcopy(original)
+        installation = replace(
+            selected.installation,
+            environment=(
+                *selected.installation.environment,
+                ("SAPPHIRE_BACKUP_DUMP_TIMEOUT_S", timeout),
+            ),
+        )
+        selected = replace(selected, installation=installation)
+        rendered["services"]["prefect-worker-backup"]["environment"][
+            "SAPPHIRE_BACKUP_DUMP_TIMEOUT_S"
+        ] = timeout
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        if timeout == "1200":
+            assert result.summary is EvaluationSummary.PASS_OFFLINE
+        else:
+            assert any(
+                item.code == "BACKUP_TIMEOUT_INVALID" for item in result.diagnostics
+            )
+        assert "secret-canary" not in repr(result)
+
+    def test_different_source_checkout_retains_execution_obligation(
+        self,
+        tmp_path: Path,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        selected, evaluated, rendered, canonical = standard_render
+        selected = replace(
+            selected,
+            installation=replace(
+                selected.installation,
+                project_directory=tmp_path / "different-checkout",
+            ),
+        )
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.summary is EvaluationSummary.PENDING
+        assert any(item.field == "project_directory" for item in result.pending_checks)
+
+
+class TestCompleteOfflineCommand:
+    @staticmethod
+    def run_command(
+        directory: Path, arguments: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "tools/deployment_profile.py"), *arguments],
+            cwd=directory,
+            env={
+                "PATH": os.environ.get("PATH", os.defpath),
+                "PYTHONPATH": os.pathsep.join(
+                    [
+                        str(ROOT / "src"),
+                        *(path for path in sys.path if path.endswith("site-packages")),
+                    ]
+                ),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+    def test_complete_external_fixture_passes_real_cli_and_render(
+        self, tmp_path: Path
+    ) -> None:
+        directory = tmp_path / "external profile"
+        directory.mkdir()
+        profile, installation = materialize_offline_fixture(directory)
+        (directory / ".env").write_text("SAPPHIRE_ONLY_DEPLOYMENTS=secret-canary\n")
+        arguments = [
+            "--profile-file",
+            str(profile),
+            "check",
+            "--installation",
+            str(installation),
+        ]
+        completed = self.run_command(directory, [*arguments, "--format", "json"])
+        report = json.loads(completed.stdout)
+        if not os.environ.get("CI") and any(
+            item["code"] == "COMPOSE_UNAVAILABLE" for item in report["pending_checks"]
+        ):
+            pytest.skip("Compose unavailable under isolated configuration")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert report["summary"] == "PASS_OFFLINE"
+        assert report["diagnostics"] == report["pending_checks"] == []
+        assert {
+            "actual_host_configuration",
+            "credential_availability",
+            "provider_access",
+            "station_model_database_state",
+            "scientific_readiness",
+            "registered_job_overrides",
+            "actual_image_identity",
+        } <= set(report["unverified_runtime"])
+        assert report["launching"] == "not_available"
+        assert (
+            report["pass_meaning"]
+            == "configuration_and_service_wiring_consistency_only"
+        )
+        assert (
+            report["offline_validation"]
+            == "bounded_standard_stored_data_forecast_and_backup"
+        )
+        assert "secret-canary" not in completed.stdout
+        assert str(directory) not in completed.stdout
+        assert not (directory / "secret-delivery").exists()
+        text = self.run_command(directory, arguments)
+        assert text.returncode == 0
+        assert "PASS_OFFLINE" in text.stdout
+        assert "Unverified runtime:" in text.stdout
+        assert "scientific_readiness" in text.stdout
+        help_result = self.run_command(directory, ["--help"])
+        assert help_result.returncode == 0
+        assert "--profile-file" in help_result.stdout
+
+    @pytest.mark.parametrize(
+        "mutation,expected",
+        [
+            ("missing_input", 1),
+            ("unknown_key", 2),
+            ("extra_service", 2),
+            ("invalid_profile", 1),
+        ],
+    )
+    def test_real_command_mutations_fail_or_remain_pending(
+        self, tmp_path: Path, mutation: str, expected: int
+    ) -> None:
+        profile, installation = materialize_offline_fixture(tmp_path)
+        application = tmp_path / "application.toml"
+        if mutation == "missing_input":
+            application.write_text(
+                application.read_text().replace(
+                    'default_display_timezone = "UTC"\n', ""
+                )
+            )
+        elif mutation == "unknown_key":
+            application.write_text(
+                "unreviewed_canary = true\n" + application.read_text()
+            )
+        elif mutation == "extra_service":
+            import yaml
+
+            compose = tmp_path / "compose.yml"
+            document = yaml.safe_load(compose.read_text())
+            document["services"]["unreviewed_canary"] = {
+                "image": "example.invalid/not-used"
+            }
+            compose.write_text(yaml.safe_dump(document))
+        else:
+            profile.write_text(
+                profile.read_text() + '\ninvalid_canary = "secret-canary"\n'
+            )
+        completed = self.run_command(
+            tmp_path,
+            [
+                "--profile-file",
+                str(profile),
+                "check",
+                "--installation",
+                str(installation),
+                "--format",
+                "json",
+            ],
+        )
+        report = json.loads(completed.stdout)
+        assert completed.returncode == expected
+        assert report["summary"] == ("FAIL" if expected == 1 else "PENDING")
+        assert "canary" not in completed.stdout
+        assert not (tmp_path / "secret-delivery").exists()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "NHS_FORECAST_JOB_OVERLAYS",
+            "NHS_PROVIDER_CONFIG_SOURCE",
+            "SAPPHIRE_DHM_DELIVERY_DIR",
+        ],
+    )
+    @pytest.mark.parametrize("value", ["", "private-secret-canary"])
+    def test_unconsumed_optional_declarations_are_explicitly_pending(
+        self, tmp_path: Path, name: str, value: str
+    ) -> None:
+        profile, installation = materialize_offline_fixture(tmp_path)
+        installation.write_text(
+            installation.read_text().replace(
+                "[environment]", f'[environment]\n{name} = "{value}"'
+            )
+        )
+        completed = self.run_command(
+            tmp_path,
+            [
+                "--profile-file",
+                str(profile),
+                "check",
+                "--installation",
+                str(installation),
+                "--format",
+                "json",
+            ],
+        )
+        report = json.loads(completed.stdout)
+        assert completed.returncode == (2 if value else 0), completed.stdout
+        if value:
+            assert any(
+                item["code"] == "EXECUTION_EXTENSION_PENDING"
+                and item["field"] == "environment"
+                for item in report["pending_checks"]
+            )
+        assert "private-secret-canary" not in completed.stdout
+
+    @pytest.mark.parametrize(
+        "section,known,unknown,expected",
+        [
+            ("weather_gap_fill.models.synthetic", "max_gap_days = 1", False, 0),
+            ("weather_gap_fill.models.synthetic", "max_gap_days = 1", True, 1),
+            ("skill_gate_thresholds.nse", "threshold = 0.5", False, 0),
+            ("skill_gate_thresholds.nse", "threshold = 0.5", True, 2),
+        ],
+    )
+    def test_model_mapping_fields_use_authoritative_metadata(
+        self, tmp_path: Path, section: str, known: str, unknown: bool, expected: int
+    ) -> None:
+        profile, installation = materialize_offline_fixture(tmp_path)
+        application = tmp_path / "application.toml"
+        addition = f"\n[{section}]\n{known}\n"
+        if unknown:
+            addition += 'unknown_canary = "private-secret-canary"\n'
+        application.write_text(application.read_text() + addition)
+        completed = self.run_command(
+            tmp_path,
+            [
+                "--profile-file",
+                str(profile),
+                "check",
+                "--installation",
+                str(installation),
+                "--format",
+                "json",
+            ],
+        )
+        report = json.loads(completed.stdout)
+        assert completed.returncode == expected, completed.stdout
+        if expected == 2:
+            assert any(
+                item["code"] == "UNCHECKED_SECTIONS"
+                for item in report["pending_checks"]
+            )
+        if expected == 1:
+            assert any(
+                item["code"] == "CONFIG_READER_INVALID"
+                for item in report["diagnostics"]
+            )
+        assert "canary" not in completed.stdout
+
+
+@pytest.mark.parametrize("filename", [".env", ".env.production", "runbook.md"])
+def test_runbook_env_files_and_aliases_are_rejected_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    filename: str,
+) -> None:
+    selected, evaluated, rendered, canonical = standard_render
+    target = tmp_path / (filename if filename.startswith(".env") else ".env")
+    target.write_text("SYNTHETIC_SECRET=private-secret-canary\n")
+    runbook = tmp_path / filename
+    if runbook != target:
+        runbook.symlink_to(target)
+    selected = replace(selected, profile=replace(selected.profile, runbook=runbook))
+    original = Path.open
+
+    def guarded(path: Path, *args: Any, **kwargs: Any) -> Any:
+        assert path.resolve() != target.resolve(), "Environment file must not be read"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded)
+    result = tool.check_wiring(selected, evaluated, rendered, canonical)
+    assert any(item.code == "RUNBOOK_PENDING" for item in result.pending_checks)
+    assert "private-secret-canary" not in repr(result)

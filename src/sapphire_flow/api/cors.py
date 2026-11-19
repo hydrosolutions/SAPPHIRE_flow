@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,7 +10,7 @@ from sapphire_flow.api.network_overview_cache import (
     network_overview_path,
 )
 from sapphire_flow.api.publication_cache import shared_forecast_read_path
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.config.cors import parse_exact_origin as parse_exact_origin
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -23,22 +22,6 @@ _REVIEW_PREFIX = "/api/v1/review/forecasts"
 _REJECTED_FORECASTS_PATH = re.compile(
     r"^/api/v1/stations/[^/]+/(?:rejected|evaluation)-forecasts$"
 )
-
-
-def parse_exact_origin(value: str) -> str:
-    parsed = urlsplit(value)
-    is_local = parsed.hostname in {"localhost", "127.0.0.1"}
-    if (
-        parsed.scheme not in ({"http", "https"} if is_local else {"https"})
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-        or "*" in value
-    ):
-        raise ConfigurationError("CORS origin must be one exact HTTPS origin")
-    return value
 
 
 class ScopedCorsMiddleware:
