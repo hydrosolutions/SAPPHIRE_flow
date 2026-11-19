@@ -368,6 +368,11 @@ the config file (`--config` or `SAPPHIRE_CONFIG`), so it is only as strong as co
 can write that file. The dry run says
 when `--apply` would be refused for this reason.
 
+Procedure on a shared host: the owner sets `promotion_allowed = true`, the administrator runs
+`--apply` once, and the owner sets it back to `false` straight afterwards. There is no per-person
+admin approval yet (`--operator` is an unverified label in the audit row); a logged-in admin
+approval is a post-MVP plan.
+
 ## Model and first forecast
 
 1. **Import the trained artifact** (an existing, trusted file; for `cmal_small` the one already
