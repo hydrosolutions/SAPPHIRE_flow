@@ -109,6 +109,7 @@ app.include_router(forecasts_router, dependencies=[Depends(require_admin)])
 app.include_router(models_router, dependencies=[Depends(require_admin)])
 
 import sapphire_flow.api.routes.api_alerts as _api_alerts  # noqa: E402
+import sapphire_flow.api.routes.api_event_review as _event_review  # noqa: E402
 import sapphire_flow.api.routes.api_forecasts as _api_fcst  # noqa: E402
 import sapphire_flow.api.routes.api_rejected_forecasts as _api_rejected  # noqa: E402
 import sapphire_flow.api.routes.api_review as _api_review  # noqa: E402
@@ -124,6 +125,7 @@ app.include_router(_api_alerts.router, dependencies=[Depends(require_principal)]
 app.include_router(_forecast_lab.router, dependencies=[Depends(require_principal)])
 # Plan 402 — REVIEW-gated: reviewer or admin token only (Plan 401).
 app.include_router(_api_review.router, dependencies=[Depends(require_reviewer)])
+app.include_router(_event_review.router, dependencies=[Depends(require_reviewer)])
 # Plan 404 T3 — its own route-level auth (`require_reviewer_or_human`,
 # matrix class REVIEW_OR_HUMAN): a reviewer/admin service token OR a named
 # human with a current station `review` grant. Registered with NO router-

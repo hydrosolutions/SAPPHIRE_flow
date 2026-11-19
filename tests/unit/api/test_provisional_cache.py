@@ -12,6 +12,8 @@ _PATHS = [
     "/api/v1/stations",
     "/api/v1/stations/example",
     "/api/v1/stations/example/forecasts",
+    "/api/v1/stations/example/review-options",
+    "/api/v1/stations/example/review-series",
     "/api/v1/forecasts/example",
 ]
 
