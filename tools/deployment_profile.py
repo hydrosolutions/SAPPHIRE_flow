@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NamedTuple, NoReturn, cast
 
 import yaml
 from cronsim import CronSim, CronSimError
@@ -1267,8 +1267,29 @@ def _check_schedules(
         )
 
 
+class CheckedProfile(NamedTuple):
+    evaluation: ProfileEvaluation
+    recipe: dict[str, Any] | None
+
+
+def inspect_profile(
+    selection: ProfileSelection, evaluation: ProfileEvaluation
+) -> CheckedProfile:
+    captured: list[dict[str, Any]] = []
+    checked = _check_profile(selection, evaluation, captured)
+    return CheckedProfile(checked, captured[0] if captured else None)
+
+
 def check_profile(
     selection: ProfileSelection, evaluation: ProfileEvaluation
+) -> ProfileEvaluation:
+    return inspect_profile(selection, evaluation).evaluation
+
+
+def _check_profile(
+    selection: ProfileSelection,
+    evaluation: ProfileEvaluation,
+    captured: list[dict[str, Any]],
 ) -> ProfileEvaluation:
     if selection.installation is None or evaluation.diagnostics:
         return evaluation
@@ -1317,6 +1338,7 @@ def check_profile(
         reference = render_compose(
             replace(selection, compose_files=(ROOT / "docker-compose.yml",))
         )
+        captured.append(rendered)
         return check_wiring(selection, evaluation, rendered, reference)
     except ProfileError as exc:
         if exc.code == "ENV_FILES_UNCHECKED":

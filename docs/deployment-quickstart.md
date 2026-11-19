@@ -14,6 +14,10 @@ To try this offline checker first, the
 [synthetic scenario](../tests/fixtures/deployment_profile/README.md) has a complete
 copy-and-check walkthrough. It is test data, not a deployment recipe.
 
+The narrower [disposable rehearsal preview](deployment/profile-rehearsal.md)
+can describe a supported private profile’s isolated startup plan after
+`PASS_OFFLINE`. It does not start services or provide a launch command.
+
 ## 1. Copy the generic examples into private storage
 
 Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)

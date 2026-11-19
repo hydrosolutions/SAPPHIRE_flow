@@ -1062,6 +1062,13 @@ When this map applies, the context packet should name:
 
 ### Touchpoint map: Prefect / Docker / deployment
 
+- Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
+  checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`
+  covers real external CLI/Compose, protected-input aliases, drift, source identity
+  and the finite transform. Preserve no-daemon/no-secret-read preview, safe JSON,
+  existing checker/smoke contracts and `docs/deployment/profile-rehearsal.md`.
+  Runtime/cleanup commands require the later reviewed runtime milestone.
+
 Use this map when a task touches the **infra/ops** layer that *runs* the flows (not the flow logic): Prefect deployment registration / scheduling / work-pools / concurrency, the Docker build, the `docker-compose` topology + overlays, the Caddy edge, the entrypoint, DB migrations, the `VERSION` / `.env` deploy convention, or the Mac-mini launchd host. For *what a flow does* once it runs, use the **Forecast cycle / assignment selection** and **Persistence / API write path** maps. Authoritative detail lives in `docs/standards/orchestration.md`, `docs/standards/cicd.md`, `docs/standards/security.md` — this map routes into them, it does not restate them. **Aspirational-vs-real is this layer's core hazard:** several standards-doc items are not implemented (and a few implemented flows are undocumented) — flagged below; verify before depending on one. File paths are named directly here because they *are* the routing targets.
 
 Before planning or implementation, inspect the relevant touchpoints below and include them in the task context packet.

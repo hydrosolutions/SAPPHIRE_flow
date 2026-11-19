@@ -22,6 +22,11 @@ reuse neutral typed defaults; scientific inputs remain explicit and uncovered
 policies remain pending. Preserve the complete ordered
 file lists and follow the applicable host runbook for actual deployment.
 
+The [private-profile rehearsal preview](../deployment/profile-rehearsal.md)
+adds no deployment/cleanup command. Its finite in-memory changes are checked
+against the existing offline render; existing recipes and launch procedures remain
+unchanged. Runtime qualification is a separate milestone.
+
 ## Docker Compose service topology
 
 Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets up to ~170 stations; architecture supports ~1000 stations across deployments.
