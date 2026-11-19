@@ -218,6 +218,8 @@ class TestMainIsReadOnly:
             "DATABASE_URL", db_engine.url.render_as_string(hide_password=False)
         )
         monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        # main() writes os.environ["SAPPHIRE_CONFIG"]; register it so it is restored
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config))
         with db_engine.begin() as setup:
             PgTenantStore(setup).ensure_tenant(
                 tenant_id=TenantId(uuid4()), code="rotest", name="Ro"
