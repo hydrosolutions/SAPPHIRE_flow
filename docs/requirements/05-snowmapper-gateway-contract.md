@@ -104,13 +104,13 @@ to 0.1° with the 19 Nov 00Z cycle, delivered 10:29. A cycle counts as delivered
 flowchart LR
   subgraph SRC["Sources"]
     ARCO["ERA5T on ARCO<br/>SnowMapper only"]
-    IFS25["ECMWF IFS control<br/>0.25° now, 0.1° planned"]
+    IFS25["ECMWF IFS control<br/>0.1° for SnowMapper since 19 Nov"]
     IFS["ECMWF IFS 0.1°<br/>00Z 06Z 12Z 18Z"]
     E5L["ERA5-Land<br/>backend not stated"]
   end
   subgraph SM["SnowMapper (Joel)"]
-    SMR["Snow reanalysis day D<br/>D+7 about 06:00-06:30<br/>promise 09:00<br/>retry 14:30 via CDS"]
-    SMF["Snow forecast 00Z / 12Z<br/>0.1°: about 10:20 / 22:20<br/>0.25°: about 08:25 / 20:25"]
+    SMR["Snow reanalysis day D<br/>D+7 about 03:00 (one observation, 19 Nov)<br/>promise 09:00<br/>retry 14:30 via CDS"]
+    SMF["Snow forecast 00Z / 12Z<br/>about 10:30 / 22:30 on S3<br/>(19 Nov 00Z: 10:29)<br/>promise init + 12 h"]
   end
   subgraph S3["S3 (manifest = complete)"]
     S3R["reanalysis/<br/>kept from 2025-09"]
@@ -262,6 +262,9 @@ and the [SnowMapper data gateway page](https://apps.mountainfutures.ch/snowmappe
 | New-format files | Not documented | Confirm the gateway ingests the new mosaic format without change |
 | Missing cycle | SnowMapper docs: a cycle that cannot be produced gets no manifest and is not replaced by an older one. Client README: missing source data raises `ApiDataUnavailableError` | Does the gateway report a missing cycle per cycle, and does it never serve an older one in its place |
 | Complete upload and recovery | SnowMapper docs: a day or cycle is complete only when its manifest exists; reanalysis retried at 14:30 | **No procedure for missed ingests or revised history** (Joel with Vatro) |
+| Timestamp convention of served IFS values | Measured 19 Nov, `g_123`, IFS ensemble members 1–10 at 0.25° (17 Nov 00Z) against ECMWF open data: five members match exactly (error 0) when the gateway stamp is read as the start of the 3-hour step; pooled error is lowest at that shift. Members 3, 4 and 7 do not match exactly (unexplained: possibly member numbering). One cycle, dry period | Vatro to confirm the convention for IFS `tp` and whether member numbers equal ECMWF's `number` |
+| Training data timestamp convention | Sandro's Dudh Koshi package: ERA5-Land precipitation is stamped at the end of the hour (README, and exact match with CDS at the Lukla cell, 1–3 Jul 2025). Our own ERA5-Land code (`period_ending_convention`: hour t covers t-1 → t) and Plan 267 also use the end | One rule for precipitation across training data and gateway data. Proposed: convert gateway accumulations to end-stamped at SAPPHIRE ingest (add one step); Sandro and Joel to confirm their conventions |
+| Gateway README wording | His README (11 Nov) says the client does not rewrite timestamps and, separately, that the gateway stamps accumulations at the start of the window | Vatro to reword so that the re-stamping is attributed to the gateway, and to add the convention to a response field |
 | Serving times | Weather 00Z/12Z: 10:30 / 22:30 (Vatro, 19 Nov). Not for 06Z/18Z | Snow reanalysis and snow forecast serving times; 06Z/18Z weather times; ERA5-Land lag; IFS fill window |
 | Snow blanks | Vatro, 19 Nov: still to be checked once the mosaic is operational | Define what a blank is, and check it on the operational mosaic before first use |
 | Timestamp convention of served ERA5-Land values | Measured 19 Nov, HRU 12300 (`g_123`, 99.7 km²), 30 Oct–1 Nov, against an exactextract coverage-weighted mean of ERA5-Land from CDS: 2 m temperature matches exactly at the same stamp (RMSE 0.0001 K). Hourly precipitation matches exactly (RMSE 0) the ERA5-Land increment that *ends* one hour later, so the gateway stamps precipitation at the interval start (ERA5-Land natively stamps at the end). Spatial averaging agrees with exactextract. One basin, three days | Vatro to confirm the convention (start-stamped increments for accumulated variables) and document it in the client README. Consumers must not treat precipitation stamps as interval ends |
