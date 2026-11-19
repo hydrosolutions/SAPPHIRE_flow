@@ -460,6 +460,11 @@ this class and pins the route's classification.
 
 Email and SMS notifications are out of scope through v1 (see `docs/handover/data-flows.md`). Alert consumers can poll the API; outbound delivery on the SAPPHIRE side is webhook-only.
 
+The [profile rehearsal preview](../deployment/profile-rehearsal.md) reads only
+selected nonsecret inputs, rejects `.env` and declared credential-delivery aliases,
+and emits no executable recipe. It does not probe images, start a Docker daemon
+or generate credentials. Runtime rehearsal qualification remains separate.
+
 ### Production (Docker Compose)
 
 All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mounted as files at `/run/secrets/` and read at startup. Application code reads secrets from file paths, never from environment variables in production.

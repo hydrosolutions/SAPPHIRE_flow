@@ -12,6 +12,10 @@ It never inspects a live server, opens credential files or retrieves manager sec
 The [synthetic deployment smoke test](hello-world.md) independently checks generic
 worker/API wiring. It does not select, launch or validate a private profile.
 
+For a clean, source-matched standard profile, the separate
+[rehearsal preview](profile-rehearsal.md) checks a narrower disposable-startup
+plan. It leaves images and runtime evidence unresolved and exposes no run command.
+
 ## Selection and file ownership
 
 ```bash

@@ -46,7 +46,8 @@ clients, hotfix tracks and automatic rollback are separate work.
 
 ## Supported selection and preview
 
-Proposed separate entry point (not available yet):
+Separate entry point: L1 delivers `preview`; `run` and `cleanup` below remain
+proposed L2/L3 commands and are not accepted by the current CLI:
 
 ```sh
 uv run python tools/deployment_rehearsal.py --profile-file /private/deployment/profile.toml preview --installation /private/deployment/installation.toml
@@ -285,4 +286,40 @@ the existing source-bound development identity, avoiding a publish-before-merge
 dependency; L4 awaits the owner's release. The review suggestion to reconfirm AWS
 does not apply because the owner explicitly authorized that fallback. No material
 owner decision remains for L1. The orchestrator sets READY; reports stay local.
-No launcher code, cloud resources or live configuration changes have occurred.
+At READY, no launcher code, cloud resources or live configuration changes had
+occurred. Subsequent implementation evidence follows below.
+
+### L1 implementation checkpoint
+
+Preview-only implementation now shares the existing checker’s evaluated render.
+It captures bounded nonsecret inputs, rejects protected-file aliases and drift,
+checks the clean source/version identity and narrower tenant/storage selection,
+and verifies the complete finite symbolic recipe. The public CLI exposes only
+`preview`; no executable recipe, generated files or image-probe claims are emitted.
+Actual external CLI tests use a separate tracked synthetic checkout. Compose
+serialization tests preserve literal dollars and shell expressions with
+`--no-interpolate`; snapshot binds explicitly forbid implicit directory creation.
+Generated secret names are explicit; symbolic image references remain unresolved
+and preserve the original image-sharing groups.
+Focused checks and independent review are complete; full final-code CI is the
+remaining delivery gate, recorded in the implementation PR. L2–L4 are not
+implemented or qualified by this checkpoint.
+
+One independent Claude patch review completed. Expected config-reread and render-
+shape failures now produce sanitized fixed diagnostics; failed development
+previews preserve their identity kind. Actual CLI regressions demonstrate that
+the existing checker already rejects extra runtime secret grants, hostile network
+settings and custom Compose extensions. No redundant secret schema was added: the
+canonical build secrets remain valid offline inputs and are removed only by the
+finite rehearsal transform. Missing/malformed recipe inputs cannot produce a ready
+plan. The guide now distinguishes unsupported/dirty-source pending evidence from
+invalid identity, selector and drift failures. After corrections, 44 preview tests,
+Ruff/format, focused Pyright and whitespace checks passed. Earlier compatibility
+checks passed 214 related tests and all 31 then-current preview tests on Compose
+2.38.2 as well as 5.6.0. Full final-code CI remains required.
+
+CI exposed a test-only renderer-discovery mismatch: the real roundtrip test looked
+only for standalone Compose while production also supports trusted system plugins.
+The test now observes the executable selected by the real production render and
+also exercises plugin-only discovery. Real rendering stays mandatory; no Docker
+wrapper, private credential configuration or daemon is used.
