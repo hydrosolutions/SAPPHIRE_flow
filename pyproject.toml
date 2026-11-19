@@ -70,6 +70,8 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
+# Host monitoring deliberately avoids the forecasting/geospatial dependency tree.
+host-monitor = ["httpx>=0.28.1", "structlog>=24.1.0"]
 dev = [
     "asyncpg",
     "cdsapi>=0.7.7",

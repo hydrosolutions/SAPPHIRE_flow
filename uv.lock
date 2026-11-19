@@ -4992,6 +4992,10 @@ dev = [
     { name = "testcontainers" },
     { name = "xlsxwriter" },
 ]
+host-monitor = [
+    { name = "httpx" },
+    { name = "structlog" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -5056,6 +5060,10 @@ dev = [
     { name = "ruff", specifier = ">=0.15.5" },
     { name = "testcontainers", extras = ["postgres"] },
     { name = "xlsxwriter", specifier = ">=3.2.9" },
+]
+host-monitor = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "structlog", specifier = ">=24.1.0" },
 ]
 
 [[package]]
