@@ -14,6 +14,8 @@ available features. All examples below are read-only.
 | Read native or hourly discharge, including rating-derived values | `GET /stations/{station_id}/observation-history` |
 | Find the latest stored reading at each station | `GET /observations/latest` |
 | Inspect daily rating-derived inputs to a forecast | `GET /forecasts/{forecast_id}/rating-input-history` |
+| Discover stored models and leads for event review | `GET /stations/{station_id}/review-options` |
+| Review stored forecasts at one lead over a past period | `GET /stations/{station_id}/review-series` |
 
 The [OpenAPI reference](../spec/api-v1-map.openapi.json) defines exact request and
 response structures for the supported dashboard/read routes. It does not describe
@@ -147,6 +149,79 @@ They are not hourly means. Missing slots stay gaps. In the documented Nepal
 baseline, the discharge block does **not** project rating-table conversions.
 See the [overview contract](../spec/network-overview.md) for availability states,
 compact series and private conditional polling.
+
+## Discover event-review options
+
+The event-review branch adds `GET /stations/{station_id}/review-options` to
+contract **2.14**; this is not yet a deployed feature. It requires reviewer or
+administrator access and accepts no query parameters. Use the returned source
+identities and `lead_hours` to populate choices: these are actual stored exact
+elapsed-hour leads, including historical artifacts, not model horizon guesses.
+
+Sources keep operational and hindcast identities separate, with recorded artifact
+hash, training dates, run, forcing and cadence. Missing provenance remains null.
+Bounds are inclusive stored valid-time bounds, not proof of continuous coverage.
+`completeness: unknown` means expected coverage is not recorded; detectable orphan
+headers or inconsistent lead timestamps are `incomplete` with reasons.
+
+Only ordinary discharge is offered. Under an active publication gate, the catalog
+contains selected operational forecasts and reports hindcast availability as
+`unsupported`, without enumerating hindcast metadata. Out-of-scope stations return
+404. All responses are `no-store`. Bounded catalog overflow returns 422 with
+`detail.code: review_catalog_limit_exceeded`; a five-second database timeout returns
+503 with `detail.code: review_query_timeout`. No partial catalog is returned.
+
+The limits are 100,000 headers, 1,000,000 stored value rows, 100 source identities
+and 2 MiB. See the [event-review contract](../spec/event-review-draft.md).
+
+### Read a period at one lead
+
+See the [frontend handoff and measured limits](event-review-handoff.md) for the
+immutable implementation snapshot, year-sized payloads and three-request timing.
+
+The same branch adds `/stations/{station_id}/review-series` in contract **2.15**;
+not yet deployed. Supply `model_id`, `lead_hours` (integer 0–8784), `start`, `end`
+and `source_mode=operational` or `source_mode=hindcast`. Bounds are aware timestamps
+covering at most 366 elapsed days, `[start,end)`, with no future end. They select
+**valid times**, including forecasts whose issue anchor precedes `start`.
+
+Hindcast requests additionally require `hindcast_run_id`, `hindcast_artifact_id`,
+`forcing_type`, and `time_step_seconds`, copied from options. An unknown or changed
+identity returns 404. An unoffered lead returns 422 `lead_not_offered`; an offered
+lead with an empty period is a successful missing result. Unknown and repeated
+parameters, including unsupported `data_use`, are rejected with typed 422 errors.
+
+Each segment contains source provenance, timestamped points and gap markers.
+Points include issue anchor, valid time, forecast ID, first storage time and QC.
+Storage time is not model generation or publication time. Members use the shared
+empirical type-7 reducer (bands need at least five members); quantiles require exact
+p50 and use exact p25/p75 if stored. Missing bands stay null with `band_reason`.
+Failed or suspect QC, invalid values and missing values expose no numbers. RAW
+hindcasts are labelled `qc_unchecked`, not QC-passed. See the
+[synthetic hindcast example](examples/review-series.json).
+
+`temporal_support` is currently `unknown`: display the labelled timestamps, but do
+not infer daily means, score these values or automatically combine sources.
+`operational_with_hindcast` therefore returns 422 `review_source_unsupported`.
+The recorded forecast timestep is not the cadence of issues at a fixed lead.
+Expected issue cadence is unknown, so `gaps` is empty: no missing issue or schedule
+is inferred from timestamp spacing. An empty gap list does not promise continuity
+or completeness. Preserve stored missing/null points when drawing lines. Series source bounds describe
+recorded values at the selected lead inside the requested period; options provides
+the wider stored bounds. Neither establishes an evaluation period or expected count.
+
+Operational reads use the current non-superseded revision for each issue, or the
+authoritative publication selection when the gate is active. Hidden issue dates,
+values and counts are not enumerated. An empty selected period under that gate is
+generically `withheld` (`no_visible_published_forecasts_in_period`); that does not
+assert that an unpublished forecast exists. Either hindcast-involving mode is
+refused before source lookup under the publication gate.
+
+Series reads share the work and byte limits above, add an 8,784 candidate-point
+limit and use a five-second SQL timeout. Work/output overflow returns 422
+`review_series_limit_exceeded` with advice to narrow the request; timeout returns
+503 `review_query_timeout`. No per-issue requests, refresh timer, forecast execution
+or skill calculation is triggered. Period skill remains future scope.
 
 ## Get observations and discharge history
 

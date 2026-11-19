@@ -1,0 +1,64 @@
+{
+  "station_id": "a163903e-0abe-49c4-a92d-ec3e606a4ea8",
+  "model_id": "climatology_fallback",
+  "lead_hours": 48,
+  "start": "2019-06-01T00:00:00Z",
+  "end": "2019-07-01T00:00:00Z",
+  "source_mode": "hindcast",
+  "parameter": "discharge",
+  "data_use": "standard",
+  "lead_definition": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then.",
+  "state": "available",
+  "reason": null,
+  "temporal_support": "unknown",
+  "support_message": "Timestamped values; interval support is unknown. Do not score or automatically combine sources.",
+  "segments": [
+    {
+      "source": {
+        "kind": "hindcast",
+        "model_id": "climatology_fallback",
+        "model_name": "Climatology",
+        "model_role": "baseline",
+        "artifact_id": "40da0015-2a24-4292-af2a-338c13387b10",
+        "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "model_version": null,
+        "training_period_start": "2010-01-01T00:00:00Z",
+        "training_period_end": "2015-01-01T00:00:00Z",
+        "hindcast_run_id": "2f64fa3b-8c5a-41ea-8c9e-4b076e7d4188",
+        "forcing_type": "reanalysis",
+        "time_step_seconds": 86400,
+        "units": "m³/s",
+        "lead_hours": [
+          48
+        ],
+        "first_valid_time": "2019-06-01T00:00:00Z",
+        "last_valid_time": "2019-06-01T00:00:00Z",
+        "temporal_support": "unknown",
+        "completeness": "unknown",
+        "reasons": [
+          "expected_coverage_unknown"
+        ]
+      },
+      "points": [
+        {
+          "valid_time": "2019-06-01T00:00:00Z",
+          "issued_at": "2019-05-30T00:00:00Z",
+          "forecast_id": "609d0bda-52cf-4246-9704-683773532fa4",
+          "stored_at": "2019-07-11T00:00:00Z",
+          "state": "available",
+          "reason": "qc_unchecked",
+          "qc_status": "raw",
+          "median": 3.0,
+          "p25": 2.0,
+          "p75": 4.0,
+          "quartile_method": "member_empirical_type7",
+          "band_reason": null,
+          "valid_interval_start": null,
+          "valid_interval_end": null
+        }
+      ],
+      "gaps": [],
+      "generation_time": null
+    }
+  ]
+}
