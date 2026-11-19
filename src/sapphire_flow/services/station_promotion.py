@@ -14,6 +14,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.station_observation_qc import USABLE_STATUSES
 from sapphire_flow.services.station_readiness import (
     check_basin,
     check_datum,
@@ -136,6 +137,7 @@ def _needs_rating_curve(
             "discharge",
             now - timedelta(days=60),
             now + timedelta(days=1),
+            qc_status=USABLE_STATUSES,
             source=ObservationSource.RATING_CURVE_DERIVED,
         )
     )
