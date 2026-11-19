@@ -54,6 +54,7 @@ name = "Sandbox tenant"
 [deployment]
 writable_tenants = ["chwrr"]
 operator = "admin test"
+promotion_allowed = true   # sandbox only; Step 8 refuses --apply without it
 
 [adapters.recap_gateway]
 base_url = "https://recap.ieasyhydro.org/sdk"
@@ -326,28 +327,41 @@ window, QC ran with the datum, a rating curve exists if the target is discharge,
 static attributes resolve (the aliases in `services/caravan_statics.py` map the model's names to
 the package's HydroATLAS names).
 
-## Step 8: switch the station on (no tool; planned as an admin-dashboard action)
+## Step 8: switch the station on
 
-Collection and the forecast cycle pick up only `operational` stations. In a sandbox:
+Collection and the forecast cycle pick up only `operational` stations. Dry run first (always
+allowed, writes nothing), then `--apply`:
 
 ```bash
-uv run python - <<'EOF'
-import os, dataclasses
-import sqlalchemy as sa
-from datetime import UTC, datetime
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.enums import StationStatus
-from sapphire_flow.types.datetime import ensure_utc
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    ss = PgStationStore(c); st = ss.fetch_station_by_code("00001", "research")
-    ss.update_station(dataclasses.replace(st, forecast_targets=frozenset({"discharge"}),
-        updated_at=ensure_utc(datetime.now(UTC))))
-    ss.update_station_status(st.id, StationStatus.OPERATIONAL)
-EOF
+uv run python -m sapphire_flow.cli.promote_station \
+  --tenant sandbox --network research --code 00001 --operator "admin test" \
+  --weather-scope S [--target discharge] [--apply]
 ```
 
+It prints seven blocking conditions, all of which must hold, and lists every failing one:
+
+1. status is `onboarding` (`suspended` / `decommissioned` are refused; an already `operational`
+   station is a no-op, exit 0);
+2. datum and gauge type set if `water_level` is measured;
+3. basin set and present;
+4. the station is in a group with an ACTIVE model assignment (the model is derived from it, there
+   is no `--model`);
+5. reanalysis, forecast and operational weather bindings ACTIVE, and the polygon binding name
+   equals the `--weather-scope` Gateway name (without `--weather-scope` this condition fails);
+6. the model's static features all resolve;
+7. every day of the model's lookback has a usable discharge value (window ends yesterday, like
+   the cycle), and an active rating curve exists when discharge is derived from level.
+
+`--apply` writes `forecast_targets`, the `operational` status and one `STATION_STATUS_CHANGE`
+audit row in one transaction. Exit 0 ok, 2 usage / unknown station, 3 refused (blocking condition,
+another tenant's station, or `promotion_allowed` off). For a bridge-sensor station it also prints
+a warning that the live feed must already deliver converted values (m a.s.l.).
+
 ⛔ On a shared host, promotion is the owner's decision: it starts live collection and puts the
-station into the forecast cycle, and demoting it later can lose observations.
+station into the forecast cycle, and demoting it later can lose observations. `--apply` is
+refused unless the host config says `[deployment] promotion_allowed = true` (default false; the
+sandbox config above adds it, a shared host's owner turns it on for one run). The dry run says
+when `--apply` would be refused for this reason.
 
 ## Model and first forecast
 

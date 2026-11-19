@@ -63,3 +63,17 @@ class TestLoadDeploymentIdentityConfig:
         config_path.write_text("max_retention_days = 600\n")
         with pytest.raises(ConfigurationError, match="writable_tenants"):
             load_deployment_identity_config(config_path)
+
+
+class TestPromotionAllowed:
+    def test_defaults_to_false(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[deployment]\nglobal_admin = true\n")
+        assert load_deployment_identity_config(config_path).promotion_allowed is False
+
+    def test_parses_true(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[deployment]\nglobal_admin = true\npromotion_allowed = true\n"
+        )
+        assert load_deployment_identity_config(config_path).promotion_allowed is True
