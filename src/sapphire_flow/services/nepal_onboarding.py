@@ -38,10 +38,12 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.nepal_onboarding import (
+    FORECAST_SOURCE,
     GATEWAY_HISTORY_SOURCE,
     GATEWAY_HRU,
     GAUGE_POLYGONS,
     HISTORY_PARAMETERS,
+    OPERATIONAL_SOURCE,
     ReadinessStatus,
     StationReadiness,
 )
@@ -196,7 +198,8 @@ def admit_weather_bindings(
     admission: OperationalWeatherAdmission,
     *,
     now: UtcDatetime,
-) -> None:
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Admit the three weather bindings; return (station code, sources added)."""
     if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
         raise ConfigurationError(
             "Nepal weather admission requires CHWRR-only write authority"
@@ -231,7 +234,7 @@ def admit_weather_bindings(
     ).all()
     store = PgStationStore(conn)
     polygons = RecapGatewayPolygonStore(conn)
-    pending: list[tuple[GatewayPolygonBindingRow, list[StationWeatherSource]]] = []
+    pending: list[tuple[GatewayPolygonBindingRow, str, list[StationWeatherSource]]] = []
     for expected in scope.station_polygons:
         station = store.fetch_station(expected.station_id)
         if (
@@ -259,22 +262,74 @@ def admit_weather_bindings(
             not in (admission.original_gateway_hru_name, scope.gateway_hru_name)
         ):
             raise ConfigurationError("conflicting weather package polygon")
-        sources = [
-            s
-            for s in store.fetch_weather_sources(station.id)
-            if s.nwp_source == "era5_land"
-        ]
-        if sources and sources != [history_binding(station.id)]:
-            raise ConfigurationError("conflicting reanalysis binding")
-        pending.append((row, sources))
-    for row, sources in pending:
+        existing = store.fetch_weather_sources(station.id)
+        pending.append((row, station.code, _bindings_to_add(station.id, existing)))
+    added: list[tuple[str, tuple[str, ...]]] = []
+    for row, code, to_add in pending:
         if row.gateway_hru_name != scope.gateway_hru_name:
             polygons.store_binding(
                 replace(row, gateway_hru_name=scope.gateway_hru_name)
             )
-        if not sources:
-            store.store_weather_source(history_binding(row.station_id))
+        for binding in to_add:
+            store.store_weather_source(binding)
+        added.append((code, tuple(b.nwp_source for b in to_add)))
     operational_weather_stations(conn, identity, scope, now=now)
+    for expected in scope.station_polygons:
+        store.fetch_forecast_binding(expected.station_id)
+        store.fetch_operational_binding(expected.station_id)
+    return added
+
+
+def _bindings_to_add(
+    station_id: StationId, existing: list[StationWeatherSource]
+) -> list[StationWeatherSource]:
+    to_add: list[StationWeatherSource] = []
+    for expected in weather_bindings(station_id):
+        same = [s for s in existing if s.nwp_source == expected.nwp_source]
+        if same and same != [expected]:
+            raise ConfigurationError(f"conflicting {expected.role.value} binding")
+        if same:
+            continue
+        others = [
+            s.nwp_source
+            for s in existing
+            if s.role is expected.role
+            and expected.role is not WeatherSourceRole.REANALYSIS
+        ]
+        if others:
+            raise ConfigurationError(
+                f"station already has a {expected.role.value} binding: {others!r}"
+            )
+        to_add.append(expected)
+    return to_add
+
+
+def weather_bindings(station_id: StationId) -> tuple[StationWeatherSource, ...]:
+    return (
+        history_binding(station_id),
+        forecast_binding(station_id),
+        operational_binding(station_id),
+    )
+
+
+def forecast_binding(station_id: StationId) -> StationWeatherSource:
+    return StationWeatherSource(
+        station_id=station_id,
+        nwp_source=FORECAST_SOURCE,
+        extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+        status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
+    )
+
+
+def operational_binding(station_id: StationId) -> StationWeatherSource:
+    return StationWeatherSource(
+        station_id=station_id,
+        nwp_source=OPERATIONAL_SOURCE,
+        extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+        status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.OPERATIONAL,
+    )
 
 
 def history_binding(station_id: StationId) -> StationWeatherSource:

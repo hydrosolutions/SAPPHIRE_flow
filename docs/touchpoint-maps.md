@@ -2537,6 +2537,12 @@ a paused-cutover operation. See the database-schema serialization contract.
 
 Weather/onboarding: `config/nepal_weather.py` → `types/nepal_onboarding.py` →
 `services/nepal_onboarding.py::admit_weather_bindings` → native polygon/weather stores.
+It writes the three bindings (reanalysis `era5_land`, forecast `ifs_ecmwf`, operational
+`recap_ecmwf_operational`; names in `types/nepal_onboarding.py`, drift-guarded against the
+adapter and `OperationalWeatherConfig` in `tests/unit/types/test_nepal_onboarding_sources.py`).
+`operational_weather_stations` stays reanalysis-only (the live ERA5 flow calls it). The CLI
+`weather-bindings` is a dry run unless `--apply` (`--dry-run` kept as a no-op alias);
+chwrr tenant only until M5b.
 Coordinate membership edits through the existing tenant lock in all three
 `PgStationGroupStore` membership mutators. Preserve package provenance and unrelated data.
 Prefect/deployment: `cli/onboard_nepal.py` submits the registered three-string

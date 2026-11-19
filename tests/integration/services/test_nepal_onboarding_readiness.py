@@ -18,7 +18,9 @@ from sapphire_flow.services.basin_package_loader import load_basin_package
 from sapphire_flow.services.nepal_onboarding import (
     history_binding,
     import_nepal_package,
+    operational_binding,
     qualify_discharge_targets,
+    weather_bindings,
 )
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
 from sapphire_flow.store.observation_store import PgObservationStore
@@ -31,6 +33,7 @@ from sapphire_flow.types.enums import (
     QcStatus,
     SpatialRepresentation,
     StationStatus,
+    WeatherSourceRole,
 )
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import TenantId
@@ -557,7 +560,17 @@ class TestWeatherAdmission:
             finally:
                 transaction.rollback()
 
-    @pytest.mark.parametrize("mode", ["success", "rollback", "conflict", "partial"])
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "success",
+            "rollback",
+            "conflict",
+            "partial",
+            "second_forecast",
+            "wrong_operational_role",
+        ],
+    )
     def test_worker_admission_preserves_package_and_converges(
         self,
         db_connection: sa.Connection,
@@ -620,6 +633,18 @@ class TestWeatherAdmission:
             PgStationStore(db_connection).store_weather_source(
                 history_binding(cohort[0].id)
             )
+            PgStationStore(db_connection).store_weather_source(
+                operational_binding(cohort[0].id)
+            )
+        if mode in ("second_forecast", "wrong_operational_role"):
+            seeded = (
+                replace(weather_bindings(cohort[0].id)[1], nwp_source="icon_ch2_eps")
+                if mode == "second_forecast"
+                else replace(
+                    operational_binding(cohort[0].id), role=WeatherSourceRole.FORECAST
+                )
+            )
+            PgStationStore(db_connection).store_weather_source(seeded)
         with db_connection.begin_nested() as transaction:
             db_connection.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
             if mode == "conflict":
@@ -629,7 +654,26 @@ class TestWeatherAdmission:
                     admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
                 assert polygons.fetch_bindings_for_station(cohort[0].id)[0] == before[0]
                 return
+            if mode in ("second_forecast", "wrong_operational_role"):
+                with pytest.raises(ConfigurationError, match="forecast|operational"):
+                    admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                assert [
+                    polygons.fetch_bindings_for_station(s.id)[0] for s in cohort
+                ] == before
+                assert all(
+                    PgStationStore(db_connection).fetch_weather_sources(s.id) == []
+                    for s in cohort[1:]
+                )
+                return
             admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            station_store = PgStationStore(db_connection)
+            for s in cohort:
+                assert station_store.fetch_forecast_binding(s.id).nwp_source == (
+                    "ifs_ecmwf"
+                )
+                assert station_store.fetch_operational_binding(s.id) == (
+                    operational_binding(s.id)
+                )
             admitted = [polygons.fetch_bindings_for_station(s.id)[0] for s in cohort]
             admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
             assert admitted == [
@@ -646,8 +690,11 @@ class TestWeatherAdmission:
             ] == before
         else:
             assert all(
-                PgStationStore(db_connection).fetch_weather_sources(s.id)
-                == [history_binding(s.id)]
+                sorted(
+                    PgStationStore(db_connection).fetch_weather_sources(s.id),
+                    key=lambda b: b.role.value,
+                )
+                == sorted(weather_bindings(s.id), key=lambda b: b.role.value)
                 for s in cohort
             )
 
