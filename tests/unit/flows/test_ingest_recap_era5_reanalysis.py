@@ -352,6 +352,20 @@ class TestOperationalWeatherScopeFlow:
             )
         assert operational_weather.calls == []
 
+    def test_scoped_history_admits_as_chwrr_tenant(
+        self, operational_weather: WeatherFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        def admit(*args: object, **kwargs: object) -> list[object]:
+            seen.update(kwargs)
+            raise ConfigurationError("stop after admission")
+
+        monkeypatch.setattr(module, "operational_weather_stations", admit)
+        with pytest.raises(ConfigurationError, match="stop after admission"):
+            run_scoped(operational_weather)
+        assert seen["tenant_code"] == "chwrr"
+
     def test_unscoped_path_uses_legacy_six_station_resolver(
         self, operational_weather: WeatherFixture
     ) -> None:
@@ -465,7 +479,10 @@ class TestProductionEra5:
 
         monkeypatch.setattr(recap_client, "RecapClient", client)
 
+        tenant_codes: list[object] = []
+
         def admit(*args: object, **kwargs: object) -> None:
+            tenant_codes.append(kwargs.get("tenant_code"))
             if failure == "admission":
                 raise ConfigurationError("inadmissible roster")
 
@@ -523,6 +540,8 @@ class TestProductionEra5:
         assert (
             logged == {"none": [1, 2, 3], "admission": [], "second_batch": [1]}[failure]
         )
+        assert tenant_codes
+        assert set(tenant_codes) == {"chwrr"}
         assert all(session.closed for session in sessions)
         if failure == "admission":
             assert not sessions

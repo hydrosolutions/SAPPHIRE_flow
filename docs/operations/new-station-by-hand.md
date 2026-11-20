@@ -148,7 +148,10 @@ Then run `weather-bindings` (a dry run unless you add `--apply`; run it without 
 read the per-station `nepal_onboarding.weather_bindings` lines, which show the Gateway name
 and the bindings it would add). It creates all three weather bindings the cycle needs:
 reanalysis `era5_land`, forecast `ifs_ecmwf`, operational `recap_ecmwf_operational`.
-It works for the `chwrr` tenant only until the tenant generalisation (M5b) lands.
+It works for any tenant: pass your tenant code as `--tenant`. Run it after the group exists and
+the station's basin package is imported (order: group, basin import, weather-bindings).
+`--confirm-t8` is a chwrr/Nepal-host acceptance flag: required for `--tenant chwrr`, optional
+for other tenants. `--confirm-package-joins` is always required.
 
 ```bash
 uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --config sandbox-config.toml \

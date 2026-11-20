@@ -46,18 +46,27 @@ log = structlog.get_logger(__name__)
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Prepare the six CHWRR gauges without activating forecasts"
+        description=(
+            "Prepare the six CHWRR gauges (weather-bindings: any tenant) "
+            "without activating forecasts"
+        )
     )
     commands = result.add_subparsers(dest="command", required=True)
     for name in ("basins", "history", "qualify", "weather-bindings"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
-        command.add_argument("--tenant", choices=["chwrr"], required=True)
+        if name == "weather-bindings":
+            command.add_argument("--tenant", required=True)
+        else:
+            command.add_argument("--tenant", choices=["chwrr"], required=True)
         command.add_argument(
             "--confirm-t8",
             action="store_true",
-            required=True,
-            help="Confirm Plan 268 staging acceptance is recorded",
+            required=name != "weather-bindings",
+            help=(
+                "Confirm Plan 268 staging acceptance is recorded "
+                "(weather-bindings: required for tenant chwrr only)"
+            ),
         )
         command.add_argument("--dry-run", action="store_true")
         if name == "weather-bindings":
@@ -142,7 +151,11 @@ async def submit_scoped_history(start: str, end: str, weather_scope: str) -> Non
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    arg_parser = parser()
+    args = arg_parser.parse_args(argv)
+    chwrr_only = args.command != "weather-bindings" or args.tenant == "chwrr"
+    if args.command == "weather-bindings" and chwrr_only and not args.confirm_t8:
+        arg_parser.error("--confirm-t8 is required for tenant chwrr")
     configure_cli_logging()
     try:
         if args.command == "history" and args.weather_scope is not None:
@@ -154,7 +167,9 @@ def main(argv: list[str] | None = None) -> int:
             asyncio.run(submit_scoped_history(args.start, args.end, args.weather_scope))
             return 0
         identity = load_deployment_identity_config(args.config)
-        if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
+        if chwrr_only and (
+            identity.global_admin or identity.writable_tenants != frozenset({"chwrr"})
+        ):
             raise ConfigurationError(
                 "Nepal onboarding requires CHWRR-only write authority"
             )
@@ -216,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                                 conn,
                                 identity,
                                 weather_scope,
+                                tenant_code=args.tenant,
                                 now=now,
                             )
                             for code, sources in added:
