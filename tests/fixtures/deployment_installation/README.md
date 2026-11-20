@@ -19,7 +19,8 @@ uv run --no-sync pytest tests/integration/test_deployment_install.py -m deployme
 ```
 
 The host user must be able to create the installation lock in `/run/lock` and use
-the local rootful Docker socket. Port 48189 must be free. Dependencies and images
+the local rootful Docker socket. Ports 48189 and 48190 must be free. The success and injected-failure cases use
+distinct ports so the second fresh install does not depend on immediate socket reuse. Dependencies and images
 are prepared before the test; the installer never pulls or builds. Use a clean
 source checkout matching the development image identity.
 

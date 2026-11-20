@@ -399,3 +399,8 @@ The first hosted attempt failed installation and then report publication because
 runner temporary storage is not private. The report now uses a private subdirectory
 validated before installation; tests cover failure evidence and unsafe-parent
 refusal. This attempt does not count as qualification or verified cleanup.
+
+The corrected hosted attempt proved the successful lifecycle, persistence, token
+revocation, missing-secret refusal and ownership-checked cleanup. Its second fresh
+installation refused immediate reuse of the first HTTP port; the two scenarios now
+use distinct ports. Failure recovery and full final-head CI remain unqualified.

@@ -84,6 +84,7 @@ def invoke(
     canaries: tuple[str, ...],
     deadline: float,
     outcomes: list[dict[str, Any]],
+    http_port: int = 48189,
     fault: Literal["none", "kill_init"] = "none",
 ) -> tuple[int, dict[str, Any]]:
     command = [
@@ -105,7 +106,7 @@ def invoke(
                 "--image-identity",
                 "ci-development",
                 "--http-port",
-                "48189",
+                str(http_port),
             ]
         )
     if deadline - time.monotonic() <= 240:
@@ -448,6 +449,7 @@ def failure_case(
             canaries=canaries,
             deadline=deadline,
             outcomes=outcomes,
+            http_port=48190,
             fault="kill_init",
         )
         assert code == 1 and result["code"] == "init_failed", (
@@ -478,6 +480,7 @@ def failure_case(
             canaries=canaries,
             deadline=deadline,
             outcomes=outcomes,
+            http_port=48190,
         )
         assert (
             code == 2
@@ -493,6 +496,7 @@ def failure_case(
             canaries=canaries,
             deadline=deadline,
             outcomes=outcomes,
+            http_port=48190,
         )
         assert code == 0 and result["status"] == "STOPPED"
         assert owned.inventory() == before, "guarded stop removed data"
@@ -507,6 +511,7 @@ def failure_case(
             canaries=canaries,
             deadline=deadline,
             outcomes=outcomes,
+            http_port=48190,
         )
         assert code == 2 and result["code"] == "partial_installation_refused"
         assert sentinel.sentinel_snapshot(docker, identity) == sentinel_before
