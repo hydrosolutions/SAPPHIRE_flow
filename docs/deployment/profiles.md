@@ -17,6 +17,11 @@ For a clean, source-matched standard profile, the separate
 Its preview remains offline; explicit runtime qualification uses fresh resources
 and test credentials on a dedicated daemon, without activating a deployment.
 
+The [persistent installation preview](profile-installation.md) uses this same
+selection and offline checker, then validates proposed retained-state and loopback
+changes. It has no launch/lifecycle commands yet and introduces no new manifest
+schema or secret-manager dependency.
+
 ## Selection and file ownership
 
 ```bash

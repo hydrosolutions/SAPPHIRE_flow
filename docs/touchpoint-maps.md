@@ -1070,6 +1070,15 @@ When this map applies, the context packet should name:
 
 ### Touchpoint map: Prefect / Docker / deployment
 
+- Persistent installation preview: `tools/deployment_install.py` reuses the
+  existing profile/rehearsal preparation checks, then verifies its own finite
+  retained recipe. `tests/unit/tools/test_deployment_install.py` covers external
+  CLI/Compose, private reports, credential aliases, source identity and transform
+  drift. Preserve no-daemon/no-secret-read preview and the rehearsal's separate
+  destructive-cleanup contract. Administrator instructions live in
+  `docs/deployment/profile-installation.md`; credential delivery in
+  `docs/secrets-bootstrap.md`. Runtime installation remains a later milestone.
+
 - Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
   checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`
   covers real external CLI/Compose, protected-input aliases, drift, source identity
