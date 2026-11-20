@@ -6,8 +6,8 @@ organization, or anyone rehearsing it in a sandbox. **What this is:** the steps 
 command (Plan 540 tools; each is a dry run until you add `--apply`). The parts that are still
 by hand are written out so they can be repeated exactly: the sandbox, the weather scope in the
 config file, the Gateway dashboard jobs, and the synthetic data a sandbox needs. **What this
-is not:** a finished admin dashboard. Model training, evaluation and activation: see the model
-onboarding guide (link to be added).
+is not:** a finished admin dashboard. For model training, evaluation and artifact activation,
+see [Train, evaluate and activate a model](model-onboarding.md).
 
 Rehearsed end to end on 2026-11-16 in a throwaway sandbox with the synthetic Trishuli
 station (code `00001`, #452): basin imported, weather history stored, observations and
@@ -261,8 +261,7 @@ Step 5c. Skipping them was the first thing that stopped the 2026-11-17 walkthrou
    must be re-processed. This is the **only shared Gateway action** in this guide: it
    re-processes runs for every basin subscribed to that job. The owner's standing rule
    (2026-11-17) lets an administrator start it without asking each time; write the time, the job
-   and the reason in the evidence folder. (The runbook still says the owner or the Gateway
-   administrator must give a go-ahead; it is being aligned with this rule.) An assistant never
+   and the reason in the evidence folder. An assistant never
    starts it.
 
 Things that look wrong but are normal:
@@ -687,7 +686,8 @@ start, end and step together, and `--model` is required; the step must be one th
 supports). It adds `training_samples` after the counted lines: how many complete training
 windows the stored history gives in that window (PASS needs more than 0 and at least
 `--minimum-samples`, default 0). Thin history there does not change the operational checks.
-Model training, evaluation and activation: see the model onboarding guide (link to be added).
+Training-sample counts describe available history; for model-specific training requirements,
+evaluation and artifact activation, see [Train, evaluate and activate a model](model-onboarding.md).
 
 Two optional sections can follow the counted checks. They are listed under "optional sections
 (not counted in the line below)" and never change the last line: `gateway_data`
@@ -771,6 +771,12 @@ per-person administrator approval in the MVP (a logged-in approval is deferred);
 is an unverified label.
 
 ## Model and first forecast
+
+Follow the [model onboarding guide](model-onboarding.md) for training, evaluation, artifact import
+and activation; this station guide covers station readiness, manual group assignment of an
+already-imported model, and station promotion. Station promotion does not activate a model
+artifact. The training flow can promote artifacts and create assignments automatically when its
+checks pass, so the manual `assign_group_model` step is not needed after every training run.
 
 1. **Import the trained artifact** (an existing, trusted file; for `cmal_small` the one already
    in use). Follow the [artifact import runbook](model-artifact-import-runbook.md). In a

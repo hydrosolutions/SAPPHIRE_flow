@@ -75,7 +75,7 @@ repository, so everything you need is repeated here.
 | 1 | Run `history` (command in the copy-paste block) and note the window, the variables and the name it prints. | You have the three values below. |
 | 2 | Open the Gateway site, `recap.ieasyhydro.org`, and find the job **`era5_land_backfill__targeted`**. | The job is open. |
 | 3 | Start one run with **Trigger DAG w/ config** and fill the fields below. This is a single manual run, not a backfill of other basins. | The run appears in the dashboard. |
-| 4 | Note the run's identifier as the dashboard shows it, then record it: `history --stream era5_history --actor "$ACTOR" --job-reference "<identifier>"`. | The tool lists the job reference. |
+| 4 | Note the run's identifier as the dashboard shows it, then record it: `history --stream era5_history --actor "$ACTOR" --job-reference "<identifier>"`. | The tool saves the job reference in the evidence folder's state file (it does not print it back; `history` without `--job-reference` prints the steps again). |
 | 5 | **Backfill the last 7 days of IFS forecasts** (see "IFS backfill" below). Without it the new basin has no forecast data for about a week. | The forecast job has re-processed the last 7 days. |
 | 6 | Wait until both runs show as finished, then run `resume` (step 6 of the checklist). | `resume` reports coverage or says what is missing. |
 
@@ -110,7 +110,7 @@ Good to know:
 - The agreed window ends at least **8 days before today**: the weather history trails the
   present by 7 to 8 days (measured on the Gateway, Oct to Nov 2026). Fetching dates past
   that edge fails with "No ERA5 dataset found", so `resume` would hold those days.
-- Do not start any other shared refresh, and do not start the IFS backfill without the owner's or the Gateway admin's go-ahead (see above).
+- Do not start any other shared refresh, and the IFS backfill is the one shared action: under the owner's standing rule (2026-11-17) an administrator may start it without asking each time, and writes the time, the job and the reason in the evidence folder.
 - A job reference only says you started a run. It does not prove the data arrived; `resume`
   does.
 - Snow history needs a procedure from the Gateway team; there is no snow job described here.
@@ -121,7 +121,7 @@ Good to know:
 - On a timeout or unclear response: stop. Do not rename or retry the upload.
 - The API key goes only in the key file, never on the command line.
 - Use one workspace on one host; never copy it or start a second one to get past a hold.
-- The IFS backfill is the only shared action; the owner or Gateway admin starts it (see Step 5 in detail). No other shared refresh here.
+- The IFS backfill is the only shared action; under the owner's standing rule (2026-11-17) an administrator may start it and records it in the evidence folder (see Step 5 in detail). No other shared refresh here.
 - Eligible means Gateway coverage only. It does not authorize training or activation.
 
 ### If it stops
@@ -145,8 +145,8 @@ holds; fixtures do not establish live coverage or Vatro approval.
 including upload outcome/identity evidence, write/flag semantics, native temporal
 support and snow procedure where needed. The owner already authorized the new
 Trishuli upload and data fetches. Do not request repeat authority for those actions.
-Subscription scope still needs exact operator confirmation. The 7-day IFS backfill needs
-the owner's or Gateway admin's go-ahead (Step 5 in detail). Existing registrations and
+Subscription scope still needs exact operator confirmation. The 7-day IFS backfill may be started by an administrator under the owner's standing rule
+(2026-11-17) and is recorded in the evidence folder (Step 5 in detail). Existing registrations and
 deployment remain outside this route.
 
 Use the approved **research** Trishuli handover, text code `00001`, not the pending
@@ -238,8 +238,9 @@ Gateway coverage passes. Exit `0` means this Gateway scope passed, not model rea
    ```
 
    The shared `ifs__subdaily` 7-day backfill is the one way to get forecasts for a
-   basin that did not exist when the recent runs were produced. It needs the owner's or
-   Gateway admin's go-ahead (see "Step 5 in detail" above). Any other shared refresh stays
+   basin that did not exist when the recent runs were produced. Under the owner's standing
+   rule (2026-11-17) an administrator may start it and records it in the evidence folder
+   (see "Step 5 in detail" above). Any other shared refresh stays
    outside this route. Missing IFS remains held until it arrives or is backfilled.
 6. Resume actual retrieval over the **whole agreed scope**. Historical requests
    use at most 31 days, reuse only complete unchanged chunks, and retry incomplete
