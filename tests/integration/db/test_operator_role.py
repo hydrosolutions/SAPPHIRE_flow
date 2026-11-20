@@ -1771,13 +1771,21 @@ class TestCurrentHeadDowngradeRefusal:
 
         before = snapshot()
         assert before[0] == "0089"
-        with pytest.raises(
-            (NotImplementedError, sa.exc.DBAPIError),
-            match=(
-                "requires a drained deployment|"
-                "cannot downgrade net radiation with retained forcing or evidence"
-            ),
-        ):
+        retained = db.scalar(
+            "SELECT EXISTS (SELECT 1 FROM operational_weather_cache) "
+            "OR EXISTS (SELECT 1 FROM forecast_evidence) "
+            "OR EXISTS (SELECT 1 FROM historical_forcing "
+            "WHERE parameter IN ('solar_net_radiation','thermal_net_radiation')) "
+            "OR EXISTS (SELECT 1 FROM weather_forecasts "
+            "WHERE parameter IN ('solar_net_radiation','thermal_net_radiation'))"
+        )
+        expected_error = sa.exc.DBAPIError if retained else NotImplementedError
+        expected_message = (
+            "cannot downgrade net radiation with retained forcing or evidence"
+            if retained
+            else "requires a drained deployment"
+        )
+        with pytest.raises(expected_error, match=expected_message):
             _alembic("downgrade", "0066")
         assert snapshot() == before
         assert _guard_object_counts(db) == (10, 3)

@@ -144,6 +144,17 @@ class TestRadiationEvidence:
         new_entry = replace(entry, past_snapshot=new_snapshot)
         raw = encode_cache_entry(new_entry, max_past_bytes=2 * 1024 * 1024)
         assert decode_cache_entry(raw, max_past_bytes=2 * 1024 * 1024) == new_entry
+        changed_day = replace(
+            new_day,
+            samples=new_day.samples[:-1]
+            + (replace(new_day.samples[-1], value=-101.0),),
+        )
+        tampered = replace(new_snapshot, window=replace(window, days=(changed_day,)))
+        with pytest.raises(ValueError, match="hash mismatch"):
+            encode_cache_entry(
+                replace(new_entry, past_snapshot=tampered),
+                max_past_bytes=2 * 1024 * 1024,
+            )
         # Domain validation catches tampering even if an attacker recomputes hashes.
         with pytest.raises(ValueError, match="overlap or duplicate"):
             replace(new_day, samples=new_day.samples + radiation[:1])

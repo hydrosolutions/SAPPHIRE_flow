@@ -136,3 +136,17 @@ class TestRadiationPeriodWire:
         )
         raw = encode_cache_entry(entry, max_past_bytes=LIMIT)
         assert decode_cache_entry(raw, max_past_bytes=LIMIT) == entry
+        first = periods[0]
+        changed = replace(
+            first,
+            samples=first.samples[:-1] + (replace(first.samples[-1], value=101.0),),
+        )
+        tampered = replace(
+            snapshot, window=replace(snapshot.window, periods=(changed, *periods[1:]))
+        )
+        with pytest.raises(ValueError, match="hash mismatch"):
+            encode_cache_entry(
+                replace(entry, past_snapshot=tampered), max_past_bytes=LIMIT
+            )
+        with pytest.raises(ValueError, match="overlap or duplicate"):
+            replace(first, samples=first.samples + first.samples[-1:])

@@ -523,6 +523,7 @@ def reduced_daily_step_times(
     *,
     time_step: timedelta,
     issue_time: UtcDatetime,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> dict[tuple[str, int | None], frozenset[UtcDatetime]]:
     """Public: the clean daily bucket VALID_TIMES per ``(parameter,
     member_id)`` AFTER the same aggregation + backdated-bucket drop that
@@ -538,7 +539,9 @@ def reduced_daily_step_times(
     truncation) — a completeness check needs the true available set, not
     one already truncated to some other consumer's horizon.
     """
-    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(
+        records, time_step, weather_policy=weather_policy
+    )
     kept_times = frozenset(
         r.valid_time for r in daily_nwp_records if r.valid_time >= issue_time
     )

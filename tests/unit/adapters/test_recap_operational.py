@@ -677,3 +677,76 @@ class TestRadiationFingerprints:
             parameters=WEATHER_PARAMETERS,
             interval_qualification=replace(qualification, revision="corrected-v2"),
         )
+
+
+class TestMixedRadiationRefresh:
+    def test_shared_hru_batches_only_requested_channels(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.operational_weather import (
+            LEGACY_WEATHER_PARAMETERS,
+            WEATHER_PARAMETERS,
+        )
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        precipitation = pd.read_parquet(FIXTURES / "precipitation.parquet")
+        other = next(
+            str(name)
+            for name in precipitation.columns
+            if str(name).startswith("g_") and name != "g_225"
+        )
+        radiation_source = make_binding()
+        legacy_source = replace(radiation_source, station_id=StationId(UUID(int=2)))
+
+        class Resolver(PolygonResolver):
+            def resolve(self, source: StationWeatherSource) -> GatewayPolygonRef:
+                ref = super().resolve(source)
+                return (
+                    replace(ref, polygon_name=GatewayPolygonName(other))
+                    if source.station_id == legacy_source.station_id
+                    else ref
+                )
+
+        api = RecordingApi(
+            {
+                "tp": precipitation,
+                "2t": pd.read_parquet(FIXTURES / "temperature.parquet"),
+                "ssr": precipitation,
+                "str": precipitation,
+            }
+        )
+        adapter = RecapGatewayOperationalAdapter(
+            api=api,
+            resolver=Resolver(),
+            config=OperationalWeatherConfig(),
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.NORMALIZED_START_V1,
+                revision="test-normalized-v1",
+            ),
+        )
+        windows = adapter.fetch_windows(
+            sources=[radiation_source, legacy_source],
+            issue_time=ISSUE,
+            start=START,
+            end=ISSUE,
+            parameters_by_station={
+                radiation_source.station_id: WEATHER_PARAMETERS,
+                legacy_source.station_id: LEGACY_WEATHER_PARAMETERS,
+            },
+        )
+        calls = [call["ifs_variable_name"] for call in api.calls]
+        assert calls.count("ssr") == calls.count("str") == 1
+        assert calls.count("tp") == calls.count("2t") == 2
+        assert {
+            sample.parameter
+            for day in windows[legacy_source.station_id].days
+            for sample in day.samples
+        } == set(LEGACY_WEATHER_PARAMETERS)
+        assert {
+            sample.parameter
+            for day in windows[radiation_source.station_id].days
+            for sample in day.samples
+        } == set(WEATHER_PARAMETERS)

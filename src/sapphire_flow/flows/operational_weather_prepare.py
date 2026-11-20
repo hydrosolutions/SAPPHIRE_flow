@@ -37,7 +37,11 @@ from sapphire_flow.types.operational_weather import (
     WeatherCacheKey,
     require_midnight,
 )
-from sapphire_flow.types.recap_intervals import UNQUALIFIED_INTERVALS
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_PARAMETERS,
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalContract,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -76,6 +80,7 @@ class PreparedWeatherRefresh:
     assignments: Mapping[tuple[StationId, ModelId], AssignmentWeatherRequirement]
     resolver: FrozenWeatherResolver
     projections: tuple[ForcingRequired, ...]
+    refusal_messages: tuple[str, ...] = ()
 
 
 def prepare_weather_refresh(
@@ -135,6 +140,7 @@ def prepare_weather_refresh(
         if isinstance(adapter, RecapGatewayForecastAdapter)
         else UNQUALIFIED_INTERVALS
     )
+    refusals: list[str] = []
     assignments: dict[tuple[StationId, ModelId], AssignmentWeatherRequirement] = {}
     specs: dict[StationId, StationWeatherRefresh] = {}
     for (sid, mid), step in scheduled.items():
@@ -151,6 +157,15 @@ def prepare_weather_refresh(
         names = (
             requirements.past_dynamic_features | requirements.future_dynamic_features
         )
+        if (
+            RADIATION_PARAMETERS.intersection(names)
+            and qualification.contract is GatewayIntervalContract.UNQUALIFIED
+        ):
+            refusals.append(
+                f"Required operational weather unavailable for {sid}/{mid}: "
+                "radiation intervals are unqualified"
+            )
+            continue
         if not names <= set(weather_parameters):
             raise ConfigurationError(
                 "selected operational weather supports only "
@@ -348,4 +363,5 @@ def prepare_weather_refresh(
         assignments=MappingProxyType(assignments),
         resolver=FrozenWeatherResolver(bindings=tuple(mappings.items())),
         projections=tuple(projections),
+        refusal_messages=tuple(refusals),
     )

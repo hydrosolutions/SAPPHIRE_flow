@@ -512,3 +512,15 @@ history alone is 70,250,826 bytes, above the unchanged capture ceiling. R5 group
 activation is therefore not qualified; a separate capacity decision is required.
 No native support was dropped, no global limit changed, no live setting enabled.
 Local measurement evidence: `/tmp/cmal-radiation-review/capacity-typed.json`.
+
+Independent patch review prompted fixes to UTC candidate aggregation policy,
+adapter integrity-error mapping and missing-value handling, per-assignment
+unqualified-input refusal, and constructor propagation. Added regressions cover
+those paths, shared-station requirement unions, exact FI names/signed inputs,
+history parameter scoping, all four legacy fingerprints, and v1/v2 digest/domain
+tampering. The complete 15-period request/receipt/proof has an exact past/future
+seam. Actual pre-change v1 and v2 readers were exercised against new payloads and
+both rejected the new vocabulary without silently omitting it (local evidence:
+`/tmp/cmal-radiation-review/legacy-reader-check.txt`). No old reader is permitted
+for rollout after new evidence exists. Full Linux CI remains the merge gate;
+macOS temporary-checkout tooling tests refused untrusted path ancestors.

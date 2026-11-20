@@ -2,9 +2,18 @@
 # pyright: reportUnknownArgumentType=false
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, NewType, Protocol, cast, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Literal,
+    NewType,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 import pandas as pd
 import polars as pl
@@ -602,6 +611,26 @@ def _require_radiation_frame_source(frame: pd.DataFrame, source: str) -> None:
         raise RecapPayloadIntegrityError("radiation requires original source identity")
 
 
+def _historical_radiation_flux(
+    value: float,
+    *,
+    start: UtcDatetime,
+    source_run: UtcDatetime,
+    source: Literal["era5_land", "ifs"],
+    qualification: GatewayIntervalQualification,
+) -> float:
+    try:
+        return radiation_mean_flux(
+            value,
+            start=start,
+            source_run=source_run,
+            source=source,
+            qualification=qualification,
+        )
+    except ValueError as exc:
+        raise RecapPayloadIntegrityError("invalid radiation interval or value") from exc
+
+
 def _required_radiation_source_run(value: object | None) -> UtcDatetime:
     result = _normalize_source_run_to_utc(value)
     if result is None:
@@ -1006,7 +1035,7 @@ class RecapGatewayForecastAdapter:
                         continue
                     discarded_variable = variable.canonical
                     rows_before = sum(len(rows) for rows in hru_acc.values())
-                    hru_source_run, _missing = self._accumulate_member(
+                    hru_source_run, _missing, _ = self._accumulate_member(
                         hru_acc,
                         refs_by_polygon,
                         variable=variable,
@@ -1031,7 +1060,7 @@ class RecapGatewayForecastAdapter:
                         # together in that window), so this costs ~1 wasted
                         # call/cycle, not 50.
                         try:
-                            hru_source_run, _missing = self._accumulate_member(
+                            hru_source_run, _missing, _ = self._accumulate_member(
                                 hru_acc,
                                 refs_by_polygon,
                                 variable=variable,
@@ -1232,7 +1261,7 @@ class RecapGatewayForecastAdapter:
                         continue
                     discarded_variable = variable.canonical
                     rows_before = sum(len(rows) for rows in hru_acc.values())
-                    _prior, missing = self._accumulate_member(
+                    _prior, missing, had_raw_rows = self._accumulate_member(
                         hru_acc,
                         refs_by_polygon,
                         variable=variable,
@@ -1250,7 +1279,9 @@ class RecapGatewayForecastAdapter:
                         str(ref.polygon_name) for ref in missing
                     )
                     rows_after = sum(len(rows) for rows in hru_acc.values())
-                    control_coverage[variable.canonical] = rows_after > rows_before
+                    control_coverage[variable.canonical] = (
+                        rows_after > rows_before or had_raw_rows
+                    )
                     control_all_missing[variable.canonical] = len(missing) == len(
                         refs_by_polygon
                     )
@@ -1258,7 +1289,7 @@ class RecapGatewayForecastAdapter:
                     if track.ensemble_mode is EnsembleMode.ENSEMBLE:
                         for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
                             try:
-                                _prior, missing = self._accumulate_member(
+                                _prior, missing, had_raw_rows = self._accumulate_member(
                                     hru_acc,
                                     refs_by_polygon,
                                     variable=variable,
@@ -1374,7 +1405,7 @@ class RecapGatewayForecastAdapter:
         member_id: int,
         prior: object | None,
         raise_on_missing: bool = True,
-    ) -> tuple[object | None, list[GatewayPolygonRef]]:
+    ) -> tuple[object | None, list[GatewayPolygonRef], bool]:
         # run_hour is mandatory: the client's _iso_date strips run_date to a bare
         # date and defaults run_hour=0, so a 06/12/18Z cycle would silently fetch
         # the 00Z run unless we pass the cycle hour explicitly (Plan 081: run_hour
@@ -1410,13 +1441,21 @@ class RecapGatewayForecastAdapter:
                     raise RecapPayloadIntegrityError(
                         "radiation source cycle differs from request"
                     )
-                value = radiation_mean_flux(
-                    value,
-                    start=valid_time,
-                    source_run=cycle_time,
-                    source="ifs",
-                    qualification=self.interval_qualification,
-                )
+                try:
+                    missing_value = math.isnan(value)
+                    value = radiation_mean_flux(
+                        0.0 if missing_value else value,
+                        start=valid_time,
+                        source_run=cycle_time,
+                        source="ifs",
+                        qualification=self.interval_qualification,
+                    )
+                except ValueError as exc:
+                    raise RecapPayloadIntegrityError(
+                        "invalid radiation interval or value"
+                    ) from exc
+                if missing_value:
+                    continue
             acc.setdefault(ref.station_id, []).append(
                 {
                     "valid_time": valid_time,
@@ -1426,7 +1465,7 @@ class RecapGatewayForecastAdapter:
                     "value": value,
                 }
             )
-        return (prior if prior is not None else source_run), missing
+        return (prior if prior is not None else source_run), missing, bool(rows)
 
     def fetch_snow_forecast(
         self,
@@ -1671,7 +1710,7 @@ class RecapGatewayReanalysisAdapter:
                 band_id=None,
                 member_id=None,
                 value=(
-                    radiation_mean_flux(
+                    _historical_radiation_flux(
                         value,
                         start=valid_time,
                         source_run=_required_radiation_source_run(row_run),
@@ -1684,6 +1723,7 @@ class RecapGatewayReanalysisAdapter:
             )
             for ref, valid_time, value, row_run in rows
             if start <= valid_time < end
+            and not (variable.canonical in RADIATION_PARAMETERS and math.isnan(value))
         ]
 
     def fetch_snow_reanalysis(

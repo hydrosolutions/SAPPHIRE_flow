@@ -75,9 +75,19 @@ def injected(value: T) -> Callable[[object], T]:
 
 
 class TestIngestRecapEra5Reanalysis:
+    @pytest.mark.parametrize(
+        "requested",
+        [
+            ("precipitation", "temperature"),
+            ("solar_net_radiation", "thermal_net_radiation"),
+        ],
+    )
     @pytest.mark.parametrize("invalid", [None, "source", "station", "end", "nan"])
     def test_bounds_provenance_and_missing_parameter_coverage(
-        self, monkeypatch: pytest.MonkeyPatch, invalid: str | None
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        invalid: str | None,
+        requested: tuple[str, str],
     ) -> None:
         station = make_station_config()
         store = FakeHistoricalForcingStore()
@@ -106,11 +116,11 @@ class TestIngestRecapEra5Reanalysis:
                 parameters: list[str],
             ) -> list[RawHistoricalForcing]:
                 windows.append((start, end))
-                assert parameters == ["precipitation", "temperature"]
+                assert parameters == list(requested)
                 row = make_raw_historical_forcing(
                     station_id=station.id,
                     source=GATEWAY_HISTORY_SOURCE,
-                    parameter="temperature",
+                    parameter=requested[1],
                     valid_time=start,
                     spatial_type=SpatialRepresentation.BASIN_AVERAGE,
                 )
@@ -125,7 +135,12 @@ class TestIngestRecapEra5Reanalysis:
         if invalid:
             with pytest.raises(ConfigurationError, match="history contract"):
                 module.ingest_recap_era5_reanalysis_flow.fn(
-                    cast("Connection", None), IDENTITY, Adapter(), WINDOW, now=START
+                    cast("Connection", None),
+                    IDENTITY,
+                    Adapter(),
+                    WINDOW,
+                    now=START,
+                    parameters=requested,
                 )
             assert (
                 store.fetch_forcing(
@@ -135,12 +150,17 @@ class TestIngestRecapEra5Reanalysis:
             )
         else:
             report = module.ingest_recap_era5_reanalysis_flow.fn(
-                cast("Connection", None), IDENTITY, Adapter(), WINDOW, now=START
+                cast("Connection", None),
+                IDENTITY,
+                Adapter(),
+                WINDOW,
+                now=START,
+                parameters=requested,
             )
             assert [int((end - start).days) for start, end in windows] == [31, 31, 8]
             assert [(r.parameter, r.rows) for r in report] == [
-                ("precipitation", 0),
-                ("temperature", 3),
+                (requested[0], 0),
+                (requested[1], 3),
             ]
 
 

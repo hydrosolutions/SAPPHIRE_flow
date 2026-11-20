@@ -341,6 +341,7 @@ def _build_production_snow_adapter(
     )
     recap_client = RecapClient(client_config)
     return RecapGatewayReanalysisAdapter(
+        interval_qualification=recap_gateway_config.interval_qualification,
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
     )

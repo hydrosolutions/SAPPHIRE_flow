@@ -170,9 +170,7 @@ class OperationalWeatherSample:
                 raise ValueError("precipitation requires a START-labelled interval")
             require_utc(self.interval_end)
             if self.interval_end != self.valid_time + step:
-                raise ValueError(
-                    "precipitation interval conflicts with source schedule"
-                )
+                raise ValueError("accumulation interval conflicts with source schedule")
         elif self.interval_end is not None:
             raise ValueError("temperature is a snapshot, not an interval")
 
@@ -210,7 +208,7 @@ class OperationalWeatherSample:
         if (
             self.parameter == "precipitation" or self.parameter in RADIATION_PARAMETERS
         ) and lead + step > max_lead:
-            raise ValueError("precipitation interval exceeds qualified IFS horizon")
+            raise ValueError("accumulation interval exceeds qualified IFS horizon")
         return timedelta(hours=step)
 
 

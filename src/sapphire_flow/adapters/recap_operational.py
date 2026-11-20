@@ -470,6 +470,10 @@ class RecapGatewayOperationalAdapter:
             raise RecapConfigurationError(
                 "combined history exceeds provider request bound"
             )
+        if parameters_by_station is not None and set(parameters_by_station) != {
+            source.station_id for source in sources
+        }:
+            raise RecapConfigurationError("requested parameter station set mismatch")
         grouped: dict[
             tuple[str, tuple[WeatherParameter, ...]],
             list[tuple[StationWeatherSource, GatewayPolygonRef]],

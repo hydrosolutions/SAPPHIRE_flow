@@ -2992,3 +2992,53 @@ class TestRadiationReanalysis:
                 ["solar_net_radiation"],
             )
         assert api.calls == []
+
+
+class TestRadiationCandidateIsolation:
+    @pytest.mark.parametrize("missing", [float("nan"), float("inf")])
+    def test_missing_polygon_value_is_scoped_and_infinity_is_integrity_error(
+        self, missing: float
+    ) -> None:
+        from sapphire_flow.types.enums import EnsembleMode
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        class RadiationApi:
+            def ifs_forecast(self, **kwargs: object) -> pd.DataFrame:
+                return pd.DataFrame(
+                    {
+                        _POLY_A: [missing],
+                        _POLY_B: [1080000.0],
+                        "source": ["ifs"],
+                        "source_run": [_CYCLE],
+                    },
+                    index=pd.DatetimeIndex([_CYCLE]),
+                )
+
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(RadiationApi(), _GoodSnow()),
+            resolver=_MapResolver(
+                {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B)}
+            ),
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.NORMALIZED_START_V1,
+                revision="test-normalized-v1",
+            ),
+        )
+        sources = [
+            _ws(sid, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)
+            for sid in (_SID_A, _SID_B)
+        ]
+        track = _track(
+            features=frozenset({"solar_net_radiation"}),
+            ensemble_mode=EnsembleMode.SINGLE,
+        )
+        if missing == float("inf"):
+            with pytest.raises(RecapPayloadIntegrityError, match="invalid radiation"):
+                adapter.fetch_requirement(track, sources, _CYCLE)
+        else:
+            result = adapter.fetch_requirement(track, sources, _CYCLE)
+            assert set(result.stations) == {_SID_B}
+            assert result.stations[_SID_B].values["value"].to_list() == [100.0]

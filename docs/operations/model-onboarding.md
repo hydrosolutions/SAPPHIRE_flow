@@ -225,3 +225,14 @@ isolated real-input qualification and verify the authenticated API listing and
 detail. Do not alter existing climatology or `cmal_small` assignments/schedules.
 API availability does not grant publication approval or establish independent
 skill with unknown training exposure.
+
+Before any radiation history write, also verify the **reanalysis endpoint's**
+original `source_run` is the UTC day of each hourly row (not a later product
+release date). Preserve a qualification record containing the exact normalization
+revision, `rad-int-v1`, station/channel list, requested window and source-run
+identities. Historical rows keep the original source run in `version`; they do
+not independently store the attestation revision. A wrong attestation cannot be
+repaired by repeating an insert, so archive this record before ingestion.
+After resolving group capture capacity, set `max_cache_bytes = 16777216` in the
+scoped Nepal `[operational_weather]` overlay and record the effective value.
+The unchanged global default is too small for this 365-day model.
