@@ -263,6 +263,11 @@ backup, release admission and schema compatibility work from the existing update
 draft. Secret managers continue to supply logical files through the existing
 delivery boundary; this rehearsal selects no vendor and tests no manager.
 
+After L4 completed, the owner selected a [fresh persistent installation](2026-11-20-persistent-profile-installation.md)
+with paused jobs and server-local access as the next planning milestone.
+Operational activation and updates remain separate; follow that plan's readiness
+and qualification gates before dispatching implementation.
+
 ```json
 {"phases":[{"id":"L0","depends_on":[]},{"id":"L1","depends_on":["L0"]},{"id":"L2","depends_on":["L1"]},{"id":"L3","depends_on":["L2"]},{"id":"L4","depends_on":["L3"]}]}
 ```
