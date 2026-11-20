@@ -919,8 +919,8 @@ class TestUnknownTrainingProvenance:
         ],
     )
     def test_contradictory_declaration_refused_before_model_access(
-        self, declaration, dates
-    ):
+        self, declaration: str, dates: tuple[object, object, object]
+    ) -> None:
         from sapphire_flow.types.enums import TrainingProvenance
 
         with pytest.raises(ConfigurationError, match="training provenance requires"):
