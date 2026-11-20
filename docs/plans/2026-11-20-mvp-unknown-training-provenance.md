@@ -61,3 +61,8 @@ API contract 3.0 records the newly nullable skill response. No runtime model or 
 contract change. Local reports remain outside git. This branch includes the existing
 PR 577 newline-only dependency; merge that first so the release-target check can
 parse main. Full PR CI is required before owner merge.
+
+CI follow-up: merged main after PR577. Updated the pinned Alembic head in
+unit, operator-role rollback and Nepal isolation tests to 0088, and added the
+reviewed discriminator to the artifact-column inventory. Scientific oracle data
+and all protection/rollback assertions remain unchanged.
