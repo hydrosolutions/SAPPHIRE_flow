@@ -337,7 +337,9 @@ def success_case(
     try:
         evidence["stage"] = "install"
         code, result = run("install")
-        assert code == 0 and result["status"] == "INSTALLED_PAUSED", "install failed"
+        assert code == 0 and result["status"] == "INSTALLED_PAUSED", (
+            f"install failed: {result.get('code')} at {result.get('stage')}"
+        )
         assert result["http_binding"] == "127.0.0.1:48189:80/tcp"
         assert result["host_responses"] == {
             "health": 200,
@@ -548,6 +550,8 @@ class TestPersistentInstallation:
                 str(tmp_path / "qualification.json"),
             )
         )
+        report.parent.mkdir(mode=0o700, exist_ok=True)
+        common.private_directory(report.parent)
         evidence: dict[str, Any] = {
             "schema_version": 1,
             "scope": "hosted_development_installation_qualification",

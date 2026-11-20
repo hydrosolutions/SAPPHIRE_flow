@@ -40,8 +40,8 @@ class TestCapacityWorkflowContract:
         steps = job["steps"]
         step = _step()
         assert job["runs-on"] == "ubuntu-latest"
-        # Includes the bounded rehearsal gate and its cleanup reserve.
-        assert job["timeout-minutes"] == 114
+        # Includes rehearsal and persistent qualification, uploads and cleanup reserves.
+        assert job["timeout-minutes"] == 170
         assert step["if"] == "env.AQUACAST_TOKEN_PRESENT == 'true'"
         assert step["timeout-minutes"] == 2
         assert (
@@ -61,7 +61,7 @@ class TestCapacityWorkflowContract:
         assert "Build" not in step["name"]
         assert "env" not in step
         assert "continue-on-error" not in step
-        assert sum(item.get("timeout-minutes", 0) for item in steps) == 113
+        assert sum(item.get("timeout-minutes", 0) for item in steps) == 169
         assert job["timeout-minutes"] > sum(
             item.get("timeout-minutes", 0) for item in steps
         )
@@ -520,3 +520,24 @@ def test_source_test_matrices_use_stable_runner_with_all_shards(
     assert selected["runs-on"] == "ubuntu-24.04"
     assert selected["strategy"]["matrix"]["shard"] == shards
     assert selected["strategy"]["fail-fast"] is False
+
+
+def test_installation_gate_reuses_images_and_only_publishes_safe_summary() -> None:
+    steps = {step.get("name"): step for step in _workflow()["jobs"][JOB]["steps"]}
+    gate = steps["Qualify persistent private-profile installation"]
+    assert gate["timeout-minutes"] == 55
+    assert gate["run"].index("docker buildx stop") < gate["run"].index("pytest")
+    assert set(gate["env"]) == {
+        "SAPPHIRE_INSTALL_ACCEPTANCE",
+        "SAPPHIRE_INSTALL_IMAGE_TAG",
+        "SAPPHIRE_INSTALL_QUALIFICATION_REPORT",
+    }
+    assert "secrets." not in str(gate)
+    assert gate["env"]["SAPPHIRE_INSTALL_ACCEPTANCE"] == "dedicated-test-daemon"
+    assert "!= 1" in gate["run"] and '("failures", "errors", "skipped")' in gate["run"]
+    upload = steps["Upload safe installation qualification summary"]
+    assert (
+        upload["with"]["path"]
+        == "${{ runner.temp }}/profile-installation-evidence/qualification.json"
+    )
+    assert upload["with"]["if-no-files-found"] == "error"

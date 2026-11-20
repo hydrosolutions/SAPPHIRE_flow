@@ -45,7 +45,7 @@ retains the existing degraded path and reports rehearsal qualification unperform
 The 45-minute combined acceptance budget plus cleanup reserves has a 55-minute
 step limit. Persistent installation qualification reuses the same images after
 rehearsal, with a separate 45-minute test budget and 55-minute step limit; the job
-allows 169 minutes including builds/scans and both cleanup reserves. This raises
+allows 170 minutes including builds/scans and both cleanup reserves. This raises
 the worst-case bound, without adding a second image build pipeline. Only
 the allowlisted qualification summary is uploaded. The Aquacast Trivy database
 cache lives under runner temporary storage so scanning does not dirty the checked

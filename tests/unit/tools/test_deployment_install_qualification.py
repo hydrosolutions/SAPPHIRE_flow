@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -133,3 +134,51 @@ class TestQualificationBoundaries:
             evidence["code"] = canary
         with pytest.raises(AssertionError, match="credential escaped"):
             qualification.assert_private_outputs(owned, (canary,), evidence)
+
+
+class TestQualificationEvidence:
+    def test_failure_summary_uses_private_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        report = tmp_path / "evidence" / "qualification.json"
+        monkeypatch.setenv("SAPPHIRE_INSTALL_ACCEPTANCE", "dedicated-test-daemon")
+        monkeypatch.setenv("SAPPHIRE_INSTALL_IMAGE_TAG", "ci-proof-test")
+        monkeypatch.setenv("SAPPHIRE_INSTALL_QUALIFICATION_REPORT", str(report))
+
+        def fail(*args: Any) -> None:
+            raise AssertionError("injected qualification failure")
+
+        monkeypatch.setattr(qualification, "success_case", fail)
+        with pytest.raises(AssertionError, match="injected qualification failure"):
+            qualification.TestPersistentInstallation().test_lifecycle_failure_and_owned_cleanup(
+                tmp_path
+            )
+        result = json.loads(report.read_text())
+        assert result["passed"] is False
+        assert result["installation_cleanup_verified"] is False
+        assert report.parent.stat().st_mode & 0o777 == 0o700
+        assert report.stat().st_mode & 0o777 == 0o600
+
+    def test_public_evidence_directory_refuses_before_installation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evidence = tmp_path / "evidence"
+        evidence.mkdir(mode=0o755)
+        evidence.chmod(0o755)
+        monkeypatch.setenv("SAPPHIRE_INSTALL_ACCEPTANCE", "dedicated-test-daemon")
+        monkeypatch.setenv("SAPPHIRE_INSTALL_IMAGE_TAG", "ci-proof-test")
+        monkeypatch.setenv(
+            "SAPPHIRE_INSTALL_QUALIFICATION_REPORT",
+            str(evidence / "qualification.json"),
+        )
+
+        def unexpected(*args: Any) -> None:
+            pytest.fail("installation started before evidence preflight")
+
+        monkeypatch.setattr(qualification, "success_case", unexpected)
+        with pytest.raises(
+            runtime.common.RehearsalRuntimeError, match="private_directory_required"
+        ):
+            qualification.TestPersistentInstallation().test_lifecycle_failure_and_owned_cleanup(
+                tmp_path
+            )

@@ -99,8 +99,10 @@ class DockerFake:
                     "com.docker.compose.service": name,
                 },
                 "Env": [f"{k}={v}" for k, v in config.get("environment", {}).items()],
-                "Cmd": config.get("command"),
-                "Entrypoint": config.get("entrypoint"),
+                "Cmd": [value.replace("$$", "$") for value in config["command"]]
+                if config.get("command") is not None
+                else ["image-default-command"],
+                "Entrypoint": config.get("entrypoint") or ["image-default-entrypoint"],
             },
             "HostConfig": {
                 "RestartPolicy": {"Name": config["restart"]},
@@ -252,7 +254,9 @@ class DockerFake:
                         "Os": "linux",
                         "Architecture": "amd64",
                         "Config": {
-                            "User": "other" if self.failure == "image_root" else ""
+                            "User": "other" if self.failure == "image_root" else "",
+                            "Cmd": ["image-default-command"],
+                            "Entrypoint": ["image-default-entrypoint"],
                         },
                     }
                 ]
@@ -829,3 +833,26 @@ class TestPersistentLifecycle:
         with pytest.raises(state.InstallError, match="state_parent_unsafe"):
             install(setup)
         assert not layout.state_dir.exists() and not fake.events
+
+    def test_engine_command_decodes_compose_dollars_but_still_rejects_drift(
+        self, setup: tuple[Any, ...]
+    ) -> None:
+        _, _, fake, _ = setup
+        code, result = install(setup)
+        assert code == 0, result["code"]
+        prefect = fake.find("container", fake.recipe["name"] + "-prefect-server-1")
+        assert "$(cat" in prefect["Config"]["Cmd"][-1]
+        assert "$$(cat" not in prefect["Config"]["Cmd"][-1]
+        prefect["Config"]["Cmd"] = ["sh", "-c", "unexpected"]
+        with pytest.raises(state.InstallError, match="container_configuration_changed"):
+            lifecycle(setup, "verify")
+
+    def test_inherited_image_entrypoint_is_checked_not_ignored(
+        self, setup: tuple[Any, ...]
+    ) -> None:
+        _, _, fake, _ = setup
+        assert install(setup)[0] == 0
+        postgres = fake.find("container", fake.recipe["name"] + "-postgres-1")
+        postgres["Config"]["Entrypoint"] = ["unexpected"]
+        with pytest.raises(state.InstallError, match="container_configuration_changed"):
+            lifecycle(setup, "verify")

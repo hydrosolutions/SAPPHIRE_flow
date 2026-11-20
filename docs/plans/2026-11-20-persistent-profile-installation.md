@@ -388,3 +388,14 @@ evidence. Local checks: 259 harness/attestation tests and 72 release-target test
 passed, with changed-file Ruff/Pyright and pre-commit gates. The deployment test
 is deliberately skipped locally without dedicated-daemon opt-in. No production deployment,
 release publication, daemon restart or host reboot is claimed here.
+
+PI3 boundary checks also correct retained-command comparison: Compose dollar
+escaping is decoded once for engine inspection, and omitted commands/entrypoints
+are checked against the pinned image defaults. Regression tests preserve refusal
+of changed commands and entrypoints. The hosted job budget and its contract test
+include both qualification steps and their safe-summary uploads.
+
+The first hosted attempt failed installation and then report publication because
+runner temporary storage is not private. The report now uses a private subdirectory
+validated before installation; tests cover failure evidence and unsafe-parent
+refusal. This attempt does not count as qualification or verified cleanup.

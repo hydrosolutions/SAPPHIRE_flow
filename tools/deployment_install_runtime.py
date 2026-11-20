@@ -639,6 +639,7 @@ def inspect_contract(
     ):
         raise InstallError("retained_resources_changed")
     running: list[bool] = []
+    image_configs: dict[str, dict[str, Any]] = {}
     secrets_by_name = {item.name: item.path for item in deliveries}
     for name in SERVICES:
         identifier, item = session.service(name)
@@ -651,12 +652,18 @@ def inspect_contract(
             or host.get("ReadonlyRootfs", False) != wanted.get("read_only", False)
         ):
             raise InstallError("container_configuration_changed")
-        for key in ("command", "entrypoint"):
-            if (
-                key in wanted
-                and config.get("Cmd" if key == "command" else "Entrypoint")
-                != wanted[key]
-            ):
+        if wanted["image"] not in image_configs:
+            image_configs[wanted["image"]] = json.loads(
+                session.driver.run(["image", "inspect", wanted["image"]])
+            )[0]["Config"]
+        for key, actual_key in (("command", "Cmd"), ("entrypoint", "Entrypoint")):
+            configured = wanted.get(key)
+            expected = (
+                image_configs[wanted["image"]].get(actual_key)
+                if configured is None
+                else [value.replace("$$", "$") for value in configured]
+            )
+            if config.get(actual_key) != expected:
                 raise InstallError("container_configuration_changed")
         actual_env = dict(
             value.split("=", 1) for value in config.get("Env", []) if "=" in value

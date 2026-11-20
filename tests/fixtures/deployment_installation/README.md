@@ -47,3 +47,8 @@ missing cleanup evidence never becomes a pass. If an uncatchable interruption
 leaves a probe, inspect its private recovery record, exact
 `sapphire-install-probe-` name and `org.sapphire.installation` label against the
 recorded daemon before manually removing it. Do not delete by prefix alone.
+
+The evidence directory is created with private permissions when absent. An existing
+directory must be owned by the invoking user with mode 0700; this is checked before
+installation starts. Hosted CI uses a dedicated subdirectory under runner temporary
+storage. Failure summaries are written there even when an assertion fails.

@@ -1383,7 +1383,7 @@ jobs:
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 169
+    timeout-minutes: 170
     permissions: { contents: read, pull-requests: read }
     env:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
@@ -1778,7 +1778,7 @@ jobs:
         env:
           SAPPHIRE_INSTALL_ACCEPTANCE: dedicated-test-daemon
           SAPPHIRE_INSTALL_IMAGE_TAG: ci-proof-${{ github.sha }}
-          SAPPHIRE_INSTALL_QUALIFICATION_REPORT: ${{ runner.temp }}/profile-installation-qualification.json
+          SAPPHIRE_INSTALL_QUALIFICATION_REPORT: ${{ runner.temp }}/profile-installation-evidence/qualification.json
         run: |
           docker buildx stop
           uv run --no-sync pytest tests/integration/test_deployment_install.py -m deployment -q --tb=short --junitxml "$RUNNER_TEMP/profile-installation-junit.xml"
@@ -1796,7 +1796,7 @@ jobs:
         timeout-minutes: 1
         with:
           name: profile-installation-qualification
-          path: ${{ runner.temp }}/profile-installation-qualification.json
+          path: ${{ runner.temp }}/profile-installation-evidence/qualification.json
           if-no-files-found: error
 
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
