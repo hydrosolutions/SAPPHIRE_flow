@@ -139,7 +139,7 @@ class TestPreview:
         assert report["offline"]["summary"] == "PASS_OFFLINE"
         assert report["offline"]["provenance"]
         assert report["http_binding"] == "127.0.0.1:18080:80/tcp"
-        assert report["launching"] == "not_available"
+        assert report["launching"] == "separate_install_command"
         assert report["proposed"]["services"] == 8
         assert report["proposed"]["runtime_credentials"] == 5
         assert all(
@@ -279,7 +279,7 @@ class TestPreview:
         assert "private.invalid" not in result.stdout + result.stderr
 
     @pytest.mark.parametrize("runtime_command", ["install", "verify", "stop", "start"])
-    def test_runtime_command_position_is_not_implemented(
+    def test_runtime_command_requires_state_selection(
         self,
         tmp_path: Path,
         checkout: Path,
@@ -544,3 +544,22 @@ class TestTransform:
         with pytest.raises(ProfileError, match="profile-installation") as error:
             tool.verify_transform(original, candidate, snapshots, selection, layout)
         assert error.value.code == "TRANSFORM_INVALID"
+
+
+class TestRuntimeTextReport:
+    def test_failed_runtime_prints_containment_and_unverified_checks(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from tools import deployment_install_runtime as runtime
+
+        def failure(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            return 1, runtime.report(
+                "FAILED", "init_failed", containment="incomplete", stage="create_init"
+            )
+
+        monkeypatch.setattr(runtime, "dispatch", failure)
+        assert tool.main(["stop", "--state-dir", "/private/synthetic-state"]) == 1
+        output = capsys.readouterr().out
+        assert "containment: incomplete" in output
+        assert "stage: create_init" in output
+        assert "unverified:" in output and "scientific_readiness" in output

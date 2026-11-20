@@ -1077,7 +1077,15 @@ When this map applies, the context packet should name:
   drift. Preserve no-daemon/no-secret-read preview and the rehearsal's separate
   destructive-cleanup contract. Administrator instructions live in
   `docs/deployment/profile-installation.md`; credential delivery in
-  `docs/secrets-bootstrap.md`. Runtime installation remains a later milestone.
+  `docs/secrets-bootstrap.md`. Retained runtime is in
+  `tools/deployment_install_runtime.py`, private state/fingerprints in
+  `tools/deployment_install_state.py`, and container checks in
+  `cli/deployment_install.py`. Shared paused-state checks live in
+  `cli/deployment_checks.py`; rehearsal and installation guards remain separate.
+  Run installation runtime/state tests and both helper suites. Preserve stop
+  availability without secrets, no init/recreation on start, original deliveries,
+  read-only verify and no destructive persistent cleanup. Real-container and
+  reboot qualification remain PI3/PI4.
 
 - Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
   checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`

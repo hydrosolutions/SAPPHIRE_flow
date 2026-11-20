@@ -1543,8 +1543,9 @@ mounts.
    A bare `up` command does not establish the paused-installation contract.
 3. Verify the scoped API, worker and backup roles and grants using the host's
    acceptance checks. For a new generic installation, start with the
-   [persistent preview](../deployment/profile-installation.md); runtime installation
-   commands remain the next milestone.
+   [persistent installer](../deployment/profile-installation.md). Explicit install
+   and retained verify/stop/start are implemented; real-container and reboot
+   qualification remain pending. Existing deployments keep their current runbooks.
 
 ### Scoped-password rotation
 

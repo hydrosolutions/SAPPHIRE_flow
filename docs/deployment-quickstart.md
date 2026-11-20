@@ -19,9 +19,10 @@ can preview a supported profile, then start and clean up a fresh test stack on a
 dedicated daemon after `PASS_OFFLINE`. It does not activate a persistent deployment.
 
 For a new stack intended to remain running, the
-[persistent installation preview](deployment/profile-installation.md) checks the
-proposed private state directory, loopback route and retained recipe. It currently
-provides preview only; install and lifecycle commands are not yet available.
+[persistent installer](deployment/profile-installation.md) provides preview,
+explicit install and retained verify/stop/start commands. Jobs stay paused and HTTP
+stays server-local. Real-container and reboot qualification remain pending; use a
+dedicated test host, and keep existing deployment runbooks until qualification.
 
 ## 1. Copy the generic examples into private storage
 

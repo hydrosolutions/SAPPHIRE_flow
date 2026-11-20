@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview a new persistent installation. No runtime commands are implemented."""
+"""Preview or manage a new persistent installation in its paused phase."""
 
 from __future__ import annotations
 
@@ -269,7 +269,7 @@ def action(code: str) -> str:
         "HTTP_PORT_INVALID": "Choose a TCP port between 1 and 65535; host "
         "availability is checked at installation.",
         "CLI_INPUT_INVALID": "Use preview with --profile-file, --installation and "
-        "--state-dir. Runtime commands are not available.",
+        "--state-dir; lifecycle commands select only --state-dir.",
         "SOURCE_DIRTY": "Use a clean source checkout; preserve other people's work.",
         "SOURCE_IDENTITY_MISMATCH": "Align the source checkout with the reviewed "
         "release inputs; do not invent an identity to obtain a pass.",
@@ -285,7 +285,7 @@ def action(code: str) -> str:
     }.get(
         code,
         "Check the diagnostic in the profile/rehearsal reference or ask deployment "
-        "support. No launch is available.",
+        "support. Preview does not launch services.",
     )
 
 
@@ -298,9 +298,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     json_output = "json" in args or "--format=json" in args
     parser = Parser(description=__doc__)
-    parser.add_argument("command", choices=("preview",))
-    parser.add_argument("--profile-file", type=Path, required=True)
-    parser.add_argument("--installation", type=Path, required=True)
+    parser.add_argument(
+        "command", choices=("preview", "install", "verify", "stop", "start")
+    )
+    parser.add_argument("--profile-file", type=Path)
+    parser.add_argument("--installation", type=Path)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--http-port", type=int, default=8080)
     parser.add_argument("--format", choices=("text", "json"), default="text")
@@ -318,6 +320,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     proposed: dict[str, int] | None = None
     try:
         options = parser.parse_args(args)
+        if options.command != "preview":
+            try:
+                from tools.deployment_install_runtime import dispatch
+            except ModuleNotFoundError:
+                from deployment_install_runtime import dispatch
+            with rehearsal.runtime_signals():
+                code, runtime_report = dispatch(
+                    options.command,
+                    options.state_dir,
+                    profile_file=options.profile_file,
+                    installation_file=options.installation,
+                    http_port=options.http_port,
+                    identity_kind=options.image_identity,
+                )
+            if json_output:
+                sys.stdout.write(json.dumps(runtime_report, sort_keys=True) + "\n")
+            else:
+                sys.stdout.write(
+                    f"{runtime_report['status']}: "
+                    f"{runtime_report.get('code') or 'completed'}\n"
+                    "Reference: docs/deployment/profile-installation.md\n"
+                )
+                for field in (
+                    "stage",
+                    "failed_operation",
+                    "containment",
+                    "http_binding",
+                    "forecasting_enabled",
+                    "unverified",
+                    "temporary_state_cleanup",
+                ):
+                    if runtime_report.get(field) is not None:
+                        sys.stdout.write(f"{field}: {runtime_report[field]}\n")
+            return code
+        if options.profile_file is None or options.installation is None:
+            refuse("CLI_INPUT_INVALID")
         identity_kind = options.image_identity
         layout = InstallationLayout(
             state_dir=options.state_dir, http_port=options.http_port
@@ -380,7 +418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "images_probed": False,
         "services_started": False,
         "executable_recipe": False,
-        "launching": "not_available",
+        "launching": "separate_install_command",
         "phases": PHASES,
         "changes": CHANGES,
         "unverified": UNVERIFIED,
@@ -391,7 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         sys.stdout.write(
             f"{status}: persistent installation preview only; "
-            "launching is not available.\n"
+            "nothing started; installation requires an explicit install command.\n"
         )
         if layout:
             sys.stdout.write(
