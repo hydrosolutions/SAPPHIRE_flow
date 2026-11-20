@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import pytest
@@ -10,8 +10,11 @@ import sqlalchemy as sa
 from pydantic import TypeAdapter
 
 from sapphire_flow.db.metadata import observations, rating_derived_discharge
+from sapphire_flow.types.dhm_delivery import DELIVERY_ID
+from sapphire_flow.types.ids import StationId, TenantId
 from sapphire_flow.types.rating_reference import canonical_content, content_digest
 from sapphire_flow.types.station_history import HistoryOutcome, HistorySample
+from tests.integration.store.test_bafu_unit_read_filter import hold
 from tests.integration.store.test_forecast_rating_history import _v2_parent
 from tests.integration.store.test_native_rating_forecasts import native_pair
 
@@ -566,6 +569,68 @@ class TestStationHistoryReader:
         result = reader(db_connection, row, "consumer").read(query)
         assert result.series[0].counts.accepted == 2016
         assert result.series[0].points[-1].value == 2015.0
+
+    @pytest.mark.parametrize(
+        "source,expected", [("measured", [2.0]), ("manual_import", [1.0, 2.0])]
+    )
+    def test_ordinary_history_respects_measured_hold_scope(
+        self,
+        db_connection: sa.Connection,
+        source: Literal["measured", "manual_import"],
+        expected: list[float],
+    ) -> None:
+        row = seed(db_connection)
+        obs = dict(db_connection.execute(sa.select(observations)).mappings().one())
+        db_connection.execute(
+            sa.insert(observations),
+            [
+                {
+                    **obs,
+                    "id": uuid4(),
+                    "parameter": "discharge",
+                    "source": source,
+                    "timestamp": row["timestamp"] + timedelta(minutes=5 * i),
+                    "value": float(i + 1),
+                }
+                for i in range(2)
+            ],
+        )
+        hold(
+            db_connection,
+            (StationId(row["station_id"]), TenantId(row["tenant_id"])),
+            start=row["timestamp"],
+            end=row["timestamp"] + timedelta(minutes=5),
+        )
+        result = reader(db_connection, row, "consumer").read(
+            reader_request(row, standard=True)
+        )
+        series = result.series[0 if source == "measured" else 1]
+        assert [point.value for point in series.points] == expected
+
+    @pytest.mark.parametrize("role,expected", [("consumer", []), ("reviewer", [12.5])])
+    def test_ordinary_history_keeps_delivery_visibility(
+        self,
+        db_connection: sa.Connection,
+        role: Literal["consumer", "reviewer"],
+        expected: list[float],
+    ) -> None:
+        row = seed(db_connection)
+        obs = dict(db_connection.execute(sa.select(observations)).mappings().one())
+        db_connection.execute(
+            sa.insert(observations).values(
+                **{
+                    **obs,
+                    "id": uuid4(),
+                    "parameter": "discharge",
+                    "delivery_id": DELIVERY_ID,
+                    "value": 12.5,
+                }
+            )
+        )
+        result = reader(db_connection, row, role).read(
+            reader_request(row, standard=True)
+        )
+        assert [point.value for point in result.series[0].points] == expected
 
     @pytest.mark.parametrize(
         "status,value,accepted",

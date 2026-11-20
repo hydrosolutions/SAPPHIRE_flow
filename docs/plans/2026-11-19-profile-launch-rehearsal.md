@@ -325,7 +325,7 @@ The test now observes the executable selected by the real production render and
 also exercises plugin-only discovery. Real rendering stays mandatory; no Docker
 wrapper, private credential configuration or daemon is used.
 
-### L2/L3 implementation checkpoint (in progress)
+### L2/L3 implementation checkpoint (complete)
 
 The same finite transform now binds runtime names, private snapshots/test deliveries
 and immutable image IDs. A bounded runner retains both output streams privately;
@@ -419,3 +419,38 @@ After the preceding PR #571 merged, the branch was rebased onto
 `573c5bfd18d0d08476cfb66601ed78e3a690ef09` and the release helper advanced the
 target to `0.1.1161`. Runtime code and workflow checks are unchanged. Fresh CI on
 this updated base is required before removing the merge-order hold.
+
+PR #572 subsequently merged at `d2e6038e2531b2ae92c240467790ca9697e2c41a`.
+Final full main CI run `44572584593` passed on that exact source, closing L2/L3.
+The earlier pending notes above are implementation history.
+
+### L4 disposable Linux qualification (complete)
+
+On 2026-11-20, owner-authorized release `0.1.1161` at the same source passed on a
+fresh AWS Ubuntu 24.04 amd64 host, using Docker 29.1.3 with its containerd image
+store and Compose 2.40.3. AWS was the authorized fallback because Infomaniak
+provisioning access was unavailable. The generic external profile returned
+`PASS_OFFLINE` and `PLAN_READY` before runtime.
+
+[Image delivery run 44709436962](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/runs/44709436962)
+passed with the exact FULL source CI proof reused. Fresh image checks, scans,
+archive validation and native probes passed; the release-version suite was not
+rerun. The owner-supplied GitHub producer/delivery receipts matched the received
+metadata and copied archive before loading on the disposable host.
+
+The actual release-target CLI returned `PASS_REHEARSAL` in 99.459 seconds with all
+seven checks, internal authenticated API access and confirmed no flow execution.
+Automatic cleanup removed 8 containers, 2 networks and 9 volumes. Independent
+absence checks and repeated cleanup passed; the separate sentinel was preserved,
+then removed. Generated credentials/configuration were erased and profile inputs
+were unchanged. This was one normal cloud run; repeat-run and injected-failure
+coverage remains the separate hosted L3 evidence above.
+
+Provider readback confirmed instance termination and removal of its disk, network
+interface, public address, security group and SSH key pair. Temporary direct-copy
+access and the relay's temporary key were removed, and the previous release
+admission was restored. No live service configuration changed in this test; the
+sealed release archive remains in release custody. Full evidence stays private.
+This closes L4 for the tested release, without extending the documented limits
+on host ports, real credentials, forecasts, scientific readiness or persistent
+deployment.

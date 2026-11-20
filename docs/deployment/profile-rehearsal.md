@@ -110,7 +110,11 @@ variants, preloads infrastructure separately, runs the actual CLI twice and then
 injects an owned-init failure. An unrelated sentinel must remain unchanged and
 all test-owned resources must be removed. Missing private build access is reported
 as qualification **not performed**, never a pass. Hosted development evidence is
-separate from later disposable Linux-provider/release qualification.
+separate from disposable Linux-provider/release qualification.
+
+Disposable Linux qualification is complete for release `0.1.1161`; see the
+[qualification record](../plans/2026-11-19-profile-launch-rehearsal.md#l4-disposable-linux-qualification-complete)
+for the tested environment, checks and verified provider cleanup.
 
 The existing [synthetic forecast smoke test](hello-world.md) remains a separate
 gate. This rehearsal runs no forecast and does not replace it.

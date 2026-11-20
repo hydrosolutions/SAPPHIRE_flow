@@ -18,7 +18,7 @@ from sapphire_flow.api.security import Principal, require_principal
 from sapphire_flow.config.deployment import DeploymentConfig  # noqa: TC001
 from sapphire_flow.db.metadata import observations, stations
 from sapphire_flow.services.station_history import build_station_history
-from sapphire_flow.store.bafu_unit_read_filter import unit_read_state
+from sapphire_flow.store.bafu_unit_read_filter import unit_read_predicate
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.dhm_delivery import DELIVERY_ID
 from sapphire_flow.types.enums import ForecastDataUse, QcStatus
@@ -146,15 +146,17 @@ class StationHistoryReader:
         request: StationHistoryRequest,
         tenant_id: TenantId,
     ) -> sa.ColumnElement[Any]:
-        state = unit_read_state.alias("history_unit_state")
         filters = [
-            state.c.station_id == request.station_id,
-            state.c.parameter == "discharge",
-            state.c.timestamp >= request.start,
-            state.c.timestamp < request.end,
-            state.c.source.in_(("measured", "manual_import")),
-            ~state.c.held,
-            sa.or_(~state.c.evidence_required, state.c.canonical),
+            observations.c.station_id == request.station_id,
+            observations.c.parameter == "discharge",
+            observations.c.timestamp >= request.start,
+            observations.c.timestamp < request.end,
+            observations.c.source.in_(("measured", "manual_import")),
+            # As in the bounded observation-store readers, keep the trust check
+            # per row: flattening EXISTS can repeatedly scan the whole view.
+            sa.select(unit_read_predicate(observations))
+            .correlate(observations)
+            .scalar_subquery(),
         ]
         if ForecastDataUse.STANDARD not in request.purposes:
             filters.append(sa.false())
@@ -163,22 +165,10 @@ class StationHistoryReader:
         source = sa.case(
             (observations.c.source == "measured", "measured"), else_="supplied"
         )
-        # Materialize one bounded trust-view scan, rather than repeatedly
-        # evaluating the security-barrier view for each observation.
+        # Retain the bounded rows so aggregation needs no second observations join.
         visible = (
-            sa.select(observations.c.id)
-            .join(
-                state,
-                state.c.observation_id == observations.c.id,
-            )
-            .join(stations, stations.c.id == observations.c.station_id)
-            .where(stations.c.tenant_id == tenant_id, *filters)
-            .limit(10001)
-            .cte("history_visible")
-            .prefix_with("MATERIALIZED")
-        )
-        rows = (
             sa.select(
+                observations.c.id,
                 observations.c.timestamp,
                 observations.c.value,
                 observations.c.qc_status,
@@ -192,12 +182,26 @@ class StationHistoryReader:
                     )
                 ).label("flags_count"),
                 source.label("source"),
+            )
+            .join(stations, stations.c.id == observations.c.station_id)
+            .where(stations.c.tenant_id == tenant_id, *filters)
+            .limit(10001)
+            .cte("history_visible")
+            .prefix_with("MATERIALIZED")
+        )
+        rows = (
+            sa.select(
+                visible.c.timestamp,
+                visible.c.value,
+                visible.c.qc_status,
+                visible.c.qc_rule_version,
+                visible.c.flags_count,
+                visible.c.source,
                 sa.func.count()
-                .over(partition_by=(observations.c.timestamp, source))
+                .over(partition_by=(visible.c.timestamp, visible.c.source))
                 .label("duplicates"),
             )
-            .join(visible, visible.c.id == observations.c.id)
-            .order_by(observations.c.timestamp, observations.c.id)
+            .order_by(visible.c.timestamp, visible.c.id)
             .limit(10001)
             .subquery()
         )
