@@ -313,3 +313,20 @@ The orchestrator records READY after the independent review and resolution of
 its material findings. PI0 is complete; PI1 is the next implementation milestone.
 This status does not approve or merge the PR, publish a release, or authorize a
 production deployment.
+
+## PI1 implementation
+
+`tools/deployment_install.py preview` now reuses profile/rehearsal preparation,
+requires an explicit local HTTP/same-origin route, and verifies a separate finite
+persistent recipe. It reports safe offline provenance and runtime gaps without
+opening credentials, contacting the daemon, writing installation state or exposing
+an executable recipe. Runtime commands and fingerprint creation remain PI2.
+
+Administrator instructions are in `docs/deployment/profile-installation.md`;
+`docs/secrets-bootstrap.md` now describes the five runtime deliveries, reader
+permissions and manager-neutral boundary. Related standards and entry points link
+those maintained instructions. No existing runtime recipe or reader changed.
+
+Local validation: 228 installation/profile/rehearsal tests passed, including 25
+new preview/transform cases; changed-file Ruff and Pyright passed. Independent
+patch review and final-head CI remain the PR gates before merge.

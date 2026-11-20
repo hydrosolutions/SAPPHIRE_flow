@@ -1534,13 +1534,17 @@ mounts.
 
 ### First deploy
 
-1. Generate the two scoped-role secrets alongside `db_password`: `openssl rand -base64 32 >
-   ./secrets/sapphire_api_db_password` and `openssl rand -base64 32 >
-   ./secrets/sapphire_worker_db_password`.
-2. `docker compose up -d --build` — `init` runs migrations, then the role bootstrap (creating both
-   roles with the passwords from step 1 and granting them per-table), then registers deployments.
-3. Verify: `docker compose exec postgres psql -U ${DB_USER:-sapphire} -d sapphire -c "\du sapphire_api
-   sapphire_worker"` shows both roles present, `Superuser`/`Create role`/`Create DB` all unset.
+1. Deliver all five current runtime files using the
+   [secrets bootstrap](../secrets-bootstrap.md), including the backup-role password
+   and API pepper. Use independent URL-safe DB passwords and permissions that the
+   actual readers can use; the old two-file/base64 instructions were incomplete.
+2. Follow the host's reviewed complete Compose recipe and release procedure.
+   Normal `init` runs migrations, bootstraps scoped roles and registers deployments.
+   A bare `up` command does not establish the paused-installation contract.
+3. Verify the scoped API, worker and backup roles and grants using the host's
+   acceptance checks. For a new generic installation, start with the
+   [persistent preview](../deployment/profile-installation.md); runtime installation
+   commands remain the next milestone.
 
 ### Scoped-password rotation
 
