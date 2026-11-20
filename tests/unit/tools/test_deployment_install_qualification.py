@@ -40,6 +40,8 @@ class TestQualificationBoundaries:
             identity_kind="ci-development",
         )
         assert prepared.preview.status == "PLAN_READY"
+        assert selection.installation is not None
+        assert selection.installation.project_name.startswith("sapphire-install-test-")
         assert len(set(canaries)) == 5
         assert not (tmp_path / "state").exists()
 
@@ -87,3 +89,47 @@ class TestQualificationBoundaries:
         )
         with pytest.raises(state.InstallError, match="installation_state_path_changed"):
             qualification.teardown_case(layout.state_dir)
+
+    def test_missing_record_does_not_claim_cleanup(self, tmp_path: Path) -> None:
+        assert qualification.teardown_case(tmp_path) == "not_created"
+
+    def test_exhausted_budget_does_not_launch_child(self, tmp_path: Path) -> None:
+        with pytest.raises(AssertionError, match="budget exhausted before launch"):
+            qualification.invoke(
+                "install",
+                tmp_path / "state",
+                profile=tmp_path / "profile.toml",
+                installation=tmp_path / "installation.toml",
+                canaries=(),
+                deadline=0,
+                outcomes=[],
+            )
+
+    @pytest.mark.parametrize("location", ["state", "environment", "evidence"])
+    def test_canary_in_any_retained_output_refuses(
+        self, setup: tuple[Any, ...], location: str
+    ) -> None:
+        _, layout, fake, _ = setup
+        assert install(setup)[0] == 0
+        record = state.load_record(layout.state_dir)
+        owned = runtime.Session(
+            runtime.common.Runtime(
+                directory=layout.state_dir,
+                deadline=fake.clock() + 120,
+                clock=fake.clock,
+                executor=fake,
+            ),
+            record,
+        )
+        canary = "PRIVATE_QUALIFICATION_CANARY"
+        evidence: dict[str, Any] = {}
+        if location == "state":
+            (layout.state_dir / "accidental-output").write_text(canary)
+        elif location == "environment":
+            fake.find("container", record.project + "-api-1")["Config"]["Env"].append(
+                "DB_PASSWORD=" + canary
+            )
+        else:
+            evidence["code"] = canary
+        with pytest.raises(AssertionError, match="credential escaped"):
+            qualification.assert_private_outputs(owned, (canary,), evidence)

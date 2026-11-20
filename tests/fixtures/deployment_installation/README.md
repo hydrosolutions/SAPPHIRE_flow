@@ -38,3 +38,12 @@ still retain data. Failures upload only an allowlisted qualification summary;
 private state, delivery files and raw logs are not artifacts. A failed cleanup is
 a failed qualification. No host reboot, daemon restart, live sources, station/model
 onboarding, backup/restore or scientific readiness is proved here (reboot is PI4).
+
+
+The hosted job stops its own Buildx builder after the image builds, before the
+installer's idle-daemon check. Do not loosen that check to accommodate unrelated
+running containers. A bounded qualification may fail before all checks run;
+missing cleanup evidence never becomes a pass. If an uncatchable interruption
+leaves a probe, inspect its private recovery record, exact
+`sapphire-install-probe-` name and `org.sapphire.installation` label against the
+recorded daemon before manually removing it. Do not delete by prefix alone.

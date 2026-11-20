@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -43,15 +44,17 @@ def prepare_case(
 ) -> tuple[Path, Path, tuple[str, ...]]:
     profile, installation = materialize(directory / "profile", revision, tag)
     project = "sapphire-install-test-" + uuid4().hex
-    installation.write_text(
-        installation.read_text()
-        .replace("synthetic-rehearsal-desired", project)
-        .replace('SAPPHIRE_DOMAIN = "example.invalid"', 'SAPPHIRE_DOMAIN = ":80"')
-        .replace(
-            'SAPPHIRE_CORS_ORIGINS = "https://example.invalid"',
-            'SAPPHIRE_CORS_ORIGINS = ""',
-        )
-    )
+    text = installation.read_text()
+    for old, new in {
+        "synthetic-rehearsal-desired": project,
+        'SAPPHIRE_DOMAIN = "example.invalid"': 'SAPPHIRE_DOMAIN = ":80"',
+        'SAPPHIRE_CORS_ORIGINS = "https://example.invalid"': (
+            'SAPPHIRE_CORS_ORIGINS = ""'
+        ),
+    }.items():
+        assert text.count(old) == 1, "qualification fixture drift"
+        text = text.replace(old, new)
+    installation.write_text(text)
     delivery = profile.parent / "secret-delivery"
     delivery.mkdir(mode=0o700)
     canaries = tuple(uuid4().hex + uuid4().hex for _ in state.ROLES)
@@ -105,18 +108,28 @@ def invoke(
                 "48189",
             ]
         )
+    if deadline - time.monotonic() <= 240:
+        raise AssertionError("qualification budget exhausted before launch")
+    operation_deadline = min(deadline - 240, time.monotonic() + 900)
     injected = False
-    with subprocess.Popen(
-        command,
-        cwd=profile.parent,
-        env=cli_environment(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    ) as process:
+    with (
+        tempfile.TemporaryFile(mode="w+t", dir=profile.parent) as stdout,
+        tempfile.TemporaryFile(mode="w+t", dir=profile.parent) as stderr,
+        subprocess.Popen(
+            command,
+            cwd=profile.parent,
+            env=cli_environment(),
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+        ) as process,
+    ):
         try:
             while process.poll() is None:
-                if time.monotonic() >= deadline - 240:
+                if time.monotonic() >= operation_deadline or any(
+                    os.fstat(stream.fileno()).st_size > common.LIMIT
+                    for stream in (stdout, stderr)
+                ):
                     process.send_signal(signal.SIGTERM)
                     break
                 if (
@@ -135,17 +148,28 @@ def invoke(
                         if identifier is not None and item.get("State", {}).get(
                             "Running"
                         ):
-                            owned.inspect("container", identifier)
-                            owned.driver.run(["kill", identifier])
+                            try:
+                                owned.inspect("container", identifier)
+                                owned.driver.run(["kill", identifier])
+                            except common.RehearsalRuntimeError:
+                                raise AssertionError(
+                                    "init failure injection failed"
+                                ) from None
                             injected = True
                 time.sleep(0.1)
-            output, errors = process.communicate(
-                timeout=max(1, min(130, deadline - time.monotonic()))
-            )
         finally:
             if process.poll() is None:
-                process.kill()
-                process.wait(timeout=10)
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=130)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+        stdout.seek(0)
+        stderr.seek(0)
+        output, errors = stdout.read(common.LIMIT + 1), stderr.read(common.LIMIT + 1)
+    if max(len(output), len(errors)) > common.LIMIT:
+        raise AssertionError("qualification child output exceeded bound")
     if any(value in output or value in errors for value in canaries):
         raise AssertionError("credential escaped captured CLI output")
     try:
@@ -235,9 +259,9 @@ def persistence_markers(
     ), "volume marker lost"
 
 
-def teardown_case(directory: Path) -> None:
+def teardown_case(directory: Path) -> Literal["not_created", "cleaned"]:
     if not (directory / "installation.json").exists():
-        return
+        return "not_created"
     owned = session(directory, time.monotonic() + 120)
     inventory = owned.inventory()
     # Test-only destruction: every resource is independently rechecked before removal.
@@ -259,6 +283,28 @@ def teardown_case(directory: Path) -> None:
     assert not probes, (
         "temporary installation probe remains; inspect private recovery state"
     )
+    return "cleaned"
+
+
+def assert_private_outputs(
+    owned: runtime.Session, canaries: tuple[str, ...], evidence: dict[str, Any]
+) -> None:
+    contents = [json.dumps(evidence).encode()]
+    contents.extend(
+        path.read_bytes()
+        for path in owned.driver.directory.rglob("*")
+        if path.is_file()
+    )
+    for identifier in owned.inventory()["container"]:
+        contents.append(
+            json.dumps(
+                owned.inspect("container", identifier)["Config"].get("Env", [])
+            ).encode()
+        )
+    if any(value.encode() in content for value in canaries for content in contents):
+        raise AssertionError(
+            "credential escaped into retained state or public evidence"
+        )
 
 
 def success_case(
@@ -352,21 +398,27 @@ def success_case(
             "unrelated sentinel changed"
         )
         evidence["persistence_verified"] = True
-        evidence["sentinel_preserved"] = True
+        assert_private_outputs(restarted, canaries, evidence)
     finally:
         try:
-            teardown_case(retained)
-            evidence["installation_cleanup_verified"] = True
+            evidence["installation_cleanup_verified"] = (
+                teardown_case(retained) == "cleaned"
+            )
         finally:
             if sentinel_created:
                 docker.deadline = time.monotonic() + 120
                 assert docker.daemon() == daemon, "sentinel daemon changed"
-                if before is not None:
-                    assert sentinel.sentinel_snapshot(docker, identity) == before, (
-                        "cleanup changed sentinel"
-                    )
-                sentinel.cleanup_sentinel(docker, identity)
-            evidence["sentinel_cleanup_verified"] = True
+                try:
+                    if before is not None:
+                        evidence["sentinel_preserved"] = (
+                            sentinel.sentinel_snapshot(docker, identity) == before
+                        )
+                        assert evidence["sentinel_preserved"], (
+                            "cleanup changed sentinel"
+                        )
+                finally:
+                    sentinel.cleanup_sentinel(docker, identity)
+                    evidence["sentinel_cleanup_verified"] = True
 
 
 def failure_case(
@@ -376,6 +428,14 @@ def failure_case(
     original = snapshot(profile.parent)
     retained = directory / "state"
     outcomes: list[dict[str, Any]] = evidence["operations"]
+    control = directory / "sentinel-control"
+    control.mkdir(mode=0o700)
+    (control / "docker-config").mkdir(mode=0o700)
+    docker = common.Runtime(directory=control, deadline=deadline)
+    daemon = docker.daemon()
+    identity = uuid4().hex
+    sentinel_created = False
+    sentinel_before: dict[str, Any] | None = None
     try:
         evidence["stage"] = "injected_init_failure"
         code, result = invoke(
@@ -401,8 +461,14 @@ def failure_case(
             not owned.inspect("container", identifier)["State"]["Running"]
             for identifier in inventory["container"]
         ), "failure left services running"
+        image = json.loads(docker.run(["image", "inspect", "sapphire-flow:" + tag]))[0][
+            "Id"
+        ]
+        sentinel_created = True
+        sentinel.create_sentinel(docker, identity, image)
+        sentinel_before = sentinel.sentinel_snapshot(docker, identity)
         before = inventory
-        code, _ = invoke(
+        code, result = invoke(
             "install",
             retained,
             profile=profile,
@@ -411,9 +477,12 @@ def failure_case(
             deadline=deadline,
             outcomes=outcomes,
         )
-        assert code == 2 and owned.inventory() == before, (
-            "repeated install mutated failed state"
+        assert (
+            code == 2
+            and result["status"] == "REFUSED"
+            and result["code"] == "STATE_PATH_OCCUPIED"
         )
+        assert owned.inventory() == before, "repeated install mutated failed state"
         code, result = invoke(
             "stop",
             retained,
@@ -428,10 +497,38 @@ def failure_case(
         assert snapshot(profile.parent) == original, (
             "failed install changed original inputs"
         )
+        code, result = invoke(
+            "start",
+            retained,
+            profile=profile,
+            installation=installation,
+            canaries=canaries,
+            deadline=deadline,
+            outcomes=outcomes,
+        )
+        assert code == 2 and result["code"] == "partial_installation_refused"
+        assert sentinel.sentinel_snapshot(docker, identity) == sentinel_before
+        assert_private_outputs(owned, canaries, evidence)
         evidence["failure_retention_verified"] = True
     finally:
-        teardown_case(retained)
-        evidence["failure_cleanup_verified"] = True
+        try:
+            evidence["failure_cleanup_verified"] = teardown_case(retained) == "cleaned"
+        finally:
+            if sentinel_created:
+                docker.deadline = time.monotonic() + 120
+                assert docker.daemon() == daemon, "failure sentinel daemon changed"
+                try:
+                    if sentinel_before is not None:
+                        evidence["failure_sentinel_preserved"] = (
+                            sentinel.sentinel_snapshot(docker, identity)
+                            == sentinel_before
+                        )
+                        assert evidence["failure_sentinel_preserved"], (
+                            "failure cleanup changed sentinel"
+                        )
+                finally:
+                    sentinel.cleanup_sentinel(docker, identity)
+                    evidence["failure_sentinel_cleanup_verified"] = True
 
 
 @pytest.mark.deployment
@@ -460,6 +557,8 @@ class TestPersistentInstallation:
             "persistence_verified": False,
             "failure_retention_verified": False,
             "sentinel_preserved": False,
+            "failure_sentinel_preserved": False,
+            "failure_sentinel_cleanup_verified": False,
             "installation_cleanup_verified": False,
             "failure_cleanup_verified": False,
             "sentinel_cleanup_verified": False,
@@ -471,6 +570,15 @@ class TestPersistentInstallation:
                 directory = tmp_path / name
                 directory.mkdir(mode=0o700)
                 check(directory, revision, tag, deadline, evidence)
+            assert all(
+                evidence[key]
+                for key in (
+                    "installation_cleanup_verified",
+                    "failure_cleanup_verified",
+                    "sentinel_cleanup_verified",
+                    "failure_sentinel_cleanup_verified",
+                )
+            ), "qualification cleanup unverified"
             evidence["stage"] = "complete"
             evidence["passed"] = True
         finally:

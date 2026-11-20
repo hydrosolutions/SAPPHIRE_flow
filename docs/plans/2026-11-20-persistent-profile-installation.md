@@ -377,6 +377,10 @@ revocation, missing-delivery refusal and injected init failure. Independent
 unrelated-resource checks and test-only ownership-verified cleanup run before the
 safe summary is uploaded. FULL attestation requires both execution and upload.
 
-The integration test and fixture runbook are implemented; final-head hosted
-qualification and independent patch review are pending. No production deployment,
+The integration test and fixture runbook are implemented. One independent Claude
+review completed; findings addressed include stopping the CI-owned builder before
+idle-daemon preflight, sentinel checks on failure recovery, truthful cleanup flags,
+bounded child termination without pipe backpressure, exact refusal assertions and
+canary scans of retained state, container environments and safe evidence. Full
+review evidence stays private. Final-head hosted qualification is pending. No production deployment,
 release publication, daemon restart or host reboot is claimed here.

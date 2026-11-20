@@ -1780,6 +1780,7 @@ jobs:
           SAPPHIRE_INSTALL_IMAGE_TAG: ci-proof-${{ github.sha }}
           SAPPHIRE_INSTALL_QUALIFICATION_REPORT: ${{ runner.temp }}/profile-installation-qualification.json
         run: |
+          docker buildx stop
           uv run --no-sync pytest tests/integration/test_deployment_install.py -m deployment -q --tb=short --junitxml "$RUNNER_TEMP/profile-installation-junit.xml"
           uv run --no-sync python - <<'PYTHON'
           import os
