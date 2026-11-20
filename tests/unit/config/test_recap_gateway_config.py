@@ -378,3 +378,24 @@ class TestLoadRecapGatewayConfigOverlay:
         config = load_recap_gateway_config(config_path)
 
         assert config.base_url == "https://recap.example.org"
+
+
+class TestNormalizationAttestation:
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            'normalized_interval_contract = "normalized_start_v1"\n',
+            'normalized_interval_contract = "unknown"\n',
+            'normalization_revision = "orphan-revision"\n',
+            'normalized_interval_contract = "normalized_start_v1"\n'
+            "normalization_revision = 42\n",
+        ],
+    )
+    def test_invalid_attestation_refused(self, tmp_path: Path, extra: str) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[adapters.recap_gateway]\nbase_url="https://recap.example.org"\ntimeout_s=120\nverify_tls=true\nstaleness_threshold_hours=12\nhru_metadata_source="manual_gpkg_upload"\nmax_retries=5\n'
+            + extra
+        )
+        with pytest.raises(ConfigurationError, match="interval|revision"):
+            load_recap_gateway_config(path)

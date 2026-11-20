@@ -2740,6 +2740,10 @@ counts, one statement snapshot, newest-before-filter semantics, full source/QC
 agreement, frozen curve/capture identity, native timestamps and source separation.
 Keep bootstrap optional ACL handling, no-store middleware/error/CORS predicates,
 map schema/version and [client guide](api/README.md#shared-nativehourly-discharge-history) aligned.
+Ordinary history uses the observation store's scalar-correlated trust predicate
+and materializes bounded result rows before aggregation. Preserve both: flattening
+the trust check or rejoining observations can cause repeated scans under stale
+planner estimates. The five-second timeout and candidate/response caps still apply.
 Tests: unit API/service `test_station_history.py`, integration store
 `test_station_history.py`, integration DB `test_station_history_roles.py`, and
 integration API `test_access_token_auth.py` for the real-token route inventory,
@@ -2778,3 +2782,16 @@ flow/service, skill classifier and API schema consistent. The deployed FI artifa
 contract does not mandate training dates. Import time, hashes, tenant/scope and
 deserialization checks remain required. Unknown skill exposure must never be
 classified as outside training. Event-review already permits null training bounds.
+
+### Recap interval radiation extension
+
+The selected-weather route admits `solar_net_radiation` and
+`thermal_net_radiation` only with qualified normalized source intervals.
+`types/recap_intervals.py` owns duration/conversion semantics; construction roots
+must propagate `RecapGatewayConfig.interval_qualification`. Requested station
+channel unions flow through preparation, refresh, adapter batching and both
+fingerprint variants. Daily consumers use `period_weather_value`; never select
+all non-precipitation features as temperature. Future weighting applies only to
+complete qualified Recap support. Preserve old fingerprints/codec bytes, source
+receipts and the existing gap-fill allowlist. See the net-radiation plan and
+model-onboarding qualification gates before activation.

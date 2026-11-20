@@ -106,6 +106,10 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
+from sapphire_flow.types.recap_intervals import (
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalQualification,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -118,10 +122,12 @@ if TYPE_CHECKING:
     from sapphire_flow.adapters.recap_gateway import (
         EcmwfApiLike,
         GatewayPolygonBindingStoreLike,
+        GatewayPolygonResolver,
         RecapClientLike,
     )
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.config.dhm import DhmConfig
+    from sapphire_flow.config.operational_weather import OperationalWeatherConfig
     from sapphire_flow.flows.daily_forecast_execution import DailyForecastExecution
     from sapphire_flow.flows.operational_weather_refresh import (
         CompletedStationWeather,
@@ -755,6 +761,38 @@ def _default_injected_adapter_forcing_policy(
     return _DEFAULT_FORCING_RESOLUTION_POLICY
 
 
+def _recap_interval_qualification(adapter: object) -> GatewayIntervalQualification:
+    from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
+
+    return (
+        adapter.interval_qualification
+        if isinstance(adapter, RecapGatewayForecastAdapter)
+        else UNQUALIFIED_INTERVALS
+    )
+
+
+def _selected_operational_adapter(
+    *,
+    existing: object | None,
+    api: EcmwfApiLike | None,
+    resolver: GatewayPolygonResolver,
+    config: OperationalWeatherConfig,
+    forecast_adapter: object,
+) -> object:
+    from sapphire_flow.adapters.recap_operational import RecapGatewayOperationalAdapter
+
+    if existing is not None:
+        return existing
+    if api is None:
+        raise ConfigurationError("selected combined weather source is not configured")
+    return RecapGatewayOperationalAdapter(
+        api=api,
+        resolver=resolver,
+        config=config,
+        interval_qualification=_recap_interval_qualification(forecast_adapter),
+    )
+
+
 def _build_recap_forecast_adapter(
     *,
     config_path: str | None,
@@ -824,6 +862,7 @@ def _build_recap_forecast_adapter(
             client=cast("RecapClientLike", recap_client),
             resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
             max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
+            interval_qualification=recap_gateway_config.interval_qualification,
         )
         policy = ForcingResolutionPolicy(
             cycle_cadence_hours=recap_gateway_config.cycle_cadence_hours,
@@ -841,12 +880,20 @@ def _build_recap_forecast_adapter(
             ecmwf=ecmwf_api,
             snow=cast("RecapClientLike", recap_client).snow,
         )
+    injected_gateway_config = (
+        load_recap_gateway_config(Path(config_path))
+        if config_path is not None
+        else None
+    )
     adapter = RecapGatewayForecastAdapter(
+        interval_qualification=injected_gateway_config.interval_qualification
+        if injected_gateway_config is not None
+        else UNQUALIFIED_INTERVALS,
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
     )
-    if config_path is not None:
-        recap_gateway_config = load_recap_gateway_config(Path(config_path))
+    if injected_gateway_config is not None:
+        recap_gateway_config = injected_gateway_config
         policy = ForcingResolutionPolicy(
             cycle_cadence_hours=recap_gateway_config.cycle_cadence_hours,
             max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
@@ -3240,9 +3287,6 @@ def run_forecast_cycle_flow(
                 RecapTransientError,
                 StoreBackedGatewayPolygonResolver,
             )
-            from sapphire_flow.adapters.recap_operational import (
-                RecapGatewayOperationalAdapter,
-            )
             from sapphire_flow.flows.operational_weather_prepare import (
                 prepare_weather_refresh,
             )
@@ -3279,18 +3323,16 @@ def run_forecast_cycle_flow(
                     eligible_group_pairs=provisional_weather_pairs,
                     gap_config=config.weather_gap_fill,
                 )
+                errors.extend(prepared_weather.refusal_messages)
                 if isinstance(adapter, RecapGatewayForecastAdapter):
                     adapter = adapter.with_resolver(prepared_weather.resolver)
-                if operational_weather_adapter is None:
-                    if operational_api is None:
-                        raise ConfigurationError(
-                            "selected combined weather source is not configured"
-                        )
-                    operational_weather_adapter = RecapGatewayOperationalAdapter(
-                        api=operational_api,
-                        resolver=prepared_weather.resolver,
-                        config=config.operational_weather,
-                    )
+                operational_weather_adapter = _selected_operational_adapter(
+                    existing=operational_weather_adapter,
+                    api=operational_api,
+                    resolver=prepared_weather.resolver,
+                    config=config.operational_weather,
+                    forecast_adapter=adapter,
+                )
                 resolution_policy = (
                     forcing_resolution_policy or _DEFAULT_FORCING_RESOLUTION_POLICY
                 )

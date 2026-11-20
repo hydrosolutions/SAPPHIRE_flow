@@ -2895,7 +2895,10 @@ class TestUnitRegister:
             assert variable.source_unit.strip(), f"{name}: no assumed source unit"
             assert variable.authority.strip(), f"{name}: no named authority"
             assert variable.unit.strip(), f"{name}: no canonical unit"
-            assert variable.convert is not None, f"{name}: ungrounded convert sentinel"
+            if name in {"solar_net_radiation", "thermal_net_radiation"}:
+                assert variable.convert is None  # Requires interval-aware conversion.
+            else:
+                assert variable.convert is not None, f"{name}: ungrounded converter"
 
     def test_the_register_matches_the_authorities_it_cites(self) -> None:
         # Pinned so a silent edit to a factor or a unit string fails here rather
@@ -2903,6 +2906,8 @@ class TestUnitRegister:
         assert {
             name: (v.source_unit, v.unit) for name, v in RECAP_VARIABLES.items()
         } == {
+            "solar_net_radiation": ("J/m²", "W/m²"),
+            "thermal_net_radiation": ("J/m²", "W/m²"),
             "precipitation": ("m", "mm"),
             "temperature": ("K", "°C"),
             "snow_depth": ("m", "cm"),
@@ -2922,8 +2927,118 @@ class TestUnitRegister:
             "snowmelt": (3.0, 3.0),  # identity
             "swe": (3.0, 3.0),  # identity
         }
-        assert set(expected) == set(RECAP_VARIABLES)
+        assert set(expected) == set(RECAP_VARIABLES) - {
+            "solar_net_radiation",
+            "thermal_net_radiation",
+        }
         for name, (raw, canonical) in expected.items():
             convert = RECAP_VARIABLES[name].convert
             assert convert is not None
             assert convert(raw) == pytest.approx(canonical), name
+
+
+class TestRadiationReanalysis:
+    @pytest.mark.parametrize(
+        "parameter", ["solar_net_radiation", "thermal_net_radiation"]
+    )
+    def test_requested_native_energy_becomes_flux_with_original_provenance(
+        self, parameter: str
+    ) -> None:
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        frame = _reanalysis_frame(
+            times=[_SOURCE_RUN], values=[-360000.0], source_runs=[_SOURCE_RUN]
+        )
+        api = _FixedFrameEcmwf(frame)
+        adapter = RecapGatewayReanalysisAdapter(
+            client=_Client(api, _GoodSnow()),
+            resolver=_MapResolver({_SID_A: _ref(_SID_A, _POLY_A)}),
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.NORMALIZED_START_V1,
+                revision="test-normalized-v1",
+            ),
+        )
+        rows = adapter.fetch_reanalysis(
+            [_ws(_SID_A, nwp_source="era5_land", role=WeatherSourceRole.REANALYSIS)],
+            _START,
+            _END,
+            [parameter],
+        )
+        assert len(rows) == 1
+        assert rows[0].value == -100.0
+        assert rows[0].parameter == parameter
+        assert rows[0].version == _SOURCE_RUN.isoformat()
+        assert len(api.calls) == 1
+
+    def test_unqualified_refuses_before_fetch(self) -> None:
+        api = _FixedFrameEcmwf(pd.DataFrame())
+        adapter = _reanalysis_adapter(
+            api, _GoodSnow(), _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+        with pytest.raises(ValueError, match="requires qualified"):
+            adapter.fetch_reanalysis(
+                [
+                    _ws(
+                        _SID_A,
+                        nwp_source="era5_land",
+                        role=WeatherSourceRole.REANALYSIS,
+                    )
+                ],
+                _START,
+                _END,
+                ["solar_net_radiation"],
+            )
+        assert api.calls == []
+
+
+class TestRadiationCandidateIsolation:
+    @pytest.mark.parametrize("missing", [float("nan"), float("inf")])
+    def test_missing_polygon_value_is_scoped_and_infinity_is_integrity_error(
+        self, missing: float
+    ) -> None:
+        from sapphire_flow.types.enums import EnsembleMode
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        class RadiationApi:
+            def ifs_forecast(self, **kwargs: object) -> pd.DataFrame:
+                return pd.DataFrame(
+                    {
+                        _POLY_A: [missing],
+                        _POLY_B: [1080000.0],
+                        "source": ["ifs"],
+                        "source_run": [_CYCLE],
+                    },
+                    index=pd.DatetimeIndex([_CYCLE]),
+                )
+
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(RadiationApi(), _GoodSnow()),
+            resolver=_MapResolver(
+                {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B)}
+            ),
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.NORMALIZED_START_V1,
+                revision="test-normalized-v1",
+            ),
+        )
+        sources = [
+            _ws(sid, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)
+            for sid in (_SID_A, _SID_B)
+        ]
+        track = _track(
+            features=frozenset({"solar_net_radiation"}),
+            ensemble_mode=EnsembleMode.SINGLE,
+        )
+        if missing == float("inf"):
+            with pytest.raises(RecapPayloadIntegrityError, match="invalid radiation"):
+                adapter.fetch_requirement(track, sources, _CYCLE)
+        else:
+            result = adapter.fetch_requirement(track, sources, _CYCLE)
+            assert set(result.stations) == {_SID_B}
+            assert result.stations[_SID_B].values["value"].to_list() == [100.0]

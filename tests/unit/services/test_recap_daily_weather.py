@@ -229,9 +229,18 @@ class TestRecapCompleteDailyWeather:
 
 
 class TestSelectedNativeCandidateResolution:
-    def test_long_model_walks_back_to_one_eligible_00z_cycle(self) -> None:
+    @pytest.mark.parametrize(
+        "parameters",
+        [
+            ("precipitation", "temperature"),
+            ("solar_net_radiation", "thermal_net_radiation"),
+        ],
+    )
+    def test_long_model_walks_back_to_one_eligible_00z_cycle(
+        self, parameters: tuple[str, str]
+    ) -> None:
         sid = StationId(uuid4())
-        features = frozenset({FeatureName("precipitation"), FeatureName("temperature")})
+        features = frozenset(FeatureName(name) for name in parameters)
         request = ResolvedTrackRequest(
             key=ForcingTrackKey(
                 nwp_source="ifs_ecmwf",
@@ -247,7 +256,11 @@ class TestSelectedNativeCandidateResolution:
 
         def fetch(cycle: UtcDatetime) -> RawFetchOutcome:
             visited.append(cycle)
-            rows = qualified_rows(cycle)
+            names = dict(zip(("precipitation", "temperature"), parameters, strict=True))
+            rows = [
+                replace(row, parameter=names[row.parameter])
+                for row in qualified_rows(cycle)
+            ]
             return RawFetchOutcome(
                 status=RawFetchStatus.FETCHED,
                 cycle=cycle,

@@ -50,6 +50,8 @@ class TestDatabaseSetup:
             "temperature",
             "humidity",
             "radiation",
+            "solar_net_radiation",
+            "thermal_net_radiation",
             "wind_speed",
             "snow_depth",
             "reference_et",

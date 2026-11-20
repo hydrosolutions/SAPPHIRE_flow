@@ -9,6 +9,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, Literal, cast
 
 import pandas as pd
+import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from sapphire_flow.adapters.recap_gateway import (
@@ -29,8 +30,10 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.operational_weather import (
+    LEGACY_WEATHER_PARAMETERS,
     OPERATIONAL_WEATHER_POLICY,
     QUALIFIED_SOURCE_REVISION,
+    WEATHER_PARAMETERS,
     OperationalWeatherCoverageError,
     OperationalWeatherSample,
     OperationalWeatherSource,
@@ -44,9 +47,16 @@ from sapphire_flow.types.operational_weather_v2 import (
     OperationalWeatherWindowV2,
     require_context,
 )
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_CONTRACT_REVISION,
+    RADIATION_PARAMETERS,
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalQualification,
+    radiation_mean_flux,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
     from sapphire_flow.adapters.recap_gateway import (
         EcmwfApiLike,
@@ -59,6 +69,9 @@ if TYPE_CHECKING:
     from sapphire_flow.types.operational_weather import WeatherParameter
     from sapphire_flow.types.station import StationWeatherSource
     from sapphire_flow.types.time_grid import TimeGrid
+
+
+log = structlog.get_logger(__name__)
 
 
 class _SourceMetadata(BaseModel):
@@ -89,6 +102,7 @@ def parse_operational_samples(
     end: UtcDatetime,
     max_response_bytes: int,
     mode: Literal["samples", "identity"] = "samples",
+    interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
 ) -> tuple[OperationalWeatherSample, ...]:
     if not isinstance(response, pd.DataFrame):
         raise RecapPayloadIntegrityError("operational response is not a dataframe")
@@ -110,8 +124,10 @@ def parse_operational_samples(
         raise RecapPayloadIntegrityError(
             "operational response lacks required provenance"
         )
+    if parameter in RADIATION_PARAMETERS:
+        interval_qualification.require_radiation()
     converter = RECAP_VARIABLES[parameter].convert
-    if converter is None:
+    if converter is None and parameter not in RADIATION_PARAMETERS:
         raise RecapPayloadIntegrityError("operational variable has no unit contract")
     samples: list[OperationalWeatherSample] = []
     seen: set[UtcDatetime] = set()
@@ -179,7 +195,22 @@ def parse_operational_samples(
                     source=source,
                     valid_time=valid_time,
                     source_run=source_run,
-                    value=converter(value_row.value),
+                    value=(
+                        radiation_mean_flux(
+                            value_row.value,
+                            start=valid_time,
+                            source_run=source_run,
+                            source=source,
+                            qualification=interval_qualification,
+                        )
+                        if parameter in RADIATION_PARAMETERS
+                        else cast("Callable[[float], float]", converter)(
+                            value_row.value
+                        )
+                    ),
+                    contract_revision=RADIATION_CONTRACT_REVISION
+                    if parameter in RADIATION_PARAMETERS
+                    else QUALIFIED_SOURCE_REVISION,
                     product=(
                         WeatherProductIdentity.REANALYSIS
                         if source is OperationalWeatherSource.ERA5_LAND
@@ -188,6 +219,7 @@ def parse_operational_samples(
                     interval_end=(
                         ensure_utc(valid_time + timedelta(hours=hours))
                         if parameter == "precipitation"
+                        or parameter in RADIATION_PARAMETERS
                         else None
                     ),
                 )
@@ -205,9 +237,13 @@ def parse_operational_samples(
 
 
 def operational_binding_fingerprint(
-    source: StationWeatherSource, ref: GatewayPolygonRef
+    source: StationWeatherSource,
+    ref: GatewayPolygonRef,
+    *,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
 ) -> str:
-    descriptor = {
+    descriptor: dict[str, object] = {
         "source": source.nwp_source,
         "role": source.role.value,
         "extraction": source.extraction_type.value,
@@ -218,6 +254,19 @@ def operational_binding_fingerprint(
         "policy": OPERATIONAL_WEATHER_POLICY,
         "contract_revision": QUALIFIED_SOURCE_REVISION,
     }
+    if RADIATION_PARAMETERS.intersection(parameters):
+        interval_qualification.require_radiation()
+        descriptor["radiation"] = {
+            "parameters": sorted(parameters),
+            "unit": "W/m²",
+            "variables": {
+                p: [RECAP_VARIABLES[p].era5_name, RECAP_VARIABLES[p].ifs_name]
+                for p in sorted(parameters)
+            },
+            "semantic_revision": RADIATION_CONTRACT_REVISION,
+            "interval_contract": interval_qualification.contract.value,
+            "normalization_revision": interval_qualification.revision,
+        }
     return hashlib.sha256(
         json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -227,8 +276,11 @@ def future_binding_fingerprint(
     source: StationWeatherSource,
     ref: GatewayPolygonRef,
     member_ids: tuple[int, ...],
+    *,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
 ) -> str:
-    descriptor = {
+    descriptor: dict[str, object] = {
         "source": source.nwp_source,
         "role": source.role.value,
         "extraction": source.extraction_type.value,
@@ -239,6 +291,19 @@ def future_binding_fingerprint(
         "policy": OPERATIONAL_WEATHER_POLICY,
         "contract_revision": QUALIFIED_SOURCE_REVISION,
     }
+    if RADIATION_PARAMETERS.intersection(parameters):
+        interval_qualification.require_radiation()
+        descriptor["radiation"] = {
+            "parameters": sorted(parameters),
+            "unit": "W/m²",
+            "variables": {
+                p: [RECAP_VARIABLES[p].era5_name, RECAP_VARIABLES[p].ifs_name]
+                for p in sorted(parameters)
+            },
+            "semantic_revision": RADIATION_CONTRACT_REVISION,
+            "interval_contract": interval_qualification.contract.value,
+            "normalization_revision": interval_qualification.revision,
+        }
     return hashlib.sha256(
         json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -247,7 +312,7 @@ def future_binding_fingerprint(
 def _period_binding_fingerprint(source_digest: str, grid: TimeGrid) -> str:
     if grid.step != timedelta(days=1):
         raise ValueError("period weather binding requires a daily grid")
-    descriptor = {
+    descriptor: dict[str, object] = {
         "source_binding_sha256": source_digest,
         "policy": "recap-start-declared-daily-v2",
         "grid": {
@@ -261,10 +326,21 @@ def _period_binding_fingerprint(source_digest: str, grid: TimeGrid) -> str:
 
 
 def operational_binding_fingerprint_v2(
-    source: StationWeatherSource, ref: GatewayPolygonRef, grid: TimeGrid
+    source: StationWeatherSource,
+    ref: GatewayPolygonRef,
+    grid: TimeGrid,
+    *,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
 ) -> str:
     return _period_binding_fingerprint(
-        operational_binding_fingerprint(source, ref), grid
+        operational_binding_fingerprint(
+            source,
+            ref,
+            parameters=parameters,
+            interval_qualification=interval_qualification,
+        ),
+        grid,
     )
 
 
@@ -273,9 +349,19 @@ def future_binding_fingerprint_v2(
     ref: GatewayPolygonRef,
     member_ids: tuple[int, ...],
     grid: TimeGrid,
+    *,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
 ) -> str:
     return _period_binding_fingerprint(
-        future_binding_fingerprint(source, ref, member_ids), grid
+        future_binding_fingerprint(
+            source,
+            ref,
+            member_ids,
+            parameters=parameters,
+            interval_qualification=interval_qualification,
+        ),
+        grid,
     )
 
 
@@ -286,10 +372,12 @@ class RecapGatewayOperationalAdapter:
         api: EcmwfApiLike,
         resolver: GatewayPolygonResolver,
         config: OperationalWeatherConfig,
+        interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
     ) -> None:
         self._api = api
         self._resolver = resolver
         self._config = config
+        self.interval_qualification = interval_qualification
 
     def fetch_windows(
         self,
@@ -298,9 +386,15 @@ class RecapGatewayOperationalAdapter:
         issue_time: UtcDatetime,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+        | None = None,
     ) -> dict[StationId, OperationalWeatherWindow]:
         windows = self._fetch_windows(
-            sources=sources, issue_time=issue_time, start=start, end=end
+            sources=sources,
+            issue_time=issue_time,
+            start=start,
+            end=end,
+            parameters_by_station=parameters_by_station,
         )
         assert all(
             isinstance(window, OperationalWeatherWindow) for window in windows.values()
@@ -316,6 +410,8 @@ class RecapGatewayOperationalAdapter:
         end: UtcDatetime,
         grid: TimeGrid,
         eligibility_cutoff: UtcDatetime,
+        parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+        | None = None,
     ) -> dict[StationId, OperationalWeatherWindowV2]:
         windows = self._fetch_windows(
             sources=sources,
@@ -324,6 +420,7 @@ class RecapGatewayOperationalAdapter:
             end=end,
             grid=grid,
             eligibility_cutoff=eligibility_cutoff,
+            parameters_by_station=parameters_by_station,
         )
         assert all(
             isinstance(window, OperationalWeatherWindowV2)
@@ -340,6 +437,8 @@ class RecapGatewayOperationalAdapter:
         end: UtcDatetime,
         grid: TimeGrid | None = None,
         eligibility_cutoff: UtcDatetime | None = None,
+        parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+        | None = None,
     ) -> dict[StationId, OperationalWeatherWindow | OperationalWeatherWindowV2]:
         if grid is None:
             for bound in (issue_time, start, end):
@@ -371,7 +470,14 @@ class RecapGatewayOperationalAdapter:
             raise RecapConfigurationError(
                 "combined history exceeds provider request bound"
             )
-        grouped: dict[str, list[tuple[StationWeatherSource, GatewayPolygonRef]]] = {}
+        if parameters_by_station is not None and set(parameters_by_station) != {
+            source.station_id for source in sources
+        }:
+            raise RecapConfigurationError("requested parameter station set mismatch")
+        grouped: dict[
+            tuple[str, tuple[WeatherParameter, ...]],
+            list[tuple[StationWeatherSource, GatewayPolygonRef]],
+        ] = {}
         seen_stations: set[StationId] = set()
         seen_polygons: set[tuple[str, str]] = set()
         for source in sources:
@@ -396,28 +502,54 @@ class RecapGatewayOperationalAdapter:
                 raise RecapConfigurationError("invalid combined polygon mapping")
             seen_stations.add(source.station_id)
             seen_polygons.add((ref.hru_name, ref.polygon_name))
-            grouped.setdefault(ref.hru_name, []).append((source, ref))
+            parameters = (
+                LEGACY_WEATHER_PARAMETERS
+                if parameters_by_station is None
+                else parameters_by_station[source.station_id]
+            )
+            if (
+                not parameters
+                or len(set(parameters)) != len(parameters)
+                or not set(parameters) <= set(WEATHER_PARAMETERS)
+            ):
+                raise RecapConfigurationError(
+                    "invalid requested operational parameters"
+                )
+            if RADIATION_PARAMETERS.intersection(parameters):
+                self.interval_qualification.require_radiation()
+            grouped.setdefault((ref.hru_name, tuple(sorted(parameters))), []).append(
+                (source, ref)
+            )
         windows: dict[
             StationId, OperationalWeatherWindow | OperationalWeatherWindowV2
         ] = {}
-        for hru, bindings in grouped.items():
-            responses = {
-                parameter: guarded_recap_fetch(
-                    self._api.operational,
-                    hru_code=hru,
-                    start_date=request_start.date(),
-                    era5_variable_name=RECAP_VARIABLES[parameter].era5_name,
-                    ifs_variable_name=RECAP_VARIABLES[parameter].ifs_name,
-                    subdaily_resolution=6,
-                    include_provenance=True,
-                )
-                for parameter in ("precipitation", "temperature")
-            }
+        for (hru, parameters), bindings in grouped.items():
+            responses: dict[str, object] = {}
+            for parameter in parameters:
+                try:
+                    responses[parameter] = guarded_recap_fetch(
+                        self._api.operational,
+                        hru_code=hru,
+                        start_date=request_start.date(),
+                        era5_variable_name=RECAP_VARIABLES[parameter].era5_name,
+                        ifs_variable_name=RECAP_VARIABLES[parameter].ifs_name,
+                        subdaily_resolution=6,
+                        include_provenance=True,
+                    )
+                except RecapDataUnavailableError:
+                    if parameter not in RADIATION_PARAMETERS:
+                        raise
+                    # Retain other native channels; consuming models still need
+                    # complete radiation and cannot fill this absent support.
+                    log.warning(
+                        "recap_operational.radiation_unavailable", parameter=parameter
+                    )
             for source, ref in bindings:
                 windows[source.station_id] = self._reduce_pair(
                     source,
                     ref,
                     responses,
+                    parameters=parameters,
                     issue_time=issue_time,
                     start=start,
                     end=end,
@@ -432,6 +564,7 @@ class RecapGatewayOperationalAdapter:
         ref: GatewayPolygonRef,
         responses: dict[str, object],
         *,
+        parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
         issue_time: UtcDatetime,
         start: UtcDatetime,
         end: UtcDatetime,
@@ -441,7 +574,8 @@ class RecapGatewayOperationalAdapter:
         buffer_end = ensure_utc(end + timedelta(days=self._config.rollover_buffer_days))
         samples = tuple(
             sample
-            for parameter in ("precipitation", "temperature")
+            for parameter in parameters
+            if parameter in responses
             for sample in parse_operational_samples(
                 responses[parameter],
                 polygon=ref.polygon_name,
@@ -449,6 +583,7 @@ class RecapGatewayOperationalAdapter:
                 start=start,
                 end=end,
                 max_response_bytes=self._config.max_response_bytes,
+                interval_qualification=self.interval_qualification,
             )
         )
         if grid is not None:
@@ -456,7 +591,11 @@ class RecapGatewayOperationalAdapter:
             return OperationalWeatherWindowV2(
                 station_id=source.station_id,
                 binding_fingerprint=operational_binding_fingerprint_v2(
-                    source, ref, grid
+                    source,
+                    ref,
+                    grid,
+                    parameters=parameters,
+                    interval_qualification=self.interval_qualification,
                 ),
                 grid=grid,
                 issue_time=issue_time,
@@ -469,9 +608,15 @@ class RecapGatewayOperationalAdapter:
                     samples=samples,
                     grid=grid,
                     coverage=WeatherCoverage.ALLOW_GAPS,
+                    parameters=parameters,
                 ),
             )
-        fingerprint = operational_binding_fingerprint(source, ref)
+        fingerprint = operational_binding_fingerprint(
+            source,
+            ref,
+            parameters=parameters,
+            interval_qualification=self.interval_qualification,
+        )
         try:
             required = reduce_daily_window(
                 station_id=source.station_id,
@@ -481,6 +626,7 @@ class RecapGatewayOperationalAdapter:
                 end=end,
                 samples=samples,
                 coverage=WeatherCoverage.ALLOW_GAPS,
+                parameters=parameters,
             )
         except OperationalWeatherCoverageError as exc:
             raise RecapDataUnavailableError(
@@ -493,7 +639,9 @@ class RecapGatewayOperationalAdapter:
             ) from exc
         if buffer_end == end:
             return required
-        for parameter in ("precipitation", "temperature"):
+        for parameter in parameters:
+            if parameter not in responses:
+                continue
             parse_operational_samples(
                 responses[parameter],
                 polygon=ref.polygon_name,
@@ -501,6 +649,7 @@ class RecapGatewayOperationalAdapter:
                 start=end,
                 end=buffer_end,
                 max_response_bytes=self._config.max_response_bytes,
+                interval_qualification=self.interval_qualification,
                 mode="identity",
             )
         # Keep the complete prefix, including when the provider's last day is
@@ -512,7 +661,8 @@ class RecapGatewayOperationalAdapter:
             try:
                 optional = tuple(
                     sample
-                    for parameter in ("precipitation", "temperature")
+                    for parameter in parameters
+                    if parameter in responses
                     for sample in parse_operational_samples(
                         _response_day(responses[parameter], cursor, next_day),
                         polygon=ref.polygon_name,
@@ -520,6 +670,7 @@ class RecapGatewayOperationalAdapter:
                         start=cursor,
                         end=next_day,
                         max_response_bytes=self._config.max_response_bytes,
+                        interval_qualification=self.interval_qualification,
                     )
                 )
                 buffer = reduce_daily_window(
@@ -529,6 +680,7 @@ class RecapGatewayOperationalAdapter:
                     start=cursor,
                     end=next_day,
                     samples=optional,
+                    parameters=parameters,
                 )
             except (
                 OperationalWeatherSupportError,

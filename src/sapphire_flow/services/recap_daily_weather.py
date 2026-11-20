@@ -10,6 +10,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleMode, SpatialRepresentation
 from sapphire_flow.types.operational_weather import (
     UTC_DAILY_WEATHER_GRID,
+    WEATHER_PARAMETERS,
     qualified_ifs_daily_support,
     require_daily_grid_boundary,
     require_utc,
@@ -65,7 +66,7 @@ def recap_complete_period_records(
     require_utc(cycle_ceiling)
     require_daily_grid_boundary(first_period_start, grid)
     if not feature_horizons or any(
-        feature not in ("precipitation", "temperature") for feature in feature_horizons
+        feature not in WEATHER_PARAMETERS for feature in feature_horizons
     ):
         return []
     selected = [

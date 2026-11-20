@@ -90,3 +90,63 @@ class TestPeriodWire:
             verify_past_snapshot(
                 replace(snapshot, payload_sha256="0" * 64), max_bytes=LIMIT
             )
+
+
+class TestRadiationPeriodWire:
+    def test_new_samples_roundtrip_with_unchanged_period_layout(self) -> None:
+        from sapphire_flow.store.operational_weather_codec import make_past_snapshot
+        from sapphire_flow.types.recap_intervals import RADIATION_CONTRACT_REVISION
+
+        entry = completed_entry()
+        snapshot = entry.past_snapshot
+        assert snapshot is not None
+        periods = tuple(
+            replace(
+                period,
+                samples=period.samples
+                + tuple(
+                    replace(
+                        sample,
+                        parameter="solar_net_radiation",
+                        value=100.0,
+                        contract_revision=RADIATION_CONTRACT_REVISION,
+                    )
+                    for sample in period.samples
+                    if sample.parameter == "precipitation"
+                ),
+            )
+            for period in snapshot.window.periods
+        )
+        snapshot = make_past_snapshot(
+            window=replace(snapshot.window, periods=periods),
+            retrieved_at=snapshot.retrieved_at,
+            snapshot_id=snapshot.id,
+            max_bytes=LIMIT,
+        )
+        completion = WeatherCacheCompletionV2(
+            finished_at=ISSUE,
+            past_outcome=entry.past_outcome,
+            future_attempts=(),
+            past_snapshot=snapshot,
+        )
+        entry = replace(
+            entry,
+            past_snapshot=snapshot,
+            completion_sha256=completion_digest(completion, max_past_bytes=LIMIT),
+        )
+        raw = encode_cache_entry(entry, max_past_bytes=LIMIT)
+        assert decode_cache_entry(raw, max_past_bytes=LIMIT) == entry
+        first = periods[0]
+        changed = replace(
+            first,
+            samples=first.samples[:-1] + (replace(first.samples[-1], value=101.0),),
+        )
+        tampered = replace(
+            snapshot, window=replace(snapshot.window, periods=(changed, *periods[1:]))
+        )
+        with pytest.raises(ValueError, match="hash mismatch"):
+            encode_cache_entry(
+                replace(entry, past_snapshot=tampered), max_past_bytes=LIMIT
+            )
+        with pytest.raises(ValueError, match="overlap or duplicate"):
+            replace(first, samples=first.samples + first.samples[-1:])

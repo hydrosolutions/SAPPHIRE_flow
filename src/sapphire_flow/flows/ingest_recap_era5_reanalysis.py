@@ -22,12 +22,18 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType, SpatialRepresentation
 from sapphire_flow.types.nepal_onboarding import (
     GATEWAY_HISTORY_SOURCE,
-    HISTORY_PARAMETERS,
     HistoryCoverage,
     HistoryWindow,
 )
+from sapphire_flow.types.operational_weather import (
+    LEGACY_WEATHER_PARAMETERS,
+    WEATHER_PARAMETERS,
+    WeatherParameter,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import sqlalchemy as sa
 
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
@@ -66,8 +72,11 @@ def ingest_recap_era5_reanalysis_flow(
     *,
     now: UtcDatetime,
     scope: OperationalWeatherScope | None = None,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> tuple[HistoryCoverage, ...]:
-    return _ingest_history(conn, identity, adapter, window, now=now, scope=scope)
+    return _ingest_history(
+        conn, identity, adapter, window, now=now, scope=scope, parameters=parameters
+    )
 
 
 def _ingest_history(
@@ -78,7 +87,14 @@ def _ingest_history(
     *,
     now: UtcDatetime,
     scope: OperationalWeatherScope | None = None,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> tuple[HistoryCoverage, ...]:
+    if (
+        not parameters
+        or len(set(parameters)) != len(parameters)
+        or not set(parameters) <= set(WEATHER_PARAMETERS)
+    ):
+        raise ConfigurationError("invalid requested history parameters")
     if scope is None:
         stations = chwrr_stations(conn, identity, now=now)
         bindings = require_history_bindings(conn, stations)
@@ -92,13 +108,11 @@ def _ingest_history(
     start = window.start
     while start < window.end:
         end = ensure_utc(min(start + timedelta(days=31), window.end))
-        rows = adapter.fetch_reanalysis(
-            bindings, start, end, sorted(HISTORY_PARAMETERS)
-        )
+        rows = adapter.fetch_reanalysis(bindings, start, end, sorted(parameters))
         if any(
             r.station_id not in station_ids
             or r.source != GATEWAY_HISTORY_SOURCE
-            or r.parameter not in HISTORY_PARAMETERS
+            or r.parameter not in parameters
             or not start <= r.valid_time < end
             or r.spatial_type is not SpatialRepresentation.BASIN_AVERAGE
             or r.band_id is not None
@@ -113,7 +127,7 @@ def _ingest_history(
         start = end
     coverage = []
     for station in stations:
-        for parameter in sorted(HISTORY_PARAMETERS):
+        for parameter in sorted(parameters):
             records = store.fetch_forcing(
                 station.id,
                 GATEWAY_HISTORY_SOURCE,
@@ -152,9 +166,10 @@ def ingest_operational_era5_history_flow(
     start: str,
     end: str,
     weather_scope: str,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> tuple[HistoryCoverage, ...]:
     try:
-        return _run_operational_history(start, end, weather_scope)
+        return _run_operational_history(start, end, weather_scope, parameters)
     except Exception:
         # SDK errors may carry prepared URLs containing the API key.
         # Raise outside the handler so Prefect receives no chained exception.
@@ -166,6 +181,7 @@ def _run_operational_history(
     start: str,
     end: str,
     weather_scope: str,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> tuple[HistoryCoverage, ...]:
     from recap_client import RecapClient
 
@@ -207,12 +223,19 @@ def _run_operational_history(
                     try:
                         adapter = RecapGatewayReanalysisAdapter(
                             client=cast("RecapClientLike", client),
+                            interval_qualification=config.interval_qualification,
                             resolver=StoreBackedGatewayPolygonResolver(
                                 RecapGatewayPolygonStore(conn)
                             ),
                         )
                         batch_coverage = _ingest_history(
-                            conn, identity, adapter, batch, now=now, scope=scope
+                            conn,
+                            identity,
+                            adapter,
+                            batch,
+                            now=now,
+                            scope=scope,
+                            parameters=parameters,
                         )
                     finally:
                         # The pinned SDK has no public close/context-manager API.
@@ -243,6 +266,8 @@ def fetch_combined_operational_windows(
     start: UtcDatetime,
     end: UtcDatetime,
     now: UtcDatetime,
+    parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+    | None = None,
 ) -> dict[StationId, OperationalWeatherWindow]:
     _authorize_operational_sources(
         sources=sources,
@@ -252,6 +277,11 @@ def fetch_combined_operational_windows(
         now=now,
     )
     return adapter.fetch_windows(
+        **(
+            {"parameters_by_station": parameters_by_station}
+            if parameters_by_station is not None
+            else {}
+        ),
         sources=sources,
         issue_time=issue_time,
         start=start,
@@ -298,6 +328,8 @@ def fetch_combined_period_windows(
     now: UtcDatetime,
     grid: TimeGrid,
     eligibility_cutoff: UtcDatetime,
+    parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+    | None = None,
 ) -> dict[StationId, OperationalWeatherWindowV2]:
     _authorize_operational_sources(
         sources=sources,
@@ -307,6 +339,11 @@ def fetch_combined_period_windows(
         now=now,
     )
     return adapter.fetch_period_windows(
+        **(
+            {"parameters_by_station": parameters_by_station}
+            if parameters_by_station is not None
+            else {}
+        ),
         sources=sources,
         issue_time=issue_time,
         start=start,

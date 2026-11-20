@@ -134,6 +134,7 @@ def build_history_adapter(
         build_recap_client_config(api_key=load_recap_api_key(), config=config)
     )
     return RecapGatewayReanalysisAdapter(
+        interval_qualification=config.interval_qualification,
         client=cast("RecapClientLike", client),
         resolver=StoreBackedGatewayPolygonResolver(RecapGatewayPolygonStore(conn)),
     )

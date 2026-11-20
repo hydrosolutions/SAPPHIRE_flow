@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sapphire_flow.types.operational_weather import (
+    WEATHER_PARAMETERS,
     FutureWeatherRequirement,
     OperationalWeatherPeriod,
     WeatherAttemptState,
@@ -115,7 +116,7 @@ class FutureWeatherRequestV2:
         if len({r.parameter for r in self.requirements}) != len(self.requirements):
             raise ValueError("future period request repeats a parameter")
         for req in self.requirements:
-            if req.parameter not in ("precipitation", "temperature") or any(
+            if req.parameter not in WEATHER_PARAMETERS or any(
                 m is None for m in req.member_ids
             ):
                 raise ValueError(
@@ -443,8 +444,7 @@ class PastWeatherRequirementV2:
         if self.start >= self.end or not self.parameters:
             raise ValueError("past weather requirement must be nonempty")
         if len(set(self.parameters)) != len(self.parameters) or any(
-            parameter not in ("precipitation", "temperature")
-            for parameter in self.parameters
+            parameter not in WEATHER_PARAMETERS for parameter in self.parameters
         ):
             raise ValueError("past weather requirement has invalid parameters")
 
