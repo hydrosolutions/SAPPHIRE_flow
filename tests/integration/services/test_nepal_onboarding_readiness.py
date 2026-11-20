@@ -981,3 +981,40 @@ class TestWeatherAdmissionTenantGeneral:
         assert (
             PgStationStore(db_connection).fetch_weather_sources(cohort[0].id) == before
         )
+
+    def test_group_owned_by_another_tenant_is_refused(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "sandbox")
+        PgTenantStore(db_connection).ensure_tenant(
+            tenant_id=TenantId(uuid4()), code="other", name="Other"
+        )
+        before = PgStationStore(db_connection).fetch_weather_sources(cohort[0].id)
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset({"other"}), global_admin=False
+        )
+        with pytest.raises(
+            ConfigurationError, match="exact group membership of tenant other"
+        ):
+            admit_weather_bindings(
+                db_connection, identity, admission, tenant_code="other", now=NOW
+            )
+        assert (
+            PgStationStore(db_connection).fetch_weather_sources(cohort[0].id) == before
+        )
+
+    def test_chwrr_refused_when_host_can_also_write_another_tenant(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "chwrr")
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset({"chwrr", "other"}), global_admin=False
+        )
+        with pytest.raises(ConfigurationError, match="CHWRR-only"):
+            admit_weather_bindings(
+                db_connection, identity, admission, tenant_code="chwrr", now=NOW
+            )
