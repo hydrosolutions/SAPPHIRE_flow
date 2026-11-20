@@ -144,11 +144,15 @@ station_polygons = [{station_id = "<station id>", polygon_name = "g_00001"}]
 
 The package may carry a different Gateway name from the one you registered; the runtime name
 is what every later tool uses, so keep it identical in the Gateway, the scope and your notes.
-Then (dry run first, then without `--dry-run`):
+Then run `weather-bindings` (a dry run unless you add `--apply`; run it without `--apply` first and
+read the per-station `nepal_onboarding.weather_bindings` lines, which show the Gateway name
+and the bindings it would add). It creates all three weather bindings the cycle needs:
+reanalysis `era5_land`, forecast `ifs_ecmwf`, operational `recap_ecmwf_operational`.
+It works for the `chwrr` tenant only until the tenant generalisation (M5b) lands.
 
 ```bash
 uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --config sandbox-config.toml \
-  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --dry-run
+  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --apply
 ```
 
 **5c. Weather history.** Submit through the deployed job (the Prefect worker must be running):
@@ -161,28 +165,7 @@ uv run python -m sapphire_flow.cli.onboard_nepal history --config sandbox-config
 Success means the job was submitted, not finished: wait for the worker to log `Completed`, then
 check `select parameter, count(*), min(valid_time), max(valid_time) from historical_forcing group by 1`.
 The Gateway's ERA5 trails real time by about 8 days: that gap is filled at forecast time by the
-operational product (5d).
-
-**5d. Forecast and operational weather bindings (no step creates them).** Without these the
-forecast cycle stops with "0 FORECAST weather-source binding(s), expected exactly 1". The names
-below are the ones the Nepal staging host uses.
-
-```bash
-uv run python - <<'EOF'
-import os, sqlalchemy as sa
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.station import StationWeatherSource
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus, WeatherSourceRole
-CODE, NETWORK = "00001", "research"
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    ss = PgStationStore(c); st = ss.fetch_station_by_code(CODE, NETWORK)
-    for src, role in (("ifs_ecmwf", WeatherSourceRole.FORECAST),
-                      ("recap_ecmwf_operational", WeatherSourceRole.OPERATIONAL)):
-        ss.store_weather_source(StationWeatherSource(station_id=st.id, nwp_source=src,
-            extraction_type=SpatialRepresentation.BASIN_AVERAGE, status=WeatherSourceStatus.ACTIVE, role=role))
-    print([(w.nwp_source, w.role.value) for w in ss.fetch_weather_sources(st.id)])
-EOF
-```
+operational product (created by `weather-bindings` in 5b).
 
 ## Step 6: observations, datum, rating, quality checks (no general tool yet)
 
@@ -433,7 +416,7 @@ runs to today.
 
 | Message | Cause |
 |---|---|
-| `0 FORECAST weather-source binding(s), expected exactly 1` | Step 5d not done |
+| `0 FORECAST weather-source binding(s), expected exactly 1` | `weather-bindings --apply` (step 5b) not run |
 | `missing_required_target` / `operational_inputs.no_observations` | No observations up to the issue date, or no discharge (step 6) |
 | `nwp_disabled ... mode=runoff_only` | `[adapters.weather_forecast]` still disabled by the Nepal overlay |
 | `selected future weather requires a candidate-aware source` | `type = "recap_gateway"` missing |

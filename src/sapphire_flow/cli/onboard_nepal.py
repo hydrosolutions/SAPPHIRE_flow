@@ -60,6 +60,12 @@ def parser() -> argparse.ArgumentParser:
             help="Confirm Plan 268 staging acceptance is recorded",
         )
         command.add_argument("--dry-run", action="store_true")
+        if name == "weather-bindings":
+            command.add_argument(
+                "--apply",
+                action="store_true",
+                help="Write the bindings; without it the command is a dry run",
+            )
         if name == "basins":
             command.add_argument("--package-dir", type=Path, required=True)
             command.add_argument(
@@ -152,6 +158,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ConfigurationError(
                 "Nepal onboarding requires CHWRR-only write authority"
             )
+        dry_run = (
+            args.command == "weather-bindings" and not args.apply
+        ) or args.dry_run
         now = ensure_utc(datetime.now(UTC))
         window = None
         model = None
@@ -200,12 +209,25 @@ def main(argv: list[str] | None = None) -> int:
                                 load_weather_scope,
                             )
 
-                            admit_weather_bindings(
+                            weather_scope = load_weather_scope(
+                                args.config, args.weather_scope
+                            )
+                            added = admit_weather_bindings(
                                 conn,
                                 identity,
-                                load_weather_scope(args.config, args.weather_scope),
+                                weather_scope,
                                 now=now,
                             )
+                            for code, sources in added:
+                                log.info(
+                                    "nepal_onboarding.weather_bindings",
+                                    station=code,
+                                    would_add=list(sources),
+                                    gateway_hru_name=str(
+                                        weather_scope.scope.gateway_hru_name
+                                    ),
+                                    applied=not dry_run,
+                                )
                         elif loaded is not None:
                             report = import_nepal_package(
                                 conn, loaded, identity, clock=lambda: now
@@ -264,12 +286,12 @@ def main(argv: list[str] | None = None) -> int:
                             held = sum(
                                 item.status is ReadinessStatus.HELD for item in reports
                             )
-                        if args.dry_run:
+                        if dry_run:
                             transaction.rollback()
             log.info(
                 "nepal_onboarding.completed",
                 command=args.command,
-                dry_run=args.dry_run,
+                dry_run=dry_run,
                 held=held,
             )
         finally:
