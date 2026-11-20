@@ -154,7 +154,7 @@ def test_standard_selected_corruption_is_unavailable(
         snapshot = (
             b"invalid"
             if fault == "truncated"
-            else zlib.compress(b" " * (32 * 1024 * 1024 + 1))
+            else zlib.compress(b" " * (128 * 1024 * 1024 + 1))
         )
         evidence = replace(
             evidence,
@@ -225,3 +225,46 @@ def test_standard_selected_scope_denial_precedes_weather_read(
             PublicationGate(),
         )
     assert caught.value.status_code == 404
+
+
+def test_large_selected_capture_persists_and_reads_with_default_configuration(
+    db_connection: sa.Connection,
+) -> None:
+    import hashlib
+    import json
+    import zlib
+
+    from sapphire_flow.config.operational_weather import OperationalWeatherConfig
+
+    ordinary, _ = native_pair(db_connection)
+    forecast = selected(ordinary)
+    evidence = forecast.evidence
+    assert evidence is not None and evidence.snapshot is not None
+    payload = json.loads(zlib.decompress(evidence.snapshot))
+    # Expand an opaque capture field without changing station/weather identities.
+    payload["capacity_probe"] = "x" * (33 * 1024 * 1024)
+    snapshot = zlib.compress(json.dumps(payload).encode())
+    digest = hashlib.sha256(snapshot).hexdigest()
+    manifest = json.loads(evidence.manifest_json)
+    manifest["snapshot_sha256"] = digest
+    evidence = replace(
+        evidence,
+        snapshot=snapshot,
+        snapshot_sha256=digest,
+        manifest_json=json.dumps(manifest),
+    )
+    assert OperationalWeatherConfig().max_evidence_bytes == 32 * 1024 * 1024
+    store = PgForecastStore(
+        db_connection, transaction_factory=savepoint_factory(db_connection)
+    )
+    forecast = replace(forecast, evidence=evidence)
+    store.store_forecast(forecast)
+    # The identical retry also reconstructs the retained large snapshot.
+    assert store.store_forecast(forecast) == forecast.id
+    client = _client(db_connection)
+    try:
+        response = client.get(f"/api/v1/forecasts/{forecast.id}/data.json")
+    finally:
+        app_overrides_clear()
+    assert response.status_code == 200
+    assert response.json()["weather_use"]["station_id"] == str(forecast.station_id)

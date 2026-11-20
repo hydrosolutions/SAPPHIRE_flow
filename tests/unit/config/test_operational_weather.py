@@ -45,8 +45,14 @@ class TestOperationalWeatherConfig:
             OperationalWeatherConfig(rollover_buffer_days=2).rollover_buffer_days == 2
         )
 
-    def test_evidence_budget_uses_measured_32_mib_ceiling(self) -> None:
+    def test_evidence_budget_keeps_default_and_accepts_explicit_larger_capture(
+        self,
+    ) -> None:
         assert OperationalWeatherConfig().max_evidence_bytes == 32 * 1024 * 1024
+        assert (
+            OperationalWeatherConfig(max_evidence_bytes=134217728).max_evidence_bytes
+            == 134217728
+        )
         assert (
             OperationalWeatherConfig(max_evidence_bytes=1024).max_evidence_bytes == 1024
         )
@@ -67,7 +73,9 @@ class TestOperationalWeatherConfig:
             {"max_retained_past_lead_hours": True},
             {"max_future_receipts": 33},
             {"max_response_bytes": 0},
-            {"max_evidence_bytes": 32 * 1024 * 1024 + 1},
+            {"max_evidence_bytes": 134217729},
+            {"max_evidence_bytes": True},
+            {"max_evidence_bytes": 0},
             {"route": "typo"},
             {"source": "ifs"},
         ],

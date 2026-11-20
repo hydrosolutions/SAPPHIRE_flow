@@ -2399,3 +2399,11 @@ The new station-history projection permits at most 32 MiB aggregate parsed
 evidence to cover measured valid seven-day histories above the initial 16 MiB
 budget. Per-document, parsing-node, curve-count, response and candidate caps are
 unchanged; existing forecast-input history keeps its separate limits.
+
+Selected operational-weather evidence has a 128 MiB absolute decoded JSON ceiling;
+its capture default remains 32 MiB, with explicit deployment opt-in for larger groups.
+Store, API, retry and selected replay readers share bounded decompression and reject
+truncated/trailing streams. This is separate from the station-history projection
+32 MiB aggregate budget above; legacy unselected evidence behavior is unchanged.
+Larger capture qualification must include reader memory/concurrency and preserve
+read compatibility after configuration rollback.

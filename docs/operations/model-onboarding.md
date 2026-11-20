@@ -206,10 +206,13 @@ four-channel days occupy **11,708,471 bytes in v1**, **11,730,261 in v2**;
 sequential Python allocation peak was **47,329,297 bytes** (not host RSS).
 Both meet the 12 MiB station gate for a proposed scoped 16 MiB cache. The global
 2 MiB default remains unchanged. Six station histories alone total
-**70,250,826 bytes**, above the unchanged 32 MiB evidence decoder ceiling and
-24 MiB qualification gate. **Multi-station CMAL activation is not qualified.**
-Resolve group evidence capacity explicitly before activation; do not discard
-native support, split immutable captures ad hoc, or raise limits silently.
+**70,250,826 bytes**, above the default 32 MiB capture budget. The owner authorized a bounded
+increase: set `operational_weather.max_evidence_bytes = 134217728` in the
+explicit Nepal profile after deploying compatible readers. This opts the deployment
+into a 128 MiB decoded evidence ceiling; the global capture default stays 32 MiB.
+Qualify the complete six-station envelope below 96 MiB, not just its history.
+The 16 MiB station-cache setting remains separate. Do not discard native support
+or split immutable captures ad hoc. Larger groups need their own measurement.
 Measure complete captures, host memory headroom and source-response sizes before
 choosing concurrency; retain sequential preparation meanwhile.
 
@@ -236,3 +239,11 @@ repaired by repeating an insert, so archive this record before ingestion.
 After resolving group capture capacity, set `max_cache_bytes = 16777216` in the
 scoped Nepal `[operational_weather]` overlay and record the effective value.
 The unchanged global default is too small for this 365-day model.
+
+Capacity rollout: retain readers supporting 128 MiB even if the capture setting is
+later reduced. Each forecast row may retain its own copy of group evidence; measure
+compressed bytes, database/WAL growth and backup cost. No retention deletion is
+authorized. Before activation measure capture, restore and retry peak RSS below
+2 GiB per process, two concurrent readers below 4 GiB aggregate, and worker baseline
+plus evidence below 6 GiB of its 8 GiB limit. Reserve 4 GiB available host memory
+for the two reads. These bounds do not qualify higher API concurrency.
