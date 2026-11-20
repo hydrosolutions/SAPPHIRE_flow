@@ -124,6 +124,11 @@ du -sh ~/camels-ch               # ~1.5 GB
 
 ## Install
 
+Provision the [installed host monitor](host-monitor.md) from a clean approved
+release before installing or updating LaunchAgents. The watchdog no longer uses
+the application's editable `.venv`; its wheel and generated version metadata
+must be installed together. Tick startup is checked before agents are replaced.
+
 ```bash
 cd /Users/sapphire/SAPPHIRE_flow
 export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
@@ -329,7 +334,7 @@ Three agents, user-context (`gui/$(id -u)`):
   Desktop never came up); it does NOT relaunch after a clean
   `up -d` exit.
 - **`ch.hydrosolutions.sapphire-watchdog`** — runs
-  `uv run python -m sapphire_flow.ops.watchdog` every 300 s
+  `/Users/sapphire/.local/share/sapphire-monitor/run-monitor` every 300 s
   (`RunAtLoad = true`, so the first tick fires on launchd bootstrap
   rather than waiting a full interval). Probes `/api/v1/health`, checks
   `pg_dumps/*.dump` mtimes against a 26 h threshold, and probes three

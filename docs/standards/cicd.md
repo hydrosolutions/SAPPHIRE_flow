@@ -1,5 +1,12 @@
 # CI/CD and Deployment Standards
 
+Host monitoring is provisioned separately from application containers. Follow
+[`host-monitor.md`](../deployment/host-monitor.md) to build/install the approved
+wheel with locked host-only dependencies and atomically switch its environment.
+Run the installed-package smoke check before replacing scheduler registrations,
+then verify a completed tick and the external dead-man signal. Never depend on
+an editable checkout or dependency resolution during watchdog ticks.
+
 > This document extends `docs/architecture-context.md`. It adds deployment implementation detail. For foundational decisions, see: tech stack (architecture-context.md § Tech stack), DB connection patterns (conventions.md § Database connection patterns), cold storage layout (architecture-context.md § Data retention and cold storage), backup plan (architecture-context.md § Backup and disaster recovery). This document does not redefine the tech stack, schema designs, or data flow definitions.
 >
 > **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A3 (no PgBouncer), § A1 (no partitioning/DLQ), § A2 (no cold storage), § A6 (single work pool), § A10 (simple backup), § F (simplified Docker topology).

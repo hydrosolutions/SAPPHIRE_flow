@@ -19,6 +19,14 @@ PLISTS=(
 
 log() { printf '[install-launchd] %s\n' "$1"; }
 
+# Fail before replacing any running agents if the release was not provisioned.
+MONITOR_LAUNCHER="/Users/sapphire/.local/share/sapphire-monitor/run-monitor"
+if ! "${MONITOR_LAUNCHER}" --help >/dev/null; then
+    log "ERROR: install the host-monitor wheel before installing LaunchAgents."
+    log "See docs/deployment/host-monitor.md. Existing agents were left unchanged."
+    exit 1
+fi
+
 mkdir -p "${AGENTS_DIR}"
 mkdir -p "${HOME}/Library/Logs"
 

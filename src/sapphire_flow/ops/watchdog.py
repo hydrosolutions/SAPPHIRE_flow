@@ -2626,7 +2626,7 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEFAULT_DISK_PATH),
         help=(
             "Filesystem path to check free space on, alerting below "
-            f"{DISK_FREE_THRESHOLD_PCT * 100:.0f}% of that volume's total "
+            f"{DISK_FREE_THRESHOLD_PCT * 100:.0f}%% of that volume's total "
             f"capacity (default: {DEFAULT_DISK_PATH})"
         ),
     )

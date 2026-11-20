@@ -5,7 +5,7 @@
 <dict>
     <key>Label</key>
     <string>ch.hydrosolutions.sapphire-watchdog</string>
-    <!-- Plan 147 Slice C: --probe-token-path is passed EXPLICITLY here
+    <!-- Plan 147 Slice C: probe-token-path is passed EXPLICITLY here
          (defensive — do NOT rely on the argparse default silently matching
          WorkingDirectory). It resolves against WorkingDirectory below to the
          HOST secret file ./secrets/health_probe_token — an admin-scoped
@@ -13,7 +13,7 @@
          on its /health/detail probes. See docs/standards/cicd.md
          § Access-token pepper + probe-token rotation for the bootstrap +
          rotation runbook.
-         Plan 163: --deadman-url-path is passed EXPLICITLY the same way. It
+         Plan 163: deadman-url-path is passed EXPLICITLY the same way. It
          resolves to the HOST secret file ./secrets/deadman_url — a
          Healthchecks.io ping URL the watchdog POSTs to after every tick
          that completes and persists. Missing/empty/unreadable -> no ping,
@@ -21,12 +21,7 @@
          absent). -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/sapphire/.local/bin/uv</string>
-        <string>run</string>
-        <string>--no-sync</string>
-        <string>python</string>
-        <string>-m</string>
-        <string>sapphire_flow.ops.watchdog</string>
+        <string>/Users/sapphire/.local/share/sapphire-monitor/run-monitor</string>
         <string>--probe-token-path</string>
         <string>./secrets/health_probe_token</string>
         <string>--deadman-url-path</string>
