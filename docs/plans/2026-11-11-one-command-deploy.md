@@ -20,6 +20,11 @@ not dispatched by that rehearsal. Its host-specific observations/owner decisions
 below are historical inputs, not a generic administrator quick-start. No duplicate
 profile schema, repository-owned agency catalogue or new release identity is approved.
 
+Reconciliation note, 2026-11-20: disposable rehearsal qualification is complete.
+The next plan is [fresh persistent installation with paused jobs and local access](2026-11-20-persistent-profile-installation.md).
+It does not implement or dispatch this update draft, its historical host-specific
+tracks, automatic rollback or operational activation.
+
 ## Outcome
 
 One command updates a deployment to a given commit or release, verifies it, and rolls back
