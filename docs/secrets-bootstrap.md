@@ -19,8 +19,9 @@ delivery or reboot recovery.
 Generate each database password independently. A practical format for new
 deliveries is 64 random hexadecimal characters (32 random bytes), generated in
 your manager. This avoids the current entrypoint's unescaped URL/substitution
-limitations. The planned installer accepts ASCII letters, digits and `-._~`,
-with an optional final newline; other characters need a separate encoding fix.
+limitations. The persistent installer accepts ASCII letters, digits and `-._~`,
+with an optional final newline; files are bounded to 4096 bytes. Other password
+characters need a separate encoding fix.
 Do not change an existing password just to match these new-install instructions.
 
 Without a manager, an administrator can generate one **new** delivery as below,
@@ -70,7 +71,11 @@ lifecycle instead of assuming a running process reloads credentials.
 The [persistent installation preview](deployment/profile-installation.md) does
 **not** open delivery files, check their permissions, create fingerprints or start
 containers. Runtime readability, content checks, unchanged-original verification
-and private change detection are planned for the installation milestone. Ephemeral
+and private salted change detection run during explicit installation. Start checks
+all five effective values before starting any service; same-value redelivery is
+allowed, rotation is separate. Treat the private fingerprint record and its backups
+as sensitive; they contain no raw credentials but permit guesses against weak ones.
+Stop remains available when deliveries are missing or changed. Ephemeral
 deliveries additionally need verified boot ordering before unattended restarts.
 
 ## Other credentials and authentication

@@ -68,7 +68,7 @@ existing contract and synthetic forecast smoke tests. The older
 Display timezone, hydrological grid and model training conventions remain distinct
 external inputs. This plan changes none of their semantics or the time-grid work.
 
-## Administrator contract (proposed, not implemented)
+## Administrator contract
 
 New host command: `tools/deployment_install.py`. Use the documented installed
 project/uv environment; installing host dependencies is an administrator step.
@@ -310,7 +310,7 @@ checks supplement the actual reader/read-only mount and authentication checks;
 automatic daemon restart retains the limitations documented above.
 
 The orchestrator records READY after the independent review and resolution of
-its material findings. PI0 is complete; PI1 is the next implementation milestone.
+its material findings. PI0 and PI1 are complete; PI2 implements the retained lifecycle.
 This status does not approve or merge the PR, publish a release, or authorize a
 production deployment.
 
@@ -334,3 +334,34 @@ strengthened administrator guidance and contract tests. Rendered-route forwardin
 and required Caddy were already enforced by the shared checker; new real-Compose
 tests verify both. No unresolved material findings; full final-head CI remains
 required before merge. Full review evidence stays private.
+
+
+## PI2 implementation
+
+Fresh install and retained verify/stop/start use the existing profile preparation,
+image probes and bounded command executor. Persistent state and cleanup are kept
+separate from disposable rehearsal. Actual bind mounts are inspected read-only
+before container entrypoints start. Private salted fingerprints detect changed
+credentials without preventing same-value redelivery or emergency owned stop.
+Shared paused-state checks preserve the existing rehearsal guard. Installation
+probes revoke their scoped token; read-only verify does not create one.
+
+The administrator guide covers selection, prerequisites, commands, retained state,
+failure recovery and the onboarding boundary. This milestone changes no live stack
+and claims no real-container or reboot persistence proof: those remain PI3/PI4.
+One independent Claude patch review completed. Confirmed findings were addressed:
+recent-worker filtering tolerates stale Prefect registrations; image consumers and
+actual publications are checked; text/JSON retain containment and stage diagnostics;
+probe attempts keep distinct recovery records; failed stops record incomplete
+containment. Equivalent credential redelivery is accepted while changed values
+refuse. Existing canonical profile paths already resolve manager symlinks, and the
+token API already accepts the injected ID; regression tests cover both relevant
+boundaries. Full review and adjudication remain private. Real runtime/reboot evidence
+stays PI3/PI4, and full final-head CI is required before merge.
+
+
+PI2 local validation: 327 installation, profile and rehearsal tests passed,
+including lifecycle faults, real offline Compose rendering, private-state/delivery
+checks and token finalizers. Changed-file Ruff and Pyright and the staged
+pre-commit checks (including secret scanning) passed. Full CI at the final PR head
+remains the merge gate; no live deployment or release publication occurred.

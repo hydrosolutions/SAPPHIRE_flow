@@ -497,7 +497,11 @@ credential values in the repository.
 Some existing readers have environment fallbacks for local development. Those do
 not replace the new installation's explicit file-delivery contract. Its
 [preview](../deployment/profile-installation.md) does not read secrets or verify
-runtime permissions. Secret-manager server automation remains separate work.
+runtime permissions. Explicit install checks consumer readability and read-only
+mounts before entrypoints run. Protected salted fingerprints gate explicit restart;
+missing files cannot fall back to ambient secret values. Installation API probes
+use a temporary scoped token with verified revocation; read-only verify never
+mints one. Secret-manager server automation remains separate work.
 
 ### Rotation
 
