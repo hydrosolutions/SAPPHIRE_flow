@@ -16,6 +16,7 @@ class CheckStatus(Enum):
     PASS = "PASS"
     FAIL = "FAIL"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+    UNKNOWN = "UNKNOWN"
 
 
 CheckName = Literal[
@@ -31,6 +32,9 @@ CheckName = Literal[
     "group_and_model",
     "discharge_lookback",
     "naming",
+    "weather_wait_facts",
+    "gateway_data",
+    "training_samples",
 ]
 
 
@@ -47,6 +51,9 @@ class StationReadinessReport:
     code: str
     network: str
     checks: tuple[ReadinessCheck, ...]
+    # Optional sections (--check-gateway, --start/--end): shown, never counted in
+    # failed()/passed(), so they cannot change the operational verdict.
+    supplementary: tuple[ReadinessCheck, ...] = ()
 
     def failed(self) -> int:
         return sum(1 for c in self.checks if c.status is CheckStatus.FAIL)

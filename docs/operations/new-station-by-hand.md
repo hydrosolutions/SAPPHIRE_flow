@@ -293,7 +293,12 @@ uv run python -m sapphire_flow.cli.station_readiness \
   --tenant sandbox --network research --code 00001 [--model cmal_small] [--weather-scope S] [--json]
 ```
 
-It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. Hand the output to the hydrologist. The SQL below is the fallback.
+It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. It also prints `weather_wait_facts`: per-role binding state (bound / missing / inactive) and the lookback days without stored reanalysis, i.e. whether to wait for the Gateway backfill or fix a binding. Hand the output to the hydrologist. The SQL below is the fallback.
+
+Two optional sections follow the checks and are never counted in the last line:
+
+- `--check-gateway` asks the Gateway (read only, one request per parameter) for precipitation and temperature over the lookback and lists days without data ("OK: all N days present", or the missing days and "try again after the backfill"). The key is read as the cycle reads it (`RECAP_API_KEY_FILE`), never printed. If the Gateway or the key cannot be reached the line is `UNKNOWN`, not a pass.
+- `--model M --start ISO --end ISO --time-step-hours H [--minimum-samples N]` adds `training_samples`: how many complete training windows the stored history gives in that window. This is training readiness only; thin history there does not change the operational checks.
 
 
 `onboard_nepal qualify` accepts only the six fixed DHM gauges ("missing DHM station 447") and

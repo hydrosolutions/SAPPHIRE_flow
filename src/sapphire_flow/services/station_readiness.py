@@ -8,15 +8,27 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+import structlog
+
+from sapphire_flow.adapters.recap_gateway import RECAP_VARIABLES, guarded_recap_fetch
+from sapphire_flow.adapters.store_backed_reanalysis import StoreBackedReanalysisSource
+from sapphire_flow.exceptions import AdapterError, ConfigurationError
 from sapphire_flow.services.caravan_statics import (
     resolve_available_static_keys_for_stations,
 )
+from sapphire_flow.services.nepal_onboarding import (
+    complete_training_rows,
+    count_training_samples,
+)
 from sapphire_flow.services.station_observation_load import days_with_value_set
 from sapphire_flow.services.station_observation_qc import USABLE_STATUSES
+from sapphire_flow.services.training_data import assemble_station_training_data
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     QcStatus,
@@ -32,9 +44,10 @@ from sapphire_flow.types.station_readiness import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from datetime import date
 
+    from sapphire_flow.adapters.recap_gateway import EcmwfApiLike
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import (
         BasinStore,
@@ -47,15 +60,34 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ModelId
-    from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.station import StationConfig, StationWeatherSource
     from sapphire_flow.types.station_readiness import (
         ForcingSummaryRow,
         ObservationSummaryRow,
     )
 
+log = structlog.get_logger(__name__)
+
 DEFAULT_LOOKBACK_DAYS = 30
+_WEATHER_PARAMETERS = ("precipitation", "temperature")
 _LISTED = 8
 _PASS, _FAIL, _NA = CheckStatus.PASS, CheckStatus.FAIL, CheckStatus.NOT_APPLICABLE
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingWindowRequest:
+    start: UtcDatetime
+    end: UtcDatetime
+    time_step: timedelta
+    minimum_samples: int = 0
+
+    def __post_init__(self) -> None:
+        if self.start >= self.end:
+            raise ValueError("training window start must precede end")
+        if self.time_step <= timedelta(0):
+            raise ValueError("training time step must be positive")
+        if self.minimum_samples < 0:
+            raise ValueError("minimum samples cannot be negative")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -78,6 +110,10 @@ def _listed(items: Sequence[str]) -> str:
     return shown + (
         f", ... (+{len(items) - _LISTED} more)" if len(items) > _LISTED else ""
     )
+
+
+def _midnight(day: date) -> UtcDatetime:
+    return ensure_utc(datetime(day.year, day.month, day.day, tzinfo=UTC))
 
 
 def _day(ts: UtcDatetime) -> str:
@@ -358,6 +394,187 @@ def check_naming(
     return _check("naming", _PASS, f"{head}; {stored}; matches weather scope")
 
 
+def weather_dates(model: ForecastModel | None, *, now: UtcDatetime) -> list[date]:
+    """UTC days of the lookback; like the forecast cycle, it ends yesterday."""
+    end = now.date() - timedelta(days=1)
+    return [
+        end - timedelta(days=i) for i in range(lookback_days_for(model) - 1, -1, -1)
+    ]
+
+
+def _role_state(
+    sources: Sequence[StationWeatherSource], role: WeatherSourceRole
+) -> str:
+    bound = [s for s in sources if s.role is role]
+    if any(s.status is WeatherSourceStatus.ACTIVE for s in bound):
+        return "bound"
+    return "inactive" if bound else "missing"
+
+
+def check_weather_wait_facts(
+    station: StationConfig,
+    model: ForecastModel | None,
+    stores: ReadinessStores,
+    *,
+    now: UtcDatetime,
+) -> ReadinessCheck:
+    sources = stores.stations.fetch_weather_sources(station.id)
+    roles = {r: _role_state(sources, r) for r in WeatherSourceRole}
+    reanalysis = sorted(
+        {
+            s.nwp_source
+            for s in sources
+            if s.role is WeatherSourceRole.REANALYSIS
+            and s.status is WeatherSourceStatus.ACTIVE
+        }
+    )
+    wanted = weather_dates(model, now=now)
+    parameters = (
+        sorted(model.data_requirements.past_dynamic_features)
+        if model is not None
+        else list(_WEATHER_PARAMETERS)
+    )
+    lo = _midnight(wanted[0])
+    hi = _midnight(wanted[-1] + timedelta(days=1))
+    gaps: list[str] = []
+    for parameter in parameters:
+        covered: set[date] = set()
+        for source in reanalysis:
+            covered |= stores.forcing.fetch_covered_days(
+                [station.id],
+                source,
+                parameter,
+                SpatialRepresentation.BASIN_AVERAGE,
+                lo,
+                hi,
+            ).get(station.id, set())
+        missing = [d.isoformat() for d in wanted if d not in covered]
+        if missing:
+            gaps.append(
+                f"{parameter} missing {len(missing)} of {len(wanted)} days: "
+                f"{_listed(missing)}"
+            )
+    roles_text = " ".join(f"{r.value}={state}" for r, state in roles.items())
+    problems = [f"{r.value} binding {s}" for r, s in roles.items() if s != "bound"]
+    ok = not gaps and not problems
+    text = f"{roles_text}; stored reanalysis: " + (
+        "; ".join(gaps) if gaps else f"all {len(wanted)} days present"
+    )
+    return _check("weather_wait_facts", _PASS if ok else _FAIL, text)
+
+
+def check_gateway_data(
+    station: StationConfig,
+    model: ForecastModel | None,
+    polygons: GatewayPolygonBindingStore,
+    make_api: Callable[[], EcmwfApiLike],
+    *,
+    now: UtcDatetime,
+) -> ReadinessCheck:
+    def unknown(reason: str) -> ReadinessCheck:
+        return _check("gateway_data", CheckStatus.UNKNOWN, f"{reason}; not a pass")
+
+    bindings = [
+        b
+        for b in polygons.fetch_bindings_for_station(station.id)
+        if b.spatial_type is SpatialRepresentation.BASIN_AVERAGE
+    ]
+    if not bindings:
+        return unknown("no basin-average polygon binding to ask the Gateway about")
+    binding = bindings[0]
+    wanted = weather_dates(model, now=now)
+    try:
+        api = make_api()
+        frames = {
+            parameter: guarded_recap_fetch(
+                api.operational,
+                hru_code=binding.gateway_hru_name,
+                start_date=wanted[0],
+                era5_variable_name=RECAP_VARIABLES[parameter].era5_name,
+                ifs_variable_name=RECAP_VARIABLES[parameter].ifs_name,
+                subdaily_resolution=6,
+                include_provenance=True,
+            )
+            for parameter in _WEATHER_PARAMETERS
+        }
+    except (AdapterError, ConfigurationError) as exc:
+        log.warning("station_readiness_gateway_failed", cause=type(exc).__name__)
+        return unknown(f"Gateway request failed ({type(exc).__name__})")
+    gaps: list[str] = []
+    for parameter, frame in frames.items():
+        if (
+            not isinstance(frame, pd.DataFrame)
+            or binding.name not in frame.columns
+            or not isinstance(frame.index, pd.DatetimeIndex)
+        ):
+            return unknown(f"unexpected Gateway response for {parameter}")
+        column = cast("pd.Series", frame[binding.name])
+        have = {
+            cast("pd.Timestamp", ts).date()
+            for ts, value in column.items()
+            if not math.isnan(cast("float", value))
+        }
+        missing = [d.isoformat() for d in wanted if d not in have]
+        if missing:
+            gaps.append(
+                f"{parameter} missing {len(missing)} of {len(wanted)} days: "
+                f"{_listed(missing)}"
+            )
+    if gaps:
+        return _check(
+            "gateway_data",
+            _FAIL,
+            "; ".join(gaps) + "; try again after the backfill",
+        )
+    return _check("gateway_data", _PASS, f"OK: all {len(wanted)} days present")
+
+
+def check_training_samples(
+    station: StationConfig,
+    model: ForecastModel,
+    request: TrainingWindowRequest,
+    stores: ReadinessStores,
+) -> ReadinessCheck:
+    requirements = model.data_requirements
+    if request.time_step not in requirements.supported_time_steps:
+        return _check(
+            "training_samples", _FAIL, "time step is not supported by the model"
+        )
+    data = assemble_station_training_data(
+        station.id,
+        model,  # pyright: ignore[reportArgumentType]
+        request.start,
+        request.end,
+        request.time_step,
+        StoreBackedReanalysisSource(stores.forcing),
+        stores.observations,
+        stores.basins,
+        stores.stations,
+    )
+    if data is None:
+        return _check(
+            "training_samples",
+            _FAIL,
+            "training inputs incomplete (QC-passed targets, reanalysis binding or "
+            "stored weather missing); 0 complete samples",
+        )
+    samples = count_training_samples(
+        complete_training_rows(data),
+        request.time_step,
+        requirements.lookback_steps,
+        requirements.forecast_horizon_steps,
+    )
+    enough = samples > 0 and samples >= request.minimum_samples
+    needed = f" (minimum {request.minimum_samples})" if request.minimum_samples else ""
+    return _check(
+        "training_samples",
+        _PASS if enough else _FAIL,
+        f"{samples} complete samples{needed} in {_day(request.start)}.."
+        f"{_day(request.end)} (lookback {requirements.lookback_steps} + horizon "
+        f"{requirements.forecast_horizon_steps} steps)",
+    )
+
+
 def build_station_readiness(
     station: StationConfig,
     stores: ReadinessStores,
@@ -367,6 +584,8 @@ def build_station_readiness(
     scope_hru_name: str | None,
     scope_polygon_name: str | None,
     now: UtcDatetime,
+    training: TrainingWindowRequest | None = None,
+    gateway: Callable[[], EcmwfApiLike] | None = None,
 ) -> StationReadinessReport:
     observations = stores.observations.fetch_station_summary(station.id)
     forcing = stores.forcing.fetch_station_summary(station.id)
@@ -388,7 +607,19 @@ def build_station_readiness(
             scope_hru_name=scope_hru_name,
             scope_polygon_name=scope_polygon_name,
         ),
+        check_weather_wait_facts(station, model, stores, now=now),
     )
+    supplementary: list[ReadinessCheck] = []
+    if gateway is not None:
+        supplementary.append(
+            check_gateway_data(station, model, stores.polygons, gateway, now=now)
+        )
+    if training is not None and model is not None:
+        supplementary.append(check_training_samples(station, model, training, stores))
     return StationReadinessReport(
-        station_id=station.id, code=station.code, network=station.network, checks=checks
+        station_id=station.id,
+        code=station.code,
+        network=station.network,
+        checks=checks,
+        supplementary=tuple(supplementary),
     )

@@ -22,9 +22,16 @@ from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.store.tenant_store import PgTenantStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import QcStatus, SpatialRepresentation, StationStatus
+from sapphire_flow.types.enums import (
+    QcStatus,
+    SpatialRepresentation,
+    StationStatus,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import TenantId
+from sapphire_flow.types.station import StationWeatherSource
 from tests.conftest import make_observation, make_station_config
 
 if TYPE_CHECKING:
@@ -146,6 +153,59 @@ class TestStationReadinessPg:
         assert status["discharge_series"] == "FAIL"
         assert status["weather_history"] == "FAIL"
         assert data["failed"] >= 3
+
+
+class TestWeatherWaitFactsPg:
+    def test_reads_stored_reanalysis_days_and_binding_state(
+        self, db_connection: sa.Connection, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _create(db_connection, "R1")
+        stations = PgStationStore(db_connection)
+        station = stations.fetch_station_by_code("R1", "research")
+        assert station is not None
+        stations.store_weather_source(
+            StationWeatherSource(
+                station_id=station.id,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        PgHistoricalForcingStore(db_connection).store_forcing(
+            [
+                RawHistoricalForcing(
+                    station_id=station.id,
+                    source="era5_land",
+                    version="v1",
+                    valid_time=ensure_utc(
+                        datetime(2026, 11, 17, tzinfo=UTC) - timedelta(days=i)
+                    ),
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=None,
+                    value=1.0,
+                )
+                for i in range(28)
+            ]
+        )
+        before = _snapshot(db_connection)
+        capsys.readouterr()
+
+        assert _run(db_connection, "R1", "--json") == 0
+
+        data = json.loads(capsys.readouterr().out)
+        (line,) = [c for c in data["checks"] if c["name"] == "weather_wait_facts"]
+        assert line["status"] == "FAIL"
+        assert "reanalysis=bound" in line["detail"]
+        assert "forecast=missing" in line["detail"]
+        assert (
+            "precipitation missing 2 of 30 days: 2026-10-19, 2026-10-20"
+            in (line["detail"])
+        )
+        assert "temperature missing 30 of 30 days" in line["detail"]
+        assert _snapshot(db_connection) == before
 
 
 class TestSummariesAgainstPostgres:

@@ -1,9 +1,13 @@
 """Plan 540 M4a: read-only station readiness report.
 
 ``python -m sapphire_flow.cli.station_readiness --tenant T --network N --code C
-[--model M] [--weather-scope S] [--json]``. Writes nothing (the transaction is
-read-only and never committed). Facts only; the last line is
-"N checks failed, M passed". Exit codes: 0 report produced (whatever it says),
+[--model M] [--weather-scope S] [--check-gateway]
+[--start ISO --end ISO --time-step-hours H [--minimum-samples N]] [--json]``.
+Writes nothing (the transaction is read-only and never committed). Facts only;
+the last line is "N checks failed, M passed" and counts only the offline
+operational checks. ``--check-gateway`` (one read-only Gateway request, off by
+default) and the training window add a separate section that is never counted.
+Exit codes: 0 report produced (whatever it says, including a Gateway error),
 2 usage error, unknown station or station of another tenant.
 """
 
@@ -13,7 +17,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +31,7 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.services.station_readiness import (
     ReadinessStores,
+    TrainingWindowRequest,
     build_station_readiness,
 )
 from sapphire_flow.services.write_principal import resolve_run_principal
@@ -44,6 +49,7 @@ from sapphire_flow.types.ids import ModelId
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from sapphire_flow.adapters.recap_gateway import EcmwfApiLike
     from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import TenantStore
@@ -66,6 +72,11 @@ def summary_line(report: StationReadinessReport) -> str:
 def render_text(report: StationReadinessReport) -> str:
     lines = [f"station {report.code} ({report.network})"]
     lines += [f"{c.status.value}  {c.name}  {c.detail}" for c in report.checks]
+    if report.supplementary:
+        lines.append("optional sections (not counted in the line below):")
+        lines += [
+            f"{c.status.value}  {c.name}  {c.detail}" for c in report.supplementary
+        ]
     lines.append(summary_line(report))
     return "\n".join(lines)
 
@@ -82,10 +93,40 @@ def render_json(report: StationReadinessReport) -> str:
                 {"name": c.name, "status": c.status.value, "detail": c.detail}
                 for c in report.checks
             ],
+            "supplementary": [
+                {"name": c.name, "status": c.status.value, "detail": c.detail}
+                for c in report.supplementary
+            ],
             "failed": report.failed(),
             "passed": report.passed(),
         }
     )
+
+
+def _parse_instant(text: str) -> UtcDatetime:
+    moment = datetime.fromisoformat(text)
+    return ensure_utc(moment if moment.tzinfo else moment.replace(tzinfo=UTC))
+
+
+def _training_request(
+    args: argparse.Namespace, model: ForecastModel | None
+) -> TrainingWindowRequest | None:
+    given = (args.start, args.end, args.time_step_hours)
+    if all(v is None for v in given):
+        return None
+    if any(v is None for v in given):
+        raise ConfigurationError("--start, --end and --time-step-hours go together")
+    if model is None:
+        raise ConfigurationError("the training window needs --model")
+    request = TrainingWindowRequest(
+        start=_parse_instant(args.start),
+        end=_parse_instant(args.end),
+        time_step=timedelta(hours=args.time_step_hours),
+        minimum_samples=args.minimum_samples,
+    )
+    if request.time_step not in model.data_requirements.supported_time_steps:
+        raise ConfigurationError("--time-step-hours is not supported by the model")
+    return request
 
 
 def run_readiness(
@@ -97,7 +138,13 @@ def run_readiness(
     model: ForecastModel | None,
     scope: tuple[str, str | None] | None,
     clock: Callable[[], UtcDatetime],
+    gateway: Callable[[], EcmwfApiLike] | None = None,
 ) -> int:
+    try:
+        training = _training_request(args, model)
+    except (ConfigurationError, ValueError) as exc:
+        log.error("station_readiness_invalid", error=str(exc))
+        return EXIT_USAGE
     try:
         principal = resolve_run_principal(
             tenants, identity, tenant_code=args.tenant, operator=None
@@ -119,6 +166,8 @@ def run_readiness(
         scope_hru_name=scope[0] if scope else None,
         scope_polygon_name=scope[1] if scope else None,
         now=clock(),
+        training=training,
+        gateway=gateway if args.check_gateway else None,
     )
     _out(render_json(report) if args.json else render_text(report))
     return EXIT_OK
@@ -134,6 +183,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--code", required=True)
     parser.add_argument("--model", default=None)
     parser.add_argument("--weather-scope", default=None)
+    parser.add_argument(
+        "--check-gateway",
+        action="store_true",
+        help="also ask the Gateway for the lookback days (read only, one request)",
+    )
+    parser.add_argument("--start", default=None, help="training window start (ISO)")
+    parser.add_argument("--end", default=None, help="training window end (ISO)")
+    parser.add_argument("--time-step-hours", type=float, default=None)
+    parser.add_argument("--minimum-samples", type=int, default=0)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -175,6 +233,29 @@ def resolve_scope(
     return str(scope.gateway_hru_name), polygon
 
 
+def _gateway_api(config_path: str) -> EcmwfApiLike:
+    import requests
+
+    from sapphire_flow.adapters.recap_operational_http import (
+        build_bounded_operational_api,
+    )
+    from sapphire_flow.config.operational_weather import OperationalWeatherConfig
+    from sapphire_flow.config.recap_gateway import (
+        build_recap_client_config,
+        load_recap_api_key,
+        load_recap_gateway_config,
+    )
+
+    return build_bounded_operational_api(
+        config=build_recap_client_config(
+            api_key=load_recap_api_key(),
+            config=load_recap_gateway_config(Path(config_path)),
+        ),
+        max_bytes=OperationalWeatherConfig().max_response_bytes,
+        session=requests.Session(),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     configure_cli_logging()
     try:
@@ -208,6 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model=model,
                 scope=scope,
                 clock=lambda: ensure_utc(datetime.now(UTC)),
+                gateway=lambda: _gateway_api(config_path),
             )
             conn.rollback()
             return code

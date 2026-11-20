@@ -3201,6 +3201,7 @@ class ForcingSummaryRow:       # parameter, source, count, first, last
 
 `--json` shape (names and status values are a contract; adding fields is allowed):
 `{"station": {"id", "code", "network"}, "checks": [{"name", "status", "detail"}], "failed": n, "passed": m}`.
+M4b: `CheckStatus` also has `UNKNOWN` (a check that could not be answered, e.g. the Gateway was unreachable); `StationReadinessReport.supplementary` holds the optional `gateway_data` and `training_samples` lines, which are not counted in `failed()`/`passed()`; the `--json` shape gains a `supplementary` list in the same format as `checks`.
 New store methods: `ObservationStore.fetch_station_summary(station_id)` and `HistoricalForcingStore.fetch_station_summary(station_id)`, both aggregate reads grouped by parameter and source (observations also by QC status and rule version).
 
 Module: `types/station_readiness.py`
