@@ -83,7 +83,9 @@ def _ingest_history(
         stations = chwrr_stations(conn, identity, now=now)
         bindings = require_history_bindings(conn, stations)
     else:
-        stations = operational_weather_stations(conn, identity, scope, now=now)
+        stations = operational_weather_stations(
+            conn, identity, scope, tenant_code="chwrr", now=now
+        )
         bindings = [history_binding(station.id) for station in stations]
     station_ids = {s.id for s in stations}
     store = PgHistoricalForcingStore(conn)
@@ -194,7 +196,9 @@ def _run_operational_history(
             for batch in window.batches():
                 with conn.begin():
                     now = ensure_utc(datetime.now(UTC))
-                    operational_weather_stations(conn, identity, scope, now=now)
+                    operational_weather_stations(
+                        conn, identity, scope, tenant_code="chwrr", now=now
+                    )
                     client = RecapClient(
                         build_recap_client_config(
                             api_key=load_recap_api_key(), config=config

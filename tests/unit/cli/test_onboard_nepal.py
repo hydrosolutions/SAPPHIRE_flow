@@ -157,6 +157,88 @@ class TestOnboardNepal:
             )
 
 
+class TestTenantFlag:
+    WEATHER = [
+        "weather-bindings",
+        "--config",
+        "config.toml",
+        "--weather-scope",
+        "s",
+        "--confirm-package-joins",
+    ]
+
+    def test_weather_bindings_accepts_free_tenant_without_t8(self) -> None:
+        args = onboard_nepal.parser().parse_args([*self.WEATHER, "--tenant", "sandbox"])
+        assert args.tenant == "sandbox"
+        assert not args.confirm_t8
+
+    @pytest.mark.parametrize(
+        "command, extra",
+        [
+            ("basins", ["--package-dir", "p", "--confirm-package-joins"]),
+            ("history", ["--start", "a", "--end", "b"]),
+            ("qualify", ["--model", "m", "--time-step-hours", "1"]),
+        ],
+    )
+    def test_other_commands_reject_non_chwrr_tenant(
+        self, command: str, extra: list[str]
+    ) -> None:
+        with pytest.raises(SystemExit, match="2"):
+            onboard_nepal.parser().parse_args(
+                [
+                    command,
+                    "--config",
+                    "c",
+                    "--tenant",
+                    "sandbox",
+                    "--confirm-t8",
+                    *extra,
+                ]
+            )
+
+    def test_chwrr_weather_bindings_requires_t8(self) -> None:
+        with pytest.raises(SystemExit, match="2"):
+            onboard_nepal.main([*self.WEATHER, "--tenant", "chwrr"])
+
+    def test_non_chwrr_tenant_is_forwarded_to_admission(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.config import nepal_weather
+
+        monkeypatch.setenv("SAPPHIRE_CONFIG", "config.toml")
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        engine = sa.create_engine(f"sqlite:///{tmp_path / 'w.db'}")
+        monkeypatch.setattr(onboard_nepal, "create_engine_from_env", lambda: engine)
+        monkeypatch.setattr(
+            nepal_weather,
+            "load_weather_scope",
+            lambda *a: SimpleNamespace(
+                scope=SimpleNamespace(gateway_hru_name="runtime")
+            ),
+        )
+        seen: dict[str, object] = {}
+
+        def admit(*args: object, **kwargs: object) -> list[object]:
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr(onboard_nepal, "admit_weather_bindings", admit)
+        args = ["--config", "config/overlays/chwrr-import.toml", "--tenant", "sandbox"]
+        assert (
+            onboard_nepal.main(
+                [
+                    "weather-bindings",
+                    *args,
+                    "--weather-scope",
+                    "s",
+                    "--confirm-package-joins",
+                ]
+            )
+            == 0
+        )
+        assert seen["tenant_code"] == "sandbox"
+
+
 class TestScopedHistory:
     @pytest.mark.parametrize(
         "extra",

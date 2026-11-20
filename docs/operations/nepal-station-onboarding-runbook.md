@@ -590,7 +590,11 @@ bindings the cycle needs: reanalysis `era5_land`, forecast `ifs_ecmwf` and opera
 ones; an existing row with a different role, extraction or status, or another forecast or
 operational source on the station, is refused and nothing is written. The command logs
 `nepal_onboarding.weather_bindings` per station with the Gateway runtime name and the
-sources it would add. It is chwrr-tenant only until the tenant generalisation (M5b).
+sources it would add. `--tenant` is a free tenant code for this subcommand only (`basins`, `history` and `qualify`
+stay chwrr-only). `--confirm-t8` is required for `--tenant chwrr` and optional for other
+tenants. The order for a general station is group, basin import, then weather-bindings;
+for chwrr the host must be CHWRR-only (not global admin), other tenants use the normal
+write-authority check.
 The CLI logs only the error type on a refusal. To diagnose, re-run the dry run and
 inspect the existing rows (read-only):
 

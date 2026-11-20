@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import GatewayPolygonBindingRow, StationConfig
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 
 def chwrr_stations(
@@ -122,25 +123,39 @@ def chwrr_stations(
     return stations
 
 
+def _weather_principal(
+    conn: sa.Connection, identity: DeploymentIdentityConfig, tenant_code: str
+) -> WritePrincipal:
+    if tenant_code == "chwrr" and (
+        identity.global_admin or identity.writable_tenants != frozenset({"chwrr"})
+    ):
+        raise ConfigurationError(
+            "CHWRR weather onboarding requires CHWRR-only write authority"
+        )
+    tenants = PgTenantStore(conn)
+    principal = resolve_run_principal(tenants, identity, tenant_code=tenant_code)
+    if principal.tenant_id is None:
+        raise ConfigurationError(
+            f"tenant {tenant_code} principal must be tenant scoped"
+        )
+    tenants.lock_tenant(principal.tenant_id)
+    return principal
+
+
 def operational_weather_stations(
     conn: sa.Connection,
     identity: DeploymentIdentityConfig,
     scope: OperationalWeatherScope,
     *,
+    tenant_code: str,
     now: UtcDatetime,
 ) -> list[StationConfig]:
-    if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
-        raise ConfigurationError(
-            "Nepal weather ingest requires CHWRR-only write authority"
-        )
-    tenants = PgTenantStore(conn)
-    principal = resolve_run_principal(tenants, identity, tenant_code="chwrr")
-    if principal.tenant_id is None:
-        raise ConfigurationError("CHWRR principal must be tenant scoped")
-    tenants.lock_tenant(principal.tenant_id)
+    principal = _weather_principal(conn, identity, tenant_code)
     group = PgStationGroupStore(conn).fetch_group(scope.group_id)
     if group is None or group.tenant_id != principal.tenant_id:
-        raise ConfigurationError("weather scope group missing or outside CHWRR tenant")
+        raise ConfigurationError(
+            f"weather scope group missing or outside tenant {tenant_code}"
+        )
     if group.station_ids != frozenset(p.station_id for p in scope.station_polygons):
         raise ConfigurationError("weather scope must match exact group membership")
     store = PgStationStore(conn)
@@ -197,18 +212,11 @@ def admit_weather_bindings(
     identity: DeploymentIdentityConfig,
     admission: OperationalWeatherAdmission,
     *,
+    tenant_code: str,
     now: UtcDatetime,
 ) -> list[tuple[str, tuple[str, ...]]]:
     """Admit the three weather bindings; return (station code, sources added)."""
-    if identity.global_admin or identity.writable_tenants != frozenset({"chwrr"}):
-        raise ConfigurationError(
-            "Nepal weather admission requires CHWRR-only write authority"
-        )
-    tenants = PgTenantStore(conn)
-    principal = resolve_run_principal(tenants, identity, tenant_code="chwrr")
-    if principal.tenant_id is None:
-        raise ConfigurationError("CHWRR principal must be tenant scoped")
-    tenants.lock_tenant(principal.tenant_id)
+    principal = _weather_principal(conn, identity, tenant_code)
     scope = admission.scope
     group = PgStationGroupStore(conn).fetch_group(scope.group_id)
     ids = frozenset(p.station_id for p in scope.station_polygons)
@@ -218,7 +226,7 @@ def admit_weather_bindings(
         or group.station_ids != ids
     ):
         raise ConfigurationError(
-            "weather scope must match exact CHWRR group membership"
+            f"weather scope must match exact group membership of tenant {tenant_code}"
         )
     conn.execute(
         sa.select(station_table.c.id)
@@ -273,7 +281,9 @@ def admit_weather_bindings(
         for binding in to_add:
             store.store_weather_source(binding)
         added.append((code, tuple(b.nwp_source for b in to_add)))
-    operational_weather_stations(conn, identity, scope, now=now)
+    operational_weather_stations(
+        conn, identity, scope, tenant_code=tenant_code, now=now
+    )
     for expected in scope.station_polygons:
         store.fetch_forecast_binding(expected.station_id)
         store.fetch_operational_binding(expected.station_id)

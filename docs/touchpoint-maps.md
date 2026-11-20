@@ -2559,7 +2559,10 @@ It writes the three bindings (reanalysis `era5_land`, forecast `ifs_ecmwf`, oper
 adapter and `OperationalWeatherConfig` in `tests/unit/types/test_nepal_onboarding_sources.py`).
 `operational_weather_stations` stays reanalysis-only (the live ERA5 flow calls it). The CLI
 `weather-bindings` is a dry run unless `--apply` (`--dry-run` kept as a no-op alias);
-chwrr tenant only until M5b.
+`--tenant` is a free tenant code here (`operational_weather_stations` and
+`admit_weather_bindings` take `tenant_code`; the live ERA5 flow passes `chwrr`); chwrr keeps
+the strict CHWRR-only identity rule, other tenants use the normal resolver. `--confirm-t8` is
+chwrr-only. `basins`/`history`/`qualify` stay chwrr-only.
 Coordinate membership edits through the existing tenant lock in all three
 `PgStationGroupStore` membership mutators. Preserve package provenance and unrelated data.
 Prefect/deployment: `cli/onboard_nepal.py` submits the registered three-string

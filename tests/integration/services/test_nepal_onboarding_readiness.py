@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from sapphire_flow.types.basin_package import LoadedBasinPackage
+    from sapphire_flow.types.nepal_onboarding import OperationalWeatherAdmission
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
@@ -666,14 +667,18 @@ class TestWeatherAdmission:
                 with pytest.raises(
                     ConfigurationError, match="conflicting weather package"
                 ):
-                    admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                    admit_weather_bindings(
+                        db_connection, IDENTITY, admission, tenant_code="chwrr", now=NOW
+                    )
                 assert polygons.fetch_bindings_for_station(cohort[0].id)[0] == before[0]
                 return
             if mode in refused_modes:
                 with pytest.raises(
                     ConfigurationError, match="(?i)forecast|operational"
                 ):
-                    admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                    admit_weather_bindings(
+                        db_connection, IDENTITY, admission, tenant_code="chwrr", now=NOW
+                    )
                 if mode == "identical_plus_second_forecast":
                     # Caught by the post-write lookup, so earlier stations were
                     # written; the caller's transaction rolls them back.
@@ -687,7 +692,9 @@ class TestWeatherAdmission:
                     for s in cohort[:-1]
                 )
                 return
-            admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            admit_weather_bindings(
+                db_connection, IDENTITY, admission, tenant_code="chwrr", now=NOW
+            )
             station_store = PgStationStore(db_connection)
             for s in cohort:
                 assert station_store.fetch_forecast_binding(s.id).nwp_source == (
@@ -697,7 +704,9 @@ class TestWeatherAdmission:
                     operational_binding(s.id)
                 )
             admitted = [polygons.fetch_bindings_for_station(s.id)[0] for s in cohort]
-            admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            admit_weather_bindings(
+                db_connection, IDENTITY, admission, tenant_code="chwrr", now=NOW
+            )
             assert admitted == [
                 replace(row, gateway_hru_name="runtime") for row in before
             ]
@@ -832,3 +841,143 @@ class TestWeatherAdmission:
             StationGroupId(uuid4()), make_station_config().id
         )
         assert store.fetch_group(group.id) == group
+
+
+class TestWeatherAdmissionTenantGeneral:
+    @staticmethod
+    def admission(
+        conn: sa.Connection, cohort: list[StationConfig], tenant_code: str
+    ) -> OperationalWeatherAdmission:
+        from contextlib import nullcontext
+
+        from sapphire_flow.store.station_group_store import PgStationGroupStore
+        from sapphire_flow.types.ids import StationGroupId
+        from sapphire_flow.types.nepal_onboarding import (
+            OperationalWeatherAdmission,
+            OperationalWeatherScope,
+            WeatherStationPolygon,
+        )
+        from sapphire_flow.types.station import StationGroup
+        from sapphire_flow.types.weather import GatewayHruName
+
+        import_nepal_package(conn, package(), IDENTITY, clock=lambda: NOW)
+        conn.execute(
+            sa.text("UPDATE tenants SET code = :code WHERE code = 'chwrr'"),
+            {"code": tenant_code},
+        )
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="weather-general",
+            description=None,
+            created_at=NOW,
+            tenant_id=cohort[0].tenant_id,
+            station_ids=frozenset(s.id for s in cohort),
+        )
+        PgStationGroupStore(
+            conn, transaction_factory=lambda: nullcontext(conn)
+        ).store_group(group)
+        scope = OperationalWeatherScope(
+            group_id=group.id,
+            gateway_hru_name=GatewayHruName("runtime"),
+            station_polygons=tuple(
+                WeatherStationPolygon(
+                    station_id=s.id, polygon_name=dict(GAUGE_POLYGONS)[s.code]
+                )
+                for s in cohort
+            ),
+        )
+        return OperationalWeatherAdmission(
+            scope=scope, original_gateway_hru_name=GatewayHruName(GATEWAY_HRU)
+        )
+
+    def test_non_chwrr_tenant_is_admitted_with_all_three_bindings(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "sandbox")
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset({"sandbox"}), global_admin=False
+        )
+        added = admit_weather_bindings(
+            db_connection, identity, admission, tenant_code="sandbox", now=NOW
+        )
+        assert len(added) == len(cohort)
+        store = PgStationStore(db_connection)
+        for s in cohort:
+            assert sorted(
+                store.fetch_weather_sources(s.id), key=lambda b: b.role.value
+            ) == sorted(weather_bindings(s.id), key=lambda b: b.role.value)
+
+    def test_host_without_the_tenant_is_refused(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "sandbox")
+        PgTenantStore(db_connection).ensure_tenant(
+            tenant_id=TenantId(uuid4()), code="other", name="Other"
+        )
+        before = PgStationStore(db_connection).fetch_weather_sources(cohort[0].id)
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset({"other"}), global_admin=False
+        )
+        with pytest.raises(ConfigurationError, match="writable_tenants"):
+            admit_weather_bindings(
+                db_connection, identity, admission, tenant_code="sandbox", now=NOW
+            )
+        assert (
+            PgStationStore(db_connection).fetch_weather_sources(cohort[0].id) == before
+        )
+
+    def test_global_admin_allowed_for_non_chwrr(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "sandbox")
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset(), global_admin=True
+        )
+        added = admit_weather_bindings(
+            db_connection, identity, admission, tenant_code="sandbox", now=NOW
+        )
+        assert len(added) == len(cohort)
+
+    def test_global_admin_refused_for_chwrr(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "chwrr")
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset(), global_admin=True
+        )
+        with pytest.raises(ConfigurationError, match="CHWRR-only"):
+            admit_weather_bindings(
+                db_connection, identity, admission, tenant_code="chwrr", now=NOW
+            )
+
+    def test_scope_not_matching_group_is_refused_before_writes(
+        self, db_connection: sa.Connection, cohort: list[StationConfig]
+    ) -> None:
+        from sapphire_flow.services.nepal_onboarding import admit_weather_bindings
+
+        admission = self.admission(db_connection, cohort, "sandbox")
+        before = PgStationStore(db_connection).fetch_weather_sources(cohort[0].id)
+        short = replace(
+            admission,
+            scope=replace(
+                admission.scope, station_polygons=admission.scope.station_polygons[:-1]
+            ),
+        )
+        identity = DeploymentIdentityConfig(
+            writable_tenants=frozenset({"sandbox"}), global_admin=False
+        )
+        with pytest.raises(ConfigurationError, match="exact group membership"):
+            admit_weather_bindings(
+                db_connection, identity, short, tenant_code="sandbox", now=NOW
+            )
+        assert (
+            PgStationStore(db_connection).fetch_weather_sources(cohort[0].id) == before
+        )
