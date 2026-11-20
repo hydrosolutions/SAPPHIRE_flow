@@ -271,6 +271,12 @@ Live API skill exposure also requires the existing time-plan publication gates.
 
 ## C2 — supplied CMAL static encoder
 
+The owner selected this artifact on 19 November. Its bounded registration is
+covered by [the independently reviewed registration slice](2026-11-19-cmal-static-encoder-registration.md).
+This does not lift the input, provenance or scientific activation conditions
+below. FI provenance requirements are being coordinated upstream; lack of
+metadata not required by FI is not a modeller contract violation.
+
 After C1, verify supplied file digests and reconstruct through the supported,
 restricted FI/Aquacast loader. Keep weights and restricted records outside Git.
 Establish the complete training history (including pretraining), target units,

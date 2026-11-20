@@ -120,6 +120,7 @@ required = [
     root / "py.typed",
     root / "models" / "aquacast" / "configs" / "cmal_pool_pt.yaml",
     root / "models" / "aquacast" / "configs" / "cmal_small.yaml",
+    root / "models" / "aquacast" / "configs" / "cmal_nepal_static_encoder.yaml",
 ]
 missing = [str(path) for path in required if not path.is_file()]
 if missing:

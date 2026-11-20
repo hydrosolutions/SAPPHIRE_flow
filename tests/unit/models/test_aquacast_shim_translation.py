@@ -953,10 +953,24 @@ class TestVendoredConfigDigest:
         configs = resources.files("sapphire_flow.models.aquacast.configs")
         digests = {
             name: hashlib.sha256(configs.joinpath(name).read_bytes()).hexdigest()
-            for name in ("cmal_small.yaml", "cmal_pool_pt.yaml")
+            for name in (
+                "cmal_small.yaml",
+                "cmal_pool_pt.yaml",
+                "cmal_nepal_static_encoder.yaml",
+            )
         }
 
         assert len(set(digests.values())) == len(digests)
+
+    def test_static_encoder_config_preserves_supplied_bytes(self) -> None:
+        raw = (
+            resources.files("sapphire_flow.models.aquacast.configs")
+            .joinpath("cmal_nepal_static_encoder.yaml")
+            .read_bytes()
+        )
+        assert hashlib.sha256(raw).hexdigest() == (
+            "c171b2bc26a3cd11eec64378322fae443a113a86d1fcfb2fe6f5edd2e1e296d9"
+        )
 
 
 class TestTheAggregationIsCorrectedWhereTheUnitIsTranslated:

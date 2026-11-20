@@ -28,6 +28,7 @@ _RESOURCES = [
     "sapphire_flow/data/icon_ch2_eps_grid.npz",
     "sapphire_flow/api/templates/base.html",
     "sapphire_flow/models/aquacast/configs/cmal_small.yaml",
+    "sapphire_flow/models/aquacast/configs/cmal_nepal_static_encoder.yaml",
 ]
 
 
@@ -64,6 +65,23 @@ def test_wheel_and_sdist_contain_and_load_resources(tmp_path: Path) -> None:
     sdist = next(dist.glob("*.tar.gz"))
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
+        import hashlib
+
+        config = archive.read(
+            "sapphire_flow/models/aquacast/configs/cmal_nepal_static_encoder.yaml"
+        )
+        assert (
+            hashlib.sha256(config).hexdigest()
+            == "c171b2bc26a3cd11eec64378322fae443a113a86d1fcfb2fe6f5edd2e1e296d9"
+        )
+        entry_points = next(
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        )
+        assert (
+            "cmal_nepal_static_encoder = "
+            "sapphire_flow.models.aquacast:CmalNepalStaticEncoder"
+            in archive.read(entry_points).decode()
+        )
     for resource in [*_RESOURCES, "sapphire_flow/_version.py"]:
         assert resource in names
     with tarfile.open(sdist) as archive:

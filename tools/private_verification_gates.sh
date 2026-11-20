@@ -112,7 +112,7 @@ prove_image() {
     --expected-version "$EXPECTED_VERSION" --expected-revision "$EXPECTED_REVISION"
   local imports='import sys, sapphire_flow, prefect'
   if [ "$variant" = aquacast ]; then
-    imports+=', aquacast, torch; from sapphire_flow.services.model_registry import discover_models; assert {"cmal_pool_pt", "cmal_small"} <= discover_models().keys()'
+    imports+=', aquacast, torch; from sapphire_flow.services.model_registry import discover_models; assert {"cmal_pool_pt", "cmal_small", "cmal_nepal_static_encoder"} <= discover_models().keys()'
   fi
   docker run --rm --network none -e DB_PASSWORD=ci-smoke-only "$image" python -I -c \
     "$imports; from pathlib import Path; assert sys.prefix == '/app/.venv'; assert 'include-system-site-packages = false' in Path('/app/.venv/pyvenv.cfg').read_text().lower()"

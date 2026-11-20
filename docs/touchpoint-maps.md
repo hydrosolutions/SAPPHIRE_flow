@@ -174,6 +174,14 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**CMAL static-encoder registration:** `cmal_nepal_static_encoder` binds the exact
+supplied YAML through `AquacastShim`; it does not change FI translation or the
+live `cmal_small` model. Keep the config digest, wheel packaging, entry point,
+365-day history, separate net thermal/solar radiation requirements and disabled
+alert eligibility covered. Run the real-extra shim tests as well as the base
+translation tests. Discovery is not input qualification or artifact activation;
+see `operations/model-onboarding.md` and the bounded registration plan.
+
 **Daily group result boundary:** FI ensembles have no SAP3 model identity. Bind
 missing IDs from the group assignment before QC and reject present mismatches;
 never relax daily output integrity. `GroupInputGate.assess_group_inputs` is an
