@@ -570,7 +570,7 @@ _SkillSourceLiteral = Literal[
 _ForcingTypeLiteral = Literal["nwp_archive", "reanalysis"]
 _FlowRegimeLiteral = Literal["low", "high", "flood"]
 _EvaluatedOnLiteral = Literal[
-    "training_period", "outside_training_period", "overlaps_training_period"
+    "training_period", "outside_training_period", "overlaps_training_period", "unknown"
 ]
 
 
@@ -585,8 +585,8 @@ class SkillRowResponse(BaseModel):
     phase_offset_seconds: int | None
     eval_period_start: datetime
     eval_period_end: datetime
-    training_period_start: datetime
-    training_period_end: datetime
+    training_period_start: datetime | None
+    training_period_end: datetime | None
     evaluated_on: _EvaluatedOnLiteral
     lead_time_hours: int
     season: str | None

@@ -20,7 +20,7 @@ from sapphire_flow.db.metadata import (
 from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ModelArtifactStatus
+from sapphire_flow.types.enums import ModelArtifactStatus, TrainingProvenance
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
@@ -274,15 +274,24 @@ class TestPgModelArtifactStore:
 
         assert store.fetch_active_artifact_id_for_station(station_id, model_id) is None
 
+    @pytest.mark.parametrize("unknown", [False, True])
     def test_fetch_artifact_record(
-        self, db_connection: sa.Connection, tmp_path: Path
+        self, db_connection: sa.Connection, tmp_path: Path, unknown: bool
     ) -> None:
         station_id = _seed_station(db_connection)
         model_id = _seed_model(db_connection)
         store = PgModelArtifactStore(db_connection, tmp_path)
 
         aid, _ = store.store_artifact(
-            model_id, b"record_bytes", _T0, _T1, _T2, station_id=station_id
+            model_id,
+            b"record_bytes",
+            None if unknown else _T0,
+            None if unknown else _T1,
+            None if unknown else _T2,
+            station_id=station_id,
+            training_provenance=TrainingProvenance.UNKNOWN
+            if unknown
+            else TrainingProvenance.KNOWN,
         )
         record = store.fetch_artifact_record(aid)
 
@@ -292,9 +301,9 @@ class TestPgModelArtifactStore:
         assert record.station_id == station_id
         assert record.group_id is None
         assert record.status == ModelArtifactStatus.TRAINING
-        assert record.training_period_start == _T0
-        assert record.training_period_end == _T1
-        assert record.trained_at == _T2
+        assert record.training_period_start == (None if unknown else _T0)
+        assert record.training_period_end == (None if unknown else _T1)
+        assert record.trained_at == (None if unknown else _T2)
         assert record.promoted_at is None
         assert record.promoted_by is None
         assert record.superseded_at is None

@@ -863,3 +863,73 @@ class TestAquacastShimProvenanceGate:
                 group_id=group.id,
                 group_store=group_store,
             )
+
+
+class TestUnknownTrainingProvenance:
+    @pytest.mark.parametrize("unknown", [False, True])
+    def test_import_preserves_declared_training_provenance(self, unknown: bool) -> None:
+        from sapphire_flow.types.enums import TrainingProvenance
+
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+        model = _SpyModel()
+        declaration = (
+            TrainingProvenance.UNKNOWN if unknown else TrainingProvenance.KNOWN
+        )
+        aid = _import(
+            model=model,
+            model_id=_MODEL_ID,
+            artifact_bytes=b"checkpoint",
+            artifact_store=artifact_store,
+            provenance_recorder=provenance_store,
+            model_store=FakeModelStore(),
+            station_store=station_store,
+            station_id=station.id,
+            training_provenance=declaration,
+            trained_at=None if unknown else _TRAINED_AT,
+            training_period_start=None if unknown else _TRAINING_PERIOD_START,
+            training_period_end=None if unknown else _TRAINING_PERIOD_END,
+        )
+        record = artifact_store.fetch_artifact_record(aid)
+        assert record is not None
+        assert record.status is ModelArtifactStatus.ACTIVE
+        assert record.training_provenance is declaration
+        assert record.trained_at == (None if unknown else _TRAINED_AT)
+        assert record.training_period_start == (
+            None if unknown else _TRAINING_PERIOD_START
+        )
+        assert record.training_period_end == (None if unknown else _TRAINING_PERIOD_END)
+        provenance = provenance_store.fetch(aid)
+        assert provenance is not None
+        assert provenance.imported_at == _IMPORTED_AT
+        if unknown:
+            assert "unknown: not supplied; accepted for MVP" in provenance.notes
+        assert model.train_calls == 0
+
+    @pytest.mark.parametrize(
+        "declaration, dates",
+        [
+            ("known", (None, None, None)),
+            ("known", (_TRAINED_AT, None, _TRAINING_PERIOD_END)),
+            ("unknown", (_TRAINED_AT, None, None)),
+            ("unknown", (_TRAINED_AT, _TRAINING_PERIOD_START, _TRAINING_PERIOD_END)),
+        ],
+    )
+    def test_contradictory_declaration_refused_before_model_access(
+        self, declaration: str, dates: tuple[object, object, object]
+    ) -> None:
+        from sapphire_flow.types.enums import TrainingProvenance
+
+        with pytest.raises(ConfigurationError, match="training provenance requires"):
+            _import(
+                model=None,
+                model_id=_MODEL_ID,
+                artifact_bytes=b"checkpoint",
+                trained_at=dates[0],
+                training_period_start=dates[1],
+                training_period_end=dates[2],
+                training_provenance=TrainingProvenance(declaration),
+            )

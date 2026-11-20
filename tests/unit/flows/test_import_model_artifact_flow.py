@@ -83,8 +83,9 @@ class TestFullFlowInvocationEndToEnd:
     discoverable synthetic GROUP FI-style model, asserting an ACTIVE group
     artifact, its provenance, and zero `train()` calls."""
 
+    @pytest.mark.parametrize("unknown", [False, True])
     def test_group_scoped_import_activates_artifact_with_provenance(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, unknown: bool
     ) -> None:
         from datetime import UTC, datetime
         from uuid import UUID, uuid4
@@ -180,9 +181,10 @@ class TestFullFlowInvocationEndToEnd:
         result = import_model_artifact_flow.fn(
             model_id=raw_model_id,
             artifact_base64=artifact_base64,
-            trained_at="2025-01-01T00:00:00+00:00",
-            training_period_start="2024-06-01T00:00:00+00:00",
-            training_period_end="2024-12-01T00:00:00+00:00",
+            training_provenance="unknown" if unknown else "known",
+            trained_at=None if unknown else "2025-01-01T00:00:00+00:00",
+            training_period_start=None if unknown else "2024-06-01T00:00:00+00:00",
+            training_period_end=None if unknown else "2024-12-01T00:00:00+00:00",
             expected_config_hash="flow-config-hash",
             group_id=str(group.id),
             source_repository="hydrosolutions/sapphire-aquacast",
@@ -193,6 +195,8 @@ class TestFullFlowInvocationEndToEnd:
         record = artifact_store.fetch_artifact_record(artifact_id)
         assert record is not None
         assert record.status == ModelArtifactStatus.ACTIVE
+        assert record.training_provenance.value == ("unknown" if unknown else "known")
+        assert (record.trained_at is None) == unknown
         assert record.group_id == group.id
         assert record.station_id is None
 
@@ -686,13 +690,7 @@ class TestStagedPathParameterSchema:
     def test_validate_parameters_refuses_any_missing_provenance_field(
         self, omitted: str
     ) -> None:
-        """Keyword-only parameters stay REQUIRED even though the artifact
-        inputs above them carry defaults — that is the whole reason this
-        signature shape was chosen.
-
-        Clean-room review 2026-09-21 (minor): an earlier version omitted only
-        expected_config_hash, so accidentally defaulting any of the other
-        three would have left it passing."""
+        """Known provenance still fails before accessing stores."""
         params = {
             "model_id": "some_model",
             "artifact_path": "best.pt",
@@ -704,8 +702,29 @@ class TestStagedPathParameterSchema:
         }
         del params[omitted]
 
-        with pytest.raises(Exception, match=f"(?i){omitted}|missing|required"):
-            import_model_artifact_flow.validate_parameters(params)
+        if omitted == "expected_config_hash":
+            from prefect.exceptions import ParameterTypeError
+
+            with pytest.raises(ParameterTypeError, match="expected_config_hash"):
+                import_model_artifact_flow.validate_parameters(params)
+        else:
+            with pytest.raises(
+                ConfigurationError, match="training provenance requires"
+            ):
+                import_model_artifact_flow.fn(**params)
+
+    def test_explicit_unknown_survives_deployment_parameter_validation(self) -> None:
+        validated = import_model_artifact_flow.validate_parameters(
+            {
+                "model_id": "some_model",
+                "artifact_path": "best.pt",
+                "expected_artifact_sha256": "ab" * 32,
+                "expected_config_hash": "config",
+                "training_provenance": "unknown",
+            }
+        )
+        assert validated["training_provenance"].value == "unknown"
+        assert validated["trained_at"] is None
 
     def test_refuses_a_checksum_on_the_base64_route(self) -> None:
         """Independent review 2026-09-21: it was silently IGNORED, so a caller
@@ -810,3 +829,16 @@ class TestPathRouteReachesTheImporter:
             )
 
         assert calls == []
+
+
+class TestInvalidTrainingProvenance:
+    @pytest.mark.parametrize("declaration", ["guessed", "", "UNKNOWN"])
+    def test_invalid_declaration_fails_before_database_access(
+        self, declaration: str
+    ) -> None:
+        with pytest.raises(ConfigurationError, match="must be known or unknown"):
+            import_model_artifact_flow.fn(
+                model_id="test",
+                expected_config_hash="config",
+                training_provenance=declaration,
+            )

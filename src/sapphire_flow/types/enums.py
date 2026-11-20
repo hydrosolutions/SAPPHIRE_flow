@@ -68,6 +68,11 @@ class ArtifactScope(Enum):
     VIRTUAL = "virtual"
 
 
+class TrainingProvenance(Enum):
+    KNOWN = "known"
+    UNKNOWN = "unknown"
+
+
 class ModelArtifactStatus(Enum):
     TRAINING = "training"
     PENDING_APPROVAL = "pending_approval"
