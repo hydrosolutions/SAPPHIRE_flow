@@ -382,5 +382,9 @@ review completed; findings addressed include stopping the CI-owned builder befor
 idle-daemon preflight, sentinel checks on failure recovery, truthful cleanup flags,
 bounded child termination without pipe backpressure, exact refusal assertions and
 canary scans of retained state, container environments and safe evidence. Full
-review evidence stays private. Final-head hosted qualification is pending. No production deployment,
+review evidence stays private. Final-head hosted qualification is the merge gate
+for implementation PR #595; its safe summary records actual pass and cleanup
+evidence. Local checks: 259 harness/attestation tests and 72 release-target tests
+passed, with changed-file Ruff/Pyright and pre-commit gates. The deployment test
+is deliberately skipped locally without dedicated-daemon opt-in. No production deployment,
 release publication, daemon restart or host reboot is claimed here.

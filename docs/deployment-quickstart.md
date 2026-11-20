@@ -21,8 +21,9 @@ dedicated daemon after `PASS_OFFLINE`. It does not activate a persistent deploym
 For a new stack intended to remain running, the
 [persistent installer](deployment/profile-installation.md) provides preview,
 explicit install and retained verify/stop/start commands. Jobs stay paused and HTTP
-stays server-local. Real-container and reboot qualification remain pending; use a
-dedicated test host, and keep existing deployment runbooks until qualification.
+stays server-local. Require the matching hosted lifecycle qualification; daemon/host
+reboot acceptance remains pending. Use a dedicated test host and keep existing
+deployment runbooks until release/host acceptance.
 
 ## 1. Copy the generic examples into private storage
 

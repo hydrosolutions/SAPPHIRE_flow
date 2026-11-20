@@ -6,13 +6,12 @@ access limited to the server. Preview first, then explicitly install. Retained
 A `PLAN_READY` result means nothing has been installed; `INSTALLED_PAUSED` means
 service wiring passed, not that forecasting or backups are operational.
 
-**Qualification status:** these commands have unit/fault coverage and a real
-Compose rendering check. Real-container persistence qualification (PI3) and
-daemon/host reboot acceptance (PI4) remain pending. The new
-[CI qualification](../../tests/fixtures/deployment_installation/README.md) exercises
-real containers; its final-head pass must be recorded before PI3 is complete.
-Use a dedicated test host
-until those milestones complete. Existing deployments keep their current runbooks.
+**Qualification status:** [Hosted CI](../../tests/fixtures/deployment_installation/README.md)
+runs the real-container install, retained lifecycle, failure and cleanup checks.
+Require a successful qualification summary for the exact source being used;
+a failed or skipped run is not qualification. Daemon/host reboot acceptance (PI4)
+remains pending. Use a dedicated test host until release/host acceptance completes.
+Existing deployments keep their current runbooks.
 
 ## Select and check your inputs
 
