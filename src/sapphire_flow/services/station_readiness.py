@@ -69,6 +69,9 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 30
+# ERA5 trails real time by about 8 days; the operational product fills the gap at
+# forecast time (docs/operations/new-station-by-hand.md, "ERA5 trails real time").
+ERA5_LAG_DAYS = 8
 _WEATHER_PARAMETERS = ("precipitation", "temperature")
 _LISTED = 8
 _PASS, _FAIL, _NA = CheckStatus.PASS, CheckStatus.FAIL, CheckStatus.NOT_APPLICABLE
@@ -109,6 +112,14 @@ def _listed(items: Sequence[str]) -> str:
     shown = ", ".join(items[:_LISTED])
     return shown + (
         f", ... (+{len(items) - _LISTED} more)" if len(items) > _LISTED else ""
+    )
+
+
+def _is_missing(value: object) -> bool:
+    return (
+        value is None
+        or value is pd.NA
+        or (isinstance(value, float) and math.isnan(value))
     )
 
 
@@ -428,16 +439,17 @@ def check_weather_wait_facts(
             and s.status is WeatherSourceStatus.ACTIVE
         }
     )
-    wanted = weather_dates(model, now=now)
+    all_days = weather_dates(model, now=now)
+    cutoff = (now - timedelta(days=ERA5_LAG_DAYS)).date()
+    wanted = [d for d in all_days if d <= cutoff]
+    not_expected = len(all_days) - len(wanted)
     parameters = (
         sorted(model.data_requirements.past_dynamic_features)
         if model is not None
         else list(_WEATHER_PARAMETERS)
     )
-    lo = _midnight(wanted[0])
-    hi = _midnight(wanted[-1] + timedelta(days=1))
     gaps: list[str] = []
-    for parameter in parameters:
+    for parameter in parameters if wanted else ():
         covered: set[date] = set()
         for source in reanalysis:
             covered |= stores.forcing.fetch_covered_days(
@@ -445,8 +457,8 @@ def check_weather_wait_facts(
                 source,
                 parameter,
                 SpatialRepresentation.BASIN_AVERAGE,
-                lo,
-                hi,
+                _midnight(wanted[0]),
+                _midnight(wanted[-1] + timedelta(days=1)),
             ).get(station.id, set())
         missing = [d.isoformat() for d in wanted if d not in covered]
         if missing:
@@ -458,8 +470,13 @@ def check_weather_wait_facts(
     problems = [f"{r.value} binding {s}" for r, s in roles.items() if s != "bound"]
     ok = not gaps and not problems
     text = f"{roles_text}; stored reanalysis: " + (
-        "; ".join(gaps) if gaps else f"all {len(wanted)} days present"
+        "; ".join(gaps) if gaps else f"all {len(wanted)} expected days present"
     )
+    if not_expected:
+        text += (
+            f"; {not_expected} newest days not expected yet (Gateway lag, filled by "
+            "the operational product at forecast time)"
+        )
     return _check("weather_wait_facts", _PASS if ok else _FAIL, text)
 
 
@@ -497,7 +514,7 @@ def check_gateway_data(
             )
             for parameter in _WEATHER_PARAMETERS
         }
-    except (AdapterError, ConfigurationError) as exc:
+    except (AdapterError, ConfigurationError, ImportError) as exc:
         log.warning("station_readiness_gateway_failed", cause=type(exc).__name__)
         return unknown(f"Gateway request failed ({type(exc).__name__})")
     gaps: list[str] = []
@@ -512,7 +529,7 @@ def check_gateway_data(
         have = {
             cast("pd.Timestamp", ts).date()
             for ts, value in column.items()
-            if not math.isnan(cast("float", value))
+            if not _is_missing(cast("object", value))
         }
         missing = [d.isoformat() for d in wanted if d not in have]
         if missing:

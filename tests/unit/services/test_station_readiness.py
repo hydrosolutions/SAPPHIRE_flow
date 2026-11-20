@@ -546,7 +546,7 @@ class TestWeatherWaitFacts:
         status, detail = World().line("weather_wait_facts")
         assert status is CheckStatus.FAIL
         assert "forecast=missing reanalysis=missing operational=missing" in detail
-        assert "precipitation missing 30 of 30 days" in detail
+        assert "precipitation missing 23 of 23 days" in detail
 
     def test_inactive_role_is_named_inactive(self) -> None:
         world = World()
@@ -557,10 +557,10 @@ class TestWeatherWaitFacts:
         world = World()
         self._all_bound(world)
         for parameter in ("precipitation", "temperature"):
-            _forcing(world, "src_reanalysis", range(3, 33), parameter)
+            _forcing(world, "src_reanalysis", range(8, 29), parameter)
         status, detail = world.line("weather_wait_facts")
         assert status is CheckStatus.FAIL
-        assert "precipitation missing 2 of 30 days: 2026-11-16, 2026-11-17" in detail
+        assert "precipitation missing 2 of 23 days: 2026-10-19, 2026-10-20" in detail
 
     def test_passes_when_bound_and_every_day_stored(self) -> None:
         world = World()
@@ -570,26 +570,65 @@ class TestWeatherWaitFacts:
         assert world.line("weather_wait_facts") == (
             CheckStatus.PASS,
             "forecast=bound reanalysis=bound operational=bound; "
-            "stored reanalysis: all 30 days present",
+            "stored reanalysis: all 23 expected days present; 7 newest days not "
+            "expected yet (Gateway lag, filled by the operational product at "
+            "forecast time)",
         )
+
+    def test_newest_lag_days_absent_still_passes_for_a_healthy_station(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(8, 33), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.PASS
+        assert "newest days not expected yet" in detail
+
+    def test_older_missing_day_still_fails(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(
+                world, "src_reanalysis", [*range(8, 20), *range(21, 33)], parameter
+            )
+        assert world.line("weather_wait_facts")[0] is CheckStatus.FAIL
+
+    def test_missing_role_fails_even_when_every_day_is_stored(self) -> None:
+        world = World()
+        _bind(world, WeatherSourceRole.REANALYSIS, WeatherSourceStatus.ACTIVE)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(8, 33), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.FAIL
+        assert "operational=missing" in detail
+        assert "precipitation missing" not in detail
 
 
 class FakeEcmwf:
     def __init__(
-        self, days: range | None = None, error: Exception | None = None
+        self,
+        days: range | None = None,
+        error: Exception | None = None,
+        nan_days: tuple[int, ...] = (),
+        raw: object | None = None,
     ) -> None:
         self.days = days if days is not None else range(1, 31)
         self.error = error
+        self.nan_days = nan_days
+        self.raw = raw
         self.calls: list[str] = []
 
     def operational(self, **kwargs: object) -> pd.DataFrame:
         self.calls.append(str(kwargs["ifs_variable_name"]))
         if self.error is not None:
             raise self.error
+        if self.raw is not None:
+            return self.raw  # type: ignore[return-value]
         index = pd.DatetimeIndex(
             [pd.Timestamp(NOW.date() - timedelta(days=i)) for i in self.days]
         )
-        return pd.DataFrame({"syn001": [1.0] * len(index)}, index=index)
+        values = [None if i in self.nan_days else 1.0 for i in self.days]
+        return pd.DataFrame({"syn001": values}, index=index)
 
 
 class TestGatewayData:
@@ -617,6 +656,21 @@ class TestGatewayData:
         assert status is CheckStatus.FAIL
         assert "precipitation missing 2 of 30 days" in detail
         assert detail.endswith("try again after the backfill")
+
+    def test_nan_or_none_value_counts_as_a_missing_day(self) -> None:
+        status, detail = self._line(self._world(), FakeEcmwf(nan_days=(5,)))
+        assert status is CheckStatus.FAIL
+        assert "precipitation missing 1 of 30 days: 2026-11-13" in detail
+
+    def test_non_dataframe_response_is_unknown(self) -> None:
+        status, _ = self._line(self._world(), FakeEcmwf(raw={"not": "a frame"}))
+        assert status is CheckStatus.UNKNOWN
+
+    def test_frame_without_the_polygon_column_is_unknown(self) -> None:
+        index = pd.DatetimeIndex([pd.Timestamp("2026-11-17")])
+        frame = pd.DataFrame({"other": [1.0]}, index=index)
+        status, _ = self._line(self._world(), FakeEcmwf(raw=frame))
+        assert status is CheckStatus.UNKNOWN
 
     def test_gateway_failure_is_unknown_not_pass(self) -> None:
         status, detail = self._line(

@@ -201,10 +201,10 @@ class TestWeatherWaitFactsPg:
         assert "reanalysis=bound" in line["detail"]
         assert "forecast=missing" in line["detail"]
         assert (
-            "precipitation missing 2 of 30 days: 2026-10-19, 2026-10-20"
+            "precipitation missing 2 of 23 days: 2026-10-19, 2026-10-20"
             in (line["detail"])
         )
-        assert "temperature missing 30 of 30 days" in line["detail"]
+        assert "temperature missing 23 of 23 days" in line["detail"]
         assert _snapshot(db_connection) == before
 
 

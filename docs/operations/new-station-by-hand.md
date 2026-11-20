@@ -293,7 +293,7 @@ uv run python -m sapphire_flow.cli.station_readiness \
   --tenant sandbox --network research --code 00001 [--model cmal_small] [--weather-scope S] [--json]
 ```
 
-It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. It also prints `weather_wait_facts`: per-role binding state (bound / missing / inactive) and the lookback days without stored reanalysis, i.e. whether to wait for the Gateway backfill or fix a binding. Hand the output to the hydrologist. The SQL below is the fallback.
+It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. It also prints `weather_wait_facts`: per-role binding state (bound / missing / inactive) and the lookback days without stored reanalysis (the newest 8 days are not expected: ERA5 lags and the operational product fills them at forecast time), i.e. whether to wait for the Gateway backfill or fix a binding. The report does not show the outcome of the station's last forecast cycle (the cache has no read-by-station method); read it in the cycle logs. Hand the output to the hydrologist. The SQL below is the fallback.
 
 Two optional sections follow the checks and are never counted in the last line:
 
