@@ -6929,8 +6929,8 @@ invalid or oversized selected evidence returns a safe 503, including chart data.
 Provisional rating summaries and existing access gates are unchanged. Weather
 STALE is separate from PROVISIONAL, with safe failure code/time and age at use.
 
-The selected evidence capture budget is configurable up to the shared 32 MiB
-capture/read ceiling. Selected JSON encoding counts ASCII bytes incrementally
+The selected evidence capture budget is 32 MiB by default and configurable up to the shared
+128 MiB capture/read ceiling. Selected JSON encoding counts ASCII bytes incrementally
 and compresses in bounded chunks; decoding stops at the ceiling plus one byte.
 Legacy/unselected encoding and reads retain their previous uncapped behavior.
 The native 21-station B2 fixture (30 past/10 future days with hourly observations)
