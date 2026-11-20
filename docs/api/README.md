@@ -426,3 +426,11 @@ the overview's discharge block and existing observations routes are unchanged.
 Features requiring configuration remain conditional on other deployments.
 When sharing instructions, check this dated deployment note against the
 recipient's server; a newer documentation commit alone does not establish deployment.
+
+### Unknown external training provenance (MVP)
+
+Imported models may explicitly declare unknown training exposure. The station
+skill response returns `training_period_start: null`, `training_period_end: null`
+and `evaluated_on: "unknown"` for their scores. These scores do not establish
+independence from training. Existing known-period classifications are unchanged.
+Event-review training bounds are also null when unknown.

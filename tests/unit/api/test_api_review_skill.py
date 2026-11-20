@@ -7,12 +7,15 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AccessTokenRole,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     SkillSource,
+    TrainingProvenance,
 )
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.skill import SkillScore
@@ -70,7 +73,9 @@ def _set_principal(role: AccessTokenRole, station_ids: frozenset[StationId]) -> 
     )
 
 
-def _seed_station_with_active_artifact(fake_stores: dict, *, model_id: ModelId):
+def _seed_station_with_active_artifact(
+    fake_stores: dict, *, model_id: ModelId, unknown: bool = False
+):
     station = make_station_config(code="SKILL-1")
     fake_stores["station_store"].store_station(station)
     fake_stores["station_store"].store_model_assignment(
@@ -85,7 +90,15 @@ def _seed_station_with_active_artifact(fake_stores: dict, *, model_id: ModelId):
     )
     artifact_store = fake_stores["artifact_store"]
     aid, _ = artifact_store.store_artifact(
-        model_id, b"bytes", _T0, _T1, _TRAINED, station_id=station.id
+        model_id,
+        b"bytes",
+        None if unknown else _T0,
+        None if unknown else _T1,
+        None if unknown else _TRAINED,
+        station_id=station.id,
+        training_provenance=TrainingProvenance.UNKNOWN
+        if unknown
+        else TrainingProvenance.KNOWN,
     )
     artifact_store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
     return station, aid
@@ -146,12 +159,13 @@ class TestStationSkill:
         assert body["rows"] == []
         assert body["selection"] == "latest_generation_on_forecast_artifact"
 
+    @pytest.mark.parametrize("unknown", [False, True])
     def test_active_artifact_rows_are_served_and_training_period_attached(
-        self, client: TestClient, fake_stores: dict
+        self, client: TestClient, fake_stores: dict, unknown: bool
     ) -> None:
         model_id = ModelId("skill_test_model")
         station, aid = _seed_station_with_active_artifact(
-            fake_stores, model_id=model_id
+            fake_stores, model_id=model_id, unknown=unknown
         )
         fake_stores["skill_store"].store_skill_scores(
             [
@@ -171,8 +185,9 @@ class TestStationSkill:
         row = rows[0]
         assert row["model_id"] == str(model_id)
         assert row["model_artifact_id"] == str(aid)
-        assert row["evaluated_on"] == "training_period"
-        assert row["training_period_start"] is not None
+        assert row["evaluated_on"] == ("unknown" if unknown else "training_period")
+        assert (row["training_period_start"] is None) == unknown
+        assert (row["training_period_end"] is None) == unknown
         assert row["metric"] == "nse"
         assert row["score"] == 0.8
 

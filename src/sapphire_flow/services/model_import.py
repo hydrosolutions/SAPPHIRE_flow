@@ -23,7 +23,8 @@ Invariants (Plan 157 T3):
   `training_period_end` (the real external training window) and
   `imported_at`** (this import's own instant, `clock()`) are three
   DISTINCT, caller-supplied values — never conflated, never fabricated as a
-  zero-length window at `trained_at`.
+  zero-length window at `trained_at`. Explicit UNKNOWN imports store all
+  three training dates as null; import time remains the real import instant.
 - **All-or-nothing, always — including the fake-backed test/replay path.**
   `store_artifact` + provenance + `promote_artifact` run inside ONE unit of
   work: a real `AuditedWriter` transaction in production, or an in-memory
@@ -44,8 +45,17 @@ import structlog
 
 from sapphire_flow.exceptions import ConfigurationError, ModelLoadError
 from sapphire_flow.store.audited_writer import AuditedWriter
-from sapphire_flow.types.enums import ArtifactScope, AuditEventType, ModelArtifactStatus
-from sapphire_flow.types.model import ModelArtifactProvenance, ModelRecord
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    AuditEventType,
+    ModelArtifactStatus,
+    TrainingProvenance,
+)
+from sapphire_flow.types.model import (
+    ModelArtifactProvenance,
+    ModelRecord,
+    validate_training_provenance,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -293,10 +303,11 @@ def import_external_artifact(  # noqa: PLR0913
     model: ForecastModel,
     model_id: ModelId,
     artifact_bytes: bytes,
-    trained_at: UtcDatetime,
-    training_period_start: UtcDatetime,
-    training_period_end: UtcDatetime,
+    trained_at: UtcDatetime | None,
+    training_period_start: UtcDatetime | None,
+    training_period_end: UtcDatetime | None,
     expected_config_hash: str,
+    training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
     clock: Callable[[], UtcDatetime],
     station_id: StationId | None = None,
     group_id: StationGroupId | None = None,
@@ -325,10 +336,23 @@ def import_external_artifact(  # noqa: PLR0913
     `trained_at`, `training_period_start`/`training_period_end` (the REAL
     external training window) and `imported_at` (`clock()`, below) are three
     deliberately distinct values — none is ever synthesized from another.
+    Explicit UNKNOWN provenance accepts null training dates for the MVP.
     `expected_config_hash` is REQUIRED: it is the digest carried by the
     artifact's own import manifest, and it must match the model's declared
     `config_hash` (also required, non-`None`) before anything is written —
     there is no warning-only opt-out."""
+    try:
+        validate_training_provenance(
+            training_provenance, trained_at, training_period_start, training_period_end
+        )
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+    if training_provenance is TrainingProvenance.UNKNOWN:
+        acceptance = (
+            "Training provenance unknown: not supplied; accepted for MVP import."
+        )
+        notes = f"{notes}\n{acceptance}" if notes else acceptance
+
     derived_tenant_id = _derive_target_tenant_id(
         station_id=station_id,
         group_id=group_id,
@@ -443,6 +467,7 @@ def import_external_artifact(  # noqa: PLR0913
             training_period_start=training_period_start,
             training_period_end=training_period_end,
             trained_at=trained_at,
+            training_provenance=training_provenance,
             station_id=station_id,
             group_id=group_id,
             status=ModelArtifactStatus.TRAINING,

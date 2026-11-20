@@ -13,6 +13,12 @@ scientific acceptance.
 
 ## Versioning (D14)
 
+Contract 3.0 permits null training bounds and `evaluated_on="unknown"` for
+explicitly unknown external training provenance. Consumers must display unknown
+exposure without interpreting scores as independent validation. Known artifacts
+retain their existing response values. Coordinate this nullable-response change
+with map consumers before deploying unknown artifacts.
+
 `docs/spec/api-v1-map.openapi.json`'s `info.version` is a **hand-maintained
 constant** (`api/map_contract.py::MAP_CONTRACT_VERSION`), never the package
 version. An additive change (a new field, route or enum
@@ -159,6 +165,8 @@ compares the row's eval window against its artifact's training period as
 **closed intervals**: fully inside -> `"training_period"`; no shared instant
 -> `"outside_training_period"`; anything else, including an eval window
 starting exactly at `training_period_end` -> `"overlaps_training_period"`.
+Unknown training exposure returns `"unknown"` with both training bounds null;
+these scores do not establish independence from training.
 `score: null` means the metric is undefined for that
 stratum (a non-finite stored value), not zero. Empty `rows` is normal: fallback
 tiers may have no skill rows. Combined (pooled/BMA) forecasts have

@@ -107,7 +107,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Reviewed shared discharge history and its lookup index chain0085 onto0084.
 # Declared-grid weather evidence chains 0086 onto 0085 (time MVP M2a3).
 # Station gauge type and sensor elevation chain 0087 onto 0086 (Plan 540 M2).
-_RELEASE_B_HEAD = "0087"
+# Migration 0088 adds explicit unknown training provenance.
+_RELEASE_B_HEAD = "0088"
 
 
 def _down_revisions() -> dict[str, str | None]:

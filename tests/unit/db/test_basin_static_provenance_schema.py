@@ -102,8 +102,8 @@ class TestModelArtifactBasinVersionsTable:
         assert artifact_fk == {"model_artifacts.id"}
         assert version_fk == {"basin_versions.id"}
 
-    def test_model_artifacts_gains_no_new_column(self) -> None:
-        # ck_model_artifacts_scope_xor + the pre-existing column set stay intact.
+    def test_model_artifacts_has_expected_columns(self) -> None:
+        # Basin provenance stays in its side table; 0088 adds training provenance.
         expected = {
             "id",
             "model_id",
@@ -115,6 +115,7 @@ class TestModelArtifactBasinVersionsTable:
             "training_period_start",
             "training_period_end",
             "trained_at",
+            "training_provenance",
             "promoted_at",
             "promoted_by",
             "superseded_at",

@@ -11,9 +11,13 @@ import sqlalchemy as sa
 from sapphire_flow.db.metadata import model_artifacts, station_group_members
 from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
-from sapphire_flow.types.enums import ModelArtifactStatus
+from sapphire_flow.types.enums import ModelArtifactStatus, TrainingProvenance
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
-from sapphire_flow.types.model import ModelArtifactRecord, StoredArtifact
+from sapphire_flow.types.model import (
+    ModelArtifactRecord,
+    StoredArtifact,
+    validate_training_provenance,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -45,14 +49,18 @@ class PgModelArtifactStore:
         self,
         model_id: ModelId,
         artifact_bytes: bytes,
-        training_period_start: UtcDatetime,
-        training_period_end: UtcDatetime,
-        trained_at: UtcDatetime,
+        training_period_start: UtcDatetime | None,
+        training_period_end: UtcDatetime | None,
+        trained_at: UtcDatetime | None,
         *,
+        training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
     ) -> StoredArtifact:
+        validate_training_provenance(
+            training_provenance, trained_at, training_period_start, training_period_end
+        )
         aid = ArtifactId(uuid4())
         sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         safe_model_dir = Path(str(model_id)).name
@@ -79,6 +87,7 @@ class PgModelArtifactStore:
                     training_period_start=training_period_start,
                     training_period_end=training_period_end,
                     trained_at=trained_at,
+                    training_provenance=training_provenance.value,
                     promoted_at=None,
                     promoted_by=None,
                     superseded_at=None,
@@ -288,11 +297,12 @@ def _row_to_record(row: sa.engine.row.RowMapping) -> ModelArtifactRecord:
         status=ModelArtifactStatus(row["status"]),
         artifact_path=row["artifact_path"],
         sha256_hash=row["sha256_hash"],
-        training_period_start=utc_from_row(row["training_period_start"]),
-        training_period_end=utc_from_row(row["training_period_end"]),
-        trained_at=utc_from_row(row["trained_at"]),
+        training_period_start=utc_or_none(row["training_period_start"]),
+        training_period_end=utc_or_none(row["training_period_end"]),
+        trained_at=utc_or_none(row["trained_at"]),
         promoted_at=utc_or_none(row["promoted_at"]),
         promoted_by=row["promoted_by"],
         superseded_at=utc_or_none(row["superseded_at"]),
         created_at=utc_from_row(row["created_at"]),
+        training_provenance=TrainingProvenance(row["training_provenance"]),
     )

@@ -2769,3 +2769,12 @@ Explicit-grid gap filling validates every supplied timestamp before its no-fill
 return; empty frames remain empty, while off-grid rows are rejected, never shifted.
 The PostgreSQL route fixture covers complete and short-gap 18:00 windows, including
 zero artificial fills and persisted/restored quality flags for complete input.
+
+### External import with unknown training provenance
+
+Migration 0088 permits null training dates only with `training_provenance=unknown`;
+known requires all three dates. Keep domain record, store/protocol/fake, import
+flow/service, skill classifier and API schema consistent. The deployed FI artifact
+contract does not mandate training dates. Import time, hashes, tenant/scope and
+deserialization checks remain required. Unknown skill exposure must never be
+classified as outside training. Event-review already permits null training bounds.

@@ -16,6 +16,7 @@ from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.types.enums import TrainingProvenance
 
 if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId
@@ -63,6 +64,7 @@ def _import_task(  # noqa: PLR0913
     audit_log_store: object,
     provenance_recorder: object,
     audited_writer: object,
+    training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
 ) -> ArtifactId:
     from sapphire_flow.services.model_import import import_external_artifact
     from sapphire_flow.types.ids import ModelId
@@ -72,6 +74,7 @@ def _import_task(  # noqa: PLR0913
         model_id=ModelId(model_id),
         artifact_bytes=artifact_bytes,
         artifact_store=artifact_store,  # type: ignore[arg-type]
+        training_provenance=training_provenance,
         trained_at=trained_at,  # type: ignore[arg-type]
         training_period_start=training_period_start,  # type: ignore[arg-type]
         training_period_end=training_period_end,  # type: ignore[arg-type]
@@ -353,9 +356,9 @@ def import_model_artifact_flow(  # noqa: PLR0913
     artifact_base64: str | None = None,
     artifact_path: str | None = None,
     expected_artifact_sha256: str | None = None,
-    trained_at: str,
-    training_period_start: str,
-    training_period_end: str,
+    trained_at: str | None = None,
+    training_period_start: str | None = None,
+    training_period_end: str | None = None,
     expected_config_hash: str,
     station_id: str | None = None,
     group_id: str | None = None,
@@ -365,17 +368,41 @@ def import_model_artifact_flow(  # noqa: PLR0913
     notes: str | None = None,
     tenant_code: str | None = None,
     operator: str | None = None,
+    training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
 ) -> str:
     """Register -> deserialize-validate -> store -> record provenance ->
     promote an externally-trained artifact. Never assembles training data
     and never calls `model.train` (Plan 157 T3's public-boundary
     acceptance criterion)."""
     import os
+    from datetime import UTC, datetime
     from uuid import UUID
 
     from sapphire_flow.services.write_principal import resolve_flow_run_principal
     from sapphire_flow.types.datetime import ensure_utc
     from sapphire_flow.types.ids import StationGroupId, StationId
+    from sapphire_flow.types.model import validate_training_provenance
+
+    try:
+        provenance = TrainingProvenance(training_provenance)
+    except ValueError as exc:
+        raise ConfigurationError(
+            "training provenance must be known or unknown"
+        ) from exc
+    supplied = (trained_at, training_period_start, training_period_end)
+    if (
+        provenance is TrainingProvenance.UNKNOWN
+        and any(d is not None for d in supplied)
+    ) or (provenance is TrainingProvenance.KNOWN and any(d is None for d in supplied)):
+        raise ConfigurationError(
+            "training provenance requires all three dates for known, "
+            "or no dates for unknown"
+        )
+    parsed = tuple(
+        ensure_utc(datetime.fromisoformat(d)) if d is not None else None
+        for d in supplied
+    )
+    validate_training_provenance(provenance, *parsed)
 
     structlog.contextvars.bind_contextvars(model_id=model_id)
 
@@ -394,8 +421,6 @@ def import_model_artifact_flow(  # noqa: PLR0913
         operator=operator,
     )
 
-    from datetime import UTC, datetime
-
     def clock() -> object:
         return ensure_utc(datetime.now(UTC))
 
@@ -411,9 +436,9 @@ def import_model_artifact_flow(  # noqa: PLR0913
         model_id,
         artifact_bytes,
         stores["artifact_store"],
-        ensure_utc(datetime.fromisoformat(trained_at)),
-        ensure_utc(datetime.fromisoformat(training_period_start)),
-        ensure_utc(datetime.fromisoformat(training_period_end)),
+        parsed[0],
+        parsed[1],
+        parsed[2],
         clock,
         StationId(UUID(station_id)) if station_id is not None else None,
         StationGroupId(UUID(group_id)) if group_id is not None else None,
@@ -429,6 +454,7 @@ def import_model_artifact_flow(  # noqa: PLR0913
         stores.get("audit_log_store"),
         None,
         audited_writer,
+        provenance,
     )
 
     log.info("import_model_artifact_flow.complete", artifact_id=str(new_id))
