@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-11-20
 owner: deployment orchestrator
 baseline: 77fd6e8abf1ac7b4b8aedc8ee5c5cfde923bb659
@@ -19,6 +19,11 @@ No agency catalogue, new configuration framework, manager SDK, UI, SSH controlle
 or cloud provisioning feature. Agency profiles and station/model choices remain
 private. No existing deployment is adopted, migrated, upgraded or reconfigured.
 This planning pass changes no runtime configuration, credentials or infrastructure.
+
+The owner deferred Proton Pass server automation and investigation of NHS's
+authentication integration until this deployment work is finished. Neither is
+an installation prerequisite. Keep the protected-file delivery boundary neutral
+to the secrets provider; verify NHS compatibility separately before activation.
 
 ## Existing capabilities and the missing boundary
 
@@ -276,15 +281,35 @@ paused-phase verification; and an honest distinction between explicit start and
 automatic host restart. Existing API grants support probe-token revocation.
 Full review evidence remains local, outside commits.
 
-**Open owner decision — credential changes.** Recommended: retain private
-credential fingerprints in protected installation state, permitting same-content
-file redelivery while detecting changed effective credentials, including the
-pepper. They never appear in reports. Alternative: format/readability plus
-database authentication checks only, explicitly accepting weaker change
-detection (especially for the pepper). Inode/mtime equality alone is not an
-acceptable restart gate. The owner has been asked; no choice is assumed.
+**Resolved owner decision — credential changes.** The owner accepted private
+credential fingerprints and deferred Proton server automation and NHS identity
+integration until after deployment work. Retain fingerprints in protected
+installation state, permitting same-content file redelivery while detecting
+changed effective credentials, including the pepper. Inode/mtime equality alone
+is not a restart gate. Credential rotation remains a separate coordinated step.
 
-The fingerprint implementation/storage rule and its same-value/redelivery and
-changed-value tests must be written here after the decision. This plan remains
-DRAFT and no implementation milestone is dispatched until that finding is
-resolved and the orchestrator records READY.
+PI2 stores a versioned record in a mode-0600 file inside mode-0700 `D`, with an
+independent random 32-byte salt per logical credential and SHA-256 of that salt
+followed by the effective credential bytes. Generate salts at the runtime
+boundary with injected randomness for tests. For DB passwords, remove only the
+permitted optional final LF; for the pepper, match the existing reader's
+text decoding and whitespace stripping, then encode as UTF-8. Never store raw
+values in installation state or include salts/fingerprints in reports, logs or
+command arguments. Treat the record and its backups as sensitive: salted hashes
+permit guesses against weak credentials if disclosed; they are change detectors,
+not a vault or evidence of successful database authentication.
+
+Explicit `start` checks all five values before starting any service; `verify`
+reports drift without mutation. Missing, malformed or mismatched fingerprint
+state refuses with exit 2; never silently establish a new baseline. `stop` must
+remain available for verified owned resources even when credential checks fail.
+PI2 tests same-value redelivery despite inode/mtime changes, supported newline
+and pepper whitespace equivalence, changes to each of the five values, missing
+or corrupt records, and absence of sensitive material in public output. These
+checks supplement the actual reader/read-only mount and authentication checks;
+automatic daemon restart retains the limitations documented above.
+
+The orchestrator records READY after the independent review and resolution of
+its material findings. PI0 is complete; PI1 is the next implementation milestone.
+This status does not approve or merge the PR, publish a release, or authorize a
+production deployment.
