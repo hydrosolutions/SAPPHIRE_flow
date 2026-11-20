@@ -30,7 +30,7 @@ Status notes only (2026-11-20); the plan text below is otherwise unchanged. PR n
 
 **Skipped for the MVP:** the follow-up to make the `global_admin` flag parse strictly instead of through `bool()` (it fails open on a malformed value). Not scheduled.
 
-**As shipped in M4:** the optional training-window check (check 11, `training_samples`) is a separate optional section next to `--check-gateway`; neither is counted in the "N checks failed, M passed" line, and thin training history does not change the operational checks. `weather_wait_facts` (10c) treats the newest 8 days of the lookback as not expected (ERA5 lags by about 8 days; the operational product fills them at forecast time), and it does not show the last forecast cycle's outcome (the cache has no read-by-station method).
+**As shipped in M4:** the optional training-window check (check 11, `training_samples`) is a separate optional section next to `--check-gateway`; neither is counted in the "N checks failed, M passed" line, and thin training history does not change the operational checks. `weather_wait_facts` (10c) treats the newest days of the lookback as not expected (cutoff today minus 8 days, so 7 days of a lookback that ends yesterday; the operational product fills them at forecast time), and it does not show the last forecast cycle's outcome (the cache has no read-by-station method).
 
 ## Why
 

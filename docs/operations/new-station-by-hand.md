@@ -300,7 +300,7 @@ relevant lines; the day counts and dates are examples):
 ```text
 station 00001 (research)
 ...
-PASS  weather_wait_facts  reanalysis=bound forecast=bound operational=bound; stored reanalysis: all 22 expected days present; 8 newest days not expected yet (Gateway lag, filled by the operational product at forecast time)
+PASS  weather_wait_facts  reanalysis=bound forecast=bound operational=bound; stored reanalysis: all 23 expected days present; 7 newest days not expected yet (Gateway lag, filled by the operational product at forecast time)
 optional sections (not counted in the line below):
 PASS  gateway_data  OK: all 30 days present
 0 checks failed, 13 passed
@@ -441,7 +441,7 @@ above the datum), or `--datum-unknown` (water-level range checks stay off). `--p
 what the station measures; give `discharge` too if the model target is discharge.
 
 ```bash
-export SAPPHIRE_CONFIG=/path/to/config.toml   # or pass --config
+export SAPPHIRE_CONFIG=sandbox-config.toml   # the config file from Part 0, or pass --config
 uv run python -m sapphire_flow.cli.create_station list    # tenants and networks that exist
 uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
   --network research --name Trishuli --lon 85.33996 --lat 28.16434 \
@@ -460,7 +460,7 @@ forecast for) is not set here; Step 8 sets it.
 ## Step 4: import the basin
 
 This one has a tool: `uv run python -m sapphire_flow.cli.import_basin_package --package-dir <handover>/package`
-([importer runbook](basin-static-importer-runbook.md)). Expect `imported=1`, `onboarding_held=0`.
+([importer runbook](basin-static-importer-runbook.md)). Expect the log line `basin_importer.cli.report` with `accepted=1`, `imported_basins=1`, `onboarding_held=0`.
 
 ## Step 5: group, weather scope, weather history
 
@@ -673,8 +673,8 @@ the last line "N checks failed, M passed". Exit 0 whenever the report ran, 2 for
 an unknown station or a station of another tenant. Without `--model` the statics check is
 NOT_APPLICABLE and the lookback is 30 days; without `--weather-scope` the naming check skips
 the comparison with the scope. The `weather_wait_facts` line shows each binding role (bound /
-missing / inactive) and the lookback days without stored reanalysis. The newest 8 days are not
-expected (ERA5 lags by about 8 days; the operational product fills them at forecast time), so
+missing / inactive) and the lookback days without stored reanalysis. The newest 7 days of a 30-day lookback are not
+expected (the lookback ends yesterday and ERA5 lags by about 8 days; the operational product fills them at forecast time), so
 they are not counted as missing: that line tells you whether to wait for the Gateway backfill
 or fix a binding. The report does not show the outcome of the station's last forecast cycle
 (read it in the cycle logs). Hand the output to the hydrologist.
@@ -698,7 +698,7 @@ Two optional sections can follow the counted checks. They are listed under "opti
 optional sections (not counted in the line below):
 PASS  gateway_data  OK: all 30 days present
 FAIL  training_samples  0 complete samples in 2022-03-01..2026-11-09 (lookback 30 + horizon 10 steps)
-0 checks failed, 11 passed
+0 checks failed, 13 passed
 ```
 
 `onboard_nepal qualify` accepts only the six fixed DHM gauges ("missing DHM station 447") and
@@ -816,7 +816,7 @@ is an unverified label.
 
 **Run one cycle.** The **person** runs it, in a shell where `RECAP_API_KEY_FILE` is set (an
 assistant must stop and ask). First read "When a run fails": the observation coverage query must
-give 30 (the readiness `discharge_lookback` line gives the same count), and the read-only
+give 30 (the readiness `discharge_lookback` line counts days in the station's local time zone, the SQL query uses UTC dates, so the two can differ by a day), and the read-only
 Gateway check must show data for every day. Use an explicit
 UTC-midnight `cycle_time`, no older than the 60-hour limit:
 
@@ -908,7 +908,7 @@ select count(distinct (o.timestamp at time zone 'UTC')::date) as usable_days
 (The cycle's own window edge can differ by a day. Fewer than 30 means gaps: list the days
 with the same query and fix them.) In the rehearsal the first synthetic series gave 7 usable
 days of 30 and the stop above; the final series had every day passed. The readiness report's
-`discharge_lookback` line counts the same days and lists the missing ones.
+`discharge_lookback` line counts days in the station's local time zone (the SQL above uses UTC dates, so the counts can differ by a day) and lists the missing ones.
 
 ## What the cycle told us when it stopped (so you can recognize it)
 
