@@ -261,8 +261,7 @@ Step 5c. Skipping them was the first thing that stopped the 2026-11-17 walkthrou
    must be re-processed. This is the **only shared Gateway action** in this guide: it
    re-processes runs for every basin subscribed to that job. The owner's standing rule
    (2026-11-17) lets an administrator start it without asking each time; write the time, the job
-   and the reason in the evidence folder. (The runbook still says the owner or the Gateway
-   administrator must give a go-ahead; it is being aligned with this rule.) An assistant never
+   and the reason in the evidence folder. An assistant never
    starts it.
 
 Things that look wrong but are normal:

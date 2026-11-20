@@ -5,7 +5,7 @@ revised: 2026-11-17
 plan: 541
 title: Sandbox exercise and new-station guide fixes from the walkthrough
 scope: Record what the guide branch changes in docs/operations/new-station-by-hand.md (edits S1 to S6, already applied there and independently reviewed) for the gaps found when a fresh administrator agent followed the guide from zero, and why. Lists the Gateway-runbook lines that now disagree with the guide; does not edit them. NOT the onboarding commands (Plan 540), NOT production hardening (MVP), NOT the hydrologist pathway design (program #450 job B).
-depends_on: ["guide branch docs/452-guide-gaps-walkthrough (unmerged; worktree sapphire-guide-gaps, edits uncommitted). Everything this plan calls 'in the guide' is true only on that branch, not on main."]
+depends_on: ["the station guide docs/operations/new-station-by-hand.md (merged to main in PR #591)"]
 blocks: []
 related: [450, 452, 540]
 open_decisions: []
@@ -94,6 +94,8 @@ All edits are prose and (for S3) one replacement snippet. They fold into the lat
 An administrator meets three command styles: `uv run python -m sapphire_flow.cli.<x>` (for example `prepare_gateway`), `scripts/<x>.py` (for example `create_station_group.py`) and `onboard_nepal <subcommand>`, plus inline heredocs. A short table in step order (checklist steps 1 to 7, then guide Steps 3 to 8, each with the command style used) would let the administrator keep them straight until Plan 540 gives a single style. **Not found in the guide branch as of this revision**: see "Open gaps".
 
 ## Gateway runbook lines that still demand a go-ahead
+
+**Update (PR #593):** the go-ahead lines below, and the runbook's "The tool lists the job reference" line (the tool saves it in the state file and does not print it back), were aligned with the guide and the code in PR #593. The table is kept as the record of what was changed.
 
 The standing rule (an administrator may start the IFS backfill, recording it in the evidence folder) contradicts these lines of `docs/operations/recap-gateway-runbook.md` as it stands on the guide branch (verified by grep, 2026-11-17):
 
