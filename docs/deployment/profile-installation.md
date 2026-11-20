@@ -62,7 +62,8 @@ installation. Neither a secret manager nor its login is required to preview.
 | `FAIL` | 1 | Unexpected tool failure. Send the safe JSON report to deployment support. |
 
 JSON contains safe file aliases, offline diagnostics and provenance, the source
-revision and proposed port. It excludes private paths, project/profile names,
+revision, proposed port and counts of services, image references, volumes,
+configuration mounts and runtime credentials. It excludes private paths, project/profile names,
 credential values and executable Compose content. Text also includes the local
 state path. Never share raw Compose output or credential files.
 
@@ -86,7 +87,9 @@ The preview reports intended removal of builds/build credentials, immutable imag
 pinning, ownership labels, frozen read-only configuration binds, and loopback-only
 publication. It preserves the standard networks, restart policies, data-volume
 sharing, service privileges and runtime credential grants. No recipe is emitted
-for execution. `--image-identity ci-development` is reserved for qualification with
+for execution. Infrastructure image references still originate in the standard
+digest pins; their proposed image-ID replacement remains unverified until runtime.
+`--image-identity ci-development` is reserved for qualification with
 matching CI development images; it is not release approval.
 
 ## What follows

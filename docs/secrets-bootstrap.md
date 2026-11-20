@@ -23,6 +23,15 @@ limitations. The planned installer accepts ASCII letters, digits and `-._~`,
 with an optional final newline; other characters need a separate encoding fix.
 Do not change an existing password just to match these new-install instructions.
 
+Without a manager, an administrator can generate one **new** delivery as below,
+after creating its private parent directory. Substitute the intended path;
+`set -C` refuses an existing file. Then apply the delivery permissions below.
+Repeat independently for each logical credential; never reuse one value.
+
+```bash
+(umask 077; set -C; openssl rand -hex 32 > /private/credential-delivery/db_password)
+```
+
 The pepper must be nonempty after the API reader strips surrounding whitespace.
 Use an independently generated high-entropy value; 64 random hexadecimal characters
 also work. Changing its effective value invalidates existing API tokens.

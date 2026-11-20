@@ -17,6 +17,7 @@ from sapphire_flow.config.deployment_profile import (
     ProfileSelection,
     select_deployment_profile,
 )
+from sapphire_flow.exceptions import ConfigurationError
 
 try:
     from tools import deployment_rehearsal as rehearsal
@@ -269,6 +270,18 @@ def action(code: str) -> str:
         "availability is checked at installation.",
         "CLI_INPUT_INVALID": "Use preview with --profile-file, --installation and "
         "--state-dir. Runtime commands are not available.",
+        "SOURCE_DIRTY": "Use a clean source checkout; preserve other people's work.",
+        "SOURCE_IDENTITY_MISMATCH": "Align the source checkout with the reviewed "
+        "release inputs; do not invent an identity to obtain a pass.",
+        "PROTECTED_INPUT": "Separate configuration files from .env and credential "
+        "deliveries, including aliases. Do not share their contents.",
+        "INPUT_INVALID": "Check that selected files are readable and contain valid "
+        "configuration; share only this safe report with deployment support.",
+        "INSTALLATION_REQUIRED": "Supply the external installation file.",
+        "TRANSFORM_INVALID": "The proposed recipe failed its invariant check; "
+        "send this safe report to deployment support.",
+        "unexpected_failure": "Send this safe report to deployment support; "
+        "a tool failure prevented preview completion.",
     }.get(
         code,
         "Check the diagnostic in the profile/rehearsal reference or ask deployment "
@@ -302,6 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = "REFUSED"
     codes: tuple[str, ...] = ()
     exit_code = 2
+    proposed: dict[str, int] | None = None
     try:
         options = parser.parse_args(args)
         identity_kind = options.image_identity
@@ -320,15 +334,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             if selection.installation
             else (),
         )
-        outcome = prepare(
-            selection, layout, identity_kind=options.image_identity
-        ).preview
+        prepared = prepare(selection, layout, identity_kind=options.image_identity)
+        outcome = prepared.preview
         codes = outcome.codes
         if outcome.status == "PLAN_READY":
             status, exit_code = "PLAN_READY", 0
+            if prepared.recipe is not None:
+                services = prepared.recipe["services"]
+                proposed = {
+                    "services": len(services),
+                    "image_references": len({s["image"] for s in services.values()}),
+                    "named_volumes": len(prepared.recipe["volumes"]),
+                    "configuration_mounts": sum(
+                        mount["type"] == "bind"
+                        for service in services.values()
+                        for mount in service.get("volumes", [])
+                    ),
+                    "runtime_credentials": len(selection.installation.secret_bindings)
+                    if selection.installation
+                    else 0,
+                    "published_ports": 1,
+                }
     except ProfileError as exc:
         codes = (exc.code,)
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError):
+        if exc.code == "TRANSFORM_INVALID":
+            status, exit_code = "FAIL", 1
+    except (OSError, ConfigurationError):
         codes = ("INPUT_INVALID",)
     except Exception:
         status, codes, exit_code = "FAIL", ("unexpected_failure",), 1
@@ -343,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "offline": asdict(outcome.offline) if outcome and outcome.offline else None,
         "state_directory": "private-installation-state",
         "http_binding": f"127.0.0.1:{layout.http_port}:80/tcp" if layout else None,
+        "proposed": proposed if status == "PLAN_READY" else None,
         "daemon_contacted": False,
         "credentials_read": False,
         "images_probed": False,
@@ -370,6 +402,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.write(f"{code}: {action(code)}\n")
         for change in CHANGES:
             sys.stdout.write(f"Change: {change}\n")
+        if proposed is not None and status == "PLAN_READY":
+            sys.stdout.write("Proposed counts: " + json.dumps(proposed) + "\n")
         if outcome and outcome.offline:
             for diagnostic in (
                 *outcome.offline.diagnostics,

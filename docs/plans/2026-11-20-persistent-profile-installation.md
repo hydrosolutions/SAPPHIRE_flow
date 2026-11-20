@@ -327,6 +327,10 @@ Administrator instructions are in `docs/deployment/profile-installation.md`;
 permissions and manager-neutral boundary. Related standards and entry points link
 those maintained instructions. No existing runtime recipe or reader changed.
 
-Local validation: 228 installation/profile/rehearsal tests passed, including 25
-new preview/transform cases; changed-file Ruff and Pyright passed. Independent
-patch review and final-head CI remain the PR gates before merge.
+Local validation: 242 installation/profile/rehearsal tests passed, including 39
+new preview/transform cases; changed-file Ruff and Pyright passed. One independent
+Claude patch review completed. Fixed defect-versus-input error classification and
+strengthened administrator guidance and contract tests. Rendered-route forwarding
+and required Caddy were already enforced by the shared checker; new real-Compose
+tests verify both. No unresolved material findings; full final-head CI remains
+required before merge. Full review evidence stays private.
