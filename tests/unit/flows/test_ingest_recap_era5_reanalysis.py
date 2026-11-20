@@ -417,6 +417,7 @@ class TestProductionEra5:
             "start": "string",
             "end": "string",
             "weather_scope": "string",
+            "parameters": "array",
         }
         spec = next(
             s
@@ -456,7 +457,11 @@ class TestProductionEra5:
             lambda *a: SimpleNamespace(scope=object()),
         )
         monkeypatch.setattr(
-            recap_gateway, "load_recap_gateway_config", lambda _: object()
+            recap_gateway,
+            "load_recap_gateway_config",
+            lambda _: SimpleNamespace(
+                interval_qualification=recap_gateway.GatewayIntervalQualification()
+            ),
         )
         monkeypatch.setattr(recap_gateway, "load_recap_api_key", lambda: "test")
         monkeypatch.setattr(

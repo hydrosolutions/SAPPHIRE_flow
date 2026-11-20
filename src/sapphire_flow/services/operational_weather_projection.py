@@ -24,6 +24,7 @@ from sapphire_flow.types.operational_weather import (
     WeatherLegState,
     WeatherUnused,
     WeatherUseBlockReason,
+    period_weather_value,
 )
 from sapphire_flow.types.operational_weather_v2 import (
     FutureWeatherRequestV2,
@@ -169,8 +170,7 @@ def project_past_weather(
     if not any(day.samples for day in days):
         return WeatherBlocked(reason=WeatherUseBlockReason.MISSING_SUPPORT)
     if coverage is WeatherCoverage.COMPLETE and any(
-        (day.precipitation_mm if parameter == "precipitation" else day.temperature_c)
-        is None
+        (period_weather_value(day, parameter)) is None
         for day in days
         for parameter in requirement.parameters
     ):

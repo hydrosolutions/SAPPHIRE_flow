@@ -162,3 +162,66 @@ is described in the [import runbook](model-artifact-import-runbook.md#4-verify-w
 group assignment remains in the station guide. Model artifact activation is
 different from making the **station** operational. Station promotion and its
 prerequisites belong to that guide; this workflow does not promote a station.
+
+### Qualifying CMAL net-radiation inputs
+
+The Recap channels are `solar_net_radiation` (ERA5
+`surface_net_solar_radiation`, IFS `ssr`) and `thermal_net_radiation`
+(ERA5 `surface_net_thermal_radiation`, IFS `str`). Gateway values are already
+**differenced interval energy in J/m²**. Its raw timestamps mark interval end;
+training uses interval start. The separately owned gateway-adapter correction
+must normalize labels before this path is enabled. This change does not shift
+labels, difference accumulations, or stitch products again.
+
+After proving that correction at midnight, source handover, lead 144 and the
+final interval, set these fields in the scoped `[adapters.recap_gateway]` overlay:
+
+```toml
+normalized_interval_contract = "normalized_start_v1"
+normalization_revision = "<exact independently corrected adapter release or commit>"
+```
+
+These fields attest to deployed behavior; they do not implement it. Default
+`unqualified` refuses radiation requests. Retain the revision and read-only
+raw/end versus normalized/start boundary evidence with the qualification record.
+Never enable this attestation on the uncorrected adapter.
+
+Use the existing `ingest-operational-era5-history` deployment with its optional
+`parameters` list to request just the two missing radiation names. The default
+remains precipitation and temperature. Verify 365 consecutive complete daily
+values for every model channel/station, source identity and hourly coverage.
+ERA5 energy is divided by 3600; IFS energy by the qualified 3h/6h duration.
+Daily radiation conserves energy through duration weighting; signed thermal
+flux is valid. Missing support remains missing and is never gap-filled.
+
+Add these exact names to the scoped Nepal NWP capabilities only after qualifying
+ingestion. Keep global capabilities unchanged. Qualify the 15-day future request
+with issue-day 00Z, past end equal to future start at midnight, and normalized
+starts through lead 354 (end 360). An older cycle provides only 14 days and does
+not satisfy the selected route's full 15-day request. The model's AT_MOST
+contract has not been changed.
+
+Capacity measured with actual typed codecs on 20 November: 380 native-hourly,
+four-channel days occupy **11,708,471 bytes in v1**, **11,730,261 in v2**;
+sequential Python allocation peak was **47,329,297 bytes** (not host RSS).
+Both meet the 12 MiB station gate for a proposed scoped 16 MiB cache. The global
+2 MiB default remains unchanged. Six station histories alone total
+**70,250,826 bytes**, above the unchanged 32 MiB evidence decoder ceiling and
+24 MiB qualification gate. **Multi-station CMAL activation is not qualified.**
+Resolve group evidence capacity explicitly before activation; do not discard
+native support, split immutable captures ad hoc, or raise limits silently.
+Measure complete captures, host memory headroom and source-response sizes before
+choosing concurrency; retain sequential preparation meanwhile.
+
+Current readers retain the v1/v2 layouts and old hashes. Radiation samples add
+vocabulary under `rad-int-v1`; old binaries cannot read those new samples.
+Radiation-enabled fingerprints bind channel sets, source mappings, units and
+normalization revision. Roll back only to a compatible reader and preserve
+artifacts, cache and evidence. Migration downgrade conservatively refuses when
+any operational cache/evidence exists, or radiation forcing remains.
+
+Import the exact checkpoint with explicit unknown training provenance, then run
+isolated real-input qualification and verify the authenticated API listing and
+detail. Do not alter existing climatology or `cmal_small` assignments/schedules.
+API availability does not grant publication approval or establish independent
+skill with unknown training exposure.

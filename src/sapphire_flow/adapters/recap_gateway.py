@@ -20,6 +20,12 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.forcing_track import RawFetchOutcome, RawFetchStatus
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_PARAMETERS,
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalQualification,
+    radiation_mean_flux,
+)
 from sapphire_flow.types.weather import (
     BasinAverageForecast,
     ElevationBandForecast,
@@ -66,20 +72,13 @@ def _identity(value: float) -> float:
 class RecapVariable:
     """One SAP3 canonical weather parameter, and the unit register for it.
 
-    The Gateway sends NO units for any variable (measured 2026-09-07: every
-    response is value/`source`/`source_run`, nothing else), and by contract it
-    applies no transformation beyond the basin average. A spatial average does
-    not change units, so the source unit is exactly what the UPSTREAM source
-    publishes and `authority` names the document that settles it. See Plan 243.
-
-    `source_unit` -> `unit` is what `convert` performs; the three fields must be
-    read together, and `authority` is why they are what they are. A unit error
-    here is SILENT (the values are numbers of the right shape) and is NOT
-    repairable by re-running: the store ignores repeats and `value` is not part
-    of the natural key, so corrected rows are dropped.
-
-    `convert is None` means "source unit UNGROUNDED — do not trust the
-    magnitude". No variable in this table is on that sentinel.
+    The endpoint contract supplies source units; responses carry no unit field.
+    Accumulations are already differenced. The separately corrected adapter must
+    normalize end labels before qualified interval conversion can be enabled.
+    Scalar converters apply only to precipitation, temperature and snow.
+    Net radiation uses ``radiation_mean_flux`` with explicit source intervals;
+    its scalar converter is intentionally absent to prevent energy passthrough.
+    Re-ingest cannot repair wrong units: values are not part of the natural key.
     """
 
     canonical: str
@@ -105,6 +104,24 @@ class RecapVariable:
 # prevent. Settle the accumulation first, the same way `rof` was settled as an
 # hourly increment rather than a rate.
 RECAP_VARIABLES: dict[str, RecapVariable] = {
+    "solar_net_radiation": RecapVariable(
+        canonical="solar_net_radiation",
+        unit="W/m²",
+        source_unit="J/m²",
+        authority="Owner-confirmed gateway interval energy, 2026-11-20",
+        era5_name="surface_net_solar_radiation",
+        ifs_name="ssr",
+        convert=None,
+    ),
+    "thermal_net_radiation": RecapVariable(
+        canonical="thermal_net_radiation",
+        unit="W/m²",
+        source_unit="J/m²",
+        authority="Owner-confirmed gateway interval energy, 2026-11-20",
+        era5_name="surface_net_thermal_radiation",
+        ifs_name="str",
+        convert=None,
+    ),
     "precipitation": RecapVariable(
         canonical="precipitation",
         unit="mm",
@@ -578,6 +595,20 @@ def _normalize_source_run_to_utc(value: object | None) -> UtcDatetime | None:
     return ensure_utc(cast("datetime", ts.to_pydatetime()))
 
 
+def _require_radiation_frame_source(frame: pd.DataFrame, source: str) -> None:
+    if not {"source", "source_run"} <= set(frame.columns) or not bool(
+        frame["source"].eq(source).all()
+    ):
+        raise RecapPayloadIntegrityError("radiation requires original source identity")
+
+
+def _required_radiation_source_run(value: object | None) -> UtcDatetime:
+    result = _normalize_source_run_to_utc(value)
+    if result is None:
+        raise RecapPayloadIntegrityError("radiation requires original source run")
+    return result
+
+
 def _source_run_to_version(value: object | None) -> str:
     normalized = _normalize_source_run_to_utc(value)
     return normalized.isoformat() if normalized is not None else ""
@@ -771,7 +802,11 @@ def _group_by_hru(
 
 
 def _ifs_variables() -> list[RecapVariable]:
-    return [v for v in RECAP_VARIABLES.values() if v.ifs_name is not None]
+    return [
+        v
+        for v in RECAP_VARIABLES.values()
+        if v.canonical in ("precipitation", "temperature")
+    ]
 
 
 def _snow_variables() -> list[RecapVariable]:
@@ -860,10 +895,12 @@ class RecapGatewayForecastAdapter:
         client: RecapClientLike,
         resolver: GatewayPolygonResolver,
         max_cycle_age_hours: float = DEFAULT_MAX_CYCLE_AGE_HOURS,
+        interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
     ) -> None:
         self._client = client
         self._resolver = resolver
         self._max_cycle_age_hours = max_cycle_age_hours
+        self.interval_qualification = interval_qualification
 
     def with_resolver(
         self, resolver: GatewayPolygonResolver
@@ -872,6 +909,7 @@ class RecapGatewayForecastAdapter:
             client=self._client,
             resolver=resolver,
             max_cycle_age_hours=self._max_cycle_age_hours,
+            interval_qualification=self.interval_qualification,
         )
 
     def _resolve_effective_cycle(
@@ -1162,7 +1200,11 @@ class RecapGatewayForecastAdapter:
         # Config-error check (no Gateway call) BEFORE any fetch -- D27.
         by_hru = _group_by_hru(resolved)
 
-        variables = [v for v in _ifs_variables() if v.canonical in track.features]
+        variables = [
+            v
+            for v in RECAP_VARIABLES.values()
+            if v.ifs_name is not None and v.canonical in track.features
+        ]
         station_ref = {ref.station_id: ref for ref in resolved}
         acc: dict[StationId, list[dict[str, object]]] = {}
         missing_polygon_column: set[StationId] = set()
@@ -1337,6 +1379,8 @@ class RecapGatewayForecastAdapter:
         # date and defaults run_hour=0, so a 06/12/18Z cycle would silently fetch
         # the 00Z run unless we pass the cycle hour explicitly (Plan 081: run_hour
         # aligns with the IFS cycle).
+        if variable.canonical in RADIATION_PARAMETERS:
+            self.interval_qualification.require_radiation()
         call_kwargs: dict[str, object] = {
             "variable": ifs_name,
             "run_date": cycle_time,
@@ -1350,10 +1394,29 @@ class RecapGatewayForecastAdapter:
             "pd.DataFrame",
             guarded_recap_fetch(self._client.ecmwf.ifs_forecast, **call_kwargs),
         )
+        if variable.canonical in RADIATION_PARAMETERS:
+            _require_radiation_frame_source(df, "ifs")
         rows, source_run, missing = _iter_long_rows(
-            df, refs_by_polygon, variable.convert, raise_on_missing=raise_on_missing
+            df,
+            refs_by_polygon,
+            _identity
+            if variable.canonical in RADIATION_PARAMETERS
+            else variable.convert,
+            raise_on_missing=raise_on_missing,
         )
-        for ref, valid_time, value, _row_run in rows:
+        for ref, valid_time, value, row_run in rows:
+            if variable.canonical in RADIATION_PARAMETERS:
+                if _required_radiation_source_run(row_run) != cycle_time:
+                    raise RecapPayloadIntegrityError(
+                        "radiation source cycle differs from request"
+                    )
+                value = radiation_mean_flux(
+                    value,
+                    start=valid_time,
+                    source_run=cycle_time,
+                    source="ifs",
+                    qualification=self.interval_qualification,
+                )
             acc.setdefault(ref.station_id, []).append(
                 {
                     "valid_time": valid_time,
@@ -1502,9 +1565,11 @@ class RecapGatewayReanalysisAdapter:
         *,
         client: RecapClientLike,
         resolver: GatewayPolygonResolver,
+        interval_qualification: GatewayIntervalQualification = UNQUALIFIED_INTERVALS,
     ) -> None:
         self._client = client
         self._resolver = resolver
+        self.interval_qualification = interval_qualification
 
     def fetch_reanalysis(
         self,
@@ -1513,6 +1578,8 @@ class RecapGatewayReanalysisAdapter:
         end: UtcDatetime,
         parameters: list[str],
     ) -> list[RawHistoricalForcing]:
+        if RADIATION_PARAMETERS.intersection(parameters):
+            self.interval_qualification.require_radiation()
         requested = _requested_reanalysis_variables(parameters)
         if not requested:
             return []
@@ -1578,7 +1645,15 @@ class RecapGatewayReanalysisAdapter:
         # `_split_provenance`/`_iter_long_rows` would otherwise discard
         # without ever inspecting per-row values.
         df = _drop_forecast_fill_rows(df)
-        rows, _, _missing = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        if variable.canonical in RADIATION_PARAMETERS:
+            _require_radiation_frame_source(df, "era5_land")
+        rows, _, _missing = _iter_long_rows(
+            df,
+            refs_by_polygon,
+            _identity
+            if variable.canonical in RADIATION_PARAMETERS
+            else variable.convert,
+        )
         # Two boundary guards on the reshaped rows:
         #  - version is the row's OWN source_run (per-row provenance), not a single
         #    collapsed value shared across a multi-day window.
@@ -1595,7 +1670,17 @@ class RecapGatewayReanalysisAdapter:
                 spatial_type=SpatialRepresentation.BASIN_AVERAGE,
                 band_id=None,
                 member_id=None,
-                value=value,
+                value=(
+                    radiation_mean_flux(
+                        value,
+                        start=valid_time,
+                        source_run=_required_radiation_source_run(row_run),
+                        source="era5_land",
+                        qualification=self.interval_qualification,
+                    )
+                    if variable.canonical in RADIATION_PARAMETERS
+                    else value
+                ),
             )
             for ref, valid_time, value, row_run in rows
             if start <= valid_time < end

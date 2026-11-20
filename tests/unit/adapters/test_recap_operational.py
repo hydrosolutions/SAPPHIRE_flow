@@ -471,3 +471,209 @@ class TestOptionalBufferIntegrity:
             sources=[make_binding()], issue_time=ISSUE, start=START, end=ISSUE
         )
         assert result[make_binding().station_id].end == ISSUE
+
+
+class TestNetRadiation:
+    def test_four_channel_request_converts_once_and_preserves_legacy_default(
+        self,
+    ) -> None:
+        from sapphire_flow.types.operational_weather import (
+            WEATHER_PARAMETERS,
+            period_weather_value,
+        )
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        precipitation = pd.read_parquet(FIXTURES / "precipitation.parquet")
+        radiation = precipitation.copy()
+        # Valid normalized fixture: per-interval energy for 100 W/m².
+        for stamp, row in radiation.iterrows():
+            run = pd.Timestamp(row["source_run"])
+            run = run.tz_localize("UTC") if run.tzinfo is None else run
+            lead = (stamp - run).total_seconds() / 3600
+            hours = 1 if row["source"] == "era5_land" else 3 if lead < 144 else 6
+            radiation.loc[stamp, "g_225"] = 100 * hours * 3600
+        api = RecordingApi(
+            {
+                "tp": precipitation,
+                "2t": pd.read_parquet(FIXTURES / "temperature.parquet"),
+                "ssr": radiation,
+                "str": radiation,
+            }
+        )
+        qualification = GatewayIntervalQualification(
+            contract=GatewayIntervalContract.NORMALIZED_START_V1,
+            revision="test-normalized-v1",
+        )
+        adapter = RecapGatewayOperationalAdapter(
+            api=api,
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+            interval_qualification=qualification,
+        )
+        source = make_binding()
+        legacy = adapter.fetch_windows(
+            sources=[source], issue_time=ISSUE, start=START, end=ISSUE
+        )[source.station_id]
+        assert {call["ifs_variable_name"] for call in api.calls} == {"tp", "2t"}
+        api.calls.clear()
+        window = adapter.fetch_windows(
+            sources=[source],
+            issue_time=ISSUE,
+            start=START,
+            end=ISSUE,
+            parameters_by_station={source.station_id: WEATHER_PARAMETERS},
+        )[source.station_id]
+        assert {call["ifs_variable_name"] for call in api.calls} == {
+            "tp",
+            "2t",
+            "ssr",
+            "str",
+        }
+        assert window.binding_fingerprint != legacy.binding_fingerprint
+        assert all(
+            period_weather_value(day, "solar_net_radiation") == 100
+            for day in window.days
+        )
+        assert [day.temperature_c for day in window.days] == [
+            day.temperature_c for day in legacy.days
+        ]
+
+    def test_unqualified_radiation_refuses_before_provider_access(self) -> None:
+        from sapphire_flow.types.operational_weather import WEATHER_PARAMETERS
+
+        api = RecordingApi({})
+        source = make_binding()
+        adapter = RecapGatewayOperationalAdapter(
+            api=api, resolver=PolygonResolver(), config=OperationalWeatherConfig()
+        )
+        with pytest.raises(ValueError, match="requires qualified"):
+            adapter.fetch_windows(
+                sources=[source],
+                issue_time=ISSUE,
+                start=START,
+                end=ISSUE,
+                parameters_by_station={source.station_id: WEATHER_PARAMETERS},
+            )
+        assert api.calls == []
+
+    def test_absent_radiation_keeps_native_legacy_support(self) -> None:
+        from sapphire_flow.adapters.recap_gateway import RecapDataUnavailableError
+        from sapphire_flow.types.operational_weather import (
+            WEATHER_PARAMETERS,
+            period_weather_value,
+        )
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        class MissingRadiationApi(RecordingApi):
+            def operational(self, **kwargs: object) -> object:
+                if kwargs["ifs_variable_name"] in ("ssr", "str"):
+                    raise RecapDataUnavailableError(
+                        "absent", code="source_data_missing"
+                    )
+                return super().operational(**kwargs)
+
+        api = MissingRadiationApi(
+            {
+                "tp": pd.read_parquet(FIXTURES / "precipitation.parquet"),
+                "2t": pd.read_parquet(FIXTURES / "temperature.parquet"),
+            }
+        )
+        source = make_binding()
+        adapter = RecapGatewayOperationalAdapter(
+            api=api,
+            resolver=PolygonResolver(),
+            config=OperationalWeatherConfig(),
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.NORMALIZED_START_V1,
+                revision="test-normalized-v1",
+            ),
+        )
+        window = adapter.fetch_windows(
+            sources=[source],
+            issue_time=ISSUE,
+            start=START,
+            end=ISSUE,
+            parameters_by_station={source.station_id: WEATHER_PARAMETERS},
+        )[source.station_id]
+        assert window.end == ISSUE
+        assert all(
+            day.precipitation_mm is not None and day.temperature_c is not None
+            for day in window.days
+        )
+        assert all(
+            period_weather_value(day, "solar_net_radiation") is None
+            for day in window.days
+        )
+
+
+class TestRadiationFingerprints:
+    def test_legacy_binding_fingerprints_remain_exact(self) -> None:
+        from sapphire_flow.adapters.recap_operational import (
+            future_binding_fingerprint,
+            future_binding_fingerprint_v2,
+            operational_binding_fingerprint,
+            operational_binding_fingerprint_v2,
+        )
+        from tests.fakes.weather_periods import GRID
+
+        source = make_binding()
+        ref = PolygonResolver().resolve(source)
+        assert (
+            operational_binding_fingerprint(source, ref)
+            == "c664d992dd1eb5a79d02533b527e58ba11db993832791766a800c47492fd460d"
+        )
+        assert (
+            future_binding_fingerprint(source, ref, (0,))
+            == "14fc73505ab25c203717231802cd5915a9fdcabe4dd2e94d1cd28a0157ca92fb"
+        )
+        assert (
+            operational_binding_fingerprint_v2(source, ref, GRID)
+            == "cb1c0d700dc5e31db07de0738962053830fee50cb175e7385b8a526f30254b1b"
+        )
+        assert (
+            future_binding_fingerprint_v2(source, ref, (0,), GRID)
+            == "343a1c902a7613351fa7f55e64ea3f08e1323e8a330ffd3127f736b6e606353e"
+        )
+
+    def test_channel_order_is_canonical_and_revision_binds_new_cache(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.adapters.recap_operational import (
+            operational_binding_fingerprint,
+        )
+        from sapphire_flow.types.operational_weather import WEATHER_PARAMETERS
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        source = make_binding()
+        ref = PolygonResolver().resolve(source)
+        qualification = GatewayIntervalQualification(
+            contract=GatewayIntervalContract.NORMALIZED_START_V1,
+            revision="corrected-v1",
+        )
+        identity = operational_binding_fingerprint(
+            source,
+            ref,
+            parameters=WEATHER_PARAMETERS,
+            interval_qualification=qualification,
+        )
+        assert identity == operational_binding_fingerprint(
+            source,
+            ref,
+            parameters=tuple(reversed(WEATHER_PARAMETERS)),
+            interval_qualification=qualification,
+        )
+        assert identity != operational_binding_fingerprint(
+            source,
+            ref,
+            parameters=WEATHER_PARAMETERS,
+            interval_qualification=replace(qualification, revision="corrected-v2"),
+        )

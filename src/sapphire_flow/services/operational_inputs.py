@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
@@ -39,6 +40,10 @@ from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
     StationModelInputs,
+)
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_PARAMETERS,
+    qualified_interval_duration,
 )
 
 if TYPE_CHECKING:
@@ -172,6 +177,7 @@ def _aggregate_nwp_records_to_time_step(
     time_step: timedelta,
     *,
     grid: TimeGrid | None = None,
+    weather_policy: FutureWeatherPolicy = FutureWeatherPolicy.LEGACY,
 ) -> list[_AggregatedNwpPoint]:
     """Aggregate hourly per-member NWP records to the model's ``time_step``.
 
@@ -182,6 +188,48 @@ def _aggregate_nwp_records_to_time_step(
     """
     if not records:
         return []
+
+    radiation = [
+        record for record in records if record.parameter in RADIATION_PARAMETERS
+    ]
+    weighted: list[_AggregatedNwpPoint] = []
+    if radiation:
+        if (
+            weather_policy is not FutureWeatherPolicy.RECAP_COMPLETE_DAILY
+            or time_step != timedelta(days=1)
+        ):
+            raise ValueError(
+                "radiation requires qualified complete daily Recap support"
+            )
+        groups: dict[
+            tuple[str, int | None, UtcDatetime], list[WeatherForecastRecord]
+        ] = defaultdict(list)
+        for record in radiation:
+            stamp = (
+                grid.floor(record.valid_time)
+                if grid is not None
+                else floor_to_time_step(record.valid_time, time_step)
+            )
+            groups[(record.parameter, record.member_id, stamp)].append(record)
+        for (parameter, member, stamp), rows in groups.items():
+            weighted.append(
+                _AggregatedNwpPoint(
+                    valid_time=stamp,
+                    parameter=parameter,
+                    member_id=member,
+                    value=math.fsum(
+                        row.value
+                        * qualified_interval_duration(
+                            row.valid_time, row.cycle_time, "ifs"
+                        ).total_seconds()
+                        for row in rows
+                    )
+                    / 86400,
+                )
+            )
+        records = [
+            record for record in records if record.parameter not in RADIATION_PARAMETERS
+        ]
 
     by_member: dict[int | None, list[WeatherForecastRecord]] = defaultdict(list)
     for r in records:
@@ -212,7 +260,7 @@ def _aggregate_nwp_records_to_time_step(
                         value=float(value),
                     )
                 )
-    return aggregated
+    return aggregated + weighted
 
 
 def _broadcast_deterministic_features_to_members(
@@ -456,7 +504,7 @@ def build_future_dynamic_frame(
             ensemble_mode=ensemble_mode,
         )
     daily_nwp_records = _aggregate_nwp_records_to_time_step(
-        records, time_step, grid=grid
+        records, time_step, grid=grid, weather_policy=weather_policy
     )
     daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
     kept_daily_records = _filter_and_cap_daily_records(

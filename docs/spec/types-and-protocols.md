@@ -7130,3 +7130,15 @@ lower bounds and configured gap-length limits are unchanged. In v2, a fill is re
 only when its start is strictly later than `past_end - 5 days`; warnings name the UTC
 interval rather than presenting its start date as a Nepal civil-day label. Actual
 60-hour cycle freshness is still checked at issuance, separately from eligibility.
+
+### Qualified Recap net radiation
+
+`WeatherParameter` also admits `solar_net_radiation` and
+`thermal_net_radiation`. Their `OperationalWeatherSample` uses mean W/m²,
+explicit `interval_end` and `contract_revision="rad-int-v1"`; signed values are
+valid. Day/Period layouts are unchanged: `period_weather_value` derives complete
+daily radiation by interval-weighted reduction. Incomplete support returns no
+value. `GatewayIntervalQualification` binds the normalized-start contract to a
+corrected adapter revision; unqualified requests cannot convert radiation.
+Operational source protocols optionally accept `parameters_by_station`, preserving
+the legacy two-channel default. No FI protocol or discharge-output schema changes.

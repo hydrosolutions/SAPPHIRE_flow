@@ -32,6 +32,7 @@ from sapphire_flow.types.operational_weather import (
     WeatherCoverage,
     WeatherUnused,
     WeatherUse,
+    period_weather_value,
 )
 from sapphire_flow.types.operational_weather_v2 import (
     FutureWeatherRequestV2,
@@ -161,9 +162,7 @@ def assemble_selected_weather(
                 {
                     "timestamp": day.start,
                     **{
-                        parameter: day.precipitation_mm
-                        if parameter == "precipitation"
-                        else day.temperature_c
+                        parameter: period_weather_value(day, parameter)
                         for parameter in past.requirement.parameters
                     },
                 }
@@ -176,12 +175,7 @@ def assemble_selected_weather(
                 day.start
                 for day in periods
                 if any(
-                    (
-                        day.precipitation_mm
-                        if parameter == "precipitation"
-                        else day.temperature_c
-                    )
-                    is None
+                    (period_weather_value(day, parameter)) is None
                     for parameter in gap_parameters
                 )
             }

@@ -17,6 +17,7 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherSource,
     PastWeatherRequirement,
     WeatherPastSnapshot,
+    period_weather_value,
 )
 
 if TYPE_CHECKING:
@@ -131,10 +132,10 @@ def snapshot_support(
         return SnapshotSupport.UNUSABLE
     by_day = {day.day: day for day in window.days}
     rollover = by_day.get(issue_time)
-    if (
-        rollover is None
-        or rollover.precipitation_mm is None
-        or rollover.temperature_c is None
+    if rollover is None or any(
+        period_weather_value(rollover, parameter) is None
+        for requirement in requirements
+        for parameter in requirement.past.parameters
     ):
         return SnapshotSupport.UNUSABLE
     support = SnapshotSupport.NATIVE
@@ -160,9 +161,7 @@ def snapshot_support(
                 {
                     "timestamp": day.day,
                     **{
-                        name: day.precipitation_mm
-                        if name == "precipitation"
-                        else day.temperature_c
+                        name: period_weather_value(day, name)
                         for name in past.parameters
                     },
                 }

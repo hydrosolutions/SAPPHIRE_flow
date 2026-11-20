@@ -11,7 +11,10 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import HydroScraperBatchResult, RawObservation
-    from sapphire_flow.types.operational_weather import OperationalWeatherWindow
+    from sapphire_flow.types.operational_weather import (
+        OperationalWeatherWindow,
+        WeatherParameter,
+    )
     from sapphire_flow.types.operational_weather_v2 import OperationalWeatherWindowV2
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
@@ -172,6 +175,8 @@ class OperationalWeatherSource(Protocol):
         issue_time: UtcDatetime,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+        | None = None,
     ) -> dict[StationId, OperationalWeatherWindow]: ...
 
 
@@ -186,4 +191,6 @@ class OperationalWeatherPeriodSource(Protocol):
         end: UtcDatetime,
         grid: TimeGrid,
         eligibility_cutoff: UtcDatetime,
+        parameters_by_station: Mapping[StationId, tuple[WeatherParameter, ...]]
+        | None = None,
     ) -> dict[StationId, OperationalWeatherWindowV2]: ...

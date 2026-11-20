@@ -1770,8 +1770,14 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0088"
-        with pytest.raises(NotImplementedError, match="requires a drained deployment"):
+        assert before[0] == "0089"
+        with pytest.raises(
+            (NotImplementedError, sa.exc.DBAPIError),
+            match=(
+                "requires a drained deployment|"
+                "cannot downgrade net radiation with retained forcing or evidence"
+            ),
+        ):
             _alembic("downgrade", "0066")
         assert snapshot() == before
         assert _guard_object_counts(db) == (10, 3)

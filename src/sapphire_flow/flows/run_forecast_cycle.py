@@ -106,6 +106,10 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
+from sapphire_flow.types.recap_intervals import (
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalQualification,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -755,6 +759,16 @@ def _default_injected_adapter_forcing_policy(
     return _DEFAULT_FORCING_RESOLUTION_POLICY
 
 
+def _recap_interval_qualification(adapter: object) -> GatewayIntervalQualification:
+    from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
+
+    return (
+        adapter.interval_qualification
+        if isinstance(adapter, RecapGatewayForecastAdapter)
+        else UNQUALIFIED_INTERVALS
+    )
+
+
 def _build_recap_forecast_adapter(
     *,
     config_path: str | None,
@@ -824,6 +838,7 @@ def _build_recap_forecast_adapter(
             client=cast("RecapClientLike", recap_client),
             resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
             max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
+            interval_qualification=recap_gateway_config.interval_qualification,
         )
         policy = ForcingResolutionPolicy(
             cycle_cadence_hours=recap_gateway_config.cycle_cadence_hours,
@@ -842,6 +857,11 @@ def _build_recap_forecast_adapter(
             snow=cast("RecapClientLike", recap_client).snow,
         )
     adapter = RecapGatewayForecastAdapter(
+        interval_qualification=load_recap_gateway_config(
+            Path(config_path)
+        ).interval_qualification
+        if config_path is not None
+        else UNQUALIFIED_INTERVALS,
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
     )
@@ -3290,6 +3310,7 @@ def run_forecast_cycle_flow(
                         api=operational_api,
                         resolver=prepared_weather.resolver,
                         config=config.operational_weather,
+                        interval_qualification=_recap_interval_qualification(adapter),
                     )
                 resolution_policy = (
                     forcing_resolution_policy or _DEFAULT_FORCING_RESOLUTION_POLICY
