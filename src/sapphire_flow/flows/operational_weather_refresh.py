@@ -47,6 +47,7 @@ from sapphire_flow.types.operational_weather_v2 import (
     WeatherPastSnapshotV2,
     require_context,
 )
+from sapphire_flow.types.recap_intervals import RADIATION_PARAMETERS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -300,9 +301,23 @@ class OperationalWeatherRefresh:
             RecapTransientError,
         )
 
+        requested_parameters = {
+            sid: spec.past_requirement.parameters
+            for sid, spec in self._specs.items()
+            if spec.past_requirement is not None
+        }
+        parameters_by_station = (
+            requested_parameters
+            if any(
+                RADIATION_PARAMETERS.intersection(names)
+                for names in requested_parameters.values()
+            )
+            else None
+        )
         try:
             if self._grid is None:
                 windows = fetch_combined_operational_windows(
+                    parameters_by_station=parameters_by_station,
                     adapter=cast("OperationalWeatherSource", adapter),
                     sources=sources,
                     station_store=station_store,
@@ -327,6 +342,7 @@ class OperationalWeatherRefresh:
                         "period refresh start omits requested past support"
                     )
                 windows = fetch_combined_period_windows(
+                    parameters_by_station=parameters_by_station,
                     adapter=adapter,
                     sources=sources,
                     station_store=station_store,

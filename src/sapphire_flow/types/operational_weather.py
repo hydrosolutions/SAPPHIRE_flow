@@ -7,6 +7,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_CONTRACT_REVISION,
+    RADIATION_PARAMETERS,
+    qualified_interval_duration,
+)
 from sapphire_flow.types.time_grid import TimeGrid
 from sapphire_flow.types.weather_gap import WeatherGapFill, WeatherGapMethod
 
@@ -44,7 +49,18 @@ class WeatherIdentityOrigin(StrEnum):
     QUALIFIED_ENDPOINT_CONTRACT = "qualified_endpoint_contract"
 
 
-WeatherParameter = Literal["precipitation", "temperature"]
+WeatherParameter = Literal[
+    "precipitation", "temperature", "solar_net_radiation", "thermal_net_radiation"
+]
+LEGACY_WEATHER_PARAMETERS: tuple[WeatherParameter, ...] = (
+    "precipitation",
+    "temperature",
+)
+WEATHER_PARAMETERS: tuple[WeatherParameter, ...] = (
+    *LEGACY_WEATHER_PARAMETERS,
+    "solar_net_radiation",
+    "thermal_net_radiation",
+)
 
 
 def require_utc(value: UtcDatetime) -> None:
@@ -122,7 +138,7 @@ class OperationalWeatherSample:
     def __post_init__(self) -> None:
         require_utc(self.valid_time)
         require_utc(self.source_run)
-        if self.parameter not in ("precipitation", "temperature"):
+        if self.parameter not in WEATHER_PARAMETERS:
             raise ValueError("unsupported operational weather parameter")
         if not isinstance(self.source, OperationalWeatherSource):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("unsupported operational weather source")
@@ -140,22 +156,29 @@ class OperationalWeatherSample:
         if (
             self.identity_origin
             is not WeatherIdentityOrigin.QUALIFIED_ENDPOINT_CONTRACT
-            or self.contract_revision != QUALIFIED_SOURCE_REVISION
+            or self.contract_revision
+            != (
+                RADIATION_CONTRACT_REVISION
+                if self.parameter in RADIATION_PARAMETERS
+                else QUALIFIED_SOURCE_REVISION
+            )
         ):
             raise ValueError("unsupported weather identity contract")
         step = self.sample_step()
-        if self.parameter == "precipitation":
+        if self.parameter == "precipitation" or self.parameter in RADIATION_PARAMETERS:
             if self.interval_end is None:
                 raise ValueError("precipitation requires a START-labelled interval")
             require_utc(self.interval_end)
             if self.interval_end != self.valid_time + step:
-                raise ValueError(
-                    "precipitation interval conflicts with source schedule"
-                )
+                raise ValueError("accumulation interval conflicts with source schedule")
         elif self.interval_end is not None:
             raise ValueError("temperature is a snapshot, not an interval")
 
     def sample_step(self) -> timedelta:
+        if self.parameter in RADIATION_PARAMETERS:
+            return qualified_interval_duration(
+                self.valid_time, self.source_run, self.source
+            )
         if any(
             (
                 self.valid_time.minute,
@@ -182,8 +205,10 @@ class OperationalWeatherSample:
         max_lead = 360 if self.source_run.hour == 0 else 72
         if lead < 0 or lead > max_lead or lead % step:
             raise ValueError("unsupported IFS lead grid")
-        if self.parameter == "precipitation" and lead + step > max_lead:
-            raise ValueError("precipitation interval exceeds qualified IFS horizon")
+        if (
+            self.parameter == "precipitation" or self.parameter in RADIATION_PARAMETERS
+        ) and lead + step > max_lead:
+            raise ValueError("accumulation interval exceeds qualified IFS horizon")
         return timedelta(hours=step)
 
 
@@ -197,6 +222,8 @@ class OperationalWeatherPeriod:
 
     def __post_init__(self) -> None:
         require_daily_grid_boundary(self.start, self.grid)
+        for name in RADIATION_PARAMETERS:
+            daily_weather_value(self.start, self.samples, name, grid=self.grid)
         for parameter in ("precipitation", "temperature"):
             reduced = daily_weather_value(
                 self.start, self.samples, parameter, grid=self.grid
@@ -227,6 +254,8 @@ class OperationalWeatherDay:
 
     def __post_init__(self) -> None:
         require_midnight(self.day)
+        for name in RADIATION_PARAMETERS:
+            daily_weather_value(self.day, self.samples, name)
         for parameter in ("precipitation", "temperature"):
             reduced = daily_weather_value(self.day, self.samples, parameter)
             actual = (
@@ -273,8 +302,35 @@ def daily_weather_value(
             missing = True
     if missing or cursor < end:
         return None
+    if parameter in RADIATION_PARAMETERS:
+        return (
+            math.fsum(
+                row.value
+                * qualified_interval_duration(
+                    row.valid_time, row.source_run, row.source
+                ).total_seconds()
+                for row in rows
+            )
+            / 86400
+        )
     value = math.fsum(row.value for row in rows)
     return value / len(rows) if parameter == "temperature" else value
+
+
+def period_weather_value(
+    period: OperationalWeatherDay | OperationalWeatherPeriod, parameter: str
+) -> float | None:
+    if parameter == "precipitation":
+        return period.precipitation_mm
+    if parameter == "temperature":
+        return period.temperature_c
+    if parameter not in RADIATION_PARAMETERS:
+        raise ValueError("unsupported operational weather parameter")
+    if isinstance(period, OperationalWeatherPeriod):
+        return daily_weather_value(
+            period.start, period.samples, parameter, grid=period.grid
+        )
+    return daily_weather_value(period.day, period.samples, parameter)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -764,8 +820,7 @@ class PastWeatherRequirement:
         if self.start >= self.end or not self.parameters:
             raise ValueError("past weather requirement must be nonempty")
         if len(set(self.parameters)) != len(self.parameters) or any(
-            parameter not in ("precipitation", "temperature")
-            for parameter in self.parameters
+            parameter not in WEATHER_PARAMETERS for parameter in self.parameters
         ):
             raise ValueError("past weather requirement has invalid parameters")
 

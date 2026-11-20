@@ -279,3 +279,19 @@ Answer: the geometry's feature attribute "name" value is considered as unique id
 *Derived from `00-internal-gap-analysis.md` (decisions #1, #1b, #2, #3b, #6, #7). Pairs
 with `02-forecast-interface-requirements.md`, which fixes the variable/feature list that
 §3/§5 here depend on.*
+
+## Net-radiation interval clarification (owner, 2026-11-20)
+
+For Recap ERA5/IFS, precipitation and net-radiation accumulations are already
+differenced over each output interval; the operational endpoint stitches history
+and forecasts. Raw labels are interval-end, while model training labels are
+interval-start. This clarification supersedes earlier assumptions that raw
+Gateway accumulations are start-stamped or spatial averaging is its only
+processing. Timestamp normalization is a separately owned adapter correction.
+
+`surface_net_solar_radiation`/`ssr` and
+`surface_net_thermal_radiation`/`str` carry J/m² interval energy, converted once
+to W/m² using qualified source bounds. They are distinct from downward/generic
+radiation. No new provider response metadata is required: SAP3's scoped
+normalization attestation identifies the independently corrected adapter revision.
+See the qualification and capacity gates in `operations/model-onboarding.md`.

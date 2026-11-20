@@ -2782,3 +2782,16 @@ flow/service, skill classifier and API schema consistent. The deployed FI artifa
 contract does not mandate training dates. Import time, hashes, tenant/scope and
 deserialization checks remain required. Unknown skill exposure must never be
 classified as outside training. Event-review already permits null training bounds.
+
+### Recap interval radiation extension
+
+The selected-weather route admits `solar_net_radiation` and
+`thermal_net_radiation` only with qualified normalized source intervals.
+`types/recap_intervals.py` owns duration/conversion semantics; construction roots
+must propagate `RecapGatewayConfig.interval_qualification`. Requested station
+channel unions flow through preparation, refresh, adapter batching and both
+fingerprint variants. Daily consumers use `period_weather_value`; never select
+all non-precipitation features as temperature. Future weighting applies only to
+complete qualified Recap support. Preserve old fingerprints/codec bytes, source
+receipts and the existing gap-fill allowlist. See the net-radiation plan and
+model-onboarding qualification gates before activation.

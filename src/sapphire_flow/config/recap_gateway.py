@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sapphire_flow.adapters.recap_gateway import DEFAULT_MAX_CYCLE_AGE_HOURS
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.types.recap_intervals import (
+    GatewayIntervalContract,
+    GatewayIntervalQualification,
+)
 
 if TYPE_CHECKING:
     from recap_client import ApiClientConfig
@@ -70,7 +74,24 @@ class RecapGatewayConfig:
     # consumes it and T8 threads it on both construction branches.
     cycle_cadence_hours: float = DEFAULT_CYCLE_CADENCE_HOURS
 
+    normalized_interval_contract: GatewayIntervalContract = (
+        GatewayIntervalContract.UNQUALIFIED
+    )
+    normalization_revision: str | None = None
+
+    @property
+    def interval_qualification(self) -> GatewayIntervalQualification:
+        return GatewayIntervalQualification(
+            contract=self.normalized_interval_contract,
+            revision=self.normalization_revision,
+        )
+
     def __post_init__(self) -> None:
+        try:
+            _ = self.interval_qualification
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
+
         # Review fold-in (major): `bool` is a subclass of `int`/`float` in
         # Python, so `cycle_cadence_hours <= 0` alone silently accepts
         # `True` (== 1.0) as a valid cadence -- reject it explicitly BEFORE
@@ -212,6 +233,12 @@ def parse_recap_gateway_config(raw: dict[str, object]) -> RecapGatewayConfig:
             f"got {raw_cadence!r}"
         ) from exc
 
+    try:
+        interval_contract = GatewayIntervalContract(
+            section.get("normalized_interval_contract", "unqualified")
+        )
+    except (ValueError, TypeError) as exc:
+        raise ConfigurationError("invalid normalized interval contract") from exc
     return RecapGatewayConfig(
         base_url=cast("str", section["base_url"]),
         timeout_s=cast("int", section["timeout_s"]),
@@ -221,4 +248,8 @@ def parse_recap_gateway_config(raw: dict[str, object]) -> RecapGatewayConfig:
         max_retries=cast("int", section["max_retries"]),
         max_cycle_age_hours=max_cycle_age_hours,
         cycle_cadence_hours=cycle_cadence_hours,
+        normalized_interval_contract=interval_contract,
+        normalization_revision=cast(
+            "str | None", section.get("normalization_revision")
+        ),
     )

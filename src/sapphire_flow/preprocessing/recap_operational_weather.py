@@ -5,12 +5,14 @@ from typing import TYPE_CHECKING
 
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.operational_weather import (
+    LEGACY_WEATHER_PARAMETERS,
     UTC_DAILY_WEATHER_GRID,
     OperationalWeatherCoverageError,
     OperationalWeatherDay,
     OperationalWeatherPeriod,
     OperationalWeatherWindow,
     WeatherCoverage,
+    WeatherParameter,
     daily_weather_value,
     require_daily_grid_boundary,
     require_midnight,
@@ -30,6 +32,7 @@ def reduce_weather_periods(
     samples: tuple[OperationalWeatherSample, ...],
     grid: TimeGrid,
     coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> tuple[OperationalWeatherPeriod, ...]:
     for bound in (start, end):
         require_daily_grid_boundary(bound, grid)
@@ -48,7 +51,10 @@ def reduce_weather_periods(
         temperature = daily_weather_value(day, rows, "temperature", grid=grid)
         precipitation = daily_weather_value(day, rows, "precipitation", grid=grid)
         if coverage is WeatherCoverage.COMPLETE and (
-            temperature is None or precipitation is None
+            any(
+                daily_weather_value(day, rows, name, grid=grid) is None
+                for name in parameters
+            )
         ):
             raise OperationalWeatherCoverageError(
                 "operational weather has a gap in required daily support"
@@ -74,6 +80,7 @@ def reduce_daily_window(
     end: UtcDatetime,
     samples: tuple[OperationalWeatherSample, ...],
     coverage: WeatherCoverage = WeatherCoverage.COMPLETE,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
 ) -> OperationalWeatherWindow:
     for bound in (issue_time, start, end):
         require_midnight(bound)
@@ -85,6 +92,7 @@ def reduce_daily_window(
         samples=samples,
         grid=UTC_DAILY_WEATHER_GRID,
         coverage=coverage,
+        parameters=parameters,
     )
     return OperationalWeatherWindow(
         station_id=station_id,

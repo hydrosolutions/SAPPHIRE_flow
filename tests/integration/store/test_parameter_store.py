@@ -15,7 +15,7 @@ class TestPgParameterStore:
     ) -> None:
         store = PgParameterStore(db_connection)
         results = store.fetch_all()
-        assert len(results) == 11
+        assert len(results) == 13
         names = {p.name for p in results}
         assert names == {
             "discharge",
@@ -24,6 +24,8 @@ class TestPgParameterStore:
             "temperature",
             "humidity",
             "radiation",
+            "solar_net_radiation",
+            "thermal_net_radiation",
             "wind_speed",
             "snow_depth",
             "reference_et",

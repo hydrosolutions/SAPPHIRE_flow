@@ -110,3 +110,56 @@ def test_valid_window_exact_byte_boundary_uses_typed_size_refusal() -> None:
     assert window_bytes(window, max_bytes=len(payload)) == payload
     with pytest.raises(WeatherSnapshotSizeError, match="cache byte limit"):
         window_bytes(window, max_bytes=len(payload) - 1)
+
+
+class TestRadiationEvidence:
+    def test_roundtrip_and_recomputed_digest_duplicate_refusal(self) -> None:
+        from datetime import timedelta
+
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.recap_intervals import RADIATION_CONTRACT_REVISION
+
+        entry = pending_entry()
+        snapshot = entry.past_snapshot
+        assert snapshot is not None
+        day = snapshot.window.days[0]
+        radiation = tuple(
+            replace(
+                sample,
+                parameter="thermal_net_radiation",
+                value=-100.0,
+                contract_revision=RADIATION_CONTRACT_REVISION,
+            )
+            for sample in day.samples
+            if sample.parameter == "precipitation"
+        )
+        new_day = replace(day, samples=day.samples + radiation)
+        window = replace(snapshot.window, days=(new_day,))
+        new_snapshot = make_past_snapshot(
+            window=window,
+            retrieved_at=ISSUE,
+            snapshot_id=uuid4(),
+            max_bytes=2 * 1024 * 1024,
+        )
+        new_entry = replace(entry, past_snapshot=new_snapshot)
+        raw = encode_cache_entry(new_entry, max_past_bytes=2 * 1024 * 1024)
+        assert decode_cache_entry(raw, max_past_bytes=2 * 1024 * 1024) == new_entry
+        changed_day = replace(
+            new_day,
+            samples=new_day.samples[:-1]
+            + (replace(new_day.samples[-1], value=-101.0),),
+        )
+        tampered = replace(new_snapshot, window=replace(window, days=(changed_day,)))
+        with pytest.raises(ValueError, match="hash mismatch"):
+            encode_cache_entry(
+                replace(new_entry, past_snapshot=tampered),
+                max_past_bytes=2 * 1024 * 1024,
+            )
+        # Domain validation catches tampering even if an attacker recomputes hashes.
+        with pytest.raises(ValueError, match="overlap or duplicate"):
+            replace(new_day, samples=new_day.samples + radiation[:1])
+        with pytest.raises(ValueError, match="source grid|lead grid|schedule"):
+            replace(
+                radiation[0],
+                valid_time=ensure_utc(radiation[0].valid_time + timedelta(hours=1)),
+            )

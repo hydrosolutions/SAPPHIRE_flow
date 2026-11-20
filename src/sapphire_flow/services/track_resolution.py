@@ -193,6 +193,7 @@ def _station_complete(
                 feature_records,
                 time_step=track_request.key.time_step,
                 issue_time=issue_time,
+                weather_policy=weather_policy,
             )
         else:
             times_by_key = {

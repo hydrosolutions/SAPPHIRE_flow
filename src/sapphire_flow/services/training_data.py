@@ -49,6 +49,8 @@ _V0_AGGREGATION_FALLBACK: dict[str, AggregationMethod] = {
     "wind_speed": AggregationMethod.MEAN,
     "wind_direction": AggregationMethod.MEAN,
     "global_radiation": AggregationMethod.MEAN,
+    "solar_net_radiation": AggregationMethod.MEAN,
+    "thermal_net_radiation": AggregationMethod.MEAN,
     "reference_et": AggregationMethod.SUM,
     "snow_water_equivalent": AggregationMethod.MEAN,
     # Plan 145 D2: canonical Recap snow variables (recap_gateway.RECAP_VARIABLES).

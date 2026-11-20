@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
 from sapphire_flow.adapters.recap_operational import (
     future_binding_fingerprint,
     operational_binding_fingerprint,
@@ -28,12 +29,18 @@ from sapphire_flow.types.forcing_track import (
     FutureSteps,
 )
 from sapphire_flow.types.operational_weather import (
+    LEGACY_WEATHER_PARAMETERS,
+    WEATHER_PARAMETERS,
     FutureWeatherRequest,
     FutureWeatherRequirement,
     PastWeatherRequirement,
     WeatherCacheKey,
-    WeatherParameter,
     require_midnight,
+)
+from sapphire_flow.types.recap_intervals import (
+    RADIATION_PARAMETERS,
+    UNQUALIFIED_INTERVALS,
+    GatewayIntervalContract,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +80,7 @@ class PreparedWeatherRefresh:
     assignments: Mapping[tuple[StationId, ModelId], AssignmentWeatherRequirement]
     resolver: FrozenWeatherResolver
     projections: tuple[ForcingRequired, ...]
+    refusal_messages: tuple[str, ...] = ()
 
 
 def prepare_weather_refresh(
@@ -126,7 +134,13 @@ def prepare_weather_refresh(
                 )
     mappings: dict[StationWeatherSource, GatewayPolygonRef] = {}
     projections: list[ForcingRequired] = []
-    weather_parameters: tuple[WeatherParameter, ...] = ("precipitation", "temperature")
+    weather_parameters = WEATHER_PARAMETERS
+    qualification = (
+        adapter.interval_qualification
+        if isinstance(adapter, RecapGatewayForecastAdapter)
+        else UNQUALIFIED_INTERVALS
+    )
+    refusals: list[str] = []
     assignments: dict[tuple[StationId, ModelId], AssignmentWeatherRequirement] = {}
     specs: dict[StationId, StationWeatherRefresh] = {}
     for (sid, mid), step in scheduled.items():
@@ -143,10 +157,19 @@ def prepare_weather_refresh(
         names = (
             requirements.past_dynamic_features | requirements.future_dynamic_features
         )
-        if not names <= {"precipitation", "temperature"}:
+        if (
+            RADIATION_PARAMETERS.intersection(names)
+            and qualification.contract is GatewayIntervalContract.UNQUALIFIED
+        ):
+            refusals.append(
+                f"Required operational weather unavailable for {sid}/{mid}: "
+                "radiation intervals are unqualified"
+            )
+            continue
+        if not names <= set(weather_parameters):
             raise ConfigurationError(
                 "selected operational weather supports only "
-                "precipitation and temperature"
+                "qualified weather parameters"
             )
         lookbacks = dict(requirements.declared_lookbacks)
         past = (
@@ -217,7 +240,15 @@ def prepare_weather_refresh(
             future = FutureWeatherRequest(
                 station_id=sid,
                 source=source.nwp_source,
-                binding_fingerprint=future_binding_fingerprint(source, ref, members),
+                binding_fingerprint=future_binding_fingerprint(
+                    source,
+                    ref,
+                    members,
+                    parameters=tuple(
+                        name for name in weather_parameters if name in horizons
+                    ),
+                    interval_qualification=qualification,
+                ),
                 issue_time=issue_time,
                 requirements=tuple(
                     FutureWeatherRequirement(
@@ -265,7 +296,14 @@ def prepare_weather_refresh(
         specs[sid] = StationWeatherRefresh(
             key=WeatherCacheKey(
                 station_id=sid,
-                binding_fingerprint=operational_binding_fingerprint(source, ref),
+                binding_fingerprint=operational_binding_fingerprint(
+                    source,
+                    ref,
+                    parameters=combined_past.parameters
+                    if combined_past is not None
+                    else LEGACY_WEATHER_PARAMETERS,
+                    interval_qualification=qualification,
+                ),
             ),
             source=source,
             past_requirement=combined_past,
@@ -295,7 +333,15 @@ def prepare_weather_refresh(
                 and future is not None
                 and all(req.member_ids == (0,) for req in future.requirements)
                 and future.binding_fingerprint
-                == future_binding_fingerprint(forecast_bindings[sid], ref, (0,))
+                == future_binding_fingerprint(
+                    forecast_bindings[sid],
+                    ref,
+                    (0,),
+                    parameters=tuple(
+                        name for name in weather_parameters if name in horizons
+                    ),
+                    interval_qualification=qualification,
+                )
                 else frozenset()
             ),
         )
@@ -317,4 +363,5 @@ def prepare_weather_refresh(
         assignments=MappingProxyType(assignments),
         resolver=FrozenWeatherResolver(bindings=tuple(mappings.items())),
         projections=tuple(projections),
+        refusal_messages=tuple(refusals),
     )
