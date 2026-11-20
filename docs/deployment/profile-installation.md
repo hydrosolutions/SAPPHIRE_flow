@@ -8,7 +8,10 @@ service wiring passed, not that forecasting or backups are operational.
 
 **Qualification status:** these commands have unit/fault coverage and a real
 Compose rendering check. Real-container persistence qualification (PI3) and
-daemon/host reboot acceptance (PI4) remain pending. Use a dedicated test host
+daemon/host reboot acceptance (PI4) remain pending. The new
+[CI qualification](../../tests/fixtures/deployment_installation/README.md) exercises
+real containers; its final-head pass must be recorded before PI3 is complete.
+Use a dedicated test host
 until those milestones complete. Existing deployments keep their current runbooks.
 
 ## Select and check your inputs

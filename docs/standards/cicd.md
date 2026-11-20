@@ -43,13 +43,27 @@ qualification runs in the Aquacast image-proof job after separately building the
 default variant and preloading pinned infrastructure. Private build access absence
 retains the existing degraded path and reports rehearsal qualification unperformed.
 The 45-minute combined acceptance budget plus cleanup reserves has a 55-minute
-step limit; the job allows 114 minutes including the existing builds/scans. Only
+step limit. Persistent installation qualification reuses the same images after
+rehearsal, with a separate 45-minute test budget and 55-minute step limit; the job
+allows 169 minutes including builds/scans and both cleanup reserves. This raises
+the worst-case bound, without adding a second image build pipeline. Only
 the allowlisted qualification summary is uploaded. The Aquacast Trivy database
 cache lives under runner temporary storage so scanning does not dirty the checked
 source used by rehearsal. No clean-source guard is bypassed. FULL source-CI attestation
 requires every rehearsal preparation, execution and safe-upload step to succeed;
 missing, skipped or failed qualification cannot produce FULL evidence. Workflow
 changes refresh both the reviewed byte hash and mandatory producer inventory.
+
+The persistent qualification uses `tests/integration/test_deployment_install.py`
+with an explicit dedicated-daemon opt-in, random synthetic file deliveries and
+private external profiles. It exercises install/verify/stop/start, retained DB and
+volume markers, unchanged init, missing-file refusal, token revocation and injected
+init failure. Its test-only cleanup rechecks daemon and installation/project labels;
+the installer itself never removes data. Only the allowlisted summary is uploaded.
+Both qualification and summary upload are mandatory for FULL attestation. Host
+reboot and daemon-restart acceptance remain PI4; see the
+[fixture runbook](../../tests/fixtures/deployment_installation/README.md).
+
 
 ## Docker Compose service topology
 

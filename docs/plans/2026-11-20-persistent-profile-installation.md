@@ -365,3 +365,18 @@ including lifecycle faults, real offline Compose rendering, private-state/delive
 checks and token finalizers. Changed-file Ruff and Pyright and the staged
 pre-commit checks (including secret scanning) passed. Full CI at the final PR head
 remains the merge gate; no live deployment or release publication occurred.
+
+
+## PI3 implementation and qualification
+
+PI2 merged as #594 with all required final-head checks passing. PI3 adds one
+opt-in real-container qualification in the existing hosted image-proof job,
+reusing prepared default/Aquacast images and pinned infrastructure. It exercises
+retained data, unchanged init, paused state, host-loopback access, scoped probe
+revocation, missing-delivery refusal and injected init failure. Independent
+unrelated-resource checks and test-only ownership-verified cleanup run before the
+safe summary is uploaded. FULL attestation requires both execution and upload.
+
+The integration test and fixture runbook are implemented; final-head hosted
+qualification and independent patch review are pending. No production deployment,
+release publication, daemon restart or host reboot is claimed here.

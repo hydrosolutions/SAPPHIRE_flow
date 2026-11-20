@@ -1084,8 +1084,11 @@ When this map applies, the context packet should name:
   `cli/deployment_checks.py`; rehearsal and installation guards remain separate.
   Run installation runtime/state tests and both helper suites. Preserve stop
   availability without secrets, no init/recreation on start, original deliveries,
-  read-only verify and no destructive persistent cleanup. Real-container and
-  reboot qualification remain PI3/PI4.
+  read-only verify and no destructive persistent cleanup. Hosted real-container
+  qualification is `tests/integration/test_deployment_install.py`; it reuses the
+  existing CI images and has test-only owned-resource destruction. Keep its
+  execution and safe-summary steps in `tools/ci_attest.py` producer inventory
+  and refresh the reviewed workflow hash. Reboot acceptance remains PI4.
 
 - Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
   checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`
