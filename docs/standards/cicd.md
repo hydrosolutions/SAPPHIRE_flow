@@ -2217,3 +2217,12 @@ no primary key. Downgrade refuses while any v2 cache or forecast parent remains;
 never delete retained evidence to force a downgrade. Normal preparation still
 writes v1. This migration is a prerequisite for later qualified-grid activation,
 not authorization to switch Nepal models or deploy this branch.
+
+### Unknown training provenance migration (0088)
+
+Deploy matching readers with migration 0088 before importing an unknown artifact.
+Existing records retain known provenance; no training date is fabricated. A clean
+database can downgrade; downgrade refuses while unknown artifacts exist. Do not
+delete forecast evidence or fill invented dates to roll back. Use a forward fix
+once unknown artifacts have been admitted. This change does not publish or
+activate a model assignment.

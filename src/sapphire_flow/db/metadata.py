@@ -1044,9 +1044,17 @@ model_artifacts = sa.Table(
     ),
     sa.Column("artifact_path", sa.Text, nullable=False),
     sa.Column("sha256_hash", sa.Text, nullable=False, server_default=""),
-    sa.Column("training_period_start", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("training_period_end", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("trained_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("training_period_start", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("training_period_end", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("trained_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("training_provenance", sa.Text, nullable=False, server_default="known"),
+    sa.CheckConstraint(
+        "(training_provenance = 'known' AND trained_at IS NOT NULL "
+        "AND training_period_start IS NOT NULL AND training_period_end IS NOT NULL) OR "
+        "(training_provenance = 'unknown' AND trained_at IS NULL "
+        "AND training_period_start IS NULL AND training_period_end IS NULL)",
+        name="ck_model_artifacts_training_provenance",
+    ),
     sa.Column("promoted_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("promoted_by", UUID(as_uuid=True), nullable=True),
     sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True),
@@ -1086,10 +1094,9 @@ sa.Index(
 
 # Plan 157 T3 (G4/G7): provenance for an EXTERNALLY-IMPORTED artifact. A row
 # here means the paired model_artifacts row was imported, not trained by
-# SAP3 — absence means SAP3-trained. Deliberately NOT a widening of
-# model_artifacts itself (training_period_start/end/trained_at stay
-# non-nullable there; see services/model_import.py for how an import
-# populates them). One row per artifact — the FK is also the PK.
+# SAP3 — absence means SAP3-trained. External training dates may explicitly
+# be unknown (migration 0088); import time is always known.
+# One row per artifact — the FK is also the PK.
 model_artifact_provenance = sa.Table(
     "model_artifact_provenance",
     metadata,

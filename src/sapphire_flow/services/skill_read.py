@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 
 EvaluatedOn = Literal[
-    "training_period", "outside_training_period", "overlaps_training_period"
+    "training_period", "outside_training_period", "overlaps_training_period", "unknown"
 ]
 
 _DISCHARGE = "discharge"
@@ -47,8 +47,8 @@ class StationSkillRow:
     phase_offset_seconds: int | None
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
-    training_period_start: UtcDatetime
-    training_period_end: UtcDatetime
+    training_period_start: UtcDatetime | None
+    training_period_end: UtcDatetime | None
     evaluated_on: EvaluatedOn
     lead_time_hours: int
     season: str | None
@@ -62,12 +62,14 @@ def evaluated_on(
     *,
     eval_start: UtcDatetime,
     eval_end: UtcDatetime,
-    training_start: UtcDatetime,
-    training_end: UtcDatetime,
+    training_start: UtcDatetime | None,
+    training_end: UtcDatetime | None,
 ) -> EvaluatedOn:
     """Closed intervals (plan `Endpoint contract`): an eval window starting
     exactly at `training_period_end` is `overlaps_training_period`, not
     `outside_training_period` — a shared instant is not "no shared instant"."""
+    if training_start is None or training_end is None:
+        return "unknown"
     if training_start <= eval_start and eval_end <= training_end:
         return "training_period"
     if eval_end < training_start or eval_start > training_end:

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl  # noqa: TC002
 
-from sapphire_flow.types.enums import EnsembleMode, ForcingRoute
+from sapphire_flow.types.enums import EnsembleMode, ForcingRoute, TrainingProvenance
 
 # Runtime import (not TYPE_CHECKING-only): StoredArtifact subclasses
 # `tuple[ArtifactId, str]` below, and a class's base-list is evaluated at
@@ -401,13 +401,39 @@ class ModelArtifactRecord:
     status: ModelArtifactStatus
     artifact_path: str
     sha256_hash: str
-    training_period_start: UtcDatetime
-    training_period_end: UtcDatetime
-    trained_at: UtcDatetime
+    training_period_start: UtcDatetime | None
+    training_period_end: UtcDatetime | None
+    trained_at: UtcDatetime | None
     promoted_at: UtcDatetime | None
     promoted_by: UUID | None
     superseded_at: UtcDatetime | None
     created_at: UtcDatetime
+    training_provenance: TrainingProvenance = TrainingProvenance.KNOWN
+
+    def __post_init__(self) -> None:
+        validate_training_provenance(
+            self.training_provenance,
+            self.trained_at,
+            self.training_period_start,
+            self.training_period_end,
+        )
+
+
+def validate_training_provenance(
+    provenance: TrainingProvenance,
+    trained_at: UtcDatetime | None,
+    period_start: UtcDatetime | None,
+    period_end: UtcDatetime | None,
+) -> None:
+    dates = (trained_at, period_start, period_end)
+    if provenance is TrainingProvenance.UNKNOWN and all(d is None for d in dates):
+        return
+    if provenance is TrainingProvenance.KNOWN and all(d is not None for d in dates):
+        return
+    raise ValueError(
+        "training provenance requires all three dates for known, "
+        "or no dates for unknown"
+    )
 
 
 class StoredArtifact(tuple[ArtifactId, str]):

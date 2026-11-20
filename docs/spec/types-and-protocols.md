@@ -2084,9 +2084,10 @@ class ModelArtifactRecord:
     status: ModelArtifactStatus
     artifact_path: str                 # relative path to serialized artifact file
     sha256_hash: str                   # hex digest of artifact bytes (OWASP A08 integrity control)
-    training_period_start: UtcDatetime
-    training_period_end: UtcDatetime
-    trained_at: UtcDatetime
+    training_period_start: UtcDatetime | None
+    training_period_end: UtcDatetime | None
+    trained_at: UtcDatetime | None
+    training_provenance: TrainingProvenance = TrainingProvenance.KNOWN
     promoted_at: UtcDatetime | None    # when status changed to ACTIVE
     promoted_by: UUID | None           # model admin who approved
     superseded_at: UtcDatetime | None  # when a newer artifact replaced this one
@@ -2101,8 +2102,10 @@ Plan 157 T3 (G4/G7): marks a `model_artifacts` row as EXTERNALLY IMPORTED
 rather than trained by SAP3. Presence of a `model_artifact_provenance` row
 keyed by `artifact_id` is the provenance signal — absence means SAP3-trained.
 `training_period_start`/`training_period_end`/`trained_at` on
-`ModelArtifactRecord` stay non-nullable for an import too (see
-`services/model_import.py`); `imported_at` here is a deliberately SEPARATE
+`ModelArtifactRecord` are null together for explicit `unknown` imports; otherwise
+all three remain required. A persisted `TrainingProvenance` discriminator and
+record/database constraints enforce the pairing (migration 0088).
+`imported_at` here is a deliberately SEPARATE
 field from `trained_at` — conflating them would backdate the import event to
 the model's external training-completion instant.
 
@@ -3794,10 +3797,11 @@ class ModelArtifactStore(Protocol):
         self,
         model_id: ModelId,
         artifact_bytes: bytes,
-        training_period_start: UtcDatetime,
-        training_period_end: UtcDatetime,
-        trained_at: UtcDatetime,
+        training_period_start: UtcDatetime | None,
+        training_period_end: UtcDatetime | None,
+        trained_at: UtcDatetime | None,
         *,
+        training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
         station_id: StationId | None = None,   # for station-scoped models
         group_id: StationGroupId | None = None, # for group-scoped models
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,  # explicit default; callers may pass TRAINING
@@ -3932,7 +3936,9 @@ never learns the generated artifact id still cannot leak a file). It never
 calls `model.train`.
 
 `training_period_start`/`training_period_end` (the REAL external training
-window) are separate, REQUIRED parameters, distinct from `trained_at` (the
+window) are required for default `known` provenance. For the owner-authorized MVP,
+`training_provenance="unknown"` accepts all three dates as null and records the
+acceptance in import provenance notes. They remain distinct from `trained_at` (the
 external training-COMPLETION instant) and `imported_at` (this import's own
 instant, `clock()`) — none of the three is ever synthesized from another;
 earlier code fabricated a zero-length training period at `trained_at`,

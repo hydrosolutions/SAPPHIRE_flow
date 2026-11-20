@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from sapphire_flow.types.enums import ModelArtifactStatus
+from sapphire_flow.types.enums import ModelArtifactStatus, TrainingProvenance
 from sapphire_flow.types.observation_read import ObservationWindowStart
 
 # Convention: all range queries use half-open intervals [start, end).
@@ -738,10 +738,11 @@ class ModelArtifactStore(Protocol):
         self,
         model_id: ModelId,
         artifact_bytes: bytes,
-        training_period_start: UtcDatetime,
-        training_period_end: UtcDatetime,
-        trained_at: UtcDatetime,
+        training_period_start: UtcDatetime | None,
+        training_period_end: UtcDatetime | None,
+        trained_at: UtcDatetime | None,
         *,
+        training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,

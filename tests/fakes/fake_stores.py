@@ -70,6 +70,7 @@ from sapphire_flow.types.enums import (
     StationKind,
     StationOwnership,
     StationStatus,
+    TrainingProvenance,
     WeatherSourceRole,
 )
 from sapphire_flow.types.forecast import (  # noqa: TC001
@@ -1848,10 +1849,11 @@ class FakeModelArtifactStore:
         self,
         model_id: ModelId,
         artifact_bytes: bytes,
-        training_period_start: UtcDatetime,
-        training_period_end: UtcDatetime,
-        trained_at: UtcDatetime,
+        training_period_start: UtcDatetime | None,
+        training_period_end: UtcDatetime | None,
+        trained_at: UtcDatetime | None,
         *,
+        training_provenance: TrainingProvenance = TrainingProvenance.KNOWN,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
@@ -1873,7 +1875,8 @@ class FakeModelArtifactStore:
             promoted_at=None,
             promoted_by=None,
             superseded_at=None,
-            created_at=trained_at,
+            created_at=trained_at or ensure_utc(datetime(2000, 1, 1, tzinfo=UTC)),
+            training_provenance=training_provenance,
         )
         self._records[aid] = record
         self._bytes[aid] = artifact_bytes
@@ -1965,7 +1968,7 @@ class FakeModelArtifactStore:
         promoted_by: UUID | None = None,
     ) -> None:
         rec = self._records[artifact_id]
-        now = rec.trained_at  # use trained_at as clock proxy in fakes
+        now = rec.created_at  # deterministic clock proxy in fakes
         if new_status == ModelArtifactStatus.ACTIVE:
             self._records[artifact_id] = replace(
                 rec, status=new_status, promoted_at=now, promoted_by=promoted_by
