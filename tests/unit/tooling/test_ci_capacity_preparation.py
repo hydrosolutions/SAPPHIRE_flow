@@ -40,7 +40,8 @@ class TestCapacityWorkflowContract:
         steps = job["steps"]
         step = _step()
         assert job["runs-on"] == "ubuntu-latest"
-        assert job["timeout-minutes"] == 35
+        # Includes the bounded rehearsal gate and its cleanup reserve.
+        assert job["timeout-minutes"] == 114
         assert step["if"] == "env.AQUACAST_TOKEN_PRESENT == 'true'"
         assert step["timeout-minutes"] == 2
         assert (
@@ -60,8 +61,10 @@ class TestCapacityWorkflowContract:
         assert "Build" not in step["name"]
         assert "env" not in step
         assert "continue-on-error" not in step
-        assert sum(item.get("timeout-minutes", 0) for item in steps) == 34
-        assert job["timeout-minutes"] >= 34
+        assert sum(item.get("timeout-minutes", 0) for item in steps) == 113
+        assert job["timeout-minutes"] > sum(
+            item.get("timeout-minutes", 0) for item in steps
+        )
 
     def test_script_is_exactly_allowlisted(self) -> None:
         script = _step()["run"]
@@ -443,3 +446,77 @@ class TestCapacityScriptBehavior:
         result = self._run(tmp_path, df_outputs=(" Avail \n100\n",))
         assert result.completed.returncode != 0
         assert "fake df sequence exhausted" in result.completed.stderr
+
+
+def test_rehearsal_gate_has_no_publication_credentials_or_skip_success() -> None:
+    steps = {step.get("name"): step for step in _workflow()["jobs"][JOB]["steps"]}
+    build = steps["Build default image for disposable rehearsal"]
+    assert build["with"]["push"] is False and build["with"]["load"] is True
+    gate = steps["Qualify disposable private-profile rehearsal"]
+    assert set(gate["env"]) == {
+        "SAPPHIRE_REHEARSAL_ACCEPTANCE",
+        "SAPPHIRE_REHEARSAL_IMAGE_TAG",
+        "SAPPHIRE_REHEARSAL_QUALIFICATION_REPORT",
+    }
+    assert "secrets." not in str(gate)
+    assert gate["env"]["SAPPHIRE_REHEARSAL_ACCEPTANCE"] == "dedicated-test-daemon"
+    assert "!= 1" in gate["run"] and '("failures", "errors", "skipped")' in gate["run"]
+    upload = steps["Upload safe rehearsal qualification summary"]
+    assert (
+        upload["with"]["path"]
+        == "${{ runner.temp }}/profile-rehearsal-qualification.json"
+    )
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert "NOT performed" in next(
+        step["run"] for step in steps.values() if "NOT performed" in step.get("run", "")
+    )
+
+
+def test_aquacast_scan_cache_stays_outside_checked_source(tmp_path: Path) -> None:
+    scan = next(
+        step
+        for step in _workflow()["jobs"][JOB]["steps"]
+        if step.get("name") == "Trivy Aquacast image scan"
+    )
+    assert scan["with"]["cache-dir"] == "${{ runner.temp }}/trivy-aquacast-cache"
+    assert scan["with"]["cache"] == "true"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
+    cache = Path(
+        scan["with"]["cache-dir"].replace(
+            "${{ runner.temp }}", str(tmp_path / "runner-temp")
+        )
+    )
+    cache.mkdir(parents=True)
+    (cache / "db-metadata.json").write_text("{}")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("job", "shards"),
+    [
+        ("unit", ["scripts", "services", "adapters-flows", "rest"]),
+        ("integration-shard", ["heavy", "rest"]),
+    ],
+)
+def test_source_test_matrices_use_stable_runner_with_all_shards(
+    job: str, shards: list[str]
+) -> None:
+    selected = _workflow()["jobs"][job]
+    assert selected["runs-on"] == "ubuntu-24.04"
+    assert selected["strategy"]["matrix"]["shard"] == shards
+    assert selected["strategy"]["fail-fast"] is False

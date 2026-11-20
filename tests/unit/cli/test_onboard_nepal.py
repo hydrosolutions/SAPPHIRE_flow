@@ -249,3 +249,53 @@ class TestScopedHistory:
                 },
             ),
         ]
+
+
+class TestWeatherBindingsApply:
+    @pytest.mark.parametrize(
+        "extra, committed",
+        [([], False), (["--dry-run"], False), (["--apply"], True)],
+    )
+    def test_writes_only_with_apply(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        extra: list[str],
+        committed: bool,
+    ) -> None:
+        from sapphire_flow.config import nepal_weather
+
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        engine = sa.create_engine(f"sqlite:///{tmp_path / 'w.db'}")
+        with engine.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE w (n INTEGER)"))
+        monkeypatch.setattr(onboard_nepal, "create_engine_from_env", lambda: engine)
+        monkeypatch.setattr(
+            nepal_weather,
+            "load_weather_scope",
+            lambda *a: SimpleNamespace(
+                scope=SimpleNamespace(gateway_hru_name="runtime")
+            ),
+        )
+
+        def admit(conn: sa.Connection, *a: object, **k: object) -> list[object]:
+            conn.execute(sa.text("INSERT INTO w VALUES (1)"))
+            return [("447", ("ifs_ecmwf",))]
+
+        monkeypatch.setattr(onboard_nepal, "admit_weather_bindings", admit)
+        args = [
+            "weather-bindings",
+            "--config",
+            "config/overlays/chwrr-import.toml",
+            "--tenant",
+            "chwrr",
+            "--confirm-t8",
+            "--weather-scope",
+            "s",
+            "--confirm-package-joins",
+            *extra,
+        ]
+        assert onboard_nepal.main(args) == 0
+        with engine.connect() as conn:
+            assert conn.scalar(sa.text("SELECT count(*) FROM w")) == int(committed)
+        engine.dispose()

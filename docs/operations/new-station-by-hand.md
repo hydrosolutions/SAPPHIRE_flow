@@ -54,6 +54,7 @@ name = "Sandbox tenant"
 [deployment]
 writable_tenants = ["chwrr"]
 operator = "admin test"
+promotion_allowed = true   # sandbox only; Step 8 refuses --apply without it
 
 [adapters.recap_gateway]
 base_url = "https://recap.ieasyhydro.org/sdk"
@@ -143,11 +144,15 @@ station_polygons = [{station_id = "<station id>", polygon_name = "g_00001"}]
 
 The package may carry a different Gateway name from the one you registered; the runtime name
 is what every later tool uses, so keep it identical in the Gateway, the scope and your notes.
-Then (dry run first, then without `--dry-run`):
+Then run `weather-bindings` (a dry run unless you add `--apply`; run it without `--apply` first and
+read the per-station `nepal_onboarding.weather_bindings` lines, which show the Gateway name
+and the bindings it would add). It creates all three weather bindings the cycle needs:
+reanalysis `era5_land`, forecast `ifs_ecmwf`, operational `recap_ecmwf_operational`.
+It works for the `chwrr` tenant only until the tenant generalisation (M5b) lands.
 
 ```bash
 uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --config sandbox-config.toml \
-  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --dry-run
+  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --apply
 ```
 
 **5c. Weather history.** Submit through the deployed job (the Prefect worker must be running):
@@ -160,28 +165,7 @@ uv run python -m sapphire_flow.cli.onboard_nepal history --config sandbox-config
 Success means the job was submitted, not finished: wait for the worker to log `Completed`, then
 check `select parameter, count(*), min(valid_time), max(valid_time) from historical_forcing group by 1`.
 The Gateway's ERA5 trails real time by about 8 days: that gap is filled at forecast time by the
-operational product (5d).
-
-**5d. Forecast and operational weather bindings (no step creates them).** Without these the
-forecast cycle stops with "0 FORECAST weather-source binding(s), expected exactly 1". The names
-below are the ones the Nepal staging host uses.
-
-```bash
-uv run python - <<'EOF'
-import os, sqlalchemy as sa
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.station import StationWeatherSource
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus, WeatherSourceRole
-CODE, NETWORK = "00001", "research"
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    ss = PgStationStore(c); st = ss.fetch_station_by_code(CODE, NETWORK)
-    for src, role in (("ifs_ecmwf", WeatherSourceRole.FORECAST),
-                      ("recap_ecmwf_operational", WeatherSourceRole.OPERATIONAL)):
-        ss.store_weather_source(StationWeatherSource(station_id=st.id, nwp_source=src,
-            extraction_type=SpatialRepresentation.BASIN_AVERAGE, status=WeatherSourceStatus.ACTIVE, role=role))
-    print([(w.nwp_source, w.role.value) for w in ss.fetch_weather_sources(st.id)])
-EOF
-```
+operational product (created by `weather-bindings` in 5b).
 
 ## Step 6: observations, datum, rating, quality checks (no general tool yet)
 
@@ -326,28 +310,51 @@ window, QC ran with the datum, a rating curve exists if the target is discharge,
 static attributes resolve (the aliases in `services/caravan_statics.py` map the model's names to
 the package's HydroATLAS names).
 
-## Step 8: switch the station on (no tool; planned as an admin-dashboard action)
+## Step 8: switch the station on
 
-Collection and the forecast cycle pick up only `operational` stations. In a sandbox:
+Collection and the forecast cycle pick up only `operational` stations. ⛔ Do this step AFTER
+"Model and first forecast" items 1 and 2 below (import the artifact, assign the model to the
+group): conditions 4, 6 and 7 need the ACTIVE model assignment, so before it the command always
+refuses. Dry run first (always allowed, writes nothing), then `--apply`:
 
 ```bash
-uv run python - <<'EOF'
-import os, dataclasses
-import sqlalchemy as sa
-from datetime import UTC, datetime
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.types.enums import StationStatus
-from sapphire_flow.types.datetime import ensure_utc
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    ss = PgStationStore(c); st = ss.fetch_station_by_code("00001", "research")
-    ss.update_station(dataclasses.replace(st, forecast_targets=frozenset({"discharge"}),
-        updated_at=ensure_utc(datetime.now(UTC))))
-    ss.update_station_status(st.id, StationStatus.OPERATIONAL)
-EOF
+uv run python -m sapphire_flow.cli.promote_station \
+  --tenant chwrr --network research --code 00001 --operator "admin test" \
+  --weather-scope trishuli [--target discharge] [--apply]
 ```
 
+It prints seven blocking conditions, all of which must hold, and lists every failing one:
+
+1. status is `onboarding` (`suspended` / `decommissioned` are refused; an already `operational`
+   station is a no-op, exit 0);
+2. datum and gauge type set if `water_level` is measured;
+3. basin set and present;
+4. the station is in a group with an ACTIVE model assignment (the model is derived from it, there
+   is no `--model`);
+5. reanalysis, forecast and operational weather bindings ACTIVE, and the polygon binding name
+   equals the `--weather-scope` Gateway name (without `--weather-scope` this condition fails);
+6. the model's static features all resolve;
+7. every day of the model's lookback has a usable discharge value (window ends yesterday, like
+   the cycle), and an active rating curve exists when water level is measured and the target is discharge
+   (or discharge derived from level appears in the last 60 days).
+
+`--apply` writes `forecast_targets`, the `operational` status and one `STATION_STATUS_CHANGE`
+audit row in one transaction. Exit 0 ok, 2 usage / unknown station, 3 refused (blocking condition,
+another tenant's station, or `promotion_allowed` off). For a bridge-sensor station it also prints
+a warning that the live feed must already deliver converted values (m a.s.l.).
+
 ⛔ On a shared host, promotion is the owner's decision: it starts live collection and puts the
-station into the forecast cycle, and demoting it later can lose observations.
+station into the forecast cycle, and demoting it later can lose observations. `--apply` is
+refused unless the host config says `[deployment] promotion_allowed = true` (default false; the
+sandbox config above adds it, a shared host's owner turns it on for one run). It is read from
+the config file (`--config` or `SAPPHIRE_CONFIG`), so it is only as strong as control over who
+can write that file. The dry run says
+when `--apply` would be refused for this reason.
+
+Procedure on a shared host: the owner sets `promotion_allowed = true`, the administrator runs
+`--apply` once, and the owner sets it back to `false` straight afterwards. There is no per-person
+admin approval yet (`--operator` is an unverified label in the audit row); a logged-in admin
+approval is a post-MVP plan.
 
 ## Model and first forecast
 
@@ -409,7 +416,7 @@ runs to today.
 
 | Message | Cause |
 |---|---|
-| `0 FORECAST weather-source binding(s), expected exactly 1` | Step 5d not done |
+| `0 FORECAST weather-source binding(s), expected exactly 1` | `weather-bindings --apply` (step 5b) not run |
 | `missing_required_target` / `operational_inputs.no_observations` | No observations up to the issue date, or no discharge (step 6) |
 | `nwp_disabled ... mode=runoff_only` | `[adapters.weather_forecast]` still disabled by the Nepal overlay |
 | `selected future weather requires a candidate-aware source` | `type = "recap_gateway"` missing |

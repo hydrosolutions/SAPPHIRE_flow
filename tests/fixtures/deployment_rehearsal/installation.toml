@@ -1,0 +1,21 @@
+# Source-bound development images are prepared separately.
+schema_version = 1
+agency_profile = "profile.toml"
+project_name = "synthetic-rehearsal-desired"
+project_directory = "@CHECKOUT@"
+compose_files = ["@CHECKOUT@/docker-compose.yml", "@PROFILE_DIR@/compose.yml"]
+
+[environment]
+VERSION = "@IMAGE_TAG@"
+SAPPHIRE_RELEASE_VERSION = "0.dev0+g@SOURCE_REVISION@"
+SAPPHIRE_SOURCE_REVISION = "@SOURCE_REVISION@"
+SAPPHIRE_ONLY_DEPLOYMENTS = "forecast-cycle,backup-database"
+SAPPHIRE_CORS_ORIGINS = "https://example.invalid"
+SAPPHIRE_DOMAIN = "example.invalid"
+
+[secret_bindings]
+db_password = "@PROFILE_DIR@/secret-delivery/db_password"
+sapphire_api_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_api_db_password"
+sapphire_worker_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_worker_db_password"
+sapphire_backup_db_password = "@PROFILE_DIR@/secret-delivery/sapphire_backup_db_password"
+access_token_pepper = "@PROFILE_DIR@/secret-delivery/access_token_pepper"

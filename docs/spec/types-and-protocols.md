@@ -1708,7 +1708,7 @@ read roles (`AccessTokenRole.CONSUMER`/`REVIEWER`/`ADMIN`) and never materialize
 (read-only, G4) or from the target row being written. Built ONLY from config + a validated run
 identity: `services/write_principal.py::resolve_run_principal` resolves the `[deployment]` config
 block (`config/deployment_identity.py::DeploymentIdentityConfig` — `writable_tenants`/`global_admin`
-+ optional `operator`) plus an interactive `--tenant`/`--operator` override or the scheduled flow's
++ optional `operator` + `promotion_allowed`, default false, the host switch for `cli/promote_station --apply`, Plan 540 M7a) plus an interactive `--tenant`/`--operator` override or the scheduled flow's
 single config-selected tenant (resolved BEFORE unit selection — never from
 `unit.station_id`/`unit.group_id`). `services/write_principal.py::enforce_tenant_isolation` is the
 single enforcement chokepoint every write path calls: a mismatched target raises

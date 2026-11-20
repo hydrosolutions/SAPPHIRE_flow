@@ -18,7 +18,9 @@ from sapphire_flow.services.basin_package_loader import load_basin_package
 from sapphire_flow.services.nepal_onboarding import (
     history_binding,
     import_nepal_package,
+    operational_binding,
     qualify_discharge_targets,
+    weather_bindings,
 )
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
 from sapphire_flow.store.observation_store import PgObservationStore
@@ -31,6 +33,7 @@ from sapphire_flow.types.enums import (
     QcStatus,
     SpatialRepresentation,
     StationStatus,
+    WeatherSourceRole,
 )
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import TenantId
@@ -557,7 +560,18 @@ class TestWeatherAdmission:
             finally:
                 transaction.rollback()
 
-    @pytest.mark.parametrize("mode", ["success", "rollback", "conflict", "partial"])
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "success",
+            "rollback",
+            "conflict",
+            "partial",
+            "second_forecast",
+            "wrong_operational_role",
+            "identical_plus_second_forecast",
+        ],
+    )
     def test_worker_admission_preserves_package_and_converges(
         self,
         db_connection: sa.Connection,
@@ -620,6 +634,32 @@ class TestWeatherAdmission:
             PgStationStore(db_connection).store_weather_source(
                 history_binding(cohort[0].id)
             )
+            PgStationStore(db_connection).store_weather_source(
+                operational_binding(cohort[0].id)
+            )
+        refused_modes = (
+            "second_forecast",
+            "wrong_operational_role",
+            "identical_plus_second_forecast",
+        )
+        if mode in refused_modes:
+            last = cohort[-1].id
+            other_forecast = replace(
+                weather_bindings(last)[1], nwp_source="icon_ch2_eps"
+            )
+            wrong_role = replace(
+                operational_binding(last), role=WeatherSourceRole.FORECAST
+            )
+            seeded = {
+                "second_forecast": [other_forecast],
+                "wrong_operational_role": [wrong_role],
+                "identical_plus_second_forecast": [
+                    weather_bindings(last)[1],
+                    other_forecast,
+                ],
+            }[mode]
+            for binding in seeded:
+                PgStationStore(db_connection).store_weather_source(binding)
         with db_connection.begin_nested() as transaction:
             db_connection.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
             if mode == "conflict":
@@ -629,7 +669,33 @@ class TestWeatherAdmission:
                     admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
                 assert polygons.fetch_bindings_for_station(cohort[0].id)[0] == before[0]
                 return
+            if mode in refused_modes:
+                with pytest.raises(
+                    ConfigurationError, match="(?i)forecast|operational"
+                ):
+                    admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+                if mode == "identical_plus_second_forecast":
+                    # Caught by the post-write lookup, so earlier stations were
+                    # written; the caller's transaction rolls them back.
+                    transaction.rollback()
+                    return
+                assert [
+                    polygons.fetch_bindings_for_station(s.id)[0] for s in cohort
+                ] == before
+                assert all(
+                    PgStationStore(db_connection).fetch_weather_sources(s.id) == []
+                    for s in cohort[:-1]
+                )
+                return
             admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
+            station_store = PgStationStore(db_connection)
+            for s in cohort:
+                assert station_store.fetch_forecast_binding(s.id).nwp_source == (
+                    "ifs_ecmwf"
+                )
+                assert station_store.fetch_operational_binding(s.id) == (
+                    operational_binding(s.id)
+                )
             admitted = [polygons.fetch_bindings_for_station(s.id)[0] for s in cohort]
             admit_weather_bindings(db_connection, IDENTITY, admission, now=NOW)
             assert admitted == [
@@ -646,8 +712,11 @@ class TestWeatherAdmission:
             ] == before
         else:
             assert all(
-                PgStationStore(db_connection).fetch_weather_sources(s.id)
-                == [history_binding(s.id)]
+                sorted(
+                    PgStationStore(db_connection).fetch_weather_sources(s.id),
+                    key=lambda b: b.role.value,
+                )
+                == sorted(weather_bindings(s.id), key=lambda b: b.role.value)
                 for s in cohort
             )
 

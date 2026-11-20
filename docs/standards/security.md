@@ -460,6 +460,16 @@ this class and pins the route's classification.
 
 Email and SMS notifications are out of scope through v1 (see `docs/handover/data-flows.md`). Alert consumers can poll the API; outbound delivery on the SAPPHIRE side is webhook-only.
 
+The [profile rehearsal preview](../deployment/profile-rehearsal.md) reads only
+selected nonsecret inputs, rejects `.env` and declared credential-delivery aliases,
+and emits no executable recipe or daemon calls. Explicit runtime generates five
+independent test deliveries in a private workspace, without reading real deliveries.
+It starts only fresh owned resources on a dedicated local daemon, with no published
+ports or external networks. The tenant-scoped temporary consumer token stays inside
+one guarded API process. Recovery rechecks daemon and project/run labels per
+removal; private generated inputs are erased even when Docker cleanup fails.
+Original credentials, unrelated resources and images are never removed.
+
 ### Production (Docker Compose)
 
 All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mounted as files at `/run/secrets/` and read at startup. Application code reads secrets from file paths, never from environment variables in production.

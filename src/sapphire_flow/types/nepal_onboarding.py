@@ -21,6 +21,8 @@ GAUGE_POLYGONS = (
 )
 GATEWAY_HRU = "nepal6_20260923"
 GATEWAY_HISTORY_SOURCE = "recap_era5_land_reanalysis"
+FORECAST_SOURCE = "ifs_ecmwf"
+OPERATIONAL_SOURCE = "recap_ecmwf_operational"
 HISTORY_PARAMETERS = frozenset({"precipitation", "temperature"})
 
 

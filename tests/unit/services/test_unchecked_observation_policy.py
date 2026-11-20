@@ -635,6 +635,7 @@ _EXPECTED_READ_INVENTORY: dict[str, tuple[str, ...]] = {
         "MODEL_INPUT_QC_STATUSES",
     ),
     # Plan 540 M4a: the readiness lookback counts passed + unchecked days only.
+    "src/sapphire_flow/services/station_promotion.py": ("USABLE_STATUSES",),
     "src/sapphire_flow/services/station_readiness.py": ("USABLE_STATUSES",),
     "src/sapphire_flow/services/track_assembly.py": (
         "MODEL_INPUT_QC_STATUSES",

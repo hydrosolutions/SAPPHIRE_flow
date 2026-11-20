@@ -303,6 +303,7 @@ class TestRetainedWorkflow:
         assert set(workflow["on"]) == {"workflow_dispatch"}
         assert workflow["permissions"] == {"contents": "read"}
         job = workflow["jobs"]["verify"]
+        assert job["runs-on"] == "ubuntu-24.04"
         assert job["environment"] == "staging-release"
         assert "env" not in workflow
         uses = [step["uses"] for step in job["steps"] if "uses" in step]

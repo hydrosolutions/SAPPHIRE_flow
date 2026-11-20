@@ -174,6 +174,14 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**CMAL static-encoder registration:** `cmal_nepal_static_encoder` binds the exact
+supplied YAML through `AquacastShim`; it does not change FI translation or the
+live `cmal_small` model. Keep the config digest, wheel packaging, entry point,
+365-day history, separate net thermal/solar radiation requirements and disabled
+alert eligibility covered. Run the real-extra shim tests as well as the base
+translation tests. Discovery is not input qualification or artifact activation;
+see `operations/model-onboarding.md` and the bounded registration plan.
+
 **Daily group result boundary:** FI ensembles have no SAP3 model identity. Bind
 missing IDs from the group assignment before QC and reject present mismatches;
 never relax daily output integrity. `GroupInputGate.assess_group_inputs` is an
@@ -995,6 +1003,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - group model assignment (Plan 540 M5-assign): `cli/assign_group_model.py` + `services/group_model_assignment.py` plan/apply around `create_group_assignment` (dry run default, `--apply`, exit 0/2/3, refuses a model with no `models` row / INACTIVE assignment, identical ACTIVE re-run is a no-op that does not call `create_group_assignment`, a differing ACTIVE assignment is overwritten (time step, priority, created_at), one `MODEL_ASSIGNED` audit row); a `cli/` module on purpose, so the curated operator-script list (Dockerfile, ci.yml, `tools/private_verification_gates.sh`, cicd.md, `test_dockerfile_operator_scripts.py`) is untouched; re-run `tests/unit/cli/test_assign_group_model.py`, `tests/integration/cli/test_assign_group_model_pg.py`
 - synthetic onboarding scenario (Plan 540 M3d-1): `services/synthetic_series.py` (pure seeded discharge generator; limits read from the passed-in `QcRuleSet`) and the committed `tests/fixtures/synthetic_station/` (README, `scenario.json` in `create_station` argument form, `discharge_hourly.csv`, `discharge_daily.csv`) — touch this when changing the Swiss built-in discharge rules for the 3600 s or 86400 s groups, `Stage1QualityChecker`, or `create_station` flags; the files change only by a deliberate seed/parameter change recorded in the fixture README; re-run `tests/unit/services/test_synthetic_series.py`
 - station readiness report (Plan 540 M4a): `cli/station_readiness.py` + `services/station_readiness.py` (`build_station_readiness`, one `check_*` per fact, reusable by M7a) + `types/station_readiness.py`; READ-ONLY (`SET TRANSACTION READ ONLY`, never committed, no audit row, tenant mismatch looks like an unknown station, exit 0/2); facts only, no verdict, last line `N checks failed, M passed`; the two aggregate reads are `PgObservationStore.fetch_station_summary` (same trusted read predicate as `fetch_latest_timestamp`) and `PgHistoricalForcingStore.fetch_station_summary`; usable-day counting is shared with M3 (`station_observation_load.days_with_value_set`, `USABLE_STATUSES`). Must-not-change: `onboard_nepal qualify` and its `update_station` write stay untouched, and this command must never call a store write. M4b (weather wait facts, `--check-gateway`) not built; check 11 `training_samples` and `--start/--end/--time-step-hours` not built, they go to 4b. Re-run `tests/unit/services/test_station_readiness.py`, `tests/unit/cli/test_station_readiness.py`, `tests/integration/services/test_station_readiness.py`
+- station promotion (Plan 540 M7a): `cli/promote_station.py` + `services/station_promotion.py` (`plan_promotion` read-only, `apply_promotion` writes `forecast_targets` + OPERATIONAL + one `STATION_STATUS_CHANGE` audit row on the caller's connection, so the CLI's one transaction makes them atomic). Computes its own seven blocking conditions from M4a's `check_*` fact readers (not from a readiness verdict), lists ALL failing ones, derives the model from the station's ACTIVE group assignment (no `--model`). Dry run always allowed; `--apply` needs `[deployment] promotion_allowed = true` (`DeploymentIdentityConfig.promotion_allowed`, default false) and the dry run prints when apply would be refused. Must-not-change: no `--dry-run` / `--confirm-shared-host` flag; `PgStationStore` stays untouched; the dashboard button (M7b) is a separate plan. Re-run `tests/unit/services/test_station_promotion.py`, `tests/unit/cli/test_promote_station.py`, `tests/unit/config/test_deployment_identity.py`, `tests/integration/cli/test_promote_station_pg.py`
 - observation load (Plan 540 M3a): `cli/load_station_observations.py` (`water-level`, `discharge`; dry run default, `--apply` writes via `PgObservationStore.store_raw_observations` plus one `OBSERVATIONS_LOADED` audit row; write authority via `resolve_run_principal` + `enforce_tenant_isolation` on `station.tenant_id`; exit 0/2/3) over the pure `services/station_observation_load.py` (`ObservationValueKind`, `parse_observation_csv`, `to_raw_observations`, `DatumRequiredError`); stored level = datum + reading (staff) or sensor elevation - reading (bridge sensor) — touch this when changing the gauge columns or the stored-level convention; never edits live ingest; **Plan 540 M3b** runs Stage 1 QC on load through `services/station_observation_qc.py::run_stage1_qc` — a deliberate COPY of `flows/ingest_observations.py::_evaluate_qc_window` (+ the logic of its private `_aggregate_qc_status`), a QC caller that must stay in lockstep with it: change either and the parity test `tests/unit/services/test_station_observation_qc.py::TestParityWithLiveIngest` must still pass (it is the only drift guard); exit 3 on rule version `1.2-datum-skip`, any zero-rule group (unless `--allow-unchecked`), or stale QC; **Plan 540 M3c** adds `rating` (parse and validate a rating CSV via `services/station_rating.py::parse_rating_csv`, stage converted like the observations; one `RATING_CURVE_STORED` audit row; an active curve needs `--supersede`, which calls `supersede_curve` and bumps the version) and `derive-discharge` (`RatingConverter.convert` over stored measured `water_level`, out-of-range levels skipped and counted, stored as `rating_curve_derived` with `rating_curve_id`, then the same Stage 1 QC with `datum=None`, rule version `1.2`; a refused QC rolls back like the loaders) — touch this when changing `RatingConverter` clamping or the rating tables; derive reads only passed/unchecked levels (`USABLE_STATUSES`) and counts failed, suspect and raw ones; the read inventory in `tests/unit/services/test_unchecked_observation_policy.py` pins it; also re-run `tests/unit/services/test_station_rating.py`, `tests/unit/cli/test_load_station_rating.py`, `tests/integration/cli/test_load_station_rating_pg.py`, re-run `tests/unit/services/test_station_observation_qc.py`, `tests/integration/cli/test_load_station_observations_pg.py`, `tests/unit/services/test_station_observation_load.py`, `tests/unit/cli/test_load_station_observations.py`, `tests/integration/cli/test_load_station_observations_cli.py`, `tests/unit/types/test_enums.py`
 - tenant-scoped station/group writes (Plan 147 Slice A): `stations.tenant_id`/`station_groups.tenant_id` are canonical and `NOT NULL`; `station_group_members.tenant_id` is bound by TWO composite FKs (`(station_id, tenant_id) -> stations(id, tenant_id)`, `(group_id, tenant_id) -> station_groups(id, tenant_id)`) so `PgStationGroupStore.store_group`/`add_station_to_group` structurally reject a cross-tenant membership (`IntegrityError`, not a Python check) — touch this when changing group membership writers or the `tenants` table; `fetch_group_by_name` now takes a `tenant_id` (name is unique per tenant, not globally)
 - plain-insert / append-only writers (`store_hindcast`, `store_state`, `store_config`, `append_health_record`) — and `store_forecast`, which is a plain insert only when the natural key is FREE; otherwise it classifies the re-run (Plan 327, see contracts below)
@@ -1060,6 +1069,19 @@ When this map applies, the context packet should name:
 - which focused tests will prove the change
 
 ### Touchpoint map: Prefect / Docker / deployment
+
+- Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
+  checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`
+  covers real external CLI/Compose, protected-input aliases, drift, source identity
+  and the finite transform. Preserve no-daemon/no-secret-read preview, safe JSON,
+  existing checker/smoke contracts and `docs/deployment/profile-rehearsal.md`.
+  Runtime/recovery lives in that tool; guarded pool/job/history/API checks live in
+  `src/sapphire_flow/cli/deployment_rehearsal.py`. Preserve paused pools before
+  init/workers, in-process token confinement, finite transform, no-build/no-pull,
+  bounded cleanup and daemon+label guards. Unit fault tests plus opt-in
+  `tests/integration/test_deployment_rehearsal.py` cover the separate runtime gate;
+  the hosted Aquacast CI job builds both variants and uploads only a safe summary.
+  Existing registrar/auth/runtime recipes and synthetic forecast smoke stay unchanged.
 
 Use this map when a task touches the **infra/ops** layer that *runs* the flows (not the flow logic): Prefect deployment registration / scheduling / work-pools / concurrency, the Docker build, the `docker-compose` topology + overlays, the Caddy edge, the entrypoint, DB migrations, the `VERSION` / `.env` deploy convention, or the Mac-mini launchd host. For *what a flow does* once it runs, use the **Forecast cycle / assignment selection** and **Persistence / API write path** maps. Authoritative detail lives in `docs/standards/orchestration.md`, `docs/standards/cicd.md`, `docs/standards/security.md` — this map routes into them, it does not restate them. **Aspirational-vs-real is this layer's core hazard:** several standards-doc items are not implemented (and a few implemented flows are undocumented) — flagged below; verify before depending on one. File paths are named directly here because they *are* the routing targets.
 
@@ -2363,7 +2385,10 @@ The original production wait/deadline/byte-cap path is unchanged.
 
 FULL source-CI reuse also touches `tools/ci_attest.py`, `tools/ci_provenance.py`,
 `.github/workflows/ci.yml`, the private gate shell and their tool tests. Review the
-whole-workflow hash and all 12 legs/61 enforcing predicates together. Preserve
+whole-workflow hash and all 12 legs with the current enforcing predicates together.
+The Aquacast leg includes the default rehearsal build, host environment/dependency
+setup, infrastructure preload, mandatory real qualification and safe summary upload;
+update variant-separation tests and producer inventory when these gates change. Preserve
 exact merged-main push identity, same/latest attempt, inclusive precise 30-day
 age, bounded credential-separated transport, final API check before atomic proof
 freeze, and no subsequent CI refresh. Retain the admitted proof digest through
@@ -2529,6 +2554,12 @@ a paused-cutover operation. See the database-schema serialization contract.
 
 Weather/onboarding: `config/nepal_weather.py` → `types/nepal_onboarding.py` →
 `services/nepal_onboarding.py::admit_weather_bindings` → native polygon/weather stores.
+It writes the three bindings (reanalysis `era5_land`, forecast `ifs_ecmwf`, operational
+`recap_ecmwf_operational`; names in `types/nepal_onboarding.py`, drift-guarded against the
+adapter and `OperationalWeatherConfig` in `tests/unit/types/test_nepal_onboarding_sources.py`).
+`operational_weather_stations` stays reanalysis-only (the live ERA5 flow calls it). The CLI
+`weather-bindings` is a dry run unless `--apply` (`--dry-run` kept as a no-op alias);
+chwrr tenant only until M5b.
 Coordinate membership edits through the existing tenant lock in all three
 `PgStationGroupStore` membership mutators. Preserve package provenance and unrelated data.
 Prefect/deployment: `cli/onboard_nepal.py` submits the registered three-string

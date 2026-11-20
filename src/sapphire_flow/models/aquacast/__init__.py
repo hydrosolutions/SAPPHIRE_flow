@@ -4,6 +4,7 @@ from sapphire_flow.models.aquacast._shim import (
     AQUACAST_TO_CANONICAL_NAME,
     CANONICAL_TO_AQUACAST_NAME,
     AquacastShim,
+    CmalNepalStaticEncoder,
     CmalPoolPT,
     CmalSmall,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "AQUACAST_TO_CANONICAL_NAME",
     "CANONICAL_TO_AQUACAST_NAME",
     "AquacastShim",
+    "CmalNepalStaticEncoder",
     "CmalPoolPT",
     "CmalSmall",
     "m3_per_s_to_mm_per_day",

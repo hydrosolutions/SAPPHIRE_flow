@@ -518,6 +518,7 @@ class TestAquacastImageProofCredentialGuard:
             "exit-code": "1",
             "ignore-unfixed": default_scan["with"]["ignore-unfixed"],
             "cache": default_scan["with"]["cache"],
+            "cache-dir": "${{ runner.temp }}/trivy-aquacast-cache",
         }
         assert "--scanners vuln,secret" in default_gate["run"]
         assert "--severity HIGH,CRITICAL" in default_gate["run"]

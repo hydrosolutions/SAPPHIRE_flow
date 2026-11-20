@@ -1408,12 +1408,15 @@ def test_ci_build_actions_are_load_only_and_disable_build_record_uploads() -> No
         assert "outputs" not in with_block
 
 
-def test_ci_aquacast_sibling_builds_only_aquacast_variant() -> None:
+def test_ci_aquacast_sibling_keeps_rehearsal_build_variants_separate() -> None:
     job = _ci_job("aquacast-release-image-proof")
     assert job.get("permissions") == {"contents": "read", "pull-requests": "read"}
     steps = _job_steps("aquacast-release-image-proof")
     build_steps = [step for step in steps if "Build" in str(step.get("name", ""))]
-    assert [step["name"] for step in build_steps] == ["Build Aquacast app image"]
+    assert [step["name"] for step in build_steps] == [
+        "Build Aquacast app image",
+        "Build default image for disposable rehearsal",
+    ]
     build = build_steps[0]
     with_block = build["with"]
     assert isinstance(with_block, dict)
@@ -1429,6 +1432,23 @@ def test_ci_aquacast_sibling_builds_only_aquacast_variant() -> None:
         in with_block["secrets"]
     )
     assert "aquacast_token=${{ secrets.AQUACAST_TOKEN }}" in with_block["secrets"]
+    default = build_steps[1]["with"]
+    assert isinstance(default, dict)
+    assert default["context"] == with_block["context"]
+    assert default["file"] == with_block["file"]
+    assert "WITH_AQUACAST=0" in default["build-args"]
+    for identity in (
+        "SAPPHIRE_RELEASE_VERSION=0.dev0+g${{ github.sha }}",
+        "SAPPHIRE_SOURCE_REVISION=${{ github.sha }}",
+    ):
+        assert identity in default["build-args"]
+    assert (
+        default["secrets"].strip()
+        == "recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}"
+    )
+    assert default["tags"] != with_block["tags"]
+    for variant in (default, with_block):
+        assert variant["load"] is True and variant["push"] is False
 
 
 def test_ci_aquacast_proof_uses_same_checked_out_sha_identity() -> None:

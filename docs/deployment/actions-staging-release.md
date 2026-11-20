@@ -362,6 +362,11 @@ including failure paths. New events require both `delivery_mode` and
 `verification_profile`; the profile defaults to `ci-reuse`. Smoke-only is still
 public diagnostics, regardless of profile, and never admits a source CI proof.
 
+The manual delivery job selects `ubuntu-24.04`, the qualified runner family.
+`ubuntu-latest` can move to a different OS and Docker version, as it did during
+the 19 November delivery attempt. This family pin is not an immutable runner
+image; the exact engine check and per-run exporter smoke still detect drift.
+
 Before private input, the fresh hosted Linux/x64 job requires stock Docker
 28.0.4 at the default local socket and zero containers. It accepts the normal
 systemd `--containerd=/run/containerd/containerd.sock` argument, but rejects

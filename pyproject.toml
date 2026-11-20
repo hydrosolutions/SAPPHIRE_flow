@@ -204,3 +204,4 @@ seasonal_precip_runoff_regression = "sapphire_flow.models.nwp_regression:Seasona
 # importable and every other model still discovers.
 cmal_pool_pt = "sapphire_flow.models.aquacast:CmalPoolPT"
 cmal_small = "sapphire_flow.models.aquacast:CmalSmall"
+cmal_nepal_static_encoder = "sapphire_flow.models.aquacast:CmalNepalStaticEncoder"
