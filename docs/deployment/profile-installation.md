@@ -188,7 +188,8 @@ strong credentials and their independent recovery copies are still required.
 Standard `unless-stopped` policies are retained. Automatic daemon/host restart does
 not run the explicit start prechecks: it relies on persistent Prefect pauses and
 credential files already being available. Ephemeral manager deliveries need
-separate boot-order verification. Reboot persistence is not yet qualified.
+separate boot-order verification; the qualified durable-file setup is described
+under Qualification status above.
 
 ## Failure and recovery
 

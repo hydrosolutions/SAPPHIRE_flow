@@ -129,8 +129,9 @@ and recipes remain unchanged by this tool.
 Schedule defaults remain owned by the [registrar](../src/sapphire_flow/cli/register_deployments.py).
 Skipping a job does not remove an already registered job. Use the
 [security standard](standards/security.md) and [secrets bootstrap](secrets-bootstrap.md)
-for credential/authentication details. Broader offline coverage, manager
-integration and profile-driven launch remain follow-on work. The separate
+for credential/authentication details. The [persistent installer](deployment/profile-installation.md)
+supports the bounded new-install path above; broader offline coverage, manager
+integration and existing-stack updates remain follow-on work. The separate
 [synthetic smoke test](deployment/hello-world.md) checks installation and internal
 worker/API wiring; the station onboarding sandbox checks a different workflow.
 Neither validates this private profile or proves public host access.
