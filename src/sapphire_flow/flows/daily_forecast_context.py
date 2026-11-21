@@ -49,3 +49,19 @@ def current_scheduled_daily_run(
         context.flow_run if context is not None else None,
         expected_deployment_id=expected_deployment_id,
     )
+
+
+def current_operator_daily_owner(*, expected_deployment_id: UUID) -> UUID:
+    context = FlowRunContext.get()
+    run = context.flow_run if context is not None else None
+    if (
+        run is None
+        or run.auto_scheduled
+        or run.parent_task_run_id is not None
+        or run.deployment_id != expected_deployment_id
+    ):
+        raise ValueError(
+            "operator retry requires a manual top-level run "
+            "of the configured deployment"
+        )
+    return run.id

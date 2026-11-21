@@ -652,3 +652,16 @@ listener teardown, including when a downstream test assertion fails. Ordered
 flow and persistence tests share the disposable database to detect fault leakage.
 When FI returns only failed variables, the adapter retains the typed anticipated
 `ModelPredictionFailure` and the legacy `no usable output` message for callers.
+
+## Audited operator retry
+
+After the two automatic attempts are exhausted, an explicit same-day operator
+request may create an `operator_retry` attempt through the existing forecast flow.
+It has a parent/request identity, no scheduled tick or ordinal, and immutable
+actor/reason, parent/current configuration digests and runtime identity. It shares
+the transactional active-owner lock and verified completion path. Duplicate
+requests never grant a second execution capability. Scheduled eligibility remains
+two attempts; disposable manual/replay execution remains excluded from authority.
+The latest operator attempt controls operational reads, including no older-summary
+fallback while active or failed. See the [operator runbook](operations/operator-daily-retry.md)
+for admission, trusted access, latency, recovery and migration compatibility.

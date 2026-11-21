@@ -169,6 +169,7 @@ if TYPE_CHECKING:
     from sapphire_flow.services.selected_weather_inputs import AssignmentWeatherInputs
     from sapphire_flow.services.track_assembly import AssignmentRunInput
     from sapphire_flow.types.basin import Basin
+    from sapphire_flow.types.daily_operator_retry import OperatorRetryRequest
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
     from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -2596,6 +2597,82 @@ def _load_selected_provider_config(
     return load_forecast_provider_config(Path(base_path), worker_paths, selection)
 
 
+def _parse_operator_retry(
+    raw: dict[str, str] | None,
+    cycle_time: str | None,
+    data_use: ForecastDataUse,
+) -> OperatorRetryRequest | None:
+    from sapphire_flow.store.daily_forecast_store import parse_operator_request
+
+    if raw is None:
+        return None
+    if cycle_time is not None or data_use is not ForecastDataUse.STANDARD:
+        raise ConfigurationError(
+            "operator retry cannot override cycle time or data purpose"
+        )
+    return parse_operator_request(raw)
+
+
+def _operator_duplicate(
+    request: OperatorRetryRequest | None, execution: DailyForecastExecution | None
+) -> bool:
+    from sapphire_flow.types.daily_forecast import DailyAttemptState
+    from sapphire_flow.types.daily_operator_retry import OperatorAdmissionState
+
+    if request is None:
+        return False
+    if execution is None or execution.operator_admission is None:
+        raise ConfigurationError("operator retry has no admission result")
+    admission = execution.operator_admission
+    if admission.admission is OperatorAdmissionState.CREATED:
+        return False
+    if admission.state is not DailyAttemptState.COMPLETE:
+        raise ConfigurationError(
+            f"operator retry {admission.claim.id} already exists with state "
+            f"{admission.state.value}; no execution repeated"
+        )
+    return True
+
+
+def _prepare_cycle_daily(
+    *,
+    config: DeploymentConfig,
+    models: Mapping[ModelId, ForecastModel],
+    group_store: StationGroupStore | None,
+    artifact_store: ModelArtifactStore,
+    store: DailyRuntimeStore | None,
+    writer: CommittedForecastWriter | None,
+    rejected_writer: CommittedRejectedForecastWriter | None,
+    clock: Callable[[], UtcDatetime],
+    id_gen: Callable[[], UUID],
+    data_use: ForecastDataUse,
+    operator_request: OperatorRetryRequest | None,
+) -> tuple[DailyForecastExecution | None, list[str]]:
+    if data_use is not ForecastDataUse.STANDARD:
+        return None, []
+    try:
+        execution = prepare_daily_execution(
+            config=config,
+            models=models,
+            group_store=group_store,
+            artifact_store=artifact_store,
+            store=store,
+            writer=writer,
+            rejected_writer=rejected_writer,
+            clock=clock,
+            id_gen=id_gen,
+            operator_request=operator_request,
+        )
+        return execution, []
+    except Exception as exc:
+        if operator_request is not None:
+            raise
+        log.error(
+            "forecast_cycle.daily_preflight_failed", error_type=type(exc).__name__
+        )
+        return None, [f"Daily preflight failed: {type(exc).__name__}"]
+
+
 @flow(
     name="forecast-cycle",
     log_prints=False,
@@ -2623,6 +2700,7 @@ def run_forecast_cycle_flow(
     grid_store: object | None = None,
     grid_extractor: object | None = None,
     cycle_time: str | None = None,
+    operator_daily_retry: dict[str, str] | None = None,
     # Plan 082 Task 2D: §5a-table-backed store for the Recap Gateway
     # forecast dispatch resolver. Unused (and unbuilt) on Swiss deployments.
     gateway_polygon_store: object | None = None,
@@ -2668,6 +2746,7 @@ def run_forecast_cycle_flow(
     operational_weather_adapter: object | None = None,
     operational_weather_principal: object | None = None,
 ) -> ForecastCycleResult:
+    operator_request = _parse_operator_retry(operator_daily_retry, cycle_time, data_use)
     flow_t0 = time.perf_counter()
     if data_use not in (ForecastDataUse.STANDARD, ForecastDataUse.PROVISIONAL_RATING):
         raise ConfigurationError(
@@ -3106,35 +3185,32 @@ def run_forecast_cycle_flow(
             else _resolve_cycle_time(cycle_time, clock)
         )
 
-        daily_preflight_errors: list[str] = []
-        try:
-            daily_execution = (
-                prepare_daily_execution(
-                    config=config,
-                    models=models,
-                    group_store=cast("StationGroupStore | None", group_store),
-                    artifact_store=artifact_store,
-                    store=cast("DailyRuntimeStore | None", daily_forecast_store),
-                    writer=cast(
-                        "CommittedForecastWriter | None", daily_forecast_writer
-                    ),
-                    rejected_writer=cast(
-                        "CommittedRejectedForecastWriter | None",
-                        rejected_forecast_store,
-                    ),
-                    clock=clock,
-                    id_gen=id_gen,
-                )
-                if data_use is ForecastDataUse.STANDARD
-                else None
-            )
-        except Exception as exc:
-            daily_execution = None
-            daily_preflight_errors.append(
-                f"Daily preflight failed: {type(exc).__name__}"
-            )
-            log.error(
-                "forecast_cycle.daily_preflight_failed", error_type=type(exc).__name__
+        daily_execution, daily_preflight_errors = _prepare_cycle_daily(
+            config=config,
+            models=models,
+            group_store=cast("StationGroupStore | None", group_store),
+            artifact_store=artifact_store,
+            store=cast("DailyRuntimeStore | None", daily_forecast_store),
+            writer=cast("CommittedForecastWriter | None", daily_forecast_writer),
+            rejected_writer=cast(
+                "CommittedRejectedForecastWriter | None", rejected_forecast_store
+            ),
+            clock=clock,
+            id_gen=id_gen,
+            data_use=data_use,
+            operator_request=operator_request,
+        )
+        if _operator_duplicate(operator_request, daily_execution):
+            return ForecastCycleResult(
+                cycle_time=resolved_cycle_time,
+                health=ForecastCycleHealth.HEALTHY,
+                stations_attempted=0,
+                stations_succeeded=0,
+                stations_failed=0,
+                forecasts_stored=0,
+                alerts_checked=False,
+                duration_ms=(time.perf_counter() - flow_t0) * 1000,
+                errors=(),
             )
 
         # --- Batch pre-fetch: operational stations ---

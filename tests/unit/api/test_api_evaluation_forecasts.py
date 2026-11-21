@@ -577,3 +577,53 @@ class TestFailedDiagnosticAttributionRoute:
         assert diagnostic["records"] == []
         assert diagnostic["stored_result"]["output_id"] == str(UUID(int=888))
         assert response.json()["parameters"][0]["selected"] is None
+
+
+def test_operator_trigger_is_public_but_operator_notes_are_not(
+    api: SimpleNamespace,
+    case: SimpleNamespace,
+) -> None:
+    from sapphire_flow.types.daily_operator_retry import (
+        OperatorDailyClaim,
+        OperatorDailyForecast,
+        OperatorRetryRequest,
+        roster_sha256,
+    )
+    from sapphire_flow.types.ids import PrincipalId
+
+    original = case.summary.claim
+    key = replace(
+        original.key, context=OperatorDailyForecast(target_date=case.issue.date())
+    )
+    request = OperatorRetryRequest(
+        request_id=original.id,
+        parent_id=UUID(int=400),
+        key=key,
+        artifact_id=original.frozen.artifact_id,
+        artifact_sha256="c" * 64,
+        configuration_sha256=original.frozen.configuration_sha256,
+        roster_sha256=roster_sha256(original.frozen),
+        actor=PrincipalId("private-operator-name"),
+        reason="private-incident-note",
+    )
+    claim = OperatorDailyClaim(
+        id=request.request_id,
+        owner_id=original.owner_id,
+        key=key,
+        frozen=original.frozen,
+        parent_id=request.parent_id,
+        started_at=original.started_at,
+        request=request,
+        software_version="test",
+        parent_configuration_sha256="b" * 64,
+    )
+    summary = replace(case.summary, claim=claim)
+    case.days.day = replace(case.days.day, latest=summary, authoritative=summary)
+    response = api.client.get(api.url)
+    assert response.status_code == 200
+    assert response.json()["daily"][0]["latest_attempt_trigger"] == "operator_retry"
+    assert (
+        response.json()["daily"][0]["authoritative_attempt_trigger"] == "operator_retry"
+    )
+    assert "private-operator-name" not in response.text
+    assert "private-incident-note" not in response.text

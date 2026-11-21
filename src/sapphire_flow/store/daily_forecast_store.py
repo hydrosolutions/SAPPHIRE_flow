@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from uuid import UUID  # noqa: TC003 -- Pydantic resolves this at runtime.
 
 import sqlalchemy as sa
@@ -37,6 +37,7 @@ from sapphire_flow.types.daily_forecast_one_shot import (
     OneShotDailyExecution,
     OneShotDailyKey,
     OneShotDailySnapshot,
+    OperationalDailyClaim,
 )
 from sapphire_flow.types.daily_forecast_outcome import (
     DailyMemberOutcome,
@@ -48,11 +49,20 @@ from sapphire_flow.types.daily_forecast_snapshot import (
     DailyAttemptSnapshot,
     DailyDaySnapshot,
 )
+from sapphire_flow.types.daily_operator_retry import (
+    OperatorAdmissionState,
+    OperatorDailyClaim,
+    OperatorDailyForecast,
+    OperatorRetryAdmission,
+    OperatorRetryRequest,
+    roster_sha256,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ForecastDataUse
 from sapphire_flow.types.ids import (
     ArtifactId,
     ModelId,
+    PrincipalId,
     StationGroupId,
     StationId,
     TenantId,
@@ -75,6 +85,59 @@ class _MemberDocument(BaseModel):
     required_parameters: tuple[str, ...]
 
 
+class _OperatorRequestDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    request_id: UUID
+    parent_id: UUID
+    tenant_id: UUID
+    deployment: str
+    group_id: UUID
+    model_id: str
+    data_use: ForecastDataUse
+    issued_at: datetime
+    artifact_id: UUID
+    artifact_sha256: str
+    configuration_sha256: str
+    roster_sha256: str
+    actor: str
+    reason: str
+
+    def to_domain(self) -> OperatorRetryRequest:
+        issue = ensure_utc(self.issued_at)
+        context = OperatorDailyForecast(target_date=issue.date())
+        if issue != context.issue_time:
+            raise ValueError("operator issue must be midnight UTC")
+        return OperatorRetryRequest(
+            request_id=self.request_id,
+            parent_id=self.parent_id,
+            key=DailyClaimKey(
+                tenant_id=TenantId(self.tenant_id),
+                deployment=self.deployment,
+                group_id=StationGroupId(self.group_id),
+                model_id=ModelId(self.model_id),
+                data_use=self.data_use,
+                context=context,
+            ),
+            artifact_id=ArtifactId(self.artifact_id),
+            artifact_sha256=self.artifact_sha256,
+            configuration_sha256=self.configuration_sha256,
+            roster_sha256=self.roster_sha256,
+            actor=PrincipalId(self.actor),
+            reason=self.reason,
+        )
+
+
+class _OperatorMetadataDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    request: _OperatorRequestDocument
+    software_version: str
+    parent_configuration_sha256: str
+
+
+def parse_operator_request(raw: object) -> OperatorRetryRequest:
+    return _OperatorRequestDocument.model_validate(raw).to_domain()
+
+
 def _roster_json(frozen: FrozenDailyAssignment) -> str:
     return json.dumps(
         [
@@ -91,6 +154,11 @@ _SCHEDULED_SCOPE = """tenant_id = :tenant_id AND deployment = :deployment
     AND group_id = :group_id
     AND model_id = :model_id AND data_use = :data_use AND issued_at = :issued_at
     AND trigger_kind = 'scheduled'"""
+
+
+_OPERATIONAL_SCOPE = _SCHEDULED_SCOPE.replace(
+    "trigger_kind = 'scheduled'", "trigger_kind IN ('scheduled', 'operator_retry')"
+)
 
 
 def _frozen_from_row(row: RowMapping) -> FrozenDailyAssignment:
@@ -113,27 +181,42 @@ def _frozen_from_row(row: RowMapping) -> FrozenDailyAssignment:
 
 
 def _snapshot(row: RowMapping) -> DailyAttemptSnapshot:
-    if row["trigger_kind"] != "scheduled":
-        raise ValueError("scheduled snapshot cannot parse a one-shot")
+    if row["trigger_kind"] not in ("scheduled", "operator_retry"):
+        raise ValueError("operational snapshot cannot parse a one-shot")
     key = DailyClaimKey(
         tenant_id=TenantId(row["tenant_id"]),
         deployment=row["deployment"],
         group_id=StationGroupId(row["group_id"]),
         model_id=ModelId(row["model_id"]),
         data_use=ForecastDataUse(row["data_use"]),
-        context=ScheduledDailyForecast(
-            scheduled_tick=ensure_utc(row["scheduled_tick"])
-        ),
+        context=ScheduledDailyForecast(scheduled_tick=ensure_utc(row["scheduled_tick"]))
+        if row["trigger_kind"] == "scheduled"
+        else OperatorDailyForecast(target_date=ensure_utc(row["issued_at"]).date()),
     )
-    claim = DailyClaim(
-        id=row["id"],
-        owner_id=row["owner_id"],
-        key=key,
-        ordinal=DailyAttemptOrdinal(row["ordinal"]),
-        frozen=_frozen_from_row(row),
-        parent_id=row["parent_id"],
-        started_at=ensure_utc(row["started_at"]),
-    )
+    claim: OperationalDailyClaim
+    if row["trigger_kind"] == "scheduled":
+        claim = DailyClaim(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            key=key,
+            ordinal=DailyAttemptOrdinal(row["ordinal"]),
+            frozen=_frozen_from_row(row),
+            parent_id=row["parent_id"],
+            started_at=ensure_utc(row["started_at"]),
+        )
+    else:
+        meta = _OperatorMetadataDocument.model_validate(row["operator_metadata"])
+        claim = OperatorDailyClaim(
+            id=row["id"],
+            owner_id=row["owner_id"],
+            key=key,
+            frozen=_frozen_from_row(row),
+            parent_id=row["parent_id"],
+            started_at=ensure_utc(row["started_at"]),
+            request=meta.request.to_domain(),
+            software_version=meta.software_version,
+            parent_configuration_sha256=meta.parent_configuration_sha256,
+        )
     return DailyAttemptSnapshot(
         claim=claim,
         state=DailyAttemptState(row["state"]),
@@ -263,15 +346,16 @@ class PgDailyForecastStore:
             else None,
         )
 
-    def claim(
+    def claim_operator_retry(
         self,
-        key: DailyClaimKey,
+        request: OperatorRetryRequest,
         frozen: FrozenDailyAssignment,
         *,
-        attempt_id: UUID,
         owner_id: UUID,
         started_at: UtcDatetime,
-    ) -> DailyClaim | DailyAttemptDecision:
+        software_version: str,
+    ) -> OperatorRetryAdmission:
+        key = request.key
         fields = dict(
             tenant_id=key.tenant_id,
             deployment=key.deployment,
@@ -288,6 +372,173 @@ class PgDailyForecastStore:
                 sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                 {"key": lock_key},
             )
+            existing = (
+                txn.execute(
+                    sa.text("SELECT * FROM daily_forecast_attempts WHERE id=:id"),
+                    {"id": request.request_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                snapshot = _snapshot(existing)
+                if (
+                    not isinstance(snapshot.claim, OperatorDailyClaim)
+                    or snapshot.claim.request != request
+                ):
+                    raise ValueError(
+                        "operator request UUID already has different payload"
+                    )
+                return OperatorRetryAdmission(
+                    claim=snapshot.claim,
+                    state=snapshot.state,
+                    admission=OperatorAdmissionState.EXISTING,
+                )
+            if (
+                started_at.utcoffset() != timedelta(0)
+                or key.context.issue_time.date() != started_at.date()
+            ):
+                raise ValueError("operator retry requires today's UTC logical day")
+            rows = (
+                txn.execute(
+                    sa.text(
+                        "SELECT * FROM daily_forecast_attempts WHERE "
+                        + _OPERATIONAL_SCOPE
+                    ),
+                    fields,
+                )
+                .mappings()
+                .all()
+            )
+            parent_ids = {r["parent_id"] for r in rows if r["parent_id"] is not None}
+            leaves = [r for r in rows if r["id"] not in parent_ids]
+            if len(leaves) != 1 or leaves[0]["id"] != request.parent_id:
+                raise ValueError(
+                    "operator retry parent is no longer the latest attempt"
+                )
+            if any(r["state"] == "active" for r in rows):
+                raise ValueError("operator retry has an active owner")
+            if any(r["state"] == "complete" for r in rows):
+                raise ValueError("operator retry cannot reopen a completed day")
+            scheduled = [r for r in rows if r["trigger_kind"] == "scheduled"]
+            if {r["ordinal"] for r in scheduled} != {1, 2}:
+                raise ValueError("operator retry requires exhausted automatic attempts")
+            parent = leaves[0]
+            if parent["state"] not in ("incomplete", "failed", "abandoned"):
+                raise ValueError(
+                    "operator retry requires a terminal unsuccessful parent"
+                )
+            previous = _frozen_from_row(parent)
+            if (
+                frozen.artifact_id is None
+                or frozen.artifact_id != request.artifact_id
+                or frozen.artifact_id != previous.artifact_id
+                or roster_sha256(frozen) != request.roster_sha256
+                or roster_sha256(previous) != request.roster_sha256
+                or frozen.output_contracts != previous.output_contracts
+            ):
+                raise ValueError(
+                    "operator retry cannot change artifact, roster or output contract"
+                )
+            if frozen.configuration_sha256 != request.configuration_sha256:
+                raise ValueError("operator preview configuration is stale")
+            artifact_hash = txn.execute(
+                sa.text("SELECT sha256_hash FROM model_artifacts WHERE id=:id"),
+                {"id": request.artifact_id},
+            ).scalar_one_or_none()
+            if artifact_hash != request.artifact_sha256:
+                raise ValueError("operator preview artifact hash is stale")
+            claim = OperatorDailyClaim(
+                id=request.request_id,
+                owner_id=owner_id,
+                key=key,
+                frozen=frozen,
+                parent_id=request.parent_id,
+                started_at=started_at,
+                request=request,
+                software_version=software_version,
+                parent_configuration_sha256=previous.configuration_sha256,
+            )
+            self._verify_assignment(txn, claim)
+            metadata = json.dumps(
+                {
+                    "request": request.document(),
+                    "software_version": software_version,
+                    "parent_configuration_sha256": previous.configuration_sha256,
+                }
+            )
+            inserted = txn.execute(
+                sa.text("""INSERT INTO daily_forecast_attempts
+                (id,tenant_id,deployment,group_id,model_id,data_use,issued_at,
+                 trigger_kind,parent_id,owner_id,started_at,state,artifact_id,
+                 configuration_sha256,roster,output_contracts,operator_metadata)
+                VALUES (:id,:tenant_id,:deployment,:group_id,:model_id,
+                 :data_use,:issued_at,
+                 'operator_retry',:parent,:owner,:started,'active',
+                 :artifact,:configuration,
+                 CAST(:roster AS jsonb),CAST(:contracts AS jsonb),
+                 CAST(:metadata AS jsonb))
+                ON CONFLICT(id) DO NOTHING RETURNING id"""),
+                {
+                    **fields,
+                    "id": claim.id,
+                    "parent": claim.parent_id,
+                    "owner": owner_id,
+                    "started": started_at,
+                    "artifact": frozen.artifact_id,
+                    "configuration": frozen.configuration_sha256,
+                    "roster": _roster_json(frozen),
+                    "contracts": contracts_json(frozen.output_contracts),
+                    "metadata": metadata,
+                },
+            ).scalar_one_or_none()
+            if inserted is None:
+                raise ValueError(
+                    "operator request UUID already admitted in another scope"
+                )
+        return OperatorRetryAdmission(
+            claim=claim,
+            state=DailyAttemptState.ACTIVE,
+            admission=OperatorAdmissionState.CREATED,
+        )
+
+    def claim(
+        self,
+        key: DailyClaimKey,
+        frozen: FrozenDailyAssignment,
+        *,
+        attempt_id: UUID,
+        owner_id: UUID,
+        started_at: UtcDatetime,
+    ) -> DailyClaim | DailyAttemptDecision:
+        if not isinstance(key.context, ScheduledDailyForecast):
+            raise ValueError("scheduled claim requires scheduled context")
+        fields = dict(
+            tenant_id=key.tenant_id,
+            deployment=key.deployment,
+            group_id=key.group_id,
+            model_id=key.model_id,
+            data_use=key.data_use.value,
+            issued_at=key.context.issue_time,
+        )
+        lock_key = json.dumps([str(value) for value in fields.values()])
+        with self._begin() as txn:
+            txn.execute(sa.text("SET LOCAL lock_timeout = '5s'"))
+            txn.execute(sa.text("SET LOCAL statement_timeout = '30s'"))
+            txn.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": lock_key},
+            )
+            active = txn.execute(
+                sa.text(
+                    "SELECT id FROM daily_forecast_attempts WHERE "
+                    + _OPERATIONAL_SCOPE
+                    + " AND state = 'active' LIMIT 1"
+                ),
+                fields,
+            ).scalar_one_or_none()
+            if active is not None:
+                return DailyAttemptDecision.OWNED
             row = (
                 txn.execute(
                     sa.text(
@@ -373,6 +624,13 @@ class PgDailyForecastStore:
             raise ValueError(
                 "daily artifact must belong to the assigned group and model"
             )
+        if isinstance(claim, OperatorDailyClaim):
+            artifact_hash = txn.execute(
+                sa.text("SELECT sha256_hash FROM model_artifacts WHERE id=:id"),
+                {"id": claim.frozen.artifact_id},
+            ).scalar_one_or_none()
+            if artifact_hash != claim.request.artifact_sha256:
+                raise ValueError("operator artifact hash changed")
         for member in claim.frozen.members:
             tenant = txn.execute(
                 sa.text("SELECT tenant_id FROM stations WHERE id = :id"),
@@ -403,12 +661,16 @@ class PgDailyForecastStore:
             "issued_at": claim.key.context.issue_time,
             "trigger_kind": "scheduled"
             if isinstance(claim, DailyClaim)
+            else "operator_retry"
+            if isinstance(claim, OperatorDailyClaim)
             else claim.key.context.trigger.value,
             "scheduled_tick": claim.key.context.scheduled_tick
-            if isinstance(claim, DailyClaim)
+            if isinstance(claim.key.context, ScheduledDailyForecast)
             else None,
             "ordinal": claim.ordinal.value if isinstance(claim, DailyClaim) else None,
-            "parent_id": claim.parent_id if isinstance(claim, DailyClaim) else None,
+            "parent_id": claim.parent_id
+            if isinstance(claim, (DailyClaim, OperatorDailyClaim))
+            else None,
             "started_at": claim.started_at,
             "artifact_id": claim.frozen.artifact_id,
             "configuration_sha256": claim.frozen.configuration_sha256,
@@ -419,6 +681,10 @@ class PgDailyForecastStore:
             != json.loads(contracts_json(claim.frozen.output_contracts))
         ):
             raise ValueError("daily claim differs from its frozen database identity")
+        if isinstance(claim, OperatorDailyClaim):
+            persisted = _snapshot(row).claim
+            if persisted != claim:
+                raise ValueError("operator claim differs from its immutable request")
 
     def fail(
         self,
@@ -512,10 +778,10 @@ class PgDailyForecastStore:
         return state
 
     def abandon(
-        self, claim: DailyClaim, confirmation: ConfirmedDailyTermination
+        self, claim: OperationalDailyClaim, confirmation: ConfirmedDailyTermination
     ) -> None:
         """The operator must first verify that the run AND all writers stopped."""
-        if not isinstance(claim, DailyClaim):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(claim, (DailyClaim, OperatorDailyClaim)):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("one-shot recovery is unsupported")
         if (
             confirmation.attempt_id != claim.id
@@ -545,7 +811,7 @@ class PgDailyForecastStore:
                     recovery = CAST(:recovery AS jsonb)
                 WHERE id = :id AND owner_id = :owner
                   AND tenant_id = :tenant AND state = 'active'
-                  AND trigger_kind = 'scheduled'
+                  AND trigger_kind IN ('scheduled', 'operator_retry')
                 RETURNING id"""),
                 {
                     "id": claim.id,
@@ -564,7 +830,7 @@ class PgDailyForecastStore:
             recovered = txn.execute(
                 sa.text(
                     "SELECT 1 FROM daily_forecast_attempts WHERE "
-                    + _SCHEDULED_SCOPE
+                    + _OPERATIONAL_SCOPE
                     + " AND recovery IS NOT NULL LIMIT 1"
                 ),
                 {
@@ -589,7 +855,7 @@ class PgDailyForecastStore:
                 txn.execute(
                     sa.text(
                         "SELECT * FROM daily_forecast_attempts WHERE "
-                        + _SCHEDULED_SCOPE
+                        + _OPERATIONAL_SCOPE
                         + " ORDER BY ordinal DESC"
                     ),
                     {
@@ -605,7 +871,38 @@ class PgDailyForecastStore:
                 .all()
             )
         try:
-            attempts = tuple(_snapshot(row) for row in rows)
+            by_id = {row["id"]: _snapshot(row) for row in rows}
+            if all(isinstance(item.claim, DailyClaim) for item in by_id.values()):
+                attempts = tuple(
+                    sorted(
+                        by_id.values(),
+                        key=lambda item: cast("DailyClaim", item.claim).ordinal.value,
+                        reverse=True,
+                    )
+                )
+            else:
+                parents = {item.claim.parent_id for item in by_id.values()}
+                leaves = [item for ident, item in by_id.items() if ident not in parents]
+                if by_id and len(leaves) != 1:
+                    raise ValueError(
+                        "daily authority has no unique latest parent-chain leaf"
+                    )
+                ordered: list[DailyAttemptSnapshot] = []
+                item = leaves[0] if leaves else None
+                while item is not None:
+                    if item in ordered:
+                        raise ValueError("daily authority contains a parent cycle")
+                    ordered.append(item)
+                    item = (
+                        by_id.get(item.claim.parent_id)
+                        if item.claim.parent_id
+                        else None
+                    )
+                if len(ordered) != len(by_id):
+                    raise ValueError(
+                        "daily authority contains a disconnected parent chain"
+                    )
+                attempts = tuple(ordered)
         except ValueError as exc:
             raise DailyAuthorityIntegrityError(
                 "invalid persisted daily authority"
@@ -613,6 +910,8 @@ class PgDailyForecastStore:
         authoritative = next(
             (attempt for attempt in attempts if attempt.outcomes is not None), None
         )
+        if attempts and isinstance(attempts[0].claim, OperatorDailyClaim):
+            authoritative = attempts[0] if attempts[0].outcomes is not None else None
         recovery = (
             DailyRecoveryStatus.OPERATOR_RECOVERED
             if any(attempt.recovery is not None for attempt in attempts)
@@ -666,20 +965,51 @@ class PgDailyForecastStore:
             attempts.c.model_id == requested.c.model_id,
             attempts.c.issued_at == requested.c.issued_at,
             attempts.c.data_use == ForecastDataUse.STANDARD.value,
-            attempts.c.trigger_kind == "scheduled",
+            attempts.c.trigger_kind.in_(("scheduled", "operator_retry")),
         )
-        latest = (
-            scoped.order_by(attempts.c.ordinal.desc())
-            .limit(1)
+        child = attempts.alias("daily_child")
+        leaf = (
+            ~sa.select(child.c.id)
+            .where(
+                child.c.parent_id == attempts.c.id,
+                child.c.trigger_kind.in_(("scheduled", "operator_retry")),
+            )
+            .exists()
+        )
+        operator_latest = scoped.where(leaf).correlate(requested).scalar_subquery()
+        has_operator = (
+            scoped.where(attempts.c.trigger_kind == "operator_retry")
             .correlate(requested)
-            .scalar_subquery()
+            .exists()
         )
-        authority = (
-            scoped.where(attempts.c.summary.is_not(None))
+        scheduled_latest = (
+            scoped.where(attempts.c.trigger_kind == "scheduled")
             .order_by(attempts.c.ordinal.desc())
             .limit(1)
             .correlate(requested)
             .scalar_subquery()
+        )
+        latest = sa.case((has_operator, operator_latest), else_=scheduled_latest)
+        operator_authority = (
+            scoped.where(
+                leaf,
+                attempts.c.trigger_kind == "operator_retry",
+                attempts.c.summary.is_not(None),
+            )
+            .correlate(requested)
+            .scalar_subquery()
+        )
+        scheduled_authority = (
+            scoped.where(
+                attempts.c.trigger_kind == "scheduled", attempts.c.summary.is_not(None)
+            )
+            .order_by(attempts.c.ordinal.desc())
+            .limit(1)
+            .correlate(requested)
+            .scalar_subquery()
+        )
+        authority = sa.case(
+            (has_operator, operator_authority), else_=scheduled_authority
         )
         recovered = (
             scoped.where(attempts.c.recovery.is_not(None)).correlate(requested).exists()
@@ -728,6 +1058,12 @@ class PgDailyForecastStore:
                                 ),
                                 0,
                             )
+                            + sa.func.coalesce(
+                                sa.func.octet_length(
+                                    sa.cast(attempts.c.operator_metadata, sa.Text())
+                                ),
+                                0,
+                            )
                         )
                     ).where(attempts.c.id.in_(ids))
                 ).scalar_one()
@@ -761,7 +1097,9 @@ class PgDailyForecastStore:
                         SELECT sum(octet_length(roster::text)
                             + octet_length(output_contracts::text)
                             + coalesce(octet_length(summary::text),0)
-                            + coalesce(octet_length(recovery::text),0)) AS bytes,
+                            + coalesce(octet_length(recovery::text),0)
+                            + coalesce(octet_length(operator_metadata::text),0))
+                            AS bytes,
                             sum(jsonb_array_length(roster)
                                 + jsonb_array_length(coalesce(summary,'[]'::jsonb))
                                 + (SELECT coalesce(sum(jsonb_array_length(

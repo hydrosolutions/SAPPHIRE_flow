@@ -7142,3 +7142,17 @@ value. `GatewayIntervalQualification` binds the normalized-start contract to a
 corrected adapter revision; unqualified requests cannot convert radiation.
 Operational source protocols optionally accept `parameters_by_station`, preserving
 the legacy two-channel default. No FI protocol or discharge-output schema changes.
+
+### Operator daily retry identity
+
+`OperatorDailyForecast` fixes an explicit parent-derived UTC day;
+`OperatorRetryRequest` binds scope, parent/request UUIDs, artifact/hash, roster and
+current configuration fingerprints, actor and reason. `OperatorDailyClaim` carries
+that request plus owner/runtime and parent-configuration identity.
+`OperatorRetryAdmission` distinguishes CREATED (the sole execution capability)
+from EXISTING (status only, regardless of active/terminal state).
+`DailyExecution` includes this operational claim alongside scheduled and disposable
+one-shot execution. `DailyRuntimeStore.claim_operator_retry` admits it atomically;
+`DailyAttemptSnapshot` may carry either operational claim. Automatic ordinals and
+manual/replay semantics are unchanged. Public evaluation diagnostics identify the
+operational trigger without disclosing actor/reason.
