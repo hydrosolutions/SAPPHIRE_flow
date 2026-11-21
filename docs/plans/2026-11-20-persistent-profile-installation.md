@@ -310,7 +310,8 @@ checks supplement the actual reader/read-only mount and authentication checks;
 automatic daemon restart retains the limitations documented above.
 
 The orchestrator records READY after the independent review and resolution of
-its material findings. PI0 and PI1 are complete; PI2 implements the retained lifecycle.
+its material findings. PI0 through PI4 are complete for the scope and tested
+release/host combination recorded below.
 This status does not approve or merge the PR, publish a release, or authorize a
 production deployment.
 
@@ -403,4 +404,56 @@ refusal. This attempt does not count as qualification or verified cleanup.
 The corrected hosted attempt proved the successful lifecycle, persistence, token
 revocation, missing-secret refusal and ownership-checked cleanup. Its second fresh
 installation refused immediate reuse of the first HTTP port; the two scenarios now
-use distinct ports. Failure recovery and full final-head CI remain unqualified.
+use distinct ports. Those were interim findings: final PR CI run `44817759730`
+passed, including failure recovery and all cleanup checks. PR #595 merged at
+`ac6913b8821a9d78a9079cc01f142e7107d71d5c`; exact-source main CI run
+`44892552652` also passed with its FULL proof.
+
+## PI4 release/host acceptance (complete)
+
+On 2026-11-21, owner-authorized release **0.1.1170**, at the same merged source,
+passed on a disposable AWS Ubuntu 24.04 amd64 host. AWS was the authorized fallback
+because Infomaniak provisioning access was unavailable. The host used Docker
+29.1.3 with the containerd image store, Compose 2.40.3, four CPUs, about 15.3 GiB guest RAM and a
+100 GiB disposable disk. These are observed test resources, not minimum sizing.
+
+[Release delivery run 44910065011](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/runs/44910065011)
+passed using the exact FULL source-CI proof above. Assurance remains **source CI
+reused; delivery gates only; release-version suite not rerun**. Fresh image builds,
+scans and export checks passed. The owner's independently supplied GitHub
+producer/delivery receipts matched the sealed metadata and copied archive before
+native image loading and probes on the test host.
+
+The generic external profile passed `PLAN_READY` and the actual release-target
+installer returned `INSTALLED_PAUSED` in 97.6 seconds. Host-loopback access,
+paused pools/jobs, no flow execution and probe-token revocation passed. Original
+profile and delivery bytes, ownership, permissions and modification times were
+preserved throughout testing. Read-only verification did not change installation
+state or mint another token.
+
+- Restarting Docker while running preserved database/file markers, container IDs
+  and init identity/finish time, recovering to `VERIFIED_PAUSED` in 92.8 seconds.
+  Health and worker-readiness checks reported temporary failures during recovery;
+  no repair, recreation or init rerun was used to obtain the pass.
+- Rebooting the running host changed its boot ID and preserved those same facts,
+  with jobs still paused and no execution.
+- After explicit `stop`, both Docker restart and a second host reboot left all
+  installation containers stopped, with the same resources and completed init.
+- Explicit `start` then returned to `VERIFIED_PAUSED`; data markers survived and
+  the original single probe token remained revoked. This check took 58.5 seconds.
+
+Test-only ownership-checked teardown removed 8 containers, 2 networks and 9 volumes.
+Independent inventories confirmed absence; synthetic inputs were erased and the
+source checkout remained clean. Provider readback confirmed instance termination,
+disk/network-interface deletion, security-group/key-pair removal and public-address
+release. Temporary direct-transfer access and local test keys were removed. Prior
+staging receiver/GitHub admission settings were temporarily modified, then restored
+and verified. Live forecasting service configuration and activation were unchanged; the sealed release remains in normal
+staging custody. Full evidence stays private.
+
+This closes PI4 only for the tested release/host and durable-file delivery path.
+It does not qualify subsequent source changes, other host setups, ephemeral manager
+boot ordering, backup/restore, public access, existing-stack upgrades, real station/
+model onboarding or scientific activation. Newer main changes are not included in
+this release evidence. Administrator instructions link this record instead of
+duplicating implementation history.

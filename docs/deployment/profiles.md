@@ -20,8 +20,8 @@ and test credentials on a dedicated daemon, without activating a deployment.
 The [persistent installer](profile-installation.md) uses this same selection and
 offline checker. Preview remains offline; explicit install creates a retained,
 paused stack with loopback HTTP. Verify/stop/start use its frozen private state.
-Matching hosted lifecycle qualification is required; reboot acceptance remains
-pending. There is no new manifest
+Matching hosted lifecycle qualification is required; the installer guide records
+the tested release/host combination and restart limits. There is no new manifest
 schema or secret-manager dependency.
 
 ## Selection and file ownership

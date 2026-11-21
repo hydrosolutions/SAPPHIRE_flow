@@ -1088,7 +1088,9 @@ When this map applies, the context packet should name:
   qualification is `tests/integration/test_deployment_install.py`; it reuses the
   existing CI images and has test-only owned-resource destruction. Keep its
   execution and safe-summary steps in `tools/ci_attest.py` producer inventory
-  and refresh the reviewed workflow hash. Reboot acceptance remains PI4.
+  and refresh the reviewed workflow hash. Separate release/host reboot evidence
+  is recorded in the persistent-installer guide; do not extend it to untested
+  releases, host setups or credential-delivery mechanisms.
 
 - Private rehearsal preview: `tools/deployment_rehearsal.py` consumes the existing
   checker's typed evaluated render; `tests/unit/tools/test_deployment_rehearsal.py`
