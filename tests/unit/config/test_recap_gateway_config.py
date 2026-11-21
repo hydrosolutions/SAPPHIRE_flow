@@ -384,6 +384,11 @@ class TestNormalizationAttestation:
     @pytest.mark.parametrize(
         "extra",
         [
+            'normalized_interval_contract = "gateway_native_start_v1"\n'
+            'normalization_revision = "normalized-v1"\n',
+            'normalized_interval_contract = "gateway_native_start_v1"\n'
+            'normalization_revision = "gateway-docs:'
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"\n',
             'normalized_interval_contract = "normalized_start_v1"\n',
             'normalized_interval_contract = "unknown"\n',
             'normalization_revision = "orphan-revision"\n',
@@ -399,3 +404,20 @@ class TestNormalizationAttestation:
         )
         with pytest.raises(ConfigurationError, match="interval|revision"):
             load_recap_gateway_config(path)
+
+    def test_native_documentation_attestation_is_loaded(self, tmp_path: Path) -> None:
+        from sapphire_flow.types.recap_intervals import GatewayIntervalContract
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[adapters.recap_gateway]\nbase_url="https://recap.example.org"\ntimeout_s=120\nverify_tls=true\nstaleness_threshold_hours=12\nhru_metadata_source="manual_gpkg_upload"\nmax_retries=5\n'
+            'normalized_interval_contract="gateway_native_start_v1"\n'
+            'normalization_revision="gateway-docs:6bcc6d949a33ddda042f844d36bc2710620a9ccb"\n'
+        )
+        qualification = load_recap_gateway_config(path).interval_qualification
+        assert qualification.contract is GatewayIntervalContract.GATEWAY_NATIVE_START_V1
+        assert (
+            qualification.revision
+            == "gateway-docs:6bcc6d949a33ddda042f844d36bc2710620a9ccb"
+        )
+        qualification.require_radiation()

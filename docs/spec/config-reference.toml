@@ -866,3 +866,12 @@ allow_origins = ["https://sapphire.example.ch"]  # explicit list, never "*"
 # Commented out: the base config declares no tenants (only `sapphire`, from migration 0041).
 # [tenants.chwrr]
 # name = "CHWRR Nepal"
+
+# Optional scoped Gateway radiation qualification (default: unqualified).
+# See docs/operations/model-onboarding.md for required operator boundary evidence.
+# These existing key names do not request a timestamp shift. Native increments
+# retain physical start labels for UTC daily aggregation; sub-daily model timing
+# requires a separate review. Legacy normalized_start_v1 remains readable.
+# [adapters.recap_gateway]
+# normalized_interval_contract = "gateway_native_start_v1"
+# normalization_revision = "gateway-docs:6bcc6d949a33ddda042f844d36bc2710620a9ccb"

@@ -168,23 +168,42 @@ prerequisites belong to that guide; this workflow does not promote a station.
 The Recap channels are `solar_net_radiation` (ERA5
 `surface_net_solar_radiation`, IFS `ssr`) and `thermal_net_radiation`
 (ERA5 `surface_net_thermal_radiation`, IFS `str`). Gateway values are already
-**differenced interval energy in J/m²**. Its raw timestamps mark interval end;
-training uses interval start. The separately owned gateway-adapter correction
-must normalize labels before this path is enabled. This change does not shift
-labels, difference accumulations, or stitch products again.
+**differenced interval energy in J/m²**, stamped at the **start** of each
+interval. For UTC day D, sum Gateway hourly increments D00 through D23.
+This equals the raw ERA5-Land accumulation at D+1 00Z, which belongs to day D.
+Do not add an hour before daily aggregation, difference increments again, or
+shift daily model labels. Temperature remains instantaneous: average D00..D23.
+Daily radiation is the sum of interval energies divided by 86400 seconds;
+for mixed forecast intervals this is a duration-weighted mean of their fluxes.
 
-After proving that correction at midnight, source handover, lead 144 and the
-final interval, set these fields in the scoped `[adapters.recap_gateway]` overlay:
+Sources: [Gateway timestamp policy](https://github.com/hydrosolutions/recap-dg-client/blob/6bcc6d949a33ddda042f844d36bc2710620a9ccb/README.md#timestamp-policy),
+[ECMWF accumulation convention](https://confluence.ecmwf.int/spaces/CKB/pages/140385202/ERA5-Land+data+documentation),
+and [ERA5-Land daily aggregation](https://developers.google.com/earth-engine/datasets/catalog/ECMWF_ERA5_LAND_DAILY_AGGR).
+
+After checking native bounds, source handover, the IFS 3h/6h transition and
+final interval against the deployed endpoint, prefer this scoped configuration:
 
 ```toml
-normalized_interval_contract = "normalized_start_v1"
-normalization_revision = "<exact independently corrected adapter release or commit>"
+normalized_interval_contract = "gateway_native_start_v1"
+normalization_revision = "gateway-docs:6bcc6d949a33ddda042f844d36bc2710620a9ccb"
 ```
 
-These fields attest to deployed behavior; they do not implement it. Default
-`unqualified` refuses radiation requests. Retain the revision and read-only
-raw/end versus normalized/start boundary evidence with the qualification record.
-Never enable this attestation on the uncorrected adapter.
+The existing key names are retained for compatibility. For the native contract,
+`normalization_revision` must be `gateway-docs:` followed by a full lowercase
+40-hex documentation commit. It records an **operator attestation**, not automatic
+verification of the server or training lineage. Archive the pinned source and
+boundary evidence before enabling it. Default `unqualified` still refuses radiation.
+Legacy `normalized_start_v1` remains accepted for existing qualified callers;
+it describes the same physical start-labelled support but has a different
+radiation acquisition fingerprint. Neither contract performs a time shift.
+Historical forcing retains the original source run as its version, not this
+attestation: operational cache fingerprints do not protect historical imports.
+
+**Sub-daily forecasting needs a separate timing review.** This daily agreement
+does not qualify end-labelled hourly model inputs, SnowMapper `rof` inputs,
+local-day boundaries, or their query/resampling rules. Revisit the adapter and
+the model's input convention before enabling those paths. A blanket +1 hour is
+not valid for three-hour or six-hour accumulations.
 
 Use the existing `ingest-operational-era5-history` deployment with its optional
 `parameters` list to request just the two missing radiation names. The default
@@ -231,7 +250,7 @@ skill with unknown training exposure.
 
 Before any radiation history write, also verify the **reanalysis endpoint's**
 original `source_run` is the UTC day of each hourly row (not a later product
-release date). Preserve a qualification record containing the exact normalization
+release date). Preserve a qualification record containing the exact interval qualification
 revision, `rad-int-v1`, station/channel list, requested window and source-run
 identities. Historical rows keep the original source run in `version`; they do
 not independently store the attestation revision. A wrong attestation cannot be

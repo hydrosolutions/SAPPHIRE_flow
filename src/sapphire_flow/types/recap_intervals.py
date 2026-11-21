@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
@@ -17,6 +18,7 @@ RADIATION_CONTRACT_REVISION = "rad-int-v1"
 class GatewayIntervalContract(StrEnum):
     UNQUALIFIED = "unqualified"
     NORMALIZED_START_V1 = "normalized_start_v1"
+    GATEWAY_NATIVE_START_V1 = "gateway_native_start_v1"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -27,14 +29,21 @@ class GatewayIntervalQualification:
     def __post_init__(self) -> None:
         if not isinstance(self.contract, GatewayIntervalContract):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("gateway interval contract must be typed")
-        if self.contract is GatewayIntervalContract.NORMALIZED_START_V1:
+        if self.contract is not GatewayIntervalContract.UNQUALIFIED:
             if (
                 not isinstance(self.revision, str)
                 or not self.revision
                 or self.revision != self.revision.strip()
             ):
                 raise ValueError(
-                    "normalized intervals require a corrected adapter revision"
+                    "qualified start intervals require a qualification revision"
+                )
+            if (
+                self.contract is GatewayIntervalContract.GATEWAY_NATIVE_START_V1
+                and re.fullmatch(r"gateway-docs:[0-9a-f]{40}", self.revision) is None
+            ):
+                raise ValueError(
+                    "native intervals require revision gateway-docs:<40-hex-commit>"
                 )
         elif self.revision is not None:
             raise ValueError(
@@ -42,8 +51,8 @@ class GatewayIntervalQualification:
             )
 
     def require_radiation(self) -> None:
-        if self.contract is not GatewayIntervalContract.NORMALIZED_START_V1:
-            raise ValueError("radiation requires qualified normalized start intervals")
+        if self.contract is GatewayIntervalContract.UNQUALIFIED:
+            raise ValueError("radiation requires qualified start intervals")
 
 
 UNQUALIFIED_INTERVALS = GatewayIntervalQualification()
