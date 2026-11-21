@@ -8,7 +8,8 @@ from sapphire_flow.types.daily_forecast import DailyAttemptState
 from sapphire_flow.types.daily_forecast_outcome import finalized_outcome_state
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.daily_forecast_claim import DailyClaim, DailyFailureReason
+    from sapphire_flow.types.daily_forecast_claim import DailyFailureReason
+    from sapphire_flow.types.daily_forecast_one_shot import OperationalDailyClaim
     from sapphire_flow.types.daily_forecast_outcome import DailyMemberOutcome
     from sapphire_flow.types.daily_forecast_recovery import (
         ConfirmedDailyTermination,
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class DailyAttemptSnapshot:
-    claim: DailyClaim
+    claim: OperationalDailyClaim
     state: DailyAttemptState
     finished_at: UtcDatetime | None
     outcomes: tuple[DailyMemberOutcome, ...] | None

@@ -245,6 +245,12 @@ def get_evaluation_forecasts(
                 else None,
                 group_id=str(d.group_id) if d.group_id else None,
                 issue_time=d.issue_time,
+                latest_attempt_trigger=d.latest_attempt_trigger.value
+                if d.latest_attempt_trigger
+                else None,
+                authoritative_attempt_trigger=d.authoritative_attempt_trigger.value
+                if d.authoritative_attempt_trigger
+                else None,
                 latest_attempt_id=str(d.latest_attempt_id)
                 if d.latest_attempt_id
                 else None,
@@ -259,6 +265,12 @@ def get_evaluation_forecasts(
             EvaluationDailyResponse(
                 group_id=str(d.group_id),
                 issue_time=d.issue_time,
+                latest_attempt_trigger=d.latest_attempt_trigger.value
+                if d.latest_attempt_trigger
+                else None,
+                authoritative_attempt_trigger=d.authoritative_attempt_trigger.value
+                if d.authoritative_attempt_trigger
+                else None,
                 latest_attempt_id=str(d.latest_attempt_id)
                 if d.latest_attempt_id
                 else None,

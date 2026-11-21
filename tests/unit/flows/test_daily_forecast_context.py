@@ -65,3 +65,52 @@ class TestScheduledDailyRun:
         result = scheduled_daily_run(run, expected_deployment_id=deployment)
         assert result is not None
         assert result.context.issue_time == datetime(2026, 10, 26, tzinfo=UTC)
+
+
+class TestOperatorDailyOwner:
+    @pytest.mark.parametrize(
+        "invalid", ["scheduled", "subflow", "deployment", "absent"]
+    )
+    def test_rejects_untrusted_execution_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        invalid: str,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.flows.daily_forecast_context import (
+            FlowRunContext,
+            current_operator_daily_owner,
+        )
+
+        deployment = uuid4()
+        run = FlowRun(flow_id=uuid4(), deployment_id=deployment, auto_scheduled=False)
+        changes = {
+            "scheduled": {"auto_scheduled": True},
+            "subflow": {"parent_task_run_id": uuid4()},
+            "deployment": {"deployment_id": uuid4()},
+            "absent": {},
+        }
+        context = (
+            None
+            if invalid == "absent"
+            else SimpleNamespace(flow_run=run.model_copy(update=changes[invalid]))
+        )
+        monkeypatch.setattr(FlowRunContext, "get", lambda: context)
+        with pytest.raises(ValueError, match="manual top-level"):
+            current_operator_daily_owner(expected_deployment_id=deployment)
+
+    def test_accepts_real_manual_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.flows.daily_forecast_context import (
+            FlowRunContext,
+            current_operator_daily_owner,
+        )
+
+        deployment = uuid4()
+        run = FlowRun(flow_id=uuid4(), deployment_id=deployment, auto_scheduled=False)
+        monkeypatch.setattr(
+            FlowRunContext, "get", lambda: SimpleNamespace(flow_run=run)
+        )
+        assert current_operator_daily_owner(expected_deployment_id=deployment) == run.id
