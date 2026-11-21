@@ -67,11 +67,35 @@ class DeploymentSpec:
     concurrency_limit: int | None = None
     work_pool_name: str = WORK_POOL
     forecast_config_overlay: ForecastConfigOverlay | None = None
+    parameters: tuple[tuple[str, str], ...] = ()
 
 
 _SKIP_ENV_VAR = "SAPPHIRE_SKIP_DEPLOYMENTS"
 _ONLY_ENV_VAR = "SAPPHIRE_ONLY_DEPLOYMENTS"
 _SOURCE_ROOT_ENV_VAR = "SAPPHIRE_FLOW_SOURCE_ROOT"
+
+
+def _era5_refresh_specs(env: Mapping[str, str]) -> list[DeploymentSpec]:
+    cron = env.get("SCHEDULE_REFRESH_OPERATIONAL_ERA5", "").strip()
+    scope = env.get("SAPPHIRE_ERA5_WEATHER_SCOPE", "").strip()
+    if not cron and not scope:
+        return []
+    if not cron or not scope:
+        raise ValueError("ERA5 refresh requires both schedule and weather scope")
+    from prefect.client.schemas.schedules import CronSchedule
+
+    CronSchedule(cron=cron, timezone="UTC")
+    return [
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.ingest_recap_era5_reanalysis",
+            flow_attr="refresh_operational_era5_history_flow",
+            deployment_name="refresh-operational-era5-history",
+            cron=cron,
+            concurrency_limit=1,
+            work_pool_name=INGEST_POOL,
+            parameters=(("weather_scope", scope),),
+        )
+    ]
 
 
 def _flow_source_root() -> str:
@@ -177,6 +201,7 @@ def _all_specs(environment: Mapping[str, str] | None = None) -> list[DeploymentS
     )
 
     return [
+        *_era5_refresh_specs(env),
         DeploymentSpec(
             flow_module="sapphire_flow.flows.ingest_recap_era5_reanalysis",
             flow_attr="ingest_operational_era5_history_flow",
@@ -315,11 +340,20 @@ async def _register_one(spec: DeploymentSpec) -> None:
         "print_next_steps": False,
     }
     if spec.cron is not None:
-        deploy_kwargs["cron"] = spec.cron
+        if spec.deployment_name == "refresh-operational-era5-history":
+            from prefect.schedules import Cron
+
+            deploy_kwargs["schedule"] = Cron(spec.cron, timezone="UTC")
+        else:
+            deploy_kwargs["cron"] = spec.cron
     if spec.concurrency_limit is not None:
         deploy_kwargs["concurrency_limit"] = spec.concurrency_limit
 
-    if spec.deployment_name in {"forecast-cycle", "backup-database"}:
+    if spec.deployment_name in {
+        "forecast-cycle",
+        "backup-database",
+        "refresh-operational-era5-history",
+    }:
         from prefect.client.orchestration import get_client
         from prefect.exceptions import ObjectNotFound
 
@@ -330,10 +364,18 @@ async def _register_one(spec: DeploymentSpec) -> None:
                 )
             except ObjectNotFound:
                 variables: object = {}
-                parameters: dict[str, object] = {}
+                parameters: dict[str, object] = dict(spec.parameters)
             else:
                 variables = existing.job_variables
                 parameters = dict(existing.parameters)
+                if (
+                    spec.deployment_name == "refresh-operational-era5-history"
+                    and parameters.get("weather_scope")
+                    != dict(spec.parameters)["weather_scope"]
+                ):
+                    raise ValueError(
+                        "Existing ERA5 refresh scope differs from requested scope"
+                    )
         deploy_kwargs["parameters"] = parameters
         if spec.deployment_name == "forecast-cycle":
             deploy_kwargs["job_variables"] = forecast_job_variables(

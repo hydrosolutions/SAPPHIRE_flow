@@ -1088,3 +1088,91 @@ def test_explicit_subset_preserves_selector_validation() -> None:
                 "SAPPHIRE_SKIP_DEPLOYMENTS": "collect-bafu-forecasts",
             }
         )
+
+
+class TestEra5RefreshRegistration:
+    def test_opt_in_preserves_existing_specs(self) -> None:
+        baseline = _build_specs({})
+        specs = _build_specs(
+            {
+                "SCHEDULE_REFRESH_OPERATIONAL_ERA5": "35 0 * * *",
+                "SAPPHIRE_ERA5_WEATHER_SCOPE": "nepal21",
+            }
+        )
+        refresh = specs[0]
+        assert specs[1:] == baseline
+        assert refresh.parameters == (("weather_scope", "nepal21"),)
+        assert (refresh.work_pool_name, refresh.concurrency_limit, refresh.cron) == (
+            "ingest",
+            1,
+            "35 0 * * *",
+        )
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"SCHEDULE_REFRESH_OPERATIONAL_ERA5": "35 0 * * *"},
+            {"SAPPHIRE_ERA5_WEATHER_SCOPE": "nepal21"},
+            {
+                "SCHEDULE_REFRESH_OPERATIONAL_ERA5": "bad",
+                "SAPPHIRE_ERA5_WEATHER_SCOPE": "nepal21",
+            },
+        ],
+    )
+    def test_bad_configuration_fails_before_registration(
+        self, env: dict[str, str]
+    ) -> None:
+        with pytest.raises(ValueError):
+            _build_specs(env)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", ["nepal21", "other"])
+    async def test_registration_preserves_parameters_or_rejects_scope_change(
+        self, scope: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        spec = _build_specs(
+            {
+                "SCHEDULE_REFRESH_OPERATIONAL_ERA5": "35 0 * * *",
+                "SAPPHIRE_ERA5_WEATHER_SCOPE": "nepal21",
+            }
+        )[0]
+        parameters = {
+            "weather_scope": scope,
+            "window_days": 20,
+            "lag_days": 9,
+            "parameters": ["temperature"],
+        }
+        client = AsyncMock()
+        client.read_deployment_by_name.return_value = SimpleNamespace(
+            parameters=parameters, job_variables={}
+        )
+        sourced = MagicMock(adeploy=AsyncMock(return_value="id"))
+        flow = MagicMock(afrom_source=AsyncMock(return_value=sourced))
+        flow.name = "refresh-operational-era5-history"
+        with (
+            patch("prefect.client.orchestration.get_client") as get_client,
+            patch(
+                "importlib.import_module",
+                return_value=SimpleNamespace(
+                    refresh_operational_era5_history_flow=flow
+                ),
+            ),
+        ):
+            get_client.return_value.__aenter__ = AsyncMock(return_value=client)
+            if scope != "nepal21":
+                with pytest.raises(ValueError, match="scope differs"):
+                    await _register_one(spec)
+                sourced.adeploy.assert_not_called()
+            else:
+                await _register_one(spec)
+                assert sourced.adeploy.call_args.kwargs["parameters"] == parameters
+                from inspect import signature
+
+                from prefect.flows import Flow
+
+                kwargs = sourced.adeploy.call_args.kwargs
+                signature(Flow.adeploy).bind(sourced, **kwargs)
+                assert kwargs["schedule"].timezone == "UTC"
+                assert kwargs["schedule"].cron == "35 0 * * *"
