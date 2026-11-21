@@ -112,12 +112,14 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
         "Preload pinned rehearsal infrastructure",
         "Qualify disposable private-profile rehearsal",
         "Upload safe rehearsal qualification summary",
+        "Qualify persistent private-profile installation",
+        "Upload safe installation qualification summary",
     ),
 }
 
 # Reviewed workflow bytes bind names to actual commands, action pins and inputs.
 # Update only with the workflow and the producer inventory drift tests.
-WORKFLOW_SHA256 = "5de36664174a61b09acad64b97a3e4ab6ebf42c9bdb51d3edecefb97848b65ce"
+WORKFLOW_SHA256 = "00472733f21e4002484f5b8f270487634180d554b289da7c7efe6f2ff1283238"
 
 
 def require_workflow(root: Path) -> None:

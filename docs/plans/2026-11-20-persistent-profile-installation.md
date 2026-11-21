@@ -365,3 +365,42 @@ including lifecycle faults, real offline Compose rendering, private-state/delive
 checks and token finalizers. Changed-file Ruff and Pyright and the staged
 pre-commit checks (including secret scanning) passed. Full CI at the final PR head
 remains the merge gate; no live deployment or release publication occurred.
+
+
+## PI3 implementation and qualification
+
+PI2 merged as #594 with all required final-head checks passing. PI3 adds one
+opt-in real-container qualification in the existing hosted image-proof job,
+reusing prepared default/Aquacast images and pinned infrastructure. It exercises
+retained data, unchanged init, paused state, host-loopback access, scoped probe
+revocation, missing-delivery refusal and injected init failure. Independent
+unrelated-resource checks and test-only ownership-verified cleanup run before the
+safe summary is uploaded. FULL attestation requires both execution and upload.
+
+The integration test and fixture runbook are implemented. One independent Claude
+review completed; findings addressed include stopping the CI-owned builder before
+idle-daemon preflight, sentinel checks on failure recovery, truthful cleanup flags,
+bounded child termination without pipe backpressure, exact refusal assertions and
+canary scans of retained state, container environments and safe evidence. Full
+review evidence stays private. Final-head hosted qualification is the merge gate
+for implementation PR #595; its safe summary records actual pass and cleanup
+evidence. Local checks: 259 harness/attestation tests and 72 release-target tests
+passed, with changed-file Ruff/Pyright and pre-commit gates. The deployment test
+is deliberately skipped locally without dedicated-daemon opt-in. No production deployment,
+release publication, daemon restart or host reboot is claimed here.
+
+PI3 boundary checks also correct retained-command comparison: Compose dollar
+escaping is decoded once for engine inspection, and omitted commands/entrypoints
+are checked against the pinned image defaults. Regression tests preserve refusal
+of changed commands and entrypoints. The hosted job budget and its contract test
+include both qualification steps and their safe-summary uploads.
+
+The first hosted attempt failed installation and then report publication because
+runner temporary storage is not private. The report now uses a private subdirectory
+validated before installation; tests cover failure evidence and unsafe-parent
+refusal. This attempt does not count as qualification or verified cleanup.
+
+The corrected hosted attempt proved the successful lifecycle, persistence, token
+revocation, missing-secret refusal and ownership-checked cleanup. Its second fresh
+installation refused immediate reuse of the first HTTP port; the two scenarios now
+use distinct ports. Failure recovery and full final-head CI remain unqualified.

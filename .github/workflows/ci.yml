@@ -1383,7 +1383,7 @@ jobs:
 
   aquacast-release-image-proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 114
+    timeout-minutes: 170
     permissions: { contents: read, pull-requests: read }
     env:
       AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
@@ -1640,7 +1640,7 @@ jobs:
           github.actor == 'dependabot[bot]' &&
           env.UV_LOCK_CHANGED == 'false'
         run: |
-          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof, vulnerability scan and disposable rehearsal qualification were NOT performed; do not claim both images were verified."
+          echo "::warning::AQUACAST_TOKEN is not available to this Dependabot-triggered run and uv.lock is unchanged. Aquacast image proof, vulnerability scan, disposable rehearsal and persistent installation qualification were NOT performed; do not claim both images were verified."
           echo "### Aquacast image proof not performed" >> "$GITHUB_STEP_SUMMARY"
           echo "Supported Dependabot degraded case: AQUACAST_TOKEN absent and uv.lock unchanged." >> "$GITHUB_STEP_SUMMARY"
       - name: Build Aquacast app image
@@ -1769,6 +1769,34 @@ jobs:
         with:
           name: profile-rehearsal-qualification
           path: ${{ runner.temp }}/profile-rehearsal-qualification.json
+          if-no-files-found: error
+
+      - name: Qualify persistent private-profile installation
+        id: profile-installation
+        if: env.AQUACAST_TOKEN_PRESENT == 'true'
+        timeout-minutes: 55
+        env:
+          SAPPHIRE_INSTALL_ACCEPTANCE: dedicated-test-daemon
+          SAPPHIRE_INSTALL_IMAGE_TAG: ci-proof-${{ github.sha }}
+          SAPPHIRE_INSTALL_QUALIFICATION_REPORT: ${{ runner.temp }}/profile-installation-evidence/qualification.json
+        run: |
+          docker buildx stop
+          uv run --no-sync pytest tests/integration/test_deployment_install.py -m deployment -q --tb=short --junitxml "$RUNNER_TEMP/profile-installation-junit.xml"
+          uv run --no-sync python - <<'PYTHON'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          suites = ET.parse(Path(os.environ["RUNNER_TEMP"]) / "profile-installation-junit.xml").getroot().findall("testsuite")
+          if sum(int(suite.get("tests", "0")) for suite in suites) != 1 or any(int(suite.get(key, "0")) for suite in suites for key in ("failures", "errors", "skipped")):
+              raise SystemExit("Mandatory persistent installation qualification did not pass")
+          PYTHON
+      - name: Upload safe installation qualification summary
+        if: ${{ !cancelled() && steps.profile-installation.outcome != 'skipped' && steps.profile-installation.outcome != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        timeout-minutes: 1
+        with:
+          name: profile-installation-qualification
+          path: ${{ runner.temp }}/profile-installation-evidence/qualification.json
           if-no-files-found: error
 
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
