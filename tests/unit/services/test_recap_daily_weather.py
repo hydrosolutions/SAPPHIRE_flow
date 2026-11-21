@@ -175,6 +175,24 @@ def frame(
 
 
 class TestRecapCompleteDailyWeather:
+    def test_eleven_day_native_tail_does_not_fabricate_fifteen_days(self) -> None:
+        rows = [
+            row
+            for row in qualified_rows()
+            if row.valid_time < ISSUE + timedelta(days=11)
+        ]
+        result = build_future_dynamic_frame(
+            rows,
+            time_step=timedelta(days=1),
+            issue_time=ISSUE,
+            forecast_horizon_steps=15,
+            future_dynamic_features=frozenset({"precipitation", "temperature"}),
+            ensemble_mode=EnsembleMode.SINGLE,
+            weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
+        )
+        assert result.height == 11
+        assert result["timestamp"].max() == ISSUE + timedelta(days=10)
+
     def test_native_frame_has_ten_contiguous_start_labelled_days(self) -> None:
         result = frame(qualified_rows())
         assert result.height == 10

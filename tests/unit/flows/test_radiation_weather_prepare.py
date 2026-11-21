@@ -2,6 +2,8 @@ from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
 from sapphire_flow.adapters.recap_operational import operational_binding_fingerprint
 from sapphire_flow.flows.operational_weather_prepare import (
@@ -88,12 +90,24 @@ class TestRadiationWeatherPrepare:
             "temperature",
         )
 
+    @pytest.mark.parametrize(
+        "contract,revision",
+        [
+            (GatewayIntervalContract.NORMALIZED_START_V1, "test-normalized-v1"),
+            (
+                GatewayIntervalContract.GATEWAY_NATIVE_START_V1,
+                "gateway-docs:" + "a" * 40,
+            ),
+        ],
+    )
     def test_union_precedes_cache_key_and_preserves_assignment_requirements(
         self,
+        contract: GatewayIntervalContract,
+        revision: str,
     ) -> None:
         qualification = GatewayIntervalQualification(
-            contract=GatewayIntervalContract.NORMALIZED_START_V1,
-            revision="test-normalized-v1",
+            contract=contract,
+            revision=revision,
         )
         prepared = prepare(qualification)
         assert prepared.refusal_messages == ()

@@ -29,6 +29,18 @@ QUALIFIED = GatewayIntervalQualification(
 
 class TestRadiationMeanFlux:
     @pytest.mark.parametrize(
+        "revision", [None, "", " ", "corrected-v1", "gateway-docs:abc"]
+    )
+    def test_native_contract_requires_pinned_documentation(
+        self, revision: str | None
+    ) -> None:
+        with pytest.raises(ValueError, match="revision"):
+            GatewayIntervalQualification(
+                contract=GatewayIntervalContract.GATEWAY_NATIVE_START_V1,
+                revision=revision,
+            )
+
+    @pytest.mark.parametrize(
         ("source", "lead", "energy"),
         [
             ("era5_land", 0, 360000.0),

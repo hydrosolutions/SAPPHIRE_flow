@@ -785,3 +785,19 @@ staging deadline performance. The manual usable-forecast milestone is independen
 of recurrence. Acceptance still needs at least ten usable API forecasts on each
 of two consecutive automatically scheduled Nepal days, with truthful issue,
 creation and weather times. This patch does not authorize host activation.
+
+
+### UTC daily accumulation contract (21 November 2026)
+
+For daily ERA5-Land-compatible inputs, retain Gateway-native start labels. Sum
+already-differenced increments whose physical intervals cover UTC day D
+(D00..D23 for hourly ERA5). The equivalent raw ERA5-Land daily accumulation is
+at D+1 00Z and belongs to D. Average instantaneous temperature samples D00..D23;
+convert total daily radiation energy to mean W/m² by dividing by 86400 seconds.
+No extra timestamp shift, deaccumulation, or stitching is required.
+
+The scoped native radiation qualification and its operator evidence are described
+in [model onboarding](model-onboarding.md#qualifying-cmal-net-radiation-inputs).
+This is a daily-input decision. Revisit interval labels, actual durations, query
+bounds and training aggregation before introducing sub-daily forecasting; do not
+apply a universal one-hour shift. A shorter returned forecast tail stays incomplete.

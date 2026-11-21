@@ -750,3 +750,112 @@ class TestMixedRadiationRefresh:
             for day in windows[radiation_source.station_id].days
             for sample in day.samples
         } == set(WEATHER_PARAMETERS)
+
+
+class TestNativeUtcDailyContract:
+    @pytest.mark.parametrize(
+        "parameter,raw_pulse,expected",
+        [
+            ("precipitation", 0.024, 24.0),
+            ("solar_net_radiation", 86400.0, 1.0),
+            ("thermal_net_radiation", -86400.0, -1.0),
+            ("temperature", 297.15, 1.0),
+        ],
+    )
+    def test_midnight_membership_matches_era5_land_daily_product(
+        self, parameter: str, raw_pulse: float, expected: float
+    ) -> None:
+        from sapphire_flow.types.operational_weather import (
+            WeatherParameter,
+            daily_weather_value,
+        )
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        day = ensure_utc(datetime(2026, 12, 31, tzinfo=UTC))
+        next_day = ensure_utc(day + timedelta(days=1))
+        index = pd.date_range(day, periods=48, freq="h")
+        baseline = 273.15 if parameter == "temperature" else 0.0
+        values = [baseline] * 48
+        values[23] = raw_pulse
+        values[24] = raw_pulse
+        response = pd.DataFrame(
+            {
+                "g_225": values,
+                "source": "era5_land",
+                "source_run": index.floor("D"),
+                "source_meta": "{}",
+            },
+            index=index,
+        )
+        samples = parse_operational_samples(
+            response,
+            polygon="g_225",
+            parameter=cast("WeatherParameter", parameter),
+            start=day,
+            end=ensure_utc(day + timedelta(days=2)),
+            max_response_bytes=LIMIT,
+            interval_qualification=GatewayIntervalQualification(
+                contract=GatewayIntervalContract.GATEWAY_NATIVE_START_V1,
+                revision="gateway-docs:" + "a" * 40,
+            ),
+        )
+        # D23 ends at D+1 midnight and belongs to D; D+1 00 belongs to D+1.
+        assert samples[23].valid_time == day + timedelta(hours=23)
+        assert samples[23].source_run == day
+        assert samples[24].valid_time == next_day
+        assert samples[24].source_run == next_day
+        assert samples[23].interval_end == (
+            None if parameter == "temperature" else next_day
+        )
+        assert daily_weather_value(
+            day, samples[:24], cast("WeatherParameter", parameter)
+        ) == pytest.approx(expected)
+        assert daily_weather_value(
+            next_day, samples[24:], cast("WeatherParameter", parameter)
+        ) == pytest.approx(expected)
+        assert (
+            daily_weather_value(day, samples[:23], cast("WeatherParameter", parameter))
+            is None
+        )
+
+    def test_native_and_legacy_radiation_acquisitions_have_distinct_keys(self) -> None:
+        from sapphire_flow.adapters.recap_operational import (
+            future_binding_fingerprint,
+            operational_binding_fingerprint,
+        )
+        from sapphire_flow.types.operational_weather import WEATHER_PARAMETERS
+        from sapphire_flow.types.recap_intervals import (
+            GatewayIntervalContract,
+            GatewayIntervalQualification,
+        )
+
+        source = make_binding()
+        ref = PolygonResolver().resolve(source)
+        revision = "gateway-docs:" + "a" * 40
+        legacy = GatewayIntervalQualification(
+            contract=GatewayIntervalContract.NORMALIZED_START_V1, revision=revision
+        )
+        native = GatewayIntervalQualification(
+            contract=GatewayIntervalContract.GATEWAY_NATIVE_START_V1, revision=revision
+        )
+        assert operational_binding_fingerprint(
+            source, ref, parameters=WEATHER_PARAMETERS, interval_qualification=native
+        ) != operational_binding_fingerprint(
+            source, ref, parameters=WEATHER_PARAMETERS, interval_qualification=legacy
+        )
+        assert future_binding_fingerprint(
+            source,
+            ref,
+            (0,),
+            parameters=WEATHER_PARAMETERS,
+            interval_qualification=native,
+        ) != future_binding_fingerprint(
+            source,
+            ref,
+            (0,),
+            parameters=WEATHER_PARAMETERS,
+            interval_qualification=legacy,
+        )

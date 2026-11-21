@@ -2941,24 +2941,28 @@ class TestRadiationReanalysis:
     @pytest.mark.parametrize(
         "parameter", ["solar_net_radiation", "thermal_net_radiation"]
     )
+    @pytest.mark.parametrize(
+        "contract", ["normalized_start_v1", "gateway_native_start_v1"]
+    )
     def test_requested_native_energy_becomes_flux_with_original_provenance(
-        self, parameter: str
+        self, parameter: str, contract: str
     ) -> None:
         from sapphire_flow.types.recap_intervals import (
             GatewayIntervalContract,
             GatewayIntervalQualification,
         )
 
+        last_hour = _SOURCE_RUN + pd.Timedelta(hours=23)
         frame = _reanalysis_frame(
-            times=[_SOURCE_RUN], values=[-360000.0], source_runs=[_SOURCE_RUN]
+            times=[last_hour], values=[-360000.0], source_runs=[_SOURCE_RUN]
         )
         api = _FixedFrameEcmwf(frame)
         adapter = RecapGatewayReanalysisAdapter(
             client=_Client(api, _GoodSnow()),
             resolver=_MapResolver({_SID_A: _ref(_SID_A, _POLY_A)}),
             interval_qualification=GatewayIntervalQualification(
-                contract=GatewayIntervalContract.NORMALIZED_START_V1,
-                revision="test-normalized-v1",
+                contract=GatewayIntervalContract(contract),
+                revision="gateway-docs:" + "a" * 40,
             ),
         )
         rows = adapter.fetch_reanalysis(
@@ -2971,6 +2975,7 @@ class TestRadiationReanalysis:
         assert rows[0].value == -100.0
         assert rows[0].parameter == parameter
         assert rows[0].version == _SOURCE_RUN.isoformat()
+        assert rows[0].valid_time == last_hour
         assert len(api.calls) == 1
 
     def test_unqualified_refuses_before_fetch(self) -> None:

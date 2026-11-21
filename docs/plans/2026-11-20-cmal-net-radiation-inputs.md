@@ -5,6 +5,14 @@ created: 2026-11-20
 base: bafe6826af73df1b848eec917eba5ec6686d52b3
 ---
 
+> **Superseded timing premise, 21 November 2026:** the Gateway already supplies
+> start-stamped interval increments. For daily ERA5-Land training, preserve
+> physical UTC-day aggregation; no end-to-start adapter correction is required.
+> References below to that correction/activation dependency are historical and
+> superseded by [daily time alignment](2026-11-21-gateway-training-time-alignment.md).
+> Use the current model-onboarding guide for native interval qualification.
+> Sub-daily model alignment remains a separate review.
+
 # Net-radiation inputs for Nepal CMAL
 
 ## Outcome and authority
