@@ -68,7 +68,7 @@ existing contract and synthetic forecast smoke tests. The older
 Display timezone, hydrological grid and model training conventions remain distinct
 external inputs. This plan changes none of their semantics or the time-grid work.
 
-## Administrator contract (proposed, not implemented)
+## Administrator contract
 
 New host command: `tools/deployment_install.py`. Use the documented installed
 project/uv environment; installing host dependencies is an administrator step.
@@ -310,6 +310,97 @@ checks supplement the actual reader/read-only mount and authentication checks;
 automatic daemon restart retains the limitations documented above.
 
 The orchestrator records READY after the independent review and resolution of
-its material findings. PI0 is complete; PI1 is the next implementation milestone.
+its material findings. PI0 and PI1 are complete; PI2 implements the retained lifecycle.
 This status does not approve or merge the PR, publish a release, or authorize a
 production deployment.
+
+## PI1 implementation
+
+`tools/deployment_install.py preview` now reuses profile/rehearsal preparation,
+requires an explicit local HTTP/same-origin route, and verifies a separate finite
+persistent recipe. It reports safe offline provenance and runtime gaps without
+opening credentials, contacting the daemon, writing installation state or exposing
+an executable recipe. Runtime commands and fingerprint creation remain PI2.
+
+Administrator instructions are in `docs/deployment/profile-installation.md`;
+`docs/secrets-bootstrap.md` now describes the five runtime deliveries, reader
+permissions and manager-neutral boundary. Related standards and entry points link
+those maintained instructions. No existing runtime recipe or reader changed.
+
+Local validation: 242 installation/profile/rehearsal tests passed, including 39
+new preview/transform cases; changed-file Ruff and Pyright passed. One independent
+Claude patch review completed. Fixed defect-versus-input error classification and
+strengthened administrator guidance and contract tests. Rendered-route forwarding
+and required Caddy were already enforced by the shared checker; new real-Compose
+tests verify both. No unresolved material findings; full final-head CI remains
+required before merge. Full review evidence stays private.
+
+
+## PI2 implementation
+
+Fresh install and retained verify/stop/start use the existing profile preparation,
+image probes and bounded command executor. Persistent state and cleanup are kept
+separate from disposable rehearsal. Actual bind mounts are inspected read-only
+before container entrypoints start. Private salted fingerprints detect changed
+credentials without preventing same-value redelivery or emergency owned stop.
+Shared paused-state checks preserve the existing rehearsal guard. Installation
+probes revoke their scoped token; read-only verify does not create one.
+
+The administrator guide covers selection, prerequisites, commands, retained state,
+failure recovery and the onboarding boundary. This milestone changes no live stack
+and claims no real-container or reboot persistence proof: those remain PI3/PI4.
+One independent Claude patch review completed. Confirmed findings were addressed:
+recent-worker filtering tolerates stale Prefect registrations; image consumers and
+actual publications are checked; text/JSON retain containment and stage diagnostics;
+probe attempts keep distinct recovery records; failed stops record incomplete
+containment. Equivalent credential redelivery is accepted while changed values
+refuse. Existing canonical profile paths already resolve manager symlinks, and the
+token API already accepts the injected ID; regression tests cover both relevant
+boundaries. Full review and adjudication remain private. Real runtime/reboot evidence
+stays PI3/PI4, and full final-head CI is required before merge.
+
+
+PI2 local validation: 327 installation, profile and rehearsal tests passed,
+including lifecycle faults, real offline Compose rendering, private-state/delivery
+checks and token finalizers. Changed-file Ruff and Pyright and the staged
+pre-commit checks (including secret scanning) passed. Full CI at the final PR head
+remains the merge gate; no live deployment or release publication occurred.
+
+
+## PI3 implementation and qualification
+
+PI2 merged as #594 with all required final-head checks passing. PI3 adds one
+opt-in real-container qualification in the existing hosted image-proof job,
+reusing prepared default/Aquacast images and pinned infrastructure. It exercises
+retained data, unchanged init, paused state, host-loopback access, scoped probe
+revocation, missing-delivery refusal and injected init failure. Independent
+unrelated-resource checks and test-only ownership-verified cleanup run before the
+safe summary is uploaded. FULL attestation requires both execution and upload.
+
+The integration test and fixture runbook are implemented. One independent Claude
+review completed; findings addressed include stopping the CI-owned builder before
+idle-daemon preflight, sentinel checks on failure recovery, truthful cleanup flags,
+bounded child termination without pipe backpressure, exact refusal assertions and
+canary scans of retained state, container environments and safe evidence. Full
+review evidence stays private. Final-head hosted qualification is the merge gate
+for implementation PR #595; its safe summary records actual pass and cleanup
+evidence. Local checks: 259 harness/attestation tests and 72 release-target tests
+passed, with changed-file Ruff/Pyright and pre-commit gates. The deployment test
+is deliberately skipped locally without dedicated-daemon opt-in. No production deployment,
+release publication, daemon restart or host reboot is claimed here.
+
+PI3 boundary checks also correct retained-command comparison: Compose dollar
+escaping is decoded once for engine inspection, and omitted commands/entrypoints
+are checked against the pinned image defaults. Regression tests preserve refusal
+of changed commands and entrypoints. The hosted job budget and its contract test
+include both qualification steps and their safe-summary uploads.
+
+The first hosted attempt failed installation and then report publication because
+runner temporary storage is not private. The report now uses a private subdirectory
+validated before installation; tests cover failure evidence and unsafe-parent
+refusal. This attempt does not count as qualification or verified cleanup.
+
+The corrected hosted attempt proved the successful lifecycle, persistence, token
+revocation, missing-secret refusal and ownership-checked cleanup. Its second fresh
+installation refused immediate reuse of the first HTTP port; the two scenarios now
+use distinct ports. Failure recovery and full final-head CI remain unqualified.

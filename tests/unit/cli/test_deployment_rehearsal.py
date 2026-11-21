@@ -34,6 +34,7 @@ class PrefectFake:
         self.runs: list[Any] = []
         self.history: list[Any] = []
         self.heartbeat = NOW
+        self.old_heartbeats: list[datetime] = []
         self.disappear = False
 
     async def read_work_pools(self, **kwargs: Any) -> list[Any]:
@@ -67,7 +68,12 @@ class PrefectFake:
         return self.history
 
     async def read_workers_for_work_pool(self, name: str, **kwargs: Any) -> list[Any]:
-        return [SimpleNamespace(last_heartbeat_time=self.heartbeat)]
+        after = kwargs["worker_filter"].last_heartbeat_time.after_
+        return [
+            SimpleNamespace(last_heartbeat_time=heartbeat)
+            for heartbeat in [*self.old_heartbeats, self.heartbeat]
+            if heartbeat >= after
+        ][: kwargs["limit"]]
 
     def client(self) -> PrefectClient:
         return cast("PrefectClient", self)
@@ -304,3 +310,18 @@ class TestTokenConfinement:
         assert disposed == [True]
         captured = capsys.readouterr()
         assert canary not in captured.out + captured.err
+
+
+class TestRetainedWorkerHeartbeats:
+    def test_old_records_do_not_block_a_restarted_worker(self) -> None:
+        fake = prepared_client()
+        asyncio.run(helper.jobs(fake.client(), "pause"))
+        fake.old_heartbeats = [NOW - timedelta(days=1)] * 200
+        asyncio.run(helper.workers(fake.client(), NOW))
+
+    def test_two_recent_workers_are_not_accepted(self) -> None:
+        fake = prepared_client()
+        asyncio.run(helper.jobs(fake.client(), "pause"))
+        fake.old_heartbeats = [NOW - timedelta(seconds=10)]
+        with pytest.raises(helper.RehearsalCheckError, match="workers_not_ready"):
+            asyncio.run(helper.workers(fake.client(), NOW))

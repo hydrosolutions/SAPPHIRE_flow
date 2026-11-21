@@ -18,6 +18,13 @@ The narrower [disposable profile rehearsal](deployment/profile-rehearsal.md)
 can preview a supported profile, then start and clean up a fresh test stack on a
 dedicated daemon after `PASS_OFFLINE`. It does not activate a persistent deployment.
 
+For a new stack intended to remain running, the
+[persistent installer](deployment/profile-installation.md) provides preview,
+explicit install and retained verify/stop/start commands. Jobs stay paused and HTTP
+stays server-local. Require the matching hosted lifecycle qualification; daemon/host
+reboot acceptance remains pending. Use a dedicated test host and keep existing
+deployment runbooks until release/host acceptance.
+
 ## 1. Copy the generic examples into private storage
 
 Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)

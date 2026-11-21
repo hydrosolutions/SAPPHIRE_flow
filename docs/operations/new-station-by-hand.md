@@ -1,10 +1,13 @@
-# Onboard a new station by hand (until the tools exist)
+# Onboard a new station (administrator steps)
 
 **Who this is for:** the hydrosolutions facilitator doing a first onboarding for an
 organization, or anyone rehearsing it in a sandbox. **What this is:** the steps of the
-[onboarding guide](onboarding-start-here.md) that have no tool yet, written out so they can
-be repeated exactly. **What this is not:** a finished admin route. Each section names the
-missing tool; when the tool exists, the section is replaced by one command.
+[onboarding guide](onboarding-start-here.md) in the order to run them. Most steps are one
+command (Plan 540 tools; each is a dry run until you add `--apply`). The parts that are still
+by hand are written out so they can be repeated exactly: the sandbox, the weather scope in the
+config file, the Gateway dashboard jobs, and the synthetic data a sandbox needs. **What this
+is not:** a finished admin dashboard. For model training, evaluation and artifact activation,
+see [Train, evaluate and activate a model](model-onboarding.md).
 
 Rehearsed end to end on 2026-11-16 in a throwaway sandbox with the synthetic Trishuli
 station (code `00001`, #452): basin imported, weather history stored, observations and
@@ -12,15 +15,67 @@ discharge checked, `cmal_small` imported, one 10-day forecast stored. The sandbo
 used a Swiss-trained model on synthetic data: it proves the plumbing, **not** a forecast
 anyone should read.
 
+## Step order
+
+Run in this order; "needs" says what must exist before the step works.
+
+| Order | Step | Needs first | Tool |
+|---|---|---|---|
+| 1 | Part 0: sandbox, config file, tenant, Prefect (rehearsal only) | nothing | by hand |
+| 2 | Register the station with the Gateway (checklist steps 1 to 3) | the config file; the approved handover | `prepare_gateway` |
+| 3 | Subscribe; start the ERA5 job and the IFS backfill (checklist steps 4, 5) | registration confirmed | `prepare_gateway`, Gateway dashboard |
+| 4 | Step 3: create the station record | the tenant | `create_station` |
+| 5 | Step 4: import the basin | the station record (same code and network) | `import_basin_package` |
+| 6 | Step 5a: group | the station record | `scripts/create_station_group.py` |
+| 7 | Step 5b: weather scope and weather bindings | group, basin import | config file, `onboard_nepal weather-bindings` |
+| 8 | Step 5c: weather history | bindings, subscription, ERA5 job finished, workers running | `onboard_nepal history` |
+| 9 | Step 6: observations, rating curve, derived discharge | the station record with its datum | `load_station_observations` |
+| 10 | Step 7: readiness report | steps above (it reports what is missing) | `station_readiness` |
+| 11 | Model: import the artifact, assign it to the group | group | `import-model-artifact`, `assign_group_model` |
+| 12 | Step 8: switch the station on | everything above, including the assigned model | `promote_station` |
+| 13 | First forecast cycle | the station operational; Gateway data present | `run_forecast_cycle_flow` |
+
 ## Rules
 
 - Do this in a **sandbox first**, never against a shared host without the owner's go-ahead.
 - Keep the evidence folder, API key file and delivered data **outside any Git checkout**.
-  Point the tools at the Gateway key's mode-600 file; never type the key into a
-  command or message: `export RECAP_API_KEY_FILE=/path/to/key_file` (the path, not the key).
+  Keep the Gateway key in `~/.config/sapphire-flow/secrets/sapphire_dg_api_key` (mode 600,
+  the project's convention, [security standard](../standards/security.md)); there is no key
+  manager. **Point the tools at the file, never at the key:** in your own terminal run
+  `export RECAP_API_KEY_FILE=~/.config/sapphire-flow/secrets/sapphire_dg_api_key` (a path).
+  The workers, the forecast cycle and `station_readiness --check-gateway` read the key from
+  that file themselves ([Plan 540](../plans/540-general-station-onboarding-tools.md), M0).
+  The key is never typed into a command or message, and an automated assistant must not read
+  the file. The `prepare_gateway` commands take the same path as `--secret-file`. The lookup
+  order is: `/run/secrets/sapphire_dg_api_key` (containers), then `RECAP_API_KEY_FILE`, then
+  `RECAP_API_KEY` (local development only; avoid it here, it puts the key itself in the
+  environment).
 - One station at a time. Write down every manual step you ran in the evidence folder.
+- **Start with a new, empty evidence folder.** The Gateway tool keeps a state file per
+  folder and refuses to repeat an upload it recorded as confirmed (see
+  [Before Part 0](#before-part-0-register-the-station-with-the-gateway)).
 - Run everything from a checkout of this repository (`uv sync` once). All Python snippets
   below use `uv run python - <<'EOF' ... EOF`.
+- **Two lists in the Gateway runbook.** [recap-gateway-runbook.md](recap-gateway-runbook.md)
+  has an *admin checklist* (steps 1 to 7: 1 Prepare, 2 Register, 3 Reconcile, 4 Subscribe,
+  5 History, 6 Resume, 7 Status) and, further down, a *technical list* with different numbers
+  (2 Prepare, 3 Register, 4 Subscribe, ...). In this guide, "checklist step N" always means the
+  admin checklist. Steps called "Step 3" to "Step 8" with no other word are this guide's own.
+
+## Who does what
+
+| Task | The person (administrator) | An assistant, if one helps you |
+|---|---|---|
+| Point the environment at the key file (`export RECAP_API_KEY_FILE=<path>`) | Yes, in your own terminal | Never. Must not read the key file |
+| Start the Prefect workers (they read the key from the file) | Yes | Never. Stop and ask the person |
+| Run the forecast cycle (reads the key) | Yes | Never. Stop and ask the person |
+| Run the read-only Gateway check before the first cycle (`station_readiness --check-gateway`, reads the key) | Yes | Never |
+| Start the manual Gateway dashboard jobs (ERA5 targeted run, IFS backfill) | Yes. The IFS backfill is shared by all basins: under the owner's standing rule (2026-11-17) an administrator may start it and must record it in the evidence folder | Never |
+| `prepare_gateway` previews and status (take a key **file path**, not the key) | Yes | Yes, without reading the key file |
+| `prepare_gateway` commands that write to the shared Gateway: `register`, `reconcile`, `subscribe --confirm`, `history --job-reference`, `resume` | Yes | Only with the person's or owner's go-ahead for that command; never read the key file |
+| Database container, Prefect server, config files, station and basin steps, SQL checks | Yes | Yes |
+| Teardown (stop only what you started) | Yes | Yes, only with the pid files |
+| Promote a station on a shared host (`promote_station --apply`) | Only while the owner has switched `promotion_allowed` on for that run | Never |
 
 ## Values you need first
 
@@ -32,7 +87,234 @@ anyone should read.
 | Timezone | `Asia/Kathmandu` | Station register |
 | Gauge datum (m above sea level) | 1480 (invented for the sandbox) | **Ask for it.** The elevation of the gauge zero. Without it, water-level QC skips its range checks |
 | Gateway name | `trishuli_00001` | What you registered in the [Gateway runbook](recap-gateway-runbook.md) |
+| Name inside the handover package | `trishuli_research_test` | `package/manifest.json`, key `gateway_hru_names` |
 | Rating table | invented for the sandbox | The organization's real rating table. A sandbox may invent one |
+
+## Before Part 0: register the station with the Gateway
+
+Run checklist steps 1 to 3 of the [Gateway runbook](recap-gateway-runbook.md) (1 prepare and
+confirm, 2 register, 3 `reconcile --outcome confirmed`; its inputs table at the top lists the
+values you need) with a **new, empty evidence folder** and the approved handover. For `--config` use the
+sandbox config file from Part 0 below (create it first; its `[adapters.recap_gateway]` table is
+enough). Create the evidence folder **private**: `mkdir -m 700 "$EVIDENCE"`. With any wider mode
+(for example the default 755) the tool holds with "Gateway preparation held: the evidence folder
+must be private; run `chmod 700 <folder>`" and exit status 2. The tool prints a very long status
+JSON (and many `model_discovered` log lines on stderr); the field to read is
+`registration_status`. After the upload succeeds, `register` reports
+`reconciliation_required`: that is expected; confirm with `reconcile --outcome confirmed`,
+where `--evidence` is one honest sentence tying the Gateway admin panel entry to this upload
+(name, status READY, upload time) and `--actor` is your name.
+
+**When the only evidence is the tool's own HTTP success.** The tool records "the upload request
+succeeded" separately from "the shape exists under this name". The first is not proof of the
+second, and the tool does not check the `--evidence` text (any non-empty sentence is
+accepted), so it is only as good as what you write. If you cannot see the entry in the Gateway
+admin panel (or have no attributed confirmation from the Gateway administrator), do **not**
+run `reconcile --outcome confirmed`: leave the registration at `reconciliation_required` and
+ask the Gateway administrator to check. A timeout or unclear answer to the upload stays held,
+also after a restart; do not rename or retry. Only attributed proof that the shape was **not**
+created allows `reconcile --outcome not_created`, followed by a deliberate `register` of the
+same recorded name.
+
+**Scope file for the Trishuli rehearsal** (the runbook describes the fields; these are the
+values that worked. The Gateway product values come from the 2026-10-21 to 2026-11-15 probe log
+and are marked DRAFT/not reviewed in the file itself. Move the history `end` and the forecast
+cycle to a recent date: the ERA5 history ends about 8 days before today, and the forecast cycle
+must be one the Gateway already holds):
+
+```json
+{
+ "model_id": "cmal_small",
+ "time_step_seconds": 86400,
+ "history": {
+  "start": "2022-03-01T00:00:00Z",
+  "end": "2026-11-09T00:00:00Z",
+  "purpose": "Trishuli_00001 test-site rehearsal (#452): synthetic station, sandbox only"
+ },
+ "forecast": {
+  "cycles": [
+   "2026-11-16T00:00:00Z"
+  ],
+  "first_lead": "PT0S",
+  "end_lead": "P10D",
+  "members": [
+   0
+  ],
+  "level_type": "sfc",
+  "level": null,
+  "control_grid": "0p1",
+  "product_grid_reference": "DRAFT - IFS control forecast as served by the Gateway; grid not confirmed",
+  "source_runs": [
+   [
+    "2026-11-16T00:00:00Z",
+    {
+     "semantics": "utc_instant",
+     "timestamp": "2026-11-16T00:00:00Z"
+    }
+   ]
+  ]
+ },
+ "contracts": [
+  {
+   "stream": "era5_history",
+   "subscription_source": "era5",
+   "cadence": "PT1H",
+   "provenance": "era5_land",
+   "reference": "DRAFT from Gateway probe log 2026-10-21..2026-11-15 (#452); not reviewed",
+   "date_end": "inclusive",
+   "publication_lag": "P8D",
+   "historical_source_run": {
+    "semantics": "utc_date_midnight",
+    "value": null
+   },
+   "subscription_parameters": [
+    {
+     "canonical": "temperature",
+     "parameter_name": "2m_temperature",
+     "forecast_type": null
+    },
+    {
+     "canonical": "precipitation",
+     "parameter_name": "total_precipitation",
+     "forecast_type": null
+    }
+   ]
+  },
+  {
+   "stream": "ifs_forecast",
+   "subscription_source": "ifs",
+   "cadence": "PT3H",
+   "provenance": "ifs",
+   "reference": "DRAFT from Gateway probe log 2026-10-21..2026-11-15 (#452); not reviewed",
+   "date_end": "inclusive",
+   "publication_lag": "PT0S",
+   "historical_source_run": {
+    "semantics": "unresolved",
+    "value": null
+   },
+   "forecast_lead_bands": [
+    {
+     "start": "PT0S",
+     "end": "P6D",
+     "cadence": "PT3H"
+    },
+    {
+     "start": "P6D",
+     "end": "P10D",
+     "cadence": "PT6H"
+    }
+   ],
+   "subscription_parameters": [
+    {
+     "canonical": "temperature",
+     "parameter_name": "2t:fc:sfc",
+     "forecast_type": "fc"
+    },
+    {
+     "canonical": "precipitation",
+     "parameter_name": "tp:fc:sfc",
+     "forecast_type": "fc"
+    }
+   ]
+  }
+ ]
+}
+```
+
+`--vatro-review` takes the integration review reference. A **sandbox rehearsal** may use a
+clearly labelled placeholder (`SANDBOX-REHEARSAL-<date>`); a real station needs the real
+reference from the Gateway integration review.
+
+- `register` on a workspace that already records the name as `confirmed` does nothing and
+  prints the old status. It does **not** upload again.
+- **If the shapefile was deleted on the Gateway afterwards** (for example a test station
+  removed by the Gateway administrator), the state file still says `confirmed`, and the tool
+  cannot reset a confirmed registration (`reconcile --outcome not_created` is refused for it;
+  that outcome is only for an upload that timed out or was unclear). Do not delete or edit
+  state, and do not rename the Gateway name. **Stop and ask the owner.** For a throwaway
+  rehearsal name that is yours to use, the owner may approve a new evidence folder with a fresh
+  prepare, confirm, register and reconcile; keep the old folder for the record.
+
+## After registration: subscribe, then start the Gateway data jobs
+
+Registering only stores the basin shape on the Gateway. It does not yet deliver weather for
+it. Three more things must happen on the Gateway side, **before** the weather history in
+Step 5c. Skipping them was the first thing that stopped the 2026-11-17 walkthrough.
+
+1. **Subscribe** the new Gateway name to the ERA5 and IFS weather parameters (checklist step 4).
+   Run the preview first, read it, then confirm the revision it prints (the variables are the
+   ones in the runbook's inputs table; `SUBSCRIPTION_REVISION` is the revision the preview prints):
+
+   ```bash
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" subscribe --config "$CONFIG" --secret-file "$KEY_FILE"
+   uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" --handover "$HANDOVER" subscribe --confirm "$SUBSCRIPTION_REVISION" --config "$CONFIG" --secret-file "$KEY_FILE"
+   ```
+
+   The preview should list only your new name (the rehearsal showed 4 creations). Without a
+   subscription the weather history job fails (see "When a run fails" below).
+2. **The ERA5 history job, started by the person on the Gateway dashboard** (checklist step 5).
+   It is `era5_land_backfill__targeted`: one manual run for your new basin only. The
+   [runbook](recap-gateway-runbook.md) ("Step 5 in detail") lists the fields. An assistant never
+   starts it.
+3. **The IFS backfill, started by the administrator.** Forecast runs made
+   before your basin existed do not contain it, so the last 7 days of the `ifs__subdaily` job
+   must be re-processed. This is the **only shared Gateway action** in this guide: it
+   re-processes runs for every basin subscribed to that job. The owner's standing rule
+   (2026-11-17) lets an administrator start it without asking each time; write the time, the job
+   and the reason in the evidence folder. An assistant never
+   starts it.
+
+Things that look wrong but are normal:
+
+- The dashboard may show **no run identifier** for the job. The tool accepts any free text as the
+  job reference (the rehearsal used one), so write something honest and do not wait for an
+  identifier. Recording it needs the stream and your name as well:
+  `history --stream era5_history --actor "$ACTOR" --job-reference "<text>"`. The command does
+  not print the reference back; it is stored in the evidence folder's `state.json`.
+- `resume` (checklist step 6) reported the station "eligible" while the IFS backfill was still
+  running. "Eligible" means the Gateway coverage checks passed. It is **not** the signal that the
+  forecast cycle can run.
+
+**Wait rule before the first cycle.** The dashboard showing the IFS backfill as finished is
+not enough. In the rehearsal the first cycles stopped with `missing_support` (see below). The
+cause is **inferred, not observed**: the Gateway's combined weather product probably had not yet
+caught up with the backfill, and a later cycle with no change worked. So: if the first cycle
+reports `missing_support`, wait and try again. To look before you run the cycle, the person
+runs the **read-only Gateway check** (needs the basin imported, so the station has its
+polygon binding, and the Gateway key through `RECAP_API_KEY_FILE`). It asks the Gateway for the
+station's precipitation and temperature over the model's lookback (30 days without `--model`;
+`cmal_small` also needs 30) ending yesterday, with one request per parameter, and lists days
+with no data. Run it in the shell where `RECAP_API_KEY_FILE` is set, with the same
+`SAPPHIRE_CONFIG` and `SAPPHIRE_CONFIG_OVERLAY` as the cycle:
+
+```bash
+uv run python -m sapphire_flow.cli.station_readiness --tenant chwrr --network research \
+  --code 00001 --model cmal_small --weather-scope trishuli --check-gateway
+```
+
+It prints the whole readiness report (see Step 7) and, after the counted checks, a separate
+section that is never part of the "N checks failed" line. Illustrative output (only the
+relevant lines; the day counts and dates are examples):
+
+```text
+station 00001 (research)
+...
+PASS  weather_wait_facts  reanalysis=bound forecast=bound operational=bound; stored reanalysis: all 23 expected days present; 7 newest days not expected yet (Gateway lag, filled by the operational product at forecast time)
+optional sections (not counted in the line below):
+PASS  gateway_data  OK: all 30 days present
+0 checks failed, 13 passed
+```
+
+Data still missing (wait for the backfill and run it again):
+
+```text
+FAIL  gateway_data  precipitation missing 3 of 30 days: 2026-11-14, 2026-11-15, 2026-11-16; temperature missing 3 of 30 days: 2026-11-14, 2026-11-15, 2026-11-16; try again after the backfill
+```
+
+If the Gateway or the key cannot be reached, or the station has no basin-average polygon
+binding, the line reads `UNKNOWN  gateway_data  <reason>; not a pass` and the command still
+exits 0 (exit 2 is only for a usage error or an unknown station). Every day present is a good
+sign, not a guarantee: it is the same request the cycle makes.
 
 ## Part 0: a throwaway sandbox (rehearsal only)
 
@@ -43,9 +325,17 @@ export DATABASE_URL=postgresql+psycopg://postgres:sandbox@127.0.0.1:55452/sapphi
 uv run alembic upgrade head
 ```
 
-Use the `16-3.4` image: `16-3.5` has no arm64 build, and Apple-silicon laptops run it under
-emulation (slow but fine). Create a config file outside the checkout, for example
-`sandbox-config.toml`:
+The database container is started with `--rm`, so stopping it (see Tear down) also **deletes
+its data**. That is the point of a throwaway sandbox; keep anything you need elsewhere.
+
+Use the `16-3.4` image: `16-3.5` has no arm64 build. On Apple-silicon laptops `16-3.4` also
+prints a `linux/amd64` platform warning and runs under emulation (slow but fine).
+
+Install the model extra once: `uv sync --extra aquacast`. Without it a `No module named
+'aquacast'` message appears during the basin import and the model import fails with `model
+'cmal_small' is not discoverable`.
+
+Create a config file outside the checkout, for example `sandbox-config.toml`:
 
 ```toml
 [tenants.chwrr]
@@ -71,8 +361,11 @@ Create the tenant: `SAPPHIRE_CONFIG=sandbox-config.toml uv run python -m sapphir
 nothing else is touched:
 
 ```bash
-export PREFECT_HOME=/path/outside/checkout/prefect-home PREFECT_API_URL=http://127.0.0.1:4299/api
+export SANDBOX_DIR=/path/outside/checkout/sandbox      # for this rehearsal only; use the same value in every shell below
+export PREFECT_HOME="$SANDBOX_DIR/prefect-home" PREFECT_API_URL=http://127.0.0.1:4299/api
+mkdir -p "$SANDBOX_DIR/pids" && { rm -f "$SANDBOX_DIR"/pids/*.pid 2>/dev/null || true; }
 uv run prefect server start --host 127.0.0.1 --port 4299 &
+echo $! > "$SANDBOX_DIR/pids/server.pid"
 ```
 
 Register the deployments you need. The registrar assumes the Docker image path `/app`; in a
@@ -84,23 +377,70 @@ SAPPHIRE_ONLY_DEPLOYMENTS=ingest-operational-era5-history,import-model-artifact 
 uv run python -m sapphire_flow.cli.register_deployments
 ```
 
-Start one worker per pool (`ingest` and `default`) in the environment the jobs need:
-`DATABASE_URL`, `SAPPHIRE_CONFIG`, `RECAP_API_KEY_FILE` (the path to the key file), `SAPPHIRE_DATA_DIR` and
-`SAPPHIRE_INCOMING_DIR` (both folders outside the checkout):
-`uv run prefect worker start --pool ingest --type process` (and `--pool default`).
+**The person starts the workers** (never an assistant: they read the Gateway key). Open a
+terminal in the repository checkout, set the same variables as above (`SANDBOX_DIR`,
+`PREFECT_HOME`, `PREFECT_API_URL`, `DATABASE_URL`, `SAPPHIRE_CONFIG`, and two folders outside
+the checkout: `SAPPHIRE_DATA_DIR`, `SAPPHIRE_INCOMING_DIR`), then point `RECAP_API_KEY_FILE` at
+the key file and start one worker per pool (`ingest` and `default`). Only the path is in the
+environment; the workers read the key from the file. Each worker's process id goes into a pid
+file, so the tear down stops exactly these and nothing else:
 
-Tear down when done: stop the workers and server, `docker stop sapphire-onboarding-sandbox-db`.
+```bash
+export RECAP_API_KEY_FILE=~/.config/sapphire-flow/secrets/sapphire_dg_api_key
+uv run prefect worker start --pool ingest --type process > "$SANDBOX_DIR/worker-ingest.log" 2>&1 &
+echo $! > "$SANDBOX_DIR/pids/worker-ingest.pid"
+uv run prefect worker start --pool default --type process > "$SANDBOX_DIR/worker-default.log" 2>&1 &
+echo $! > "$SANDBOX_DIR/pids/worker-default.pid"
+```
+
+The worker logs are in `$SANDBOX_DIR`. Leave this terminal open while you work, and close it or
+`unset RECAP_API_KEY_FILE` when you are done.
+
+**Tear down** (always, also after a failed run). Run this block in **bash** (type `bash`
+first if your shell is zsh: zsh stops with "no matches found" when a `*.pid` pattern matches
+nothing). Never use `pkill -f "prefect ..."`: other Prefect servers and workers on the same
+machine (your other checkouts, a staging stack) would be stopped too.
+
+```bash
+: "${SANDBOX_DIR:?set SANDBOX_DIR to the folder you used above}"
+for w in worker-ingest worker-default server; do   # jobs the launcher started first, then the launcher itself
+  [ -f "$SANDBOX_DIR/pids/$w.pid" ] || continue
+  pid="$(cat "$SANDBOX_DIR/pids/$w.pid")"
+  ps -p "$pid" -o command= | grep -q prefect || continue   # a stale pid file must never hit a stranger
+  for child in $(pgrep -P "$pid"); do kill "$child" 2>/dev/null; done
+done
+for f in "$SANDBOX_DIR"/pids/*.pid; do
+  [ -f "$f" ] || continue
+  pid="$(cat "$f")"
+  ps -p "$pid" -o command= | grep -q prefect && kill "$pid" 2>/dev/null
+done
+rm -f "$SANDBOX_DIR"/pids/*.pid
+docker stop sapphire-onboarding-sandbox-db         # --rm: this also deletes the container and its data
+docker ps -a --filter name=sapphire-onboarding-sandbox-db   # must list no container
+lsof -nP -iTCP:4299 -iTCP:55452 -sTCP:LISTEN       # Prefect server and database ports: must print nothing
+```
+
+The pid files hold the `uv run` launcher processes, not the real server and workers. The real
+ones stop only through the `pgrep -P` step above (it finds the launchers' children), which is
+why that step comes first. (macOS `xargs` has no `-r` option, so the loop does not use it.)
+
+If `lsof` still shows a process on port 4299 or 55452 and it is not the sandbox's, do not
+kill it: tell the owner. Check also `pgrep -lf "prefect (worker|server)"`: anything left that
+is not yours belongs to someone else; leave it alone.
 
 ## Step 3: create the station record
 
 One command. It is a dry run until you add `--apply`. Ask the gauge type first: a staff or
 pressure gauge gives the height above the gauge zero; a bridge radar/ultrasonic sensor gives
 the distance down to the water, so it needs the sensor elevation as well. In both cases the
-datum is the elevation of the gauge zero in m a.s.l. Without a TTY pass `--gauge-type`,
-`--datum-masl` (and `--sensor-masl`), or `--datum-unknown` (water-level range checks stay off).
+datum is the elevation of the gauge zero in m a.s.l. In a terminal, if you give none of the gauge
+options, it asks for them (and, with `--apply`, "Write this station? [y/N]"). Without a terminal
+pass `--gauge-type {staff,bridge-sensor}`, `--datum-masl` (and `--sensor-masl`, which must be
+above the datum), or `--datum-unknown` (water-level range checks stay off). `--parameters` is
+what the station measures; give `discharge` too if the model target is discharge.
 
 ```bash
-export SAPPHIRE_CONFIG=/path/to/config.toml   # or pass --config
+export SAPPHIRE_CONFIG=sandbox-config.toml   # the config file from Part 0, or pass --config
 uv run python -m sapphire_flow.cli.create_station list    # tenants and networks that exist
 uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
   --network research --name Trishuli --lon 85.33996 --lat 28.16434 \
@@ -109,13 +449,17 @@ uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
 ```
 
 `--code` and `--network` must equal the handover package's, or the basin import holds the
-basin. The pair is unique across all tenants. The Gateway name is only checked and printed
-into the next steps; it is not stored on the station.
+basin. The pair is unique across all tenants (a duplicate is refused). The Gateway name must be
+lower-case letters, digits and underscores; it is only checked and printed into the "next
+steps" lines, it is not stored on the station. The command prints `DRY RUN (nothing written)` or
+`APPLIED`, the station, the gauge and a worked conversion example. Exit 0 ok, 1 refused or
+failed (the reason is in the log), 2 bad options. `forecast_targets` (what the station is
+forecast for) is not set here; Step 8 sets it.
 
 ## Step 4: import the basin
 
 This one has a tool: `uv run python -m sapphire_flow.cli.import_basin_package --package-dir <handover>/package`
-([importer runbook](basin-static-importer-runbook.md)). Expect `imported=1`, `onboarding_held=0`.
+([importer runbook](basin-static-importer-runbook.md)). Expect the log line `basin_importer.cli.report` with `accepted=1`, `imported_basins=1`, `onboarding_held=0`.
 
 ## Step 5: group, weather scope, weather history
 
@@ -129,15 +473,18 @@ SAPPHIRE_CONFIG=sandbox-config.toml uv run python scripts/create_station_group.p
     --tenant chwrr --network research --name my-group --station-code 00001 --apply
 ```
 
-It prints the group id and the station codes it added; look up the station id in the database
-for 5b. An unknown code prints the networks that have stations in the tenant.
+It prints `DRY RUN (nothing written)` or `APPLIED`, the group name and id, and the station
+codes it adds (`add:`), keeps (`already:`) or cannot use (`UNKNOWN:`, `OTHER TENANT:`; exit 1);
+a re-run with nothing to change says "no change (idempotent re-run)". An unknown code also
+prints the networks that have stations in the tenant. Look up the station id for 5b:
+`select id from stations where code = '00001' and network = 'research'`.
 
 **5b. Weather scope.** Add to the config file (ids from 5a):
 
 ```toml
 [weather_history.scopes.trishuli]
 group_id = "<group id>"
-original_gateway_hru_name = "<name inside the handover package>"
+original_gateway_hru_name = "<package/manifest.json, gateway_hru_names>"
 runtime_gateway_hru_name = "trishuli_00001"      # the name you registered
 station_polygons = [{station_id = "<station id>", polygon_name = "g_00001"}]
 ```
@@ -158,7 +505,12 @@ uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --config sandb
   --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --apply
 ```
 
-**5c. Weather history.** Submit through the deployed job (the Prefect worker must be running):
+**5c. Weather history.** First make sure the Gateway side is done: the name is **subscribed**
+and the **ERA5 history job has finished** (see "After registration" above). Otherwise this job
+fails with only `Operational ERA5 history failed`. Then submit through the deployed job (the
+person starts the Prefect worker, because it reads the Gateway key). This command accepts only
+`--tenant chwrr` and always needs `--confirm-t8`; `--start` is inclusive and `--end` exclusive,
+both with a time zone:
 
 ```bash
 uv run python -m sapphire_flow.cli.onboard_nepal history --config sandbox-config.toml --tenant chwrr \
@@ -170,88 +522,108 @@ check `select parameter, count(*), min(valid_time), max(valid_time) from histori
 The Gateway's ERA5 trails real time by about 8 days: that gap is filled at forecast time by the
 operational product (created by `weather-bindings` in 5b).
 
-## Step 6: observations, datum, rating, quality checks (no general tool yet)
+## Step 6: observations, datum, rating, quality checks
 
 Three facts decide whether this works:
 
-1. **Ask for the gauge datum** (metres above sea level of the gauge zero). Store it on the
-   station (`water_level_datum_masl`). Without it the range and gross-outlier checks are
-   skipped, and the QC rule version reads `1.2-datum-skip` while every value "passes".
+1. **Ask for the gauge datum** (metres above sea level of the gauge zero). It is stored on the
+   station at creation (`water_level_datum_masl`, Step 3). Without it the range and
+   gross-outlier checks are skipped, and the QC rule version reads `1.2-datum-skip` while every
+   value "passes"; the load command refuses that unless you pass `--allow-unchecked`.
 2. **Stored water level is metres above sea level.** QC subtracts the datum to get gauge height.
-   If the data arrive as gauge height (or as the distance from a bridge down to the water),
-   convert first: `stored = datum + gauge_height`. A value stored as gauge height fails the
-   range check (it reads about `-datum`).
+   The load command converts for you (staff gauge `datum + reading`; bridge sensor
+   `sensor elevation - reading`). A value stored as gauge height by hand fails the range check
+   (it reads about `-datum`).
 3. **Discharge needs a rating table.** Load the organization's table as a rating curve, then
    derive discharge from water level. A sandbox may invent a table (the Trishuli rehearsal used
    `Q = 60 * (h + 0.2) ** 1.8`, h = gauge height in m, labelled SYNTHETIC in `rating_type_label`).
 
-**Loading observations (Plan 540 M3a).** `load_station_observations` replaces the load part of
-the script below. It reads the station's gauge type and datum (set at station creation), converts
-the reading (staff gauge: `datum + value`; bridge sensor: `sensor elevation - value`), stores it
-and writes one audit row, then runs the same Stage 1 quality checks as live ingest (in memory on
-a dry run). Dry run by default; `--apply` writes; exit 3 means refused: the station has no datum
-(range and outlier checks would be skipped), no quality rule applies to the series (too few
-readings per day), or the stored data changed while the checks ran. `--allow-unchecked` accepts
-the first two:
-
-```bash
-uv run python -m sapphire_flow.cli.load_station_observations water-level \
-  --tenant sandbox --station-code 00001 --network research --csv gauge_heights.csv \
-  --time-column timestamp_npt --value-column water_level_m   # add --apply to write
-uv run python -m sapphire_flow.cli.load_station_observations discharge ...   # same flags
-```
-
-It prints one worked example (`reading 2 m -> stored 1482 m a.s.l. ...`), the first and last UTC
-instant, the QC rule version and counts (passed, failed, suspect, unchecked), and "N of 30 daily
-values usable (passed or unchecked)". A new station has no history baseline yet, so it prints
-"history-based check not run: no baseline yet" (that check is not counted as passed). The time zone defaults to the station's; override with
-`--utc-offset-minutes 345` or `--zone Asia/Kathmandu`. If the values already are metres above sea
-level, pass `--value-kind level-masl`.
-
-Set the datum, then load and check the observations (CSV with a local-time column and a gauge
-height column; adjust `CSV`, `OFFSET_MIN`, `DATUM`):
+**Sandbox only: make a synthetic gauge-height series.** A real station has real data; skip
+this. The forecast cycle needs daily discharge up to the issue date, and quality checks (QC)
+mark odd-looking values `suspect`, which the cycle then treats as missing days. A first
+rehearsal series with random noise gave 24 suspect days of 31 (the spike rule), and a smooth
+sine wave gave flat runs at its turning points (the frozen-sensor rule). So the rule is
+**no noise and no flat runs**: this series is a base level plus smooth storm pulses with a
+slow decay, built from a fixed seed, and every day differs from the day before by at least 3 mm.
+It runs from 2022-03-01 to today and writes the CSV the load command below reads (a pure
+script: no database), so run it first:
 
 ```bash
 uv run python - <<'EOF'
-import os, dataclasses, collections
-import pandas as pd, sqlalchemy as sa
-from datetime import UTC, datetime, timedelta, timezone
-from sapphire_flow.store.observation_store import PgObservationStore
-from sapphire_flow.store.station_store import PgStationStore
-from sapphire_flow.services.qc import Stage1QualityChecker
-from sapphire_flow.services.qc_datum import (obs_skipped_rules, obs_qc_rule_version,
-    shift_observations_for_water_level_datum, add_observation_datum_details)
-from sapphire_flow.config.qc_rules import resolve_qc_rules
-from sapphire_flow.types.domain import aggregate_qc_status
-from sapphire_flow.types.enums import ObservationSource
-from sapphire_flow.types.observation import RawObservation
-from sapphire_flow.types.datetime import ensure_utc
-CODE, NETWORK, DATUM, OFFSET_MIN = "00001", "research", 1480.0, 345   # Nepal = UTC+5:45
-CSV, TIME_COL, VALUE_COL = "gauge_heights.csv", "timestamp_npt", "water_level_m"
-rules, _ = resolve_qc_rules()
-df = pd.read_csv(CSV)
-ts = pd.to_datetime(df[TIME_COL]).dt.tz_localize(timezone(timedelta(minutes=OFFSET_MIN))).dt.tz_convert("UTC")
-with sa.create_engine(os.environ["DATABASE_URL"]).begin() as c:
-    ss = PgStationStore(c); st = ss.fetch_station_by_code(CODE, NETWORK)
-    ss.update_station(dataclasses.replace(st, water_level_datum_masl=DATUM, water_level_unit="m",
-        updated_at=ensure_utc(datetime.now(UTC))))
-    st = ss.fetch_station_by_code(CODE, NETWORK); sid, datum = st.id, st.water_level_datum_masl
-    store = PgObservationStore(c)
-    raws = [RawObservation(station_id=sid, timestamp=ensure_utc(t.to_pydatetime()), parameter="water_level",
-        value=round(datum + float(v), 2), source=ObservationSource.MEASURED) for t, v in zip(ts, df[VALUE_COL])]
-    store.store_raw_observations(raws)
-    qs = store.qc_context_reader()
-    raw = qs.fetch_observations(sid, "water_level", raws[0].timestamp, raws[-1].timestamp + timedelta(hours=1))
-    sh = shift_observations_for_water_level_datum(raw, parameter="water_level", datum=datum)
-    fl = Stage1QualityChecker().check(sh, rules, overrides=[], baselines=[], station_networks={sid: st.network},
-        skipped_rule_ids=obs_skipped_rules("water_level", datum))
-    fl = add_observation_datum_details(fl, raw_observations=raw, shifted_observations=sh,
-        parameter="water_level", datum=datum)
-    ups = [(o, aggregate_qc_status(fl[o.id]), fl[o.id]) for o in raw]
-    print(qs.update_qc_batch_if_current(ups, qc_rule_version=obs_qc_rule_version("water_level", datum)),
-          collections.Counter(s.value for _, s, _ in ups))
+import csv, math, os, random
+from datetime import date, timedelta
+START, END = date(2022, 3, 1), date.today()      # END must be today: the cycle needs data up to the issue date
+OUT = os.environ["SANDBOX_DIR"] + "/gauge_heights.csv"
+rng = random.Random(452)
+n = (END - START).days + 1
+storms, d = [], 0
+while d < n:                                    # a storm every 3 to 8 days, 0.08 to 0.18 m high
+    storms.append((d, rng.uniform(0.08, 0.18)))
+    d += rng.randint(3, 8)
+def pulse(t, amp, rise=6.0):                    # smooth rise to a peak after `rise` days, then slow decay
+    x = t / rise
+    return amp * x * math.exp(1 - x) if t >= 0 else 0.0
+gauge = [0.8 + sum(pulse(i - s, a) for s, a in storms if i - s < 60) for i in range(n)]
+for i in range(1, n):                           # no flat days: every day moves by at least 3 mm
+    step = gauge[i] - gauge[i - 1]
+    if abs(step) < 0.003:
+        gauge[i] = gauge[i - 1] + math.copysign(0.003, step or gauge[i - 1] - gauge[i - 2])
+gauge = [round(g, 4) for g in gauge]
+with open(OUT, "w", newline="") as f:
+    w = csv.writer(f); w.writerow(["timestamp_npt", "water_level_m"])
+    for i, h in enumerate(gauge):
+        w.writerow([f"{START + timedelta(days=i)}T00:00:00", h])
+print(n, "days; gauge height", min(gauge), "to", max(gauge), "m")   # must stay below 1.5 (the table's top)
 EOF
 ```
+
+The synthetic rating table (stage in m above the gauge zero, which is what the default
+`--level-kind gauge-reading` expects) goes with it:
+
+```bash
+uv run python - <<'EOF'
+import csv, os
+OUT = os.environ["SANDBOX_DIR"] + "/rating.csv"
+with open(OUT, "w", newline="") as f:             # SYNTHETIC: Q = 60 * (h + 0.2) ** 1.8, h in m
+    w = csv.writer(f); w.writerow(["stage_m", "q_m3s"])
+    for g in range(-15, 151, 5):
+        w.writerow([g / 100, round(60 * (g / 100 + 0.2) ** 1.8, 3)])
+EOF
+```
+
+If the printed maximum gauge height is 1.5 m or more, extend the range in `rating.csv`: a level
+outside the table is skipped by `derive-discharge` (counted, never extrapolated or clamped). A
+series whose values merely read `suspect` is stored, so read the counts the load prints. You can
+also drive a simple linear reservoir with the stored ERA5 precipitation instead; the same rule
+applies. A command that generates and loads the synthetic series in one step (Plan 540 M3d-2)
+is deferred.
+
+**Loading observations (Plan 540 M3a, M3b).** `load_station_observations` reads the station's
+gauge type and datum (set at station creation), converts the reading, stores it and writes one
+audit row, then runs the same Stage 1 quality checks as live ingest (in memory on a dry run).
+Dry run by default; `--apply` writes. Exit 0 ok, 2 usage or bad file, 3 refused: the station has
+no datum (range and outlier checks would be skipped), no quality rule applies to the series (too
+few readings per day), or the stored data changed while the checks ran. With `--apply` a
+refusal rolls the whole load back ("NOTHING WAS SAVED"). `--allow-unchecked` accepts the first
+two, not the third:
+
+```bash
+uv run python -m sapphire_flow.cli.load_station_observations water-level \
+  --tenant chwrr --station-code 00001 --network research --csv "$SANDBOX_DIR/gauge_heights.csv" \
+  --time-column timestamp_npt --value-column water_level_m   # add --apply to write
+```
+
+`discharge` (measured discharge, for a station that has it) takes the same flags except
+`--value-kind`. The command prints one worked example (`example: reading 2 m -> stored 1482 m
+a.s.l. (staff gauge, datum 1480)`), the first and last UTC instant, the QC rule version, the
+counts (passed, failed, suspect, unchecked, unjudged) and "N of 30 daily values usable
+(passed or unchecked)" (`--lookback-days` and `--as-of` change the window). A new station has
+no history baseline yet, so it prints "history-based check not run: no baseline yet" (that
+check is not counted as passed). The time zone defaults to the station's; override with
+`--utc-offset-minutes 345` or `--zone Asia/Kathmandu`. If every value is above the gauge zero it
+warns that the values look already absolute: if so, pass `--value-kind level-masl` (`--strict`
+turns the warning into exit 2).
+
 
 Check the result: `select qc_rule_version, qc_status, count(*) from observations group by 1,2`
 must show `1.2-datum`, not `1.2-datum-skip`.
@@ -265,10 +637,10 @@ A sandbox may invent a table: label it so (`--label SYNTHETIC`):
 
 ```bash
 uv run python -m sapphire_flow.cli.load_station_observations rating \
-  --tenant sandbox --station-code 00001 --network research --csv rating.csv \
+  --tenant chwrr --station-code 00001 --network research --csv "$SANDBOX_DIR/rating.csv" \
   --level-column stage_m --discharge-column q_m3s --label SYNTHETIC   # add --apply
 uv run python -m sapphire_flow.cli.load_station_observations derive-discharge \
-  --tenant sandbox --station-code 00001 --network research             # add --apply
+  --tenant chwrr --station-code 00001 --network research             # add --apply
 ```
 
 An active curve is refused (exit 3) unless you pass `--supersede` (the old curve ends at
@@ -290,15 +662,50 @@ whole run back).
 
 ```bash
 uv run python -m sapphire_flow.cli.station_readiness \
-  --tenant sandbox --network research --code 00001 [--model cmal_small] [--weather-scope S] [--json]
+  --tenant chwrr --network research --code 00001 [--model cmal_small] [--weather-scope trishuli] [--json]
 ```
 
-It writes nothing, prints one PASS / FAIL / NOT_APPLICABLE line per fact (station, datum, basin, statics, weather bindings and history, observations, rating curve, discharge series, group and model, discharge lookback, naming) and ends with "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error or an unknown station. Hand the output to the hydrologist. The SQL below is the fallback.
+It writes nothing and gives **facts, not a verdict**: one PASS / FAIL / NOT_APPLICABLE line per
+fact (station, datum, basin, statics, weather bindings, weather history, observations, rating
+curve, discharge series, group and model, discharge lookback, naming, weather wait facts) and
+the last line "N checks failed, M passed". Exit 0 whenever the report ran, 2 for a usage error,
+an unknown station or a station of another tenant. Without `--model` the statics check is
+NOT_APPLICABLE and the lookback is 30 days; without `--weather-scope` the naming check skips
+the comparison with the scope. The `weather_wait_facts` line shows each binding role (bound /
+missing / inactive) and the lookback days without stored reanalysis. The newest 7 days of a 30-day lookback are not
+expected (the lookback ends yesterday and ERA5 lags by about 8 days; the operational product fills them at forecast time), so
+they are not counted as missing: that line tells you whether to wait for the Gateway backfill
+or fix a binding. The report does not show the outcome of the station's last forecast cycle
+(read it in the cycle logs). Hand the output to the hydrologist.
 
+**Operational readiness is not the same as enough history for training.** The counted lines
+answer "can the forecast cycle run for this station with the model assigned to it". Whether the
+stored history is long enough to train or evaluate a model is a separate, optional section:
+add `--model M --start ISO --end ISO --time-step-hours H [--minimum-samples N]` (all three of
+start, end and step together, and `--model` is required; the step must be one the model
+supports). It adds `training_samples` after the counted lines: how many complete training
+windows the stored history gives in that window (PASS needs more than 0 and at least
+`--minimum-samples`, default 0). Thin history there does not change the operational checks.
+Training-sample counts describe available history; for model-specific training requirements,
+evaluation and artifact activation, see [Train, evaluate and activate a model](model-onboarding.md).
+
+Two optional sections can follow the counted checks. They are listed under "optional sections
+(not counted in the line below)" and never change the last line: `gateway_data`
+(`--check-gateway`, described under "Wait rule before the first cycle" above) and
+`training_samples`. Illustrative lines:
+
+```text
+optional sections (not counted in the line below):
+PASS  gateway_data  OK: all 30 days present
+FAIL  training_samples  0 complete samples in 2022-03-01..2026-11-09 (lookback 30 + horizon 10 steps)
+0 checks failed, 13 passed
+```
 
 `onboard_nepal qualify` accepts only the six fixed DHM gauges ("missing DHM station 447") and
-only discharge. The SQL below is the fallback if the command is unavailable; the facts to hand to
-the hydrologist are:
+only discharge; use this report for any other station. If the command is unavailable, the SQL
+below gives the same facts to hand to the hydrologist. In the rehearsal the station code is
+`00001`; add `where code = '00001'` (or `s.code`, for the joins) when the database holds more
+than one station.
 
 ```sql
 select code, network, station_status, measured_parameters, water_level_datum_masl, forecast_targets from stations;
@@ -328,44 +735,58 @@ uv run python -m sapphire_flow.cli.promote_station \
 
 It prints seven blocking conditions, all of which must hold, and lists every failing one:
 
-1. status is `onboarding` (`suspended` / `decommissioned` are refused; an already `operational`
-   station is a no-op, exit 0);
+1. status is `onboarding` (`suspended` / `decommissioned` are refused; a station that is already
+   `operational` with forecast targets set is a no-op, exit 0);
 2. datum and gauge type set if `water_level` is measured;
 3. basin set and present;
 4. the station is in a group with an ACTIVE model assignment (the model is derived from it, there
    is no `--model`);
-5. reanalysis, forecast and operational weather bindings ACTIVE, and the polygon binding name
-   equals the `--weather-scope` Gateway name (without `--weather-scope` this condition fails);
+5. reanalysis, forecast and operational weather bindings ACTIVE, and the polygon binding's
+   Gateway name and polygon name equal the `--weather-scope` entry's (without `--weather-scope`
+   this condition fails);
 6. the model's static features all resolve;
 7. every day of the model's lookback has a usable discharge value (window ends yesterday, like
-   the cycle), and an active rating curve exists when water level is measured and the target is discharge
-   (or discharge derived from level appears in the last 60 days).
+   the cycle), and an active rating curve exists when water level is measured and the target is
+   discharge (with `--target water_level` and measured discharge it is required only if discharge
+   derived from level appears in the last 60 days).
 
 `--apply` writes `forecast_targets`, the `operational` status and one `STATION_STATUS_CHANGE`
-audit row in one transaction. Exit 0 ok, 2 usage / unknown station, 3 refused (blocking condition,
-another tenant's station, or `promotion_allowed` off). For a bridge-sensor station it also prints
-a warning that the live feed must already deliver converted values (m a.s.l.).
+audit row in one transaction. Exit 0 ok, 2 usage / unknown station, 3 refused (blocking
+condition, another tenant's station, or `promotion_allowed` off). `--operator` is required and
+is only a label in the audit row. A dry run ends with "Re-run with --apply to write." (or, when
+the host switch is off, "NOTE: --apply would be refused"). For a bridge-sensor station it also
+prints a warning that the live feed must already deliver converted values (m a.s.l.).
 
 ⛔ On a shared host, promotion is the owner's decision: it starts live collection and puts the
-station into the forecast cycle, and demoting it later can lose observations. `--apply` is
-refused unless the host config says `[deployment] promotion_allowed = true` (default false; the
-sandbox config above adds it, a shared host's owner turns it on for one run). It is read from
+station into the forecast cycle, and demoting it later can lose observations. **In the MVP the
+only approval is the host switch** `[deployment] promotion_allowed` (default `false`): `--apply`
+is refused (exit 3) unless the config file says `promotion_allowed = true`. The sandbox config
+above sets it; on a shared host the owner turns it on for one run and off again. It is read from
 the config file (`--config` or `SAPPHIRE_CONFIG`), so it is only as strong as control over who
-can write that file. The dry run says
-when `--apply` would be refused for this reason.
+can write that file. The dry run says when `--apply` would be refused for this reason.
 
 Procedure on a shared host: the owner sets `promotion_allowed = true`, the administrator runs
-`--apply` once, and the owner sets it back to `false` straight afterwards. There is no per-person
-admin approval yet (`--operator` is an unverified label in the audit row); a logged-in admin
-approval is a post-MVP plan.
+`--apply` once, and the owner sets it back to `false` straight afterwards. There is no
+per-person administrator approval in the MVP (a logged-in approval is deferred); `--operator`
+is an unverified label.
 
 ## Model and first forecast
+
+Follow the [model onboarding guide](model-onboarding.md) for training, evaluation, artifact import
+and activation; this station guide covers station readiness, manual group assignment of an
+already-imported model, and station promotion. Station promotion does not activate a model
+artifact. The training flow can promote artifacts and create assignments automatically when its
+checks pass, so the manual `assign_group_model` step is not needed after every training run.
 
 1. **Import the trained artifact** (an existing, trusted file; for `cmal_small` the one already
    in use). Follow the [artifact import runbook](model-artifact-import-runbook.md). In a
    sandbox, put the file in the staging folder (`SAPPHIRE_INCOMING_DIR`), check its SHA-256
-   against the source, and read the six provenance values from the source host's
-   `model_artifact_provenance` record. Run the `import-model-artifact` deployment with
+   against the source, and take the six provenance values (`trained_at`, training period,
+   config hash, ...) from the source host's `model_artifact_provenance` record, or for
+   `cmal_small` from the table in [Plan 307](../plans/307-import-a-model-artifact-from-a-staged-path.md).
+   `source_repository` may stay empty in a sandbox; the config hash cannot be recomputed
+   without the owner's training tree, so use the value recorded in Plan 307 (not the file vendored
+   in this repository). That is acceptable for a rehearsal only. Run the `import-model-artifact` deployment with
    `group_id` set to your group.
 2. **Assign the model to the group** (after the artifact import; dry run first, then `--apply`):
 
@@ -385,7 +806,7 @@ approval is a post-MVP plan.
    route = "recap_combined"
    automatic_issue_timezone = "Asia/Kathmandu"
 
-   [adapters.recap_gateway]            # an overlay replaces this table whole: repeat all keys
+   [adapters.recap_gateway]            # the base config has no such table: this overlay must carry all keys
    base_url = "https://recap.ieasyhydro.org/sdk"
    timeout_s = 300
    verify_tls = true
@@ -399,7 +820,11 @@ approval is a post-MVP plan.
    type = "recap_gateway"
    ```
 
-**Run one cycle** (explicit UTC-midnight `cycle_time`, no older than the 60-hour limit):
+**Run one cycle.** The **person** runs it, in a shell where `RECAP_API_KEY_FILE` is set (an
+assistant must stop and ask). First read "When a run fails": the observation coverage query must
+give 30 (the readiness `discharge_lookback` line counts days in the station's local time zone, the SQL query uses UTC dates, so the two can differ by a day), and the read-only
+Gateway check must show data for every day. Use an explicit
+UTC-midnight `cycle_time`, no older than the 60-hour limit:
 
 ```bash
 SAPPHIRE_CONFIG=config.toml \
@@ -410,18 +835,102 @@ r = f(cycle_time="2026-11-16T00:00:00Z"); print(r.health, r.forecasts_stored, r.
 EOF
 ```
 
-`forecasts_stored=1` and a `forecasts` row (10 days, 7 quantiles) is the pass. "Degraded" with a
-staleness note is normal for synthetic data. The cycle needs **observations up to the issue
-date**; a washed-away or test gauge has none, so a sandbox must load a synthetic series that
-runs to today.
+`forecasts_stored=1` and a `forecasts` row (10 days, 7 quantiles) is the pass. The cycle needs
+**observations up to the issue date**; a washed-away or test gauge has none, so a sandbox must
+load a synthetic series that runs to today.
+
+## What a good result looks like
+
+**"Degraded" is expected in a sandbox.** The rehearsal ended `DEGRADED`, `forecasts_stored=1`,
+no errors. The warnings in that run, and why they do not make the forecast wrong:
+
+- `nwp.grid_stale` (logged as an error, and written as critical to the health table): the
+  stored weather grid was 32 to 37 hours old, against a 6-hour limit from the Gateway
+  settings. The cause: an **older cycle was replayed** (the sandbox forecasts for a past
+  cycle time) and the sandbox has no live grid refresh. A live deployment refreshes it.
+- `alert.suppressed_fallback_only`: the model `cmal_small` is declared as **not yet allowed to
+  raise alerts** (its alert eligibility is `no_event_information`, set by the owner until it has
+  been seen to work on Swiss rivers). So its forecast is stored and ranked but raises no alert.
+- Staleness of observations and weather is measured against the **clock**, so replaying an older
+  cycle always looks stale.
+
+Also: the forecast **level will not match** the synthetic series. The model is trained on Swiss
+rivers. The rehearsal proves the plumbing only; nobody should read the numbers.
+
+**The verified end state of the rehearsal** (check yours against it):
+
+- [ ] one station (`00001`), `operational`, with the gauge datum set;
+- [ ] a rating curve whose label says `SYNTHETIC`;
+- [ ] every day of the 30-day lookback has discharge with status passed (coverage query = 30);
+- [ ] the group, with the `cmal_small` assignment;
+- [ ] three weather bindings (from Step 5b, `weather-bindings --apply`);
+- [ ] one forecast with quantiles, from the real model.
+
+## When a run fails: finding the real reason
+
+**Why the error looks empty.** The weather history job hides the real error on purpose: the
+Gateway library can put the API key inside the web address it reports, so the flow replaces any
+error with the line `Operational ERA5 history failed`. That line is all the worker log and the
+Prefect dashboard show. In the rehearsal the real cause (the station was not subscribed to the
+ERA5 parameters) was found only by asking the Gateway's ERA5 history endpoint directly. The
+read-only check in "After registration" above asks the combined weather product, so it does not
+show this cause. So when that job fails, go through the Gateway steps in order:
+subscribed? ERA5 job finished? dates no later than about 8 days before today? Then rerun.
+
+**The cycle is easier to read.** It prints structured log lines in the terminal where the person
+ran it, and its final lines list the errors. Two lines mattered:
+
+- `run_group_forecast.station_inputs_unavailable`: the station was skipped. Its `reason` field
+  names the cause. The rehearsal saw `inputs_unavailable` (weather) and `cadence_mismatch`
+  (observations).
+- `operational_inputs.cadence_mismatch_skip`: the **discharge observations** have gaps. It is
+  about the observations, not the weather. Its `error` text names the gap (for example "a gap of
+  10 days").
+
+**What `missing_support` means.** It is a weather reason, in the cycle's error list as
+"required operational past weather is blocked: missing_support". It means the weather the model
+needs is not fully there. For the past leg that is any of: there is no stored past weather
+snapshot (this is what a Gateway "source data missing" answer produces); the stored window is
+shorter than the model's lookback; no day in it has samples; or a required day has no
+precipitation or no temperature for the polygon. For the future leg it means no stored forecast
+covers the times and members the model asks for. It does **not** mean our code rejected good
+data: in the rehearsal, the frames the Gateway later returned were reduced offline and gave a
+value for all 30 days of both variables.
+
+**Check observation coverage before the cycle.** The cycle accepts a daily discharge value only
+if its quality status is `qc_passed` or `qc_unchecked`. A `qc_suspect`, `qc_failed` or missing
+day counts as a gap and stops the station with `cadence_mismatch`. Count the usable days in
+the model's lookback (30 days for `cmal_small`; adjust the date to your cycle time). Expect 30:
+
+```sql
+select count(distinct (o.timestamp at time zone 'UTC')::date) as usable_days
+  from observations o join stations s on s.id = o.station_id
+ where s.code = '00001' and o.parameter = 'discharge' and o.value is not null
+   and o.qc_status in ('qc_passed', 'qc_unchecked')
+   and o.timestamp >= timestamptz '2026-11-16 00:00+00' - interval '30 days'
+   and o.timestamp <  timestamptz '2026-11-16 00:00+00';
+```
+
+(The cycle's own window edge can differ by a day. Fewer than 30 means gaps: list the days
+with the same query and fix them.) In the rehearsal the first synthetic series gave 7 usable
+days of 30 and the stop above; the final series had every day passed. The readiness report's
+`discharge_lookback` line counts days in the station's local time zone (the SQL above uses UTC dates, so the counts can differ by a day) and lists the missing ones.
 
 ## What the cycle told us when it stopped (so you can recognize it)
 
 | Message | Cause |
 |---|---|
-| `0 FORECAST weather-source binding(s), expected exactly 1` | `weather-bindings --apply` (step 5b) not run |
+| `0 FORECAST weather-source binding(s), expected exactly 1` | `weather-bindings --apply` (Step 5b) not run |
 | `missing_required_target` / `operational_inputs.no_observations` | No observations up to the issue date, or no discharge (step 6) |
 | `nwp_disabled ... mode=runoff_only` | `[adapters.weather_forecast]` still disabled by the Nepal overlay |
 | `selected future weather requires a candidate-aware source` | `type = "recap_gateway"` missing |
-| `[adapters.recap_gateway] missing required field(s)` | An overlay replaced the Gateway table with fewer keys |
+| `[adapters.recap_gateway] missing required field(s)` | Only an overlay with part of the keys defines the table (e.g. `nepal-daily-weather.toml` has one); add all keys in your last overlay |
+| `recap Gateway API key not found` | None of `/run/secrets/sapphire_dg_api_key`, `RECAP_API_KEY_FILE` or `RECAP_API_KEY` is set in the shell that runs the cycle or the worker. Export `RECAP_API_KEY_FILE=<path to the key file>`; an unreadable or empty file named there is its own error and does not fall through |
 | `missing DHM station 447` | `qualify` used for a station that is not one of the six |
+| `required operational past weather is blocked: missing_support` | The Gateway's weather for the past days is incomplete or not caught up (see "When a run fails"); wait and run the read-only check |
+| `operational_inputs.cadence_mismatch_skip` | Gaps in the discharge observations (suspect or failed days count as gaps) |
+
+Status of the tools this guide uses, and what is still deferred (Gateway runbook fixes beyond
+the first message change, further Gateway tool messages, the synthetic-series command and a
+dashboard promotion action), is in
+[Plan 540](../plans/540-general-station-onboarding-tools.md), "Implementation status".

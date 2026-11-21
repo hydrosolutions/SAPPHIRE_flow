@@ -331,3 +331,23 @@ class TestMainOnlyProducer:
             == "${{ always() && !cancelled() && github.event_name == 'push' "
             "&& github.ref == 'refs/heads/main' }}"
         )
+
+
+class TestInstallationQualificationGate:
+    @pytest.mark.parametrize(
+        "step",
+        [
+            "Qualify persistent private-profile installation",
+            "Upload safe installation qualification summary",
+        ],
+    )
+    @pytest.mark.parametrize("conclusion", ["skipped", "failure"])
+    def test_installation_evidence_is_required_for_full_attestation(
+        self, full_jobs: list[dict], step: str, conclusion: str
+    ) -> None:
+        job = next(
+            item for item in full_jobs if item["name"] == "aquacast-release-image-proof"
+        )
+        check = next(item for item in job["steps"] if item["name"] == step)
+        check["conclusion"] = conclusion
+        assert attest.qualified_jobs(full_jobs, run_id=1, attempt=2) is None

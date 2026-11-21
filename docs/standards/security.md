@@ -486,20 +486,22 @@ Required secrets:
 
 ### Development
 
-Secrets are stored outside the repository at `~/.config/sapphire-flow/secrets/`. A gitignored symlink in the repo root lets Docker Compose resolve `./secrets/` transparently:
+Keep credentials outside the repository, for example under
+`~/.config/sapphire-flow/secrets/`. The maintained
+[delivery instructions](../secrets-bootstrap.md) describe all five current
+runtime files, independent password generation, supported characters and reader
+permissions. Existing Compose runbooks can use a gitignored `secrets` symlink;
+external profiles select delivery paths explicitly. Neither approach stores
+credential values in the repository.
 
-```bash
-mkdir -p ~/.config/sapphire-flow/secrets
-openssl rand -base64 24 > ~/.config/sapphire-flow/secrets/db_password
-# Plan 147 Slice C: access_token_pepper — the API fails closed at startup
-# without it (§ v1.0 headless subset above).
-openssl rand -base64 32 > ~/.config/sapphire-flow/secrets/access_token_pepper
-ln -s ~/.config/sapphire-flow/secrets secrets
-```
-
-This preserves the same file-based secrets path as production — no `.env`-based divergence. The symlink is gitignored (`secrets/` in `.gitignore`), so neither the symlink nor the secret values can be committed.
-
-Alternatively, `.env` files can supply secrets as environment variables for local development. `.env` is in `.gitignore` — CI fails if `.env` is committed. Environment variable names match conventions.md § Environment variables.
+Some existing readers have environment fallbacks for local development. Those do
+not replace the new installation's explicit file-delivery contract. Its
+[preview](../deployment/profile-installation.md) does not read secrets or verify
+runtime permissions. Explicit install checks consumer readability and read-only
+mounts before entrypoints run. Protected salted fingerprints gate explicit restart;
+missing files cannot fall back to ambient secret values. Installation API probes
+use a temporary scoped token with verified revocation; read-only verify never
+mints one. Secret-manager server automation remains separate work.
 
 ### Rotation
 
@@ -715,7 +717,11 @@ Rules to ensure Mac/Linux consistency:
 
 ### Docker secrets access
 
-The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets/` readable by the `app` user before the application starts. This is more robust than relying on Docker's default `0444` mode, which has known bugs in standalone Compose.
+Read-only secret mounts cannot be repaired by the entrypoint's attempted `chown`.
+Deliver files readable by their actual consumers before starting services; see
+[delivery permissions](../secrets-bootstrap.md#delivery-and-access). Do not rely
+on Compose secret `uid`/`gid` declarations to rewrite host-file ownership or grant
+write access so that the entrypoint can change administrator-owned deliveries.
 
 ### Volume permissions
 
@@ -2399,3 +2405,11 @@ The new station-history projection permits at most 32 MiB aggregate parsed
 evidence to cover measured valid seven-day histories above the initial 16 MiB
 budget. Per-document, parsing-node, curve-count, response and candidate caps are
 unchanged; existing forecast-input history keeps its separate limits.
+
+Selected operational-weather evidence has a 128 MiB absolute decoded JSON ceiling;
+its capture default remains 32 MiB, with explicit deployment opt-in for larger groups.
+Store, API, retry and selected replay readers share bounded decompression and reject
+truncated/trailing streams. This is separate from the station-history projection
+32 MiB aggregate budget above; legacy unselected evidence behavior is unchanged.
+Larger capture qualification must include reader memory/concurrency and preserve
+read compatibility after configuration rollback.

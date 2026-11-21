@@ -5,10 +5,14 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pandas as pd
 from shapely.geometry import box
 
+from sapphire_flow.adapters.recap_gateway import RecapTransientError
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.station_readiness import (
     ReadinessStores,
+    TrainingWindowRequest,
     build_station_readiness,
 )
 from sapphire_flow.types.basin import Basin
@@ -92,6 +96,8 @@ class World:
         model: object | None = None,
         model_id: ModelId | None = None,
         scope: tuple[str, str | None] | None = None,
+        training: TrainingWindowRequest | None = None,
+        gateway: object | None = None,
     ) -> StationReadinessReport:
         return build_station_readiness(
             self.station,
@@ -109,7 +115,13 @@ class World:
             scope_hru_name=scope[0] if scope else None,
             scope_polygon_name=scope[1] if scope else None,
             now=NOW,
+            training=training,
+            gateway=gateway,  # type: ignore[arg-type]
         )
+
+    def supplementary(self, name: str, **kwargs: object) -> tuple[CheckStatus, str]:
+        (check,) = [c for c in self.report(**kwargs).supplementary if c.name == name]  # type: ignore[arg-type]
+        return check.status, check.detail
 
     def line(self, name: str, **kwargs: object) -> tuple[CheckStatus, str]:
         (check,) = [c for c in self.report(**kwargs).checks if c.name == name]  # type: ignore[arg-type]
@@ -393,8 +405,8 @@ class TestNoSingleVerdict:
     def test_report_has_no_ready_field_and_counts_add_up(self) -> None:
         report = World().report()
         assert not any("ready" in f.name for f in dataclasses.fields(report))
-        assert len(report.checks) == 12
-        assert report.failed() + report.passed() <= 12
+        assert len(report.checks) == 13
+        assert report.failed() + report.passed() <= 13
 
 
 class TestReviewFixes:
@@ -500,3 +512,244 @@ class TestRatingCurveAtStepSeven:
             world.station, forecast_targets=frozenset({"water_level"})
         )
         assert world.line("rating_curve")[0] is CheckStatus.NOT_APPLICABLE
+
+
+def _bind(world: World, role: WeatherSourceRole, status: WeatherSourceStatus) -> None:
+    TestWeatherBindings()._bind(world, role, status)
+
+
+def _forcing(world: World, source: str, days: range, parameter: str) -> None:
+    world.forcing.store_forcing(
+        [
+            RawHistoricalForcing(
+                station_id=world.station.id,
+                source=source,
+                version="v1",
+                valid_time=ensure_utc(NOW - timedelta(days=i)),
+                parameter=parameter,
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=None,
+                value=1.0,
+            )
+            for i in days
+        ]
+    )
+
+
+class TestWeatherWaitFacts:
+    def _all_bound(self, world: World) -> None:
+        for role in WeatherSourceRole:
+            _bind(world, role, WeatherSourceStatus.ACTIVE)
+
+    def test_nothing_bound_or_stored_fails_with_every_role_state(self) -> None:
+        status, detail = World().line("weather_wait_facts")
+        assert status is CheckStatus.FAIL
+        assert "forecast=missing reanalysis=missing operational=missing" in detail
+        assert "precipitation missing 23 of 23 days" in detail
+
+    def test_inactive_role_is_named_inactive(self) -> None:
+        world = World()
+        _bind(world, WeatherSourceRole.OPERATIONAL, WeatherSourceStatus.INACTIVE)
+        assert "operational=inactive" in world.line("weather_wait_facts")[1]
+
+    def test_lists_days_without_stored_reanalysis_until_yesterday(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(8, 29), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.FAIL
+        assert "precipitation missing 2 of 23 days: 2026-10-19, 2026-10-20" in detail
+
+    def test_passes_when_bound_and_every_day_stored(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(1, 32), parameter)
+        assert world.line("weather_wait_facts") == (
+            CheckStatus.PASS,
+            "forecast=bound reanalysis=bound operational=bound; "
+            "stored reanalysis: all 23 expected days present; 7 newest days not "
+            "expected yet (Gateway lag, filled by the operational product at "
+            "forecast time)",
+        )
+
+    def test_newest_lag_days_absent_still_passes_for_a_healthy_station(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(8, 33), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.PASS
+        assert "newest days not expected yet" in detail
+
+    def test_older_missing_day_still_fails(self) -> None:
+        world = World()
+        self._all_bound(world)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(
+                world, "src_reanalysis", [*range(8, 20), *range(21, 33)], parameter
+            )
+        assert world.line("weather_wait_facts")[0] is CheckStatus.FAIL
+
+    def test_missing_role_fails_even_when_every_day_is_stored(self) -> None:
+        world = World()
+        _bind(world, WeatherSourceRole.REANALYSIS, WeatherSourceStatus.ACTIVE)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(8, 33), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.FAIL
+        assert "operational=missing" in detail
+        assert "precipitation missing" not in detail
+
+
+class FakeEcmwf:
+    def __init__(
+        self,
+        days: range | None = None,
+        error: Exception | None = None,
+        nan_days: tuple[int, ...] = (),
+        raw: object | None = None,
+    ) -> None:
+        self.days = days if days is not None else range(1, 31)
+        self.error = error
+        self.nan_days = nan_days
+        self.raw = raw
+        self.calls: list[str] = []
+
+    def operational(self, **kwargs: object) -> pd.DataFrame:
+        self.calls.append(str(kwargs["ifs_variable_name"]))
+        if self.error is not None:
+            raise self.error
+        if self.raw is not None:
+            return self.raw  # type: ignore[return-value]
+        index = pd.DatetimeIndex(
+            [pd.Timestamp(NOW.date() - timedelta(days=i)) for i in self.days]
+        )
+        values = [None if i in self.nan_days else 1.0 for i in self.days]
+        return pd.DataFrame({"syn001": values}, index=index)
+
+
+class TestGatewayData:
+    def _world(self) -> World:
+        world = World()
+        TestNaming()._binding(world, "syn001", "syn001")
+        return world
+
+    def _line(self, world: World, api: FakeEcmwf) -> tuple[CheckStatus, str]:
+        return world.supplementary("gateway_data", gateway=lambda: api)
+
+    def test_off_by_default(self) -> None:
+        assert self._world().report().supplementary == ()
+
+    def test_all_days_present(self) -> None:
+        api = FakeEcmwf()
+        assert self._line(self._world(), api) == (
+            CheckStatus.PASS,
+            "OK: all 30 days present",
+        )
+        assert sorted(api.calls) == ["2t", "tp"]
+
+    def test_missing_days_are_listed_with_retry_hint(self) -> None:
+        status, detail = self._line(self._world(), FakeEcmwf(days=range(3, 31)))
+        assert status is CheckStatus.FAIL
+        assert "precipitation missing 2 of 30 days" in detail
+        assert detail.endswith("try again after the backfill")
+
+    def test_nan_or_none_value_counts_as_a_missing_day(self) -> None:
+        status, detail = self._line(self._world(), FakeEcmwf(nan_days=(5,)))
+        assert status is CheckStatus.FAIL
+        assert "precipitation missing 1 of 30 days: 2026-11-13" in detail
+
+    def test_non_dataframe_response_is_unknown(self) -> None:
+        status, _ = self._line(self._world(), FakeEcmwf(raw={"not": "a frame"}))
+        assert status is CheckStatus.UNKNOWN
+
+    def test_frame_without_the_polygon_column_is_unknown(self) -> None:
+        index = pd.DatetimeIndex([pd.Timestamp("2026-11-17")])
+        frame = pd.DataFrame({"other": [1.0]}, index=index)
+        status, _ = self._line(self._world(), FakeEcmwf(raw=frame))
+        assert status is CheckStatus.UNKNOWN
+
+    def test_gateway_failure_is_unknown_not_pass(self) -> None:
+        status, detail = self._line(
+            self._world(), FakeEcmwf(error=RecapTransientError("secret"))
+        )
+        assert status is CheckStatus.UNKNOWN
+        assert "secret" not in detail
+
+    def test_missing_key_is_unknown(self) -> None:
+        def no_key() -> FakeEcmwf:
+            raise ConfigurationError("recap Gateway API key not found")
+
+        status, _ = self._world().supplementary("gateway_data", gateway=no_key)
+        assert status is CheckStatus.UNKNOWN
+
+    def test_no_polygon_binding_is_unknown(self) -> None:
+        assert World().supplementary("gateway_data", gateway=FakeEcmwf)[0] is (
+            CheckStatus.UNKNOWN
+        )
+
+    def test_never_changes_the_offline_counts(self) -> None:
+        world = self._world()
+        without = world.report()
+        with_gw = world.report(gateway=lambda: FakeEcmwf(days=range(20, 21)))
+        assert (with_gw.failed(), with_gw.passed()) == (
+            without.failed(),
+            without.passed(),
+        )
+
+
+class TestTrainingSamples:
+    def _request(self, minimum: int = 0) -> TrainingWindowRequest:
+        return TrainingWindowRequest(
+            start=ensure_utc(NOW - timedelta(days=40)),
+            end=NOW,
+            time_step=timedelta(hours=24),
+            minimum_samples=minimum,
+        )
+
+    def _world(self, days: int) -> World:
+        world = World()
+        _bind(world, WeatherSourceRole.REANALYSIS, WeatherSourceStatus.ACTIVE)
+        world.add_discharge(days)
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, "src_reanalysis", range(1, days + 1), parameter)
+        return world
+
+    def test_counts_complete_windows(self) -> None:
+        status, detail = self._world(12).supplementary(
+            "training_samples", model=_model(lookback=3), training=self._request()
+        )
+        assert status is CheckStatus.PASS
+        assert detail.startswith("5 complete samples in ")
+
+    def test_thin_history_fails_only_the_training_line(self) -> None:
+        world = self._world(4)
+        report = world.report(model=_model(lookback=3), training=self._request())
+        (line,) = report.supplementary
+        assert line.status is CheckStatus.FAIL
+        assert report.failed() == world.report(model=_model(lookback=3)).failed()
+
+    def test_minimum_samples_is_enforced(self) -> None:
+        status, detail = self._world(12).supplementary(
+            "training_samples",
+            model=_model(lookback=3),
+            training=self._request(minimum=6),
+        )
+        assert status is CheckStatus.FAIL
+        assert "(minimum 6)" in detail
+
+    def test_no_inputs_reports_zero_samples(self) -> None:
+        status, detail = World().supplementary(
+            "training_samples", model=_model(lookback=3), training=self._request()
+        )
+        assert status is CheckStatus.FAIL
+        assert "0 complete samples" in detail
+
+    def test_window_must_be_ordered(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="precede"):
+            TrainingWindowRequest(start=NOW, end=NOW, time_step=timedelta(hours=24))

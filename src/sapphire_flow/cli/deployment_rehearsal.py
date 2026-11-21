@@ -13,22 +13,38 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from prefect.client.orchestration import PrefectClient
+from sapphire_flow.cli.deployment_checks import (
+    JOBS as JOBS,
+)
+from sapphire_flow.cli.deployment_checks import (
+    POOLS as POOLS,
+)
+from sapphire_flow.cli.deployment_checks import (
+    PREFECT_URL as PREFECT_URL,
+)
+from sapphire_flow.cli.deployment_checks import (
+    DeploymentCheckError as RehearsalCheckError,
+)
+from sapphire_flow.cli.deployment_checks import (
+    jobs as jobs,
+)
+from sapphire_flow.cli.deployment_checks import (
+    no_execution as no_execution,
+)
+from sapphire_flow.cli.deployment_checks import (
+    pools as pools,
+)
+from sapphire_flow.cli.deployment_checks import (
+    workers as workers,
+)
 
-POOLS = ("default", "ingest", "backup")
-JOBS = {"forecast-cycle": "default", "backup-database": "backup"}
-PREFECT_URL = "http://prefect-server:4200/api"
 API_URL = "http://caddy:80"
 MARKER = "SAPPHIRE_REHEARSAL_RUN_ID"
-
-
-class RehearsalCheckError(RuntimeError):
-    pass
 
 
 def require_environment(environment: Mapping[str, str]) -> str:
@@ -39,83 +55,6 @@ def require_environment(environment: Mapping[str, str]) -> str:
     ):
         raise RehearsalCheckError("helper_environment_refused")
     return marker
-
-
-async def pools(client: PrefectClient, action: Literal["create", "verify"]) -> None:
-    inventory = await client.read_work_pools(limit=4)
-    if action == "create":
-        if inventory:
-            raise RehearsalCheckError("existing_pools_refused")
-        from prefect.client.schemas.actions import WorkPoolCreate
-
-        for name in POOLS:
-            await client.create_work_pool(
-                WorkPoolCreate(name=name, type="process", is_paused=True)
-            )
-        inventory = await client.read_work_pools(limit=4)
-    if {item.name for item in inventory} != set(POOLS) or len(inventory) != 3:
-        raise RehearsalCheckError("pool_inventory_invalid")
-    for name in POOLS:
-        item = await client.read_work_pool(name)
-        if item.type != "process" or item.is_paused is not True:
-            raise RehearsalCheckError("pool_pause_not_confirmed")
-
-
-async def no_execution(client: PrefectClient) -> None:
-    from prefect.client.schemas.objects import StateType
-
-    runs = await client.read_flow_runs(limit=101)
-    if len(runs) > 100:
-        raise RehearsalCheckError("flow_inventory_overflow")
-    for run in runs:
-        history = await client.read_flow_run_states(run.id)
-        if len(history) > 1000:
-            raise RehearsalCheckError("flow_history_overflow")
-        states = [run.state, *history]
-        if run.start_time is not None or any(
-            state is None or state.type not in {StateType.SCHEDULED, StateType.PENDING}
-            for state in states
-        ):
-            raise RehearsalCheckError("unexpected_flow_execution")
-
-
-async def jobs(client: PrefectClient, action: Literal["pause", "verify"]) -> None:
-    await pools(client, "verify")
-    inventory = await client.read_deployments(limit=3)
-    if (
-        len(inventory) != 2
-        or {item.name: item.work_pool_name for item in inventory} != JOBS
-    ):
-        raise RehearsalCheckError("deployment_inventory_invalid")
-    for deployment in inventory:
-        schedules = await client.read_deployment_schedules(deployment.id)
-        if not schedules or len(schedules) > 4:
-            raise RehearsalCheckError("schedule_inventory_invalid")
-        if action == "pause":
-            for schedule in schedules:
-                await client.update_deployment_schedule(
-                    deployment.id, schedule.id, active=False
-                )
-        readback = await client.read_deployment_schedules(deployment.id)
-        if {item.id for item in readback} != {item.id for item in schedules} or any(
-            item.active for item in readback
-        ):
-            raise RehearsalCheckError("schedule_pause_not_confirmed")
-    await pools(client, "verify")
-    await no_execution(client)
-
-
-async def workers(client: PrefectClient, now: datetime) -> None:
-    await jobs(client, "verify")
-    for name in POOLS:
-        inventory = await client.read_workers_for_work_pool(name, limit=11)
-        if len(inventory) != 1:
-            raise RehearsalCheckError("workers_not_ready")
-        heartbeat = inventory[0].last_heartbeat_time
-        if heartbeat is None or not -5 <= (now - heartbeat).total_seconds() <= 90:
-            raise RehearsalCheckError("workers_not_ready")
-    await pools(client, "verify")
-    await no_execution(client)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

@@ -3201,6 +3201,7 @@ class ForcingSummaryRow:       # parameter, source, count, first, last
 
 `--json` shape (names and status values are a contract; adding fields is allowed):
 `{"station": {"id", "code", "network"}, "checks": [{"name", "status", "detail"}], "failed": n, "passed": m}`.
+M4b: `CheckStatus` also has `UNKNOWN` (a check that could not be answered, e.g. the Gateway was unreachable); `StationReadinessReport.supplementary` holds the optional `gateway_data` and `training_samples` lines, which are not counted in `failed()`/`passed()`; the `--json` shape gains a `supplementary` list in the same format as `checks`.
 New store methods: `ObservationStore.fetch_station_summary(station_id)` and `HistoricalForcingStore.fetch_station_summary(station_id)`, both aggregate reads grouped by parameter and source (observations also by QC status and rule version).
 
 Module: `types/station_readiness.py`
@@ -6929,8 +6930,8 @@ invalid or oversized selected evidence returns a safe 503, including chart data.
 Provisional rating summaries and existing access gates are unchanged. Weather
 STALE is separate from PROVISIONAL, with safe failure code/time and age at use.
 
-The selected evidence capture budget is configurable up to the shared 32 MiB
-capture/read ceiling. Selected JSON encoding counts ASCII bytes incrementally
+The selected evidence capture budget is 32 MiB by default and configurable up to the shared
+128 MiB capture/read ceiling. Selected JSON encoding counts ASCII bytes incrementally
 and compresses in bounded chunks; decoding stops at the ceiling plus one byte.
 Legacy/unselected encoding and reads retain their previous uncapped behavior.
 The native 21-station B2 fixture (30 past/10 future days with hourly observations)

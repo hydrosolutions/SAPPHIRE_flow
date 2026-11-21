@@ -43,13 +43,27 @@ qualification runs in the Aquacast image-proof job after separately building the
 default variant and preloading pinned infrastructure. Private build access absence
 retains the existing degraded path and reports rehearsal qualification unperformed.
 The 45-minute combined acceptance budget plus cleanup reserves has a 55-minute
-step limit; the job allows 114 minutes including the existing builds/scans. Only
+step limit. Persistent installation qualification reuses the same images after
+rehearsal, with a separate 45-minute test budget and 55-minute step limit; the job
+allows 170 minutes including builds/scans and both cleanup reserves. This raises
+the worst-case bound, without adding a second image build pipeline. Only
 the allowlisted qualification summary is uploaded. The Aquacast Trivy database
 cache lives under runner temporary storage so scanning does not dirty the checked
 source used by rehearsal. No clean-source guard is bypassed. FULL source-CI attestation
 requires every rehearsal preparation, execution and safe-upload step to succeed;
 missing, skipped or failed qualification cannot produce FULL evidence. Workflow
 changes refresh both the reviewed byte hash and mandatory producer inventory.
+
+The persistent qualification uses `tests/integration/test_deployment_install.py`
+with an explicit dedicated-daemon opt-in, random synthetic file deliveries and
+private external profiles. It exercises install/verify/stop/start, retained DB and
+volume markers, unchanged init, missing-file refusal, token revocation and injected
+init failure. Its test-only cleanup rechecks daemon and installation/project labels;
+the installer itself never removes data. Only the allowlisted summary is uploaded.
+Both qualification and summary upload are mandatory for FULL attestation. Host
+reboot and daemon-restart acceptance remain PI4; see the
+[fixture runbook](../../tests/fixtures/deployment_installation/README.md).
+
 
 ## Docker Compose service topology
 
@@ -1534,13 +1548,18 @@ mounts.
 
 ### First deploy
 
-1. Generate the two scoped-role secrets alongside `db_password`: `openssl rand -base64 32 >
-   ./secrets/sapphire_api_db_password` and `openssl rand -base64 32 >
-   ./secrets/sapphire_worker_db_password`.
-2. `docker compose up -d --build` — `init` runs migrations, then the role bootstrap (creating both
-   roles with the passwords from step 1 and granting them per-table), then registers deployments.
-3. Verify: `docker compose exec postgres psql -U ${DB_USER:-sapphire} -d sapphire -c "\du sapphire_api
-   sapphire_worker"` shows both roles present, `Superuser`/`Create role`/`Create DB` all unset.
+1. Deliver all five current runtime files using the
+   [secrets bootstrap](../secrets-bootstrap.md), including the backup-role password
+   and API pepper. Use independent URL-safe DB passwords and permissions that the
+   actual readers can use; the old two-file/base64 instructions were incomplete.
+2. Follow the host's reviewed complete Compose recipe and release procedure.
+   Normal `init` runs migrations, bootstraps scoped roles and registers deployments.
+   A bare `up` command does not establish the paused-installation contract.
+3. Verify the scoped API, worker and backup roles and grants using the host's
+   acceptance checks. For a new generic installation, start with the
+   [persistent installer](../deployment/profile-installation.md). Explicit install
+   and retained verify/stop/start are implemented; real-container and reboot
+   qualification remain pending. Existing deployments keep their current runbooks.
 
 ### Scoped-password rotation
 

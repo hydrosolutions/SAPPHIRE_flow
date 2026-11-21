@@ -524,3 +524,10 @@ both rejected the new vocabulary without silently omitting it (local evidence:
 `/tmp/cmal-radiation-review/legacy-reader-check.txt`). No old reader is permitted
 for rollout after new evidence exists. Full Linux CI remains the merge gate;
 macOS temporary-checkout tooling tests refused untrusted path ancestors.
+
+## Authorized capacity follow-up
+
+The owner authorized raising the group evidence ceiling on 20 November.
+`2026-11-20-cmal-evidence-capacity.md` supersedes this plan's 24/32 MiB group gate
+with 96/128 MiB qualification/absolute limits. The 12/16 MiB station-cache gate,
+timestamp qualification and real-input activation checks remain unchanged.
