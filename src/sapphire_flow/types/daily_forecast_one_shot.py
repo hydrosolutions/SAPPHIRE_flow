@@ -10,6 +10,7 @@ from sapphire_flow.types.daily_forecast import (
 )
 from sapphire_flow.types.daily_forecast_claim import DailyClaim
 from sapphire_flow.types.daily_forecast_outcome import finalized_outcome_state
+from sapphire_flow.types.daily_operator_retry import OperatorDailyClaim
 from sapphire_flow.types.enums import ForecastDataUse
 
 if TYPE_CHECKING:
@@ -59,7 +60,8 @@ class OneShotDailyExecution:
             raise ValueError("started_at must be aware UTC")
 
 
-DailyExecution = DailyClaim | OneShotDailyExecution
+OperationalDailyClaim = DailyClaim | OperatorDailyClaim
+DailyExecution = OperationalDailyClaim | OneShotDailyExecution
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

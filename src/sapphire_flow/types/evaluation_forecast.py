@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         DailyOutputReference,
     )
     from sapphire_flow.types.daily_forecast_recovery import DailyRecoveryStatus
+    from sapphire_flow.types.daily_operator_retry import OperationalDailyTrigger
     from sapphire_flow.types.daily_output import DailyOutputContract
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import OperationalForecast
@@ -106,6 +107,8 @@ class EvaluationReferenceDiagnostic:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class EvaluationDailyDiagnostic:
+    latest_attempt_trigger: OperationalDailyTrigger | None = None
+    authoritative_attempt_trigger: OperationalDailyTrigger | None = None
     group_id: StationGroupId
     issue_time: UtcDatetime
     latest_attempt_id: UUID | None
@@ -135,6 +138,8 @@ class EvaluationFreshness(Enum):
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class EvaluationModelDiagnostic:
+    latest_attempt_trigger: OperationalDailyTrigger | None = None
+    authoritative_attempt_trigger: OperationalDailyTrigger | None = None
     model_id: ModelId
     freshness: EvaluationFreshness
     latest_result_at: UtcDatetime | None

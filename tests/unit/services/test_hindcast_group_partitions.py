@@ -16,6 +16,7 @@ from sapphire_flow.services.hindcast import (
     run_group_hindcast,
 )
 from sapphire_flow.services.model_registry import build_station_code_resolver
+from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     ForcingRoute,
@@ -24,8 +25,19 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.forecast_evidence import StationSourceEvidence
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
-from sapphire_flow.types.model import StationInputData, StationModelInputs
+from sapphire_flow.types.ids import (
+    ArtifactId,
+    BasinId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
+from sapphire_flow.types.model import (
+    GroupModelInputs,
+    ModelArtifact,
+    StationInputData,
+    StationModelInputs,
+)
 from sapphire_flow.types.station import StationGroup, StationWeatherSource
 from tests.conftest import (
     make_observation,
@@ -33,6 +45,7 @@ from tests.conftest import (
     make_station_config,
 )
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+from tests.fakes.fake_models import FakeGroupForecastModel
 from tests.fakes.fake_stores import (
     FakeBasinStore,
     FakeHindcastStore,
@@ -41,6 +54,7 @@ from tests.fakes.fake_stores import (
 )
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.training import HindcastStepResult
 
@@ -688,3 +702,159 @@ def typed_inputs() -> dict[StationId, StationModelInputs]:
             ),
         )
     return result
+
+
+@pytest.mark.parametrize("values", [(None, 1.25), (1.25, None)])
+def test_public_hindcast_preserves_null_static_peer(
+    values: tuple[float | None, float | None],
+) -> None:
+    class RecordingGroup(FakeGroupForecastModel):
+        calls: list[GroupModelInputs] = []
+
+        def predict_batch(
+            self, artifact: ModelArtifact, inputs: GroupModelInputs, rng: random.Random
+        ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
+            self.calls.append(inputs)
+            return super().predict_batch(artifact, inputs, rng)
+
+    stations = FakeStationStore()
+    basins = FakeBasinStore()
+    observations = FakeObservationStore()
+    for member, sid in enumerate(SIDS):
+        bid = BasinId(UUID(int=900 + member))
+        stations.store_station(make_station_config(station_id=sid, basin_id=bid))
+        basins.store_basin(
+            Basin(
+                id=bid,
+                code=str(member),
+                name="fixture",
+                geometry=None,
+                area_km2=1.0,
+                attributes={"reservoir_fs": values[member]},
+                band_geometries=None,
+                created_at=BASE,
+                network="test",
+            )
+        )
+        observations.store_observations(
+            [
+                make_observation(
+                    station_id=sid,
+                    timestamp=ensure_utc(BASE - timedelta(days=k)),
+                    value=10.0,
+                    rng=random.Random(member * 10 + k),
+                )
+                for k in (1, 2, 3)
+            ]
+        )
+    model = RecordingGroup()
+    model.data_requirements = replace(
+        model.data_requirements,
+        lookback_steps=3,
+        forecast_horizon_steps=1,
+        past_dynamic_features=frozenset(),
+    )
+    store = FakeHindcastStore()
+    results = run_group_hindcast(
+        model=model,
+        artifact=b"fixture",
+        group=StationGroup(
+            id=StationGroupId(UUID(int=803)),
+            name="static-peers",
+            station_ids=frozenset(SIDS),
+            created_at=BASE,
+        ),
+        model_id=MODEL,
+        artifact_id=ArtifactId(UUID(int=804)),
+        period_start=BASE,
+        period_end=ensure_utc(BASE + timedelta(days=1)),
+        time_step=timedelta(days=1),
+        forcing_source=FakeWeatherReanalysisSource(),
+        obs_store=observations,
+        hindcast_store=store,
+        station_store=stations,
+        basin_store=basins,
+        clock=lambda: BASE,
+        rng=random.Random(19),
+        hindcast_run_id=UUID(int=805),
+        lookback_steps=3,
+    )
+    assert len(model.calls) == 1
+    for sid, value in zip(SIDS, values, strict=True):
+        static = model.calls[0].for_station(sid).static
+        assert static is not None
+        assert static["reservoir_fs"].to_list() == [value]
+        assert all(result.success for result in results[sid])
+    assert (
+        sum(
+            len(
+                store.fetch_hindcasts(
+                    sid, MODEL, BASE, ensure_utc(BASE + timedelta(days=1))
+                )
+            )
+            for sid in SIDS
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("peer", [1.25, None])
+def test_static_null_alignment_preserves_schema_and_values(
+    reverse: bool, peer: float | None
+) -> None:
+    inputs = typed_inputs()
+    for sid, value in zip(SIDS, (None, peer), strict=True):
+        inputs[sid] = replace(
+            inputs[sid],
+            data=replace(
+                inputs[sid].data,
+                static=pl.DataFrame({"reservoir_fs": [value], "other": ["unchanged"]}),
+            ),
+        )
+    ordered = dict(reversed(list(inputs.items()))) if reverse else inputs
+    grouped = _stack_hindcast_inputs(StationGroupId(UUID(int=803)), ordered)
+    expected = pl.DataFrame(
+        {
+            "station_id": [str(sid) for sid in ordered],
+            "reservoir_fs": list(reversed([None, peer])) if reverse else [None, peer],
+            "other": ["unchanged", "unchanged"],
+        }
+    )
+    assert grouped.static is not None
+    assert_frame_equal(grouped.static, expected)
+    assert grouped.static["reservoir_fs"].null_count() == (2 if peer is None else 1)
+    assert grouped.station_ids == tuple(ordered)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_static_conflicting_concrete_types_still_refused(reverse: bool) -> None:
+    inputs = typed_inputs()
+    third = StationId(UUID(int=806))
+    inputs[third] = replace(inputs[SIDS[0]], station_id=third)
+    for sid, value in zip(inputs, (None, 1.25, 2), strict=True):
+        inputs[sid] = replace(
+            inputs[sid],
+            data=replace(
+                inputs[sid].data, static=pl.DataFrame({"reservoir_fs": [value]})
+            ),
+        )
+    ordered = dict(reversed(list(inputs.items()))) if reverse else inputs
+    with pytest.raises(pl.exceptions.SchemaError, match="incompatible"):
+        _stack_hindcast_inputs(StationGroupId(UUID(int=803)), ordered)
+
+
+@pytest.mark.parametrize(
+    "peer",
+    [
+        pl.DataFrame({"reservoir_fs": [1.0]}),
+        pl.DataFrame({"other": ["same"], "reservoir_fs": [1.0]}),
+    ],
+)
+def test_static_schema_mismatches_still_refused(peer: pl.DataFrame) -> None:
+    inputs = typed_inputs()
+    first = pl.DataFrame({"reservoir_fs": [None], "other": ["same"]})
+    for sid, frame in zip(SIDS, (first, peer), strict=True):
+        inputs[sid] = replace(inputs[sid], data=replace(inputs[sid].data, static=frame))
+    with pytest.raises(pl.exceptions.ShapeError, match="(width|names)"):
+        _stack_hindcast_inputs(StationGroupId(UUID(int=803)), inputs)
