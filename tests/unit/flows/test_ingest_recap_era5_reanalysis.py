@@ -450,7 +450,10 @@ class TestProductionEra5:
             "ingest",
         )
 
-    @pytest.mark.parametrize("failure", ["none", "admission", "second_batch"])
+    @pytest.mark.parametrize(
+        "failure",
+        ["none", "admission", "second_batch", "refresh_admission", "refresh_coverage"],
+    )
     def test_transaction_and_resource_lifecycle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
     ) -> None:
@@ -508,7 +511,7 @@ class TestProductionEra5:
 
         def admit(*args: object, **kwargs: object) -> None:
             tenant_codes.append(kwargs.get("tenant_code"))
-            if failure == "admission":
+            if failure in {"admission", "refresh_admission"}:
                 raise ConfigurationError("inadmissible roster")
 
         monkeypatch.setattr(module, "operational_weather_stations", admit)
@@ -534,6 +537,12 @@ class TestProductionEra5:
             )
             if failure == "second_batch" and calls == 2:
                 raise ConfigurationError("provider failure")
+            if failure == "refresh_coverage":
+                assert (
+                    kwargs["coverage_policy"]
+                    is module.HistoryCoveragePolicy.REQUIRE_HOURLY
+                )
+                raise module.IncompleteEra5RefreshError("test gap")
             return (
                 HistoryCoverage(
                     station_id=StationId(uuid4()),
@@ -546,7 +555,15 @@ class TestProductionEra5:
             )
 
         monkeypatch.setattr(module, "_ingest_history", ingest)
-        if failure == "none":
+        if failure.startswith("refresh_"):
+            message = (
+                "coverage incomplete"
+                if failure == "refresh_coverage"
+                else "refresh failed"
+            )
+            with pytest.raises(ConfigurationError, match=message):
+                module.refresh_operational_era5_history_flow.fn("test")
+        elif failure == "none":
             module.ingest_operational_era5_history_flow.fn(
                 "2020-01-01T00:00:00Z", "2020-03-11T00:00:00Z", "test"
             )
@@ -560,15 +577,28 @@ class TestProductionEra5:
         with engine.connect() as conn:
             assert (
                 conn.scalar(sa.text("SELECT count(*) FROM batches"))
-                == {"none": 3, "admission": 0, "second_batch": 1}[failure]
+                == {
+                    "none": 3,
+                    "admission": 0,
+                    "second_batch": 1,
+                    "refresh_admission": 0,
+                    "refresh_coverage": 0,
+                }[failure]
             )
         assert (
-            logged == {"none": [1, 2, 3], "admission": [], "second_batch": [1]}[failure]
+            logged
+            == {
+                "none": [1, 2, 3],
+                "admission": [],
+                "second_batch": [1],
+                "refresh_admission": [],
+                "refresh_coverage": [],
+            }[failure]
         )
         assert tenant_codes
         assert set(tenant_codes) == {"chwrr"}
         assert all(session.closed for session in sessions)
-        if failure == "admission":
+        if failure in {"admission", "refresh_admission"}:
             assert not sessions
         engine.dispose()
 
@@ -619,3 +649,124 @@ class TestProductionEra5:
         )
         client.ecmwf._http._session.close()
         assert len(closed) == 1
+
+
+class TestRollingEra5Refresh:
+    @pytest.mark.parametrize(
+        ("instant", "start", "end"),
+        [
+            ("2026-11-21T22:00:00+00:00", "2026-10-15", "2026-11-14"),
+            ("2026-11-22T03:45:00+05:45", "2026-10-15", "2026-11-14"),
+            ("2024-03-08T00:00:00+00:00", "2024-01-31", "2024-03-01"),
+            ("2026-01-08T00:00:00+00:00", "2025-12-02", "2026-01-01"),
+        ],
+    )
+    def test_eligible_utc_window(self, instant: str, start: str, end: str) -> None:
+        window = module.rolling_era5_window(datetime.fromisoformat(instant))
+        assert window.start.isoformat() == start + "T00:00:00+00:00"
+        assert window.end.isoformat() == end + "T00:00:00+00:00"
+
+    @pytest.mark.parametrize("value", [0, 32, True, 1.5, "30"])
+    @pytest.mark.parametrize("name", ["window_days", "lag_days"])
+    def test_invalid_limits(self, name: str, value: object) -> None:
+        with pytest.raises(ConfigurationError, match="integers from 1 to 31"):
+            module.rolling_era5_window(START, **{name: value})  # type: ignore[arg-type]
+
+    def test_max_window_and_one_day_lag(self) -> None:
+        window = module.rolling_era5_window(START, window_days=31, lag_days=1)
+        assert window.end == START
+        assert window.end - window.start == timedelta(days=31)
+
+    def test_rejects_naive_clock(self) -> None:
+        with pytest.raises(ConfigurationError, match="timezone-aware"):
+            module.rolling_era5_window(datetime(2026, 11, 21))
+
+    @pytest.mark.parametrize("incomplete", [False, True])
+    def test_sanitized_failure(
+        self, monkeypatch: pytest.MonkeyPatch, incomplete: bool
+    ) -> None:
+        def fail(*args: object, **kwargs: object) -> tuple[HistoryCoverage, ...]:
+            if incomplete:
+                raise module.IncompleteEra5RefreshError("private details")
+            raise RuntimeError("url with fake credential")
+
+        monkeypatch.setattr(module, "_run_operational_history", fail)
+        with pytest.raises(ConfigurationError) as error:
+            module.refresh_operational_era5_history_flow.fn("nepal21")
+        assert str(error.value) == (
+            "Operational ERA5 refresh coverage incomplete"
+            if incomplete
+            else "Operational ERA5 refresh failed"
+        )
+        assert error.value.__context__ is None
+
+    def test_passes_strict_policy_and_parameters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        received: dict[str, object] = {}
+
+        def ingest(
+            start: str, end: str, scope: str, parameters: object, **kwargs: object
+        ) -> tuple[HistoryCoverage, ...]:
+            received.update(
+                start=start, end=end, scope=scope, parameters=parameters, **kwargs
+            )
+            return ()
+
+        monkeypatch.setattr(module, "_run_operational_history", ingest)
+        module.refresh_operational_era5_history_flow.fn(
+            "nepal21", window_days=2, parameters=("temperature",)
+        )
+        assert datetime.fromisoformat(str(received["end"])) - datetime.fromisoformat(
+            str(received["start"])
+        ) == timedelta(days=2)
+        assert received["scope"] == "nepal21"
+        assert received["parameters"] == ("temperature",)
+        assert (
+            received["coverage_policy"] is module.HistoryCoveragePolicy.REQUIRE_HOURLY
+        )
+
+    @pytest.mark.parametrize("missing_hour", [None, 12])
+    def test_exact_hourly_readback(
+        self, monkeypatch: pytest.MonkeyPatch, missing_hour: int | None
+    ) -> None:
+        station = make_station_config()
+        store = FakeHistoricalForcingStore()
+        monkeypatch.setattr(module, "chwrr_stations", lambda *a, **k: [station])
+        monkeypatch.setattr(
+            module, "require_history_bindings", lambda *a: [history_binding(station.id)]
+        )
+        monkeypatch.setattr(module, "PgHistoricalForcingStore", lambda *a: store)
+
+        class Adapter:
+            def fetch_reanalysis(self, *args: object) -> list[RawHistoricalForcing]:
+                return [
+                    make_raw_historical_forcing(
+                        station_id=station.id,
+                        source=GATEWAY_HISTORY_SOURCE,
+                        parameter="temperature",
+                        valid_time=ensure_utc(START + timedelta(hours=h)),
+                        spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    )
+                    for h in range(24)
+                    if h != missing_hour
+                ]
+
+        def run() -> tuple[HistoryCoverage, ...]:
+            return module._ingest_history(
+                cast("Connection", object()),
+                IDENTITY,
+                cast("module.WeatherReanalysisSource", Adapter()),
+                HistoryWindow(start=START, end=ensure_utc(START + timedelta(days=1))),
+                now=START,
+                parameters=("temperature",),
+                coverage_policy=module.HistoryCoveragePolicy.REQUIRE_HOURLY,
+            )
+
+        if missing_hour is None:
+            assert run()[0].rows == 24
+        else:
+            with pytest.raises(
+                module.IncompleteEra5RefreshError, match="coverage incomplete"
+            ):
+                run()

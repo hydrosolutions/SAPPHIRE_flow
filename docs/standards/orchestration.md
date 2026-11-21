@@ -519,3 +519,48 @@ Frozen daily claims retain their own issue and default execution hash. Typed age
 or day refusals finalize no-output claims as `INCOMPLETE`, not abandoned ACTIVE
 claims. See the [operational runbook](../operations/recap-gateway-runbook.md#opt-in-daily-operational-weather-issuance)
 for configuration-chain, deadline and activation gates.
+
+### Nepal operational ERA5 refresh
+
+`refresh-operational-era5-history` is an opt-in CHWRR-only deployment on the
+`ingest` pool with concurrency 1. It reuses the admitted operational weather scope
+and the fixed-window ERA5 import path. The existing manual deployment is unchanged.
+
+Registration requires both `SCHEDULE_REFRESH_OPERATIONAL_ERA5` (UTC cron, for
+example `35 0 * * *`) and `SAPPHIRE_ERA5_WEATHER_SCOPE` (for example `nepal21`).
+Neither variable registers anything; supplying only one fails. To register only
+this deployment, also set `SAPPHIRE_ONLY_DEPLOYMENTS=refresh-operational-era5-history`.
+Run the normal registration CLI in the deployed environment; do not re-register
+unrelated deployments. The scope must match on repeat registration; existing
+operator parameters are preserved. Keep these values in the host's reviewed
+registration procedure so upgrades do not remove the schedule.
+
+Parameters are `weather_scope`, `window_days=30`, `lag_days=8`, and `parameters`
+(default precipitation and temperature). Both day limits are strict integers
+between 1 and 31. With UTC execution date D, the exclusive end is midnight
+D minus seven days and the start is 30 days earlier. On 21 November 2026 this
+requests `[2026-10-15T00:00Z, 2026-11-14T00:00Z)`, including 13 November.
+The clock is captured once for the window. These bounds express the ERA5 lag;
+the example cron is a local refresh choice, not a provider delivery promise.
+
+Each run re-requests the whole overlap. Missing runs within that window recover
+on the next run; older gaps need an approved explicit-window import. Exact finite
+hourly coverage is checked from stored basin-average rows for every admitted
+station and requested parameter. Incomplete coverage fails and rolls back the
+single batch transaction. API success alone is not success. Errors are sanitized;
+coverage failure is distinguishable from a provider/admission failure. Existing
+manual imports remain report-only and can store partial windows.
+
+The first rolling run may itself backfill existing gaps: approve that scope before
+activation. For the October 27–November 13 gap observed on the Nepal host, a
+successful first rolling run makes a separate manual import unnecessary; activation
+after December 3 no longer covers its beginning. Manual and rolling deployments
+have separate concurrency limits: overlap is idempotent, but avoid simultaneous
+runs to limit provider load. After activation verify database coverage and rerun
+station readiness. Do not infer readiness of datum, rating curves or discharge
+from weather ingestion. Radiation still requires its separate interval qualification.
+
+Forecast arrival polling is separate from reanalysis refresh. The approved policy
+in `requirements/05-snowmapper-gateway-contract.md` starts at initialization +10 h,
+then polls every 15 minutes through +14 h and hourly until superseded. This refresh
+deployment does not implement that policy or change forecast/climatology schedules.

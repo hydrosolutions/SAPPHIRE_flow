@@ -3,11 +3,13 @@ from __future__ import annotations
 import math
 import os
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import structlog
 from prefect import flow
+from pydantic import Field
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.nepal_onboarding import (
@@ -58,6 +60,67 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+class HistoryCoveragePolicy(StrEnum):
+    REPORT = "report"
+    REQUIRE_HOURLY = "require_hourly"
+
+
+class IncompleteEra5RefreshError(ConfigurationError):
+    pass
+
+
+RefreshDays = Annotated[int, Field(strict=True, ge=1, le=31)]
+
+
+def rolling_era5_window(
+    now: datetime, *, window_days: int = 30, lag_days: int = 8
+) -> HistoryWindow:
+    if any(
+        type(value) is not int or not 1 <= value <= 31
+        for value in (window_days, lag_days)
+    ):
+        raise ConfigurationError(
+            "ERA5 refresh day limits must be integers from 1 to 31"
+        )
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ConfigurationError("ERA5 refresh clock must be timezone-aware")
+    midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = ensure_utc(midnight - timedelta(days=lag_days - 1))
+    return HistoryWindow(start=ensure_utc(end - timedelta(days=window_days)), end=end)
+
+
+@flow(
+    name="refresh-operational-era5-history",
+    log_prints=False,
+    persist_result=False,
+    retries=0,
+)
+def refresh_operational_era5_history_flow(
+    weather_scope: str,
+    window_days: RefreshDays = 30,
+    lag_days: RefreshDays = 8,
+    parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+) -> tuple[HistoryCoverage, ...]:
+    window = rolling_era5_window(
+        datetime.now(UTC), window_days=window_days, lag_days=lag_days
+    )
+    failure = "Operational ERA5 refresh failed"
+    try:
+        return _run_operational_history(
+            window.start.isoformat(),
+            window.end.isoformat(),
+            weather_scope,
+            parameters,
+            coverage_policy=HistoryCoveragePolicy.REQUIRE_HOURLY,
+        )
+    except IncompleteEra5RefreshError:
+        failure = "Operational ERA5 refresh coverage incomplete"
+    except Exception:
+        pass
+    # Do not chain SDK exceptions: prepared URLs can contain credentials.
+    raise ConfigurationError(failure)
+
+
 @flow(
     name="ingest-recap-era5-reanalysis",
     log_prints=False,
@@ -88,6 +151,7 @@ def _ingest_history(
     now: UtcDatetime,
     scope: OperationalWeatherScope | None = None,
     parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    coverage_policy: HistoryCoveragePolicy = HistoryCoveragePolicy.REPORT,
 ) -> tuple[HistoryCoverage, ...]:
     if (
         not parameters
@@ -136,6 +200,29 @@ def _ingest_history(
                 [parameter],
             )
             stamps = [r.valid_time for r in records if math.isfinite(r.value)]
+            if coverage_policy is HistoryCoveragePolicy.REQUIRE_HOURLY:
+                expected = {
+                    window.start + timedelta(hours=hour)
+                    for hour in range(
+                        int((window.end - window.start).total_seconds() // 3600)
+                    )
+                }
+                actual = {
+                    r.valid_time
+                    for r in records
+                    if math.isfinite(r.value)
+                    and r.spatial_type is SpatialRepresentation.BASIN_AVERAGE
+                    and r.band_id is None
+                    and r.member_id is None
+                }
+                if actual != expected:
+                    log.warning(
+                        "era5_refresh.coverage_incomplete",
+                        parameter=parameter,
+                        missing_hours=len(expected - actual),
+                        unexpected_hours=len(actual - expected),
+                    )
+                    raise IncompleteEra5RefreshError("ERA5 refresh coverage incomplete")
             coverage.append(
                 HistoryCoverage(
                     station_id=station.id,
@@ -146,6 +233,8 @@ def _ingest_history(
                     end=max(stamps) if stamps else None,
                 )
             )
+    if coverage_policy is HistoryCoveragePolicy.REQUIRE_HOURLY and not coverage:
+        raise IncompleteEra5RefreshError("ERA5 refresh coverage empty")
     return tuple(coverage)
 
 
@@ -182,6 +271,8 @@ def _run_operational_history(
     end: str,
     weather_scope: str,
     parameters: tuple[WeatherParameter, ...] = LEGACY_WEATHER_PARAMETERS,
+    *,
+    coverage_policy: HistoryCoveragePolicy = HistoryCoveragePolicy.REPORT,
 ) -> tuple[HistoryCoverage, ...]:
     from recap_client import RecapClient
 
@@ -236,6 +327,7 @@ def _run_operational_history(
                             now=now,
                             scope=scope,
                             parameters=parameters,
+                            coverage_policy=coverage_policy,
                         )
                     finally:
                         # The pinned SDK has no public close/context-manager API.
