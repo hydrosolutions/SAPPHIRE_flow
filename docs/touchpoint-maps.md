@@ -2105,7 +2105,10 @@ See the [canonical scope](standards/security.md#hindcast-input-isolation-canarie
 Group hindcast partition regression: run `tests/unit/services/test_hindcast_group_partitions.py`
 with the hindcast, statics, ensemble, legacy type and FI adapter input/predict/NaN/output
 suites. Preserve both split frames, metadata/evidence identity, optional statics and
-healthy-member assembly behavior. The synthetic left-label matrix is convention-bound;
+healthy-member assembly behavior. Static stacking casts exact Null columns only
+when peers agree on one concrete dtype; all-null columns stay Null and strict
+concrete/schema conflicts still refuse. Preserve missing values and station order;
+this does not change downstream model missing-static policy. The synthetic left-label matrix is convention-bound;
 do not change scientific labels or historical scores as part of stacking maintenance.
 
 ### Skill diagram JSON boundary coupling
