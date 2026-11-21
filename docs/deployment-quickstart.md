@@ -21,9 +21,12 @@ dedicated daemon after `PASS_OFFLINE`. It does not activate a persistent deploym
 For a new stack intended to remain running, the
 [persistent installer](deployment/profile-installation.md) provides preview,
 explicit install and retained verify/stop/start commands. Jobs stay paused and HTTP
-stays server-local. Require the matching hosted lifecycle qualification; daemon/host
-reboot acceptance remains pending. Use a dedicated test host and keep existing
-deployment runbooks until release/host acceptance.
+stays server-local. Require matching hosted lifecycle qualification and check the
+installer's documented release/host acceptance. Release 0.1.1170 passed daemon
+restart and host reboot checks with durable credential files on a disposable
+Ubuntu 24.04 amd64 host. This is single-host, single-release evidence for a dedicated
+new-install host, not a production recommendation. Existing deployments keep their
+current runbooks.
 
 ## 1. Copy the generic examples into private storage
 

@@ -60,9 +60,10 @@ private external profiles. It exercises install/verify/stop/start, retained DB a
 volume markers, unchanged init, missing-file refusal, token revocation and injected
 init failure. Its test-only cleanup rechecks daemon and installation/project labels;
 the installer itself never removes data. Only the allowlisted summary is uploaded.
-Both qualification and summary upload are mandatory for FULL attestation. Host
-reboot and daemon-restart acceptance remain PI4; see the
-[fixture runbook](../../tests/fixtures/deployment_installation/README.md).
+Both qualification and summary upload are mandatory for FULL attestation. The
+[fixture runbook](../../tests/fixtures/deployment_installation/README.md) covers
+hosted CI; separate release/host reboot evidence and its limits are recorded in
+the [installer guide](../deployment/profile-installation.md).
 
 
 ## Docker Compose service topology
@@ -1558,8 +1559,9 @@ mounts.
 3. Verify the scoped API, worker and backup roles and grants using the host's
    acceptance checks. For a new generic installation, start with the
    [persistent installer](../deployment/profile-installation.md). Explicit install
-   and retained verify/stop/start are implemented; real-container and reboot
-   qualification remain pending. Existing deployments keep their current runbooks.
+   and retained verify/stop/start are implemented. Require matching hosted
+   qualification and consult that guide's tested release/host combination and
+   restart limits. Existing deployments keep their current runbooks.
 
 ### Scoped-password rotation
 
