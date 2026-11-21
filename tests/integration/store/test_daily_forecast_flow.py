@@ -199,6 +199,11 @@ class TestDailyForecastFlow:
         "case",
         [
             "scheduled",
+            "operator",
+            "operator_active",
+            "operator_nepal",
+            "operator_no_operational",
+            "operator_stale",
             "artifact_missing",
             "artifact_inactive",
             "artifact_model",
@@ -246,6 +251,11 @@ class TestDailyForecastFlow:
         fault_cleanup: ExitStack,
         case: Literal[
             "scheduled",
+            "operator",
+            "operator_active",
+            "operator_nepal",
+            "operator_no_operational",
+            "operator_stale",
             "artifact_missing",
             "artifact_inactive",
             "artifact_model",
@@ -300,6 +310,8 @@ class TestDailyForecastFlow:
             forecast_combination, "build_combined_forecasts", observe_combination
         )
         key, frozen = assignment
+        if case == "operator_nepal":
+            key = replace(key, deployment="nepal")
         sid = frozen.members[0].station_id
         daily_model_id = ModelId("cmal_small")
         stations, observations = FakeStationStore(), FakeObservationStore()
@@ -343,7 +355,7 @@ class TestDailyForecastFlow:
                 station,
                 tenant_id=key.tenant_id,
                 station_status=StationStatus.SUSPENDED
-                if case == "no_operational"
+                if case in ("no_operational", "operator_no_operational")
                 else StationStatus.OPERATIONAL,
             )
         )
@@ -403,7 +415,7 @@ class TestDailyForecastFlow:
                 "forecast_combination_strategy": ModelCombinationStrategy.POOLED,
                 "daily_evaluation": DailyEvaluationConfig(
                     tenant_id=key.tenant_id,
-                    deployment="test",
+                    deployment=key.deployment,
                     prefect_deployment_id=deployment_id,
                     group_ids=(group.id,),
                     output_contracts=(
@@ -801,7 +813,120 @@ class TestDailyForecastFlow:
                 kwargs["rng"] = random.Random(42)
                 run_forecast_cycle_flow(**kwargs)
             else:
+                if case.startswith("operator"):
+                    from sapphire_flow.flows import daily_forecast_context
+                    from sapphire_flow.services.daily_forecast_candidates import (
+                        prepare_daily_assignments,
+                    )
+                    from sapphire_flow.types.daily_operator_retry import (
+                        OperatorDailyForecast,
+                        OperatorRetryRequest,
+                        roster_sha256,
+                    )
+                    from sapphire_flow.types.ids import PrincipalId
+
+                    settings = config.daily_evaluation.to_domain()
+                    planned = prepare_daily_assignments(
+                        settings=settings,
+                        requirements=model.data_requirements,
+                        group_store=groups,
+                        artifact_store=artifacts,
+                        configuration_sha256=execution.execution_configuration_sha256(
+                            config
+                        ),
+                    )[group.id]
+                    for hour in (0, 6):
+                        parent = ledger.claim(
+                            replace(
+                                key,
+                                model_id=daily_model_id,
+                                context=ScheduledDailyForecast(
+                                    scheduled_tick=_NOW + timedelta(hours=hour)
+                                ),
+                            ),
+                            planned,
+                            attempt_id=uuid4(),
+                            owner_id=uuid4(),
+                            started_at=_NOW,
+                        )
+                        assert isinstance(parent, DailyClaim)
+                        ledger.fail(
+                            parent,
+                            reason=DailyFailureReason.MODEL_FAILURE,
+                            finished_at=_NOW,
+                        )
+                    request = OperatorRetryRequest(
+                        request_id=uuid4(),
+                        parent_id=parent.id,
+                        key=replace(
+                            key,
+                            model_id=daily_model_id,
+                            context=OperatorDailyForecast(target_date=_NOW.date()),
+                        ),
+                        artifact_id=artifact_id,
+                        artifact_sha256="c" * 64,
+                        configuration_sha256=planned.configuration_sha256,
+                        roster_sha256=roster_sha256(planned),
+                        actor=PrincipalId("operator"),
+                        reason="Repair deployed",
+                    )
+                    if case == "operator_stale":
+                        request = replace(request, configuration_sha256="b" * 64)
+                    kwargs["operator_daily_retry"] = request.document()
+                    monkeypatch.setattr(
+                        daily_forecast_context,
+                        "current_operator_daily_owner",
+                        lambda **_: uuid4(),
+                    )
+                    if case == "operator_active":
+                        ledger.claim_operator_retry(
+                            request,
+                            planned,
+                            owner_id=uuid4(),
+                            started_at=_NOW,
+                            software_version="test-build",
+                        )
+                        with pytest.raises(ConfigurationError, match="state active"):
+                            run_forecast_cycle_flow(**kwargs)
+                        assert model.issues == []
+                        assert ordinary_model.issues == []
+                        active = ledger.read_day(request.key)
+                        assert active.latest is not None
+                        assert active.latest.state is DailyAttemptState.ACTIVE
+                        return
+                    if case == "operator_stale":
+                        with pytest.raises(ValueError, match="stale"):
+                            run_forecast_cycle_flow(**kwargs)
+                        assert model.issues == []
+                        assert ordinary_model.issues == []
+                        return
                 result = run_forecast_cycle_flow(**kwargs)
+                if case.startswith("operator"):
+                    day = ledger.read_day(
+                        replace(key, model_id=daily_model_id, context=scheduled.context)
+                    )
+                    assert day.latest is not None
+                    assert day.latest.claim.id == request.request_id
+                    assert day.latest.state is (
+                        DailyAttemptState.FAILED
+                        if case == "operator_no_operational"
+                        else DailyAttemptState.COMPLETE
+                    )
+                    before = len(model.issues), len(ordinary_model.issues)
+                    if day.latest.state is DailyAttemptState.FAILED:
+                        with pytest.raises(ConfigurationError, match="state failed"):
+                            run_forecast_cycle_flow(**kwargs)
+                    else:
+                        repeated = run_forecast_cycle_flow(**kwargs)
+                        assert repeated.forecasts_stored == 0
+                    assert (len(model.issues), len(ordinary_model.issues)) == before
+                    assert (
+                        ledger.read_days_bounded((day.latest.claim.key,))[
+                            day.latest.claim.key
+                        ]
+                        == day
+                    )
+                    return
                 if case in (
                     "missing_plugin",
                     "shared_store",

@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.daily_forecast_one_shot import DailyExecution
     from sapphire_flow.types.daily_forecast_snapshot import DailyDaySnapshot
+    from sapphire_flow.types.daily_operator_retry import (
+        OperatorRetryAdmission,
+        OperatorRetryRequest,
+    )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationGroupId, TenantId
 
@@ -50,7 +54,15 @@ class DailyClaimCoordinatorStore(Protocol):
 
 
 class DailyRuntimeStore(DailyClaimCoordinatorStore, DailyCompletionStore, Protocol):
-    pass
+    def claim_operator_retry(
+        self,
+        request: OperatorRetryRequest,
+        frozen: FrozenDailyAssignment,
+        *,
+        owner_id: UUID,
+        started_at: UtcDatetime,
+        software_version: str,
+    ) -> OperatorRetryAdmission: ...
 
 
 def claim_daily_candidates(

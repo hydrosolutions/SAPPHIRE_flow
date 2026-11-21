@@ -48,6 +48,12 @@ from sapphire_flow.types.daily_forecast_outcome import (
     DailyMemberState,
     DailyOutputSource,
 )
+from sapphire_flow.types.daily_operator_retry import (
+    OperatorAdmissionState,
+    OperatorDailyClaim,
+    OperatorRetryAdmission,
+    OperatorRetryRequest,
+)
 from sapphire_flow.types.enums import (
     ArtifactScope,
     FutureWeatherPolicy,
@@ -185,6 +191,7 @@ class DailyForecastExecution:
         self.clock = clock
         self.id_gen = id_gen
         self.pending: dict[UUID, DailyExecution] = {}
+        self.operator_admission: OperatorRetryAdmission | None = None
         self.errors: list[str] = []
         self.uncertain: set[UUID] = set()
         self.configuration_sha256 = execution_configuration_sha256(config)
@@ -288,6 +295,51 @@ class DailyForecastExecution:
             on_error=self._admission_error,
         )
 
+    def claim_operator(self, request: OperatorRetryRequest) -> None:
+        from sapphire_flow import __version__
+        from sapphire_flow.flows.daily_forecast_context import (
+            current_operator_daily_owner,
+        )
+
+        key = request.key
+        if (
+            key.tenant_id != self.settings.tenant_id
+            or key.deployment != self.settings.deployment
+            or key.group_id not in self.settings.group_ids
+            or key.model_id != self.settings.model_id
+        ):
+            raise ConfigurationError("operator retry is outside configured daily scope")
+        owner = current_operator_daily_owner(
+            expected_deployment_id=self.settings.prefect_deployment_id
+        )
+        candidates = prepare_daily_assignments(
+            settings=self.settings,
+            requirements=self.model.data_requirements,
+            group_store=self.groups,
+            artifact_store=self.artifacts,
+            configuration_sha256=self.configuration_sha256,
+        )
+        frozen = candidates.get(key.group_id)
+        if frozen is None:
+            raise ConfigurationError("operator retry assignment is unavailable")
+        admission = self.store.claim_operator_retry(
+            request,
+            frozen,
+            owner_id=owner,
+            started_at=self.clock(),
+            software_version=__version__,
+        )
+        self.operator_admission = admission
+        if admission.admission is OperatorAdmissionState.CREATED:
+            self.pending[admission.claim.id] = admission.claim
+        log.info(
+            "daily_forecast.operator_admission",
+            attempt_id=str(admission.claim.id),
+            parent_id=str(admission.claim.parent_id),
+            status=admission.state.value,
+            admission=admission.admission.value,
+        )
+
     def _forget_claim(self, claim: DailyClaim) -> None:
         self.pending.pop(claim.id, None)
 
@@ -383,7 +435,10 @@ class DailyForecastExecution:
                             phase="failure_acknowledgement_uncertain",
                             exc=close_exc,
                         )
-                if not isinstance(claim, DailyClaim) and claim.id in self.pending:
+                if (
+                    not isinstance(claim, (DailyClaim, OperatorDailyClaim))
+                    and claim.id in self.pending
+                ):
                     raise
         return stored_count, tuple(self.errors + errors)
 
@@ -432,6 +487,10 @@ class DailyForecastExecution:
             or current.artifact_id != claim.frozen.artifact_id
             or current.configuration_sha256 != claim.frozen.configuration_sha256
             or current.output_contracts != claim.frozen.output_contracts
+            or (
+                isinstance(claim, OperatorDailyClaim)
+                and current.members != claim.frozen.members
+            )
         ):
             self.fail_claim(claim, DailyFailureReason.CONFIGURATION_CHANGED)
             return 0, tuple(errors)
@@ -512,7 +571,10 @@ class DailyForecastExecution:
             )
 
         try:
-            if isinstance(claim, DailyClaim) or selected_weather_inputs is not None:
+            if (
+                isinstance(claim, (DailyClaim, OperatorDailyClaim))
+                or selected_weather_inputs is not None
+            ):
                 selected = assemble_scheduled_daily_weather(
                     assemble=assemble,
                     store=weather_forecast_store,
@@ -703,8 +765,13 @@ def prepare_daily_execution(
     rejected_writer: CommittedRejectedForecastWriter | None,
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
+    operator_request: OperatorRetryRequest | None = None,
 ) -> DailyForecastExecution | None:
     if config.daily_evaluation is None:
+        if operator_request is not None:
+            raise ConfigurationError(
+                "operator retry requires daily evaluation configuration"
+            )
         return None
     if (
         group_store is None
@@ -734,6 +801,9 @@ def prepare_daily_execution(
         clock=clock,
         id_gen=id_gen,
     )
+    if operator_request is not None:
+        execution.claim_operator(operator_request)
+        return execution
     try:
         execution.claim_scheduled()
     except Exception as exc:

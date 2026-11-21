@@ -6,6 +6,7 @@ from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.daily_forecast import ScheduledDailyForecast
 from sapphire_flow.types.daily_forecast_outcome import DailyMemberState
 from sapphire_flow.types.daily_input_provenance import DailyInputProvenance
 from sapphire_flow.types.enums import ForecastDataUse
@@ -15,9 +16,9 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.daily_forecast import (
         DailyAttemptOrdinal,
-        ScheduledDailyForecast,
     )
     from sapphire_flow.types.daily_forecast_outcome import DailyMemberOutcome
+    from sapphire_flow.types.daily_operator_retry import OperatorDailyForecast
     from sapphire_flow.types.daily_output import DailyOutputContract
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, TenantId
@@ -29,7 +30,7 @@ class DailyClaimKey:
     deployment: str
     group_id: StationGroupId
     model_id: ModelId
-    context: ScheduledDailyForecast
+    context: ScheduledDailyForecast | OperatorDailyForecast
     data_use: ForecastDataUse = ForecastDataUse.STANDARD
 
     def __post_init__(self) -> None:
@@ -71,6 +72,8 @@ class DailyClaim:
     started_at: UtcDatetime
 
     def __post_init__(self) -> None:
+        if not isinstance(self.key.context, ScheduledDailyForecast):
+            raise ValueError("scheduled claim requires a scheduled context")
         if self.started_at.utcoffset() != timedelta(0):
             raise ValueError("started_at must be aware UTC")
 

@@ -2883,6 +2883,7 @@ daily_forecast_attempts = sa.Table(
     sa.Column("output_contracts", JSONB, nullable=False),
     sa.Column("summary", JSONB),
     sa.Column("recovery", JSONB),
+    sa.Column("operator_metadata", JSONB(none_as_null=True)),
     sa.ForeignKeyConstraint(
         ["group_id", "tenant_id"],
         ["station_groups.id", "station_groups.tenant_id"],
@@ -2890,7 +2891,9 @@ daily_forecast_attempts = sa.Table(
     ),
     sa.CheckConstraint("length(btrim(deployment)) > 0"),
     sa.CheckConstraint("data_use = 'standard'"),
-    sa.CheckConstraint("trigger_kind IN ('scheduled', 'manual', 'replay')"),
+    sa.CheckConstraint(
+        "trigger_kind IN ('scheduled', 'operator_retry', 'manual', 'replay')"
+    ),
     sa.CheckConstraint(
         "state IN ('active', 'failed', 'complete', 'incomplete', 'abandoned')"
     ),
@@ -2916,6 +2919,10 @@ daily_forecast_attempts = sa.Table(
         "AT TIME ZONE 'UTC' "
         "AND ((ordinal = 1 AND parent_id IS NULL) "
         "OR (ordinal = 2 AND parent_id IS NOT NULL))) OR "
+        "(trigger_kind = 'operator_retry' AND scheduled_tick IS NULL "
+        "AND ordinal IS NULL AND parent_id IS NOT NULL AND parent_id <> id "
+        "AND issued_at = date_trunc('day', issued_at AT TIME ZONE 'UTC') "
+        "AT TIME ZONE 'UTC') OR "
         "(trigger_kind IN ('manual', 'replay') AND scheduled_tick IS NULL "
         "AND ordinal IS NULL AND parent_id IS NULL "
         "AND issued_at = date_trunc('day', issued_at AT TIME ZONE 'UTC') "
@@ -2923,7 +2930,8 @@ daily_forecast_attempts = sa.Table(
         name="ck_daily_identity",
     ),
     sa.CheckConstraint(
-        "trigger_kind = 'scheduled' OR (state <> 'abandoned' AND recovery IS NULL)",
+        "trigger_kind IN ('scheduled', 'operator_retry') "
+        "OR (state <> 'abandoned' AND recovery IS NULL)",
         name="ck_daily_recovery",
     ),
     sa.CheckConstraint(
@@ -2938,6 +2946,12 @@ daily_forecast_attempts = sa.Table(
         name="ck_daily_terminal",
     ),
     sa.CheckConstraint("finished_at >= started_at", name="ck_daily_finish"),
+    sa.CheckConstraint(
+        "(trigger_kind='operator_retry' AND operator_metadata IS NOT NULL "
+        "AND jsonb_typeof(operator_metadata)='object') OR "
+        "(trigger_kind<>'operator_retry' AND operator_metadata IS NULL)",
+        name="ck_daily_operator_metadata",
+    ),
 )
 sa.Index(
     "uq_daily_active",
@@ -2950,7 +2964,7 @@ sa.Index(
     unique=True,
     postgresql_where=sa.and_(
         daily_forecast_attempts.c.state == "active",
-        daily_forecast_attempts.c.trigger_kind == "scheduled",
+        daily_forecast_attempts.c.trigger_kind.in_(("scheduled", "operator_retry")),
     ),
 )
 
@@ -2967,6 +2981,13 @@ sa.Index(
     postgresql_where=daily_forecast_attempts.c.trigger_kind == "scheduled",
 )
 
+
+sa.Index(
+    "uq_daily_operator_parent",
+    daily_forecast_attempts.c.parent_id,
+    unique=True,
+    postgresql_where=daily_forecast_attempts.c.trigger_kind == "operator_retry",
+)
 
 bafu_unit_batch_admissions = sa.Table(
     "bafu_unit_batch_admissions",

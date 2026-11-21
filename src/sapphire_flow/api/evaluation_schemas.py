@@ -82,6 +82,8 @@ class EvaluationReferenceResponse(BaseModel):
 
 
 class EvaluationDailyResponse(BaseModel):
+    latest_attempt_trigger: Literal["scheduled", "operator_retry"] | None = None
+    authoritative_attempt_trigger: Literal["scheduled", "operator_retry"] | None = None
     group_id: str
     issue_time: datetime
     latest_attempt_id: str | None
@@ -105,6 +107,8 @@ class EvaluationAssignmentResponse(BaseModel):
 
 
 class EvaluationModelDiagnosticResponse(BaseModel):
+    latest_attempt_trigger: Literal["scheduled", "operator_retry"] | None = None
+    authoritative_attempt_trigger: Literal["scheduled", "operator_retry"] | None = None
     availability: Literal["available", "post_as_of"] = "available"
     model_id: str
     freshness: Literal["current", "stale", "absent", "unknown"]

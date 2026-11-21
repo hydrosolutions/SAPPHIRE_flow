@@ -13,12 +13,13 @@ from sapphire_flow.services.forecast_read import (
     require_standard_forecast_store,
 )
 from sapphire_flow.types.daily_forecast import DailyAttemptState, ScheduledDailyForecast
-from sapphire_flow.types.daily_forecast_claim import DailyClaim, DailyClaimKey
+from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
 from sapphire_flow.types.daily_forecast_outcome import (
     DailyMemberState,
     DailyOutputReference,
     DailyOutputSource,
 )
+from sapphire_flow.types.daily_operator_retry import operational_trigger
 from sapphire_flow.types.daily_output import DailyOutputEligibility
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -50,6 +51,7 @@ from sapphire_flow.types.ids import ForecastId, RejectedForecastId
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from sapphire_flow.types.daily_forecast_one_shot import OperationalDailyClaim
     from sapphire_flow.types.ids import ModelId, StationId
 
 if TYPE_CHECKING:
@@ -120,7 +122,7 @@ def read_evaluation_forecasts(
     current_days: dict[DailyClaimKey, DailyDaySnapshot] = {}
     daily_model: EvaluationModelDiagnostic | None = None
     candidate_cache: dict[
-        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+        tuple[OperationalDailyClaim, DailyOutputReference], EvaluationCandidate | None
     ] = {}
     window_start = ensure_utc(issue - timedelta(days=1))
     keys = [
@@ -183,9 +185,15 @@ def read_evaluation_forecasts(
                 group_id=group_id,
                 issue_time=day_issue,
                 latest_attempt_id=day.latest.claim.id if day.latest else None,
+                latest_attempt_trigger=operational_trigger(day.latest.claim)
+                if day.latest
+                else None,
                 latest_state=day.latest.state if day.latest else None,
                 failure_reason=day.latest.failure_reason if day.latest else None,
                 authoritative_attempt_id=summary.claim.id if summary else None,
+                authoritative_attempt_trigger=operational_trigger(summary.claim)
+                if summary
+                else None,
                 member=member,
                 recovery_status=day.recovery_status,
                 references=tuple(
@@ -222,8 +230,12 @@ def read_evaluation_forecasts(
                 group_id=group_id,
                 issue_time=day_issue,
                 latest_attempt_id=day.latest.claim.id,
+                latest_attempt_trigger=operational_trigger(day.latest.claim),
                 latest_state=day.latest.state,
                 authoritative_attempt_id=summary.claim.id if summary else None,
+                authoritative_attempt_trigger=operational_trigger(summary.claim)
+                if summary
+                else None,
             )
     selection = select_current_daily(
         station_id=station.id,
@@ -317,7 +329,7 @@ def select_current_daily(
     parameters: tuple[str, ...],
     days: Mapping[DailyClaimKey, DailyDaySnapshot],
     candidates: Mapping[
-        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+        tuple[OperationalDailyClaim, DailyOutputReference], EvaluationCandidate | None
     ],
     now: UtcDatetime,
     valid_at: UtcDatetime,
@@ -347,7 +359,7 @@ def select_current_member(
     station_id: StationId,
     parameters: tuple[str, ...],
     candidates: Mapping[
-        tuple[DailyClaim, DailyOutputReference], EvaluationCandidate | None
+        tuple[OperationalDailyClaim, DailyOutputReference], EvaluationCandidate | None
     ],
     valid_at: UtcDatetime,
 ) -> CurrentMemberSelection | None:
@@ -521,6 +533,7 @@ def _daily_history(
             group_id=summary.claim.key.group_id,
             issue_time=issue,
             authoritative_attempt_id=summary.claim.id,
+            authoritative_attempt_trigger=operational_trigger(summary.claim),
         )
     # Legacy/unverified rows have no frozen contract. Expose identity and age,
     # not inferred shape, acceptance, values, or current eligibility.
@@ -550,6 +563,9 @@ def _daily_history(
         issue_time=row.issued_at,
         group_id=linked_attempt.claim.key.group_id if linked_attempt else None,
         latest_attempt_id=linked_attempt.claim.id if linked_attempt else None,
+        latest_attempt_trigger=operational_trigger(linked_attempt.claim)
+        if linked_attempt
+        else None,
         latest_state=linked_attempt.state if linked_attempt else None,
     )
 
