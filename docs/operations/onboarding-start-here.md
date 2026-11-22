@@ -7,9 +7,14 @@ system, checked, and ready" — one ordered journey, the same for every organiza
 this is not:** the runbooks themselves. Each step below says what to do, which document
 holds the details, and how you know you are done.
 
-Status as of 2026-11-16. Steps 3 to 9 for one new station were rehearsed end to end in a
-throwaway sandbox with a synthetic test station (#452); the manual parts are written out in
-[Onboard a new station by hand](new-station-by-hand.md). That rehearsal used a Swiss-trained
+Status as of 2026-11-22. Steps 3 to 9 for one new station were rehearsed end to end on
+2026-11-16 in a throwaway sandbox with a synthetic test station (#452). On 2026-11-22 a
+second walkthrough followed only the written guide on a local database and got as far as the
+readiness report and the promotion dry run; the steps that need the Gateway key, a model
+artifact or an approved basin handover cannot be repeated offline, and the guide lists them
+under ["What you can and cannot rehearse offline"](new-station-by-hand.md#what-you-can-and-cannot-rehearse-offline).
+The manual parts are written out in [Onboard a new station by hand](new-station-by-hand.md).
+The first rehearsal used a Swiss-trained
 model on synthetic data, so it proves the plumbing, not forecast quality. The README step
 "Load the demo stations" is the Swiss route in this journey.
 
