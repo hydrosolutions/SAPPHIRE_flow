@@ -26,6 +26,8 @@ from tests.integration.db.test_bafu_unit_guards import worker as worker
 from tests.integration.store.test_bafu_unit_writer import QUOTA, later, normalized
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from sapphire_flow.types.bafu_capture_batch import BafuStationCaptureBatch
     from tests.integration.db.test_role_bootstrap import _RoleBootstrapHarness
 
@@ -81,6 +83,13 @@ class TestUnitReaderRoles:
         with worker.begin() as conn:
             store = PgObservationStore(conn)
             qc_store = store.qc_context_reader()
+            assert (
+                store.fetch_latest_timestamp(protected.station_id, "discharge") is None
+            )
+            assert (
+                qc_store.fetch_latest_timestamp(protected.station_id, "discharge")
+                == protected.received_at
+            )
             start, end = (
                 protected.received_at,
                 protected.received_at + timedelta(days=1),
@@ -414,3 +423,94 @@ class TestConditionalQcBoundary:
                     )
         finally:
             api.dispose()
+
+
+class TestLatestTimestampPlan:
+    def test_authority_lookup_stays_indexed(
+        self,
+        worker: sa.Engine,
+        protected: BafuStationCaptureBatch,
+        isolated_committed_db_engine: sa.Engine,
+    ) -> None:
+        from sapphire_flow.store.bafu_unit_read_filter import (
+            latest_unit_read_predicate,
+            unit_read_predicate,
+        )
+        from sapphire_flow.store.station_store import PgStationStore
+        from sapphire_flow.types.ids import StationId
+        from tests.conftest import make_station_config
+
+        PgBafuUnitWriter(worker.begin, quota=QUOTA).write(protected)
+        other = make_station_config(station_id=StationId(uuid4()), code="2044")
+        with isolated_committed_db_engine.begin() as conn:
+            PgStationStore(conn).store_station(other)
+            conn.execute(
+                sa.insert(observations),
+                [
+                    dict(
+                        id=uuid4(),
+                        station_id=other.id,
+                        timestamp=protected.received_at + timedelta(minutes=offset),
+                        parameter="discharge",
+                        source="measured",
+                        value=1.0,
+                        qc_status="raw",
+                    )
+                    for offset in range(10000)
+                ],
+            )
+            conn.execute(sa.text("ANALYZE observations"))
+
+        with worker.begin() as conn:
+            conn.execute(sa.text("SET LOCAL statement_timeout = '10s'"))
+            plans = []
+            for predicate in (unit_read_predicate, latest_unit_read_predicate):
+                query = sa.select(sa.func.max(observations.c.timestamp)).where(
+                    observations.c.station_id == protected.station_id,
+                    observations.c.parameter == "discharge",
+                    predicate(observations),
+                )
+                sql = str(
+                    query.compile(
+                        dialect=conn.dialect, compile_kwargs={"literal_binds": True}
+                    )
+                )
+                plan = conn.exec_driver_sql(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql
+                ).scalar_one()[0]
+                plans.append(plan)
+            assert (
+                PgObservationStore(conn).fetch_latest_timestamp(
+                    protected.station_id, "discharge"
+                )
+                == protected.received_at
+            )
+
+        def observation_scans(plan: dict[str, Any]) -> list[dict[str, Any]]:
+            pending = [plan["Plan"]]
+            found = []
+            while pending:
+                node = pending.pop()
+                pending.extend(node.get("Plans", []))
+                if node.get("Relation Name") == "observations":
+                    found.append(node)
+            return found
+
+        original, optimized = map(observation_scans, plans)
+        # The negative control must reproduce global work, otherwise the fixture
+        # no longer demonstrates the planner regression this test protects.
+        assert any(node["Actual Rows"] >= 10000 for node in original)
+        assert optimized
+        assert all(
+            node["Node Type"] in {"Index Scan", "Index Only Scan"} for node in optimized
+        )
+        assert all(
+            (
+                node["Actual Rows"]
+                + node.get("Rows Removed by Filter", 0)
+                + node.get("Rows Removed by Index Recheck", 0)
+            )
+            * node["Actual Loops"]
+            <= 1
+            for node in optimized
+        )

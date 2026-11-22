@@ -22,10 +22,10 @@ unit_read_state = sa.table(
 )
 
 
-def unit_read_predicate(
+def _unit_read_query(
     observations: sa.FromClause,
     purpose: ObservationReadPurpose = ObservationReadPurpose.TRUSTED,
-) -> sa.ColumnElement[bool]:
+) -> sa.Select[tuple[object]]:
     if purpose not in tuple(ObservationReadPurpose):
         raise ValueError("observation read purpose must be typed")
     if purpose is ObservationReadPurpose.SOURCE_AUDIT:
@@ -40,7 +40,24 @@ def unit_read_predicate(
         sa.select(state.c.observation_id)
         .where(state.c.observation_id == observations.c.id, eligible)
         .correlate(observations)
-        .exists()
+    )
+
+
+def unit_read_predicate(
+    observations: sa.FromClause,
+    purpose: ObservationReadPurpose = ObservationReadPurpose.TRUSTED,
+) -> sa.ColumnElement[bool]:
+    return _unit_read_query(observations, purpose).exists()
+
+
+def latest_unit_read_predicate(
+    observations: sa.FromClause,
+    purpose: ObservationReadPurpose = ObservationReadPurpose.TRUSTED,
+) -> sa.ColumnElement[bool]:
+    # Keep PostgreSQL's MAX index probe correlated; pulling this EXISTS into a
+    # semijoin otherwise scans the full security-barrier authority view (#549).
+    return (
+        _unit_read_query(observations, purpose).offset(sa.literal_column("0")).exists()
     )
 
 
