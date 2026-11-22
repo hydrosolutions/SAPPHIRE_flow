@@ -564,7 +564,7 @@ uv run python -m sapphire_flow.cli.onboard_nepal history --config sandbox-config
 ```
 
 There is no dry run for this command when `--weather-scope` is given: `--dry-run` is refused
-(today with an unhelpful `ConfigurationError` line and no reason).
+(it exits 2 with a usage message naming the reason).
 
 Success means the job was submitted, not finished: wait for the worker to log `Completed`, then
 check `select parameter, count(*), min(valid_time), max(valid_time) from historical_forcing group by 1`.
@@ -741,7 +741,8 @@ or fix a binding. The report does not show the outcome of the station's last for
 Read the lines, not only the count: how many pass depends on what you gave it. A first offline
 run with no model and no Gateway data shows fewer passes than the "13 passed" in the examples
 below (no `--model` makes `statics` not applicable). Without `--model`, `group_and_model`
-passes whenever the station is in a group, even when it prints `assignments=none`; give
+passes whenever the station is in a group, even when it prints `assignments=none` (it then adds
+"no model assigned yet; pass --model to check one"); give
 `--model` to make it fail unless that model has an ACTIVE assignment, and read the
 `assignments=` part before you treat the station as ready for promotion. `rating_curve` reads
 NOT_APPLICABLE while discharge is not a forecast target and not derived from water level alone: a

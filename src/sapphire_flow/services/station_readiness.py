@@ -318,7 +318,10 @@ def check_group_and_model(
             )
     text = f"groups={[g.name for g in member_of]} assignments={described or 'none'}"
     if model_id is None:
-        return _check("group_and_model", _PASS, text)
+        note = (
+            "" if described else " (no model assigned yet; pass --model to check one)"
+        )
+        return _check("group_and_model", _PASS, text + note)
     return _check(
         "group_and_model",
         _PASS if assigned else _FAIL,

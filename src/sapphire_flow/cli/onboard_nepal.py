@@ -157,13 +157,13 @@ def main(argv: list[str] | None = None) -> int:
     chwrr_only = args.command != "weather-bindings" or args.tenant == "chwrr"
     if args.command == "weather-bindings" and chwrr_only and not args.confirm_t8:
         arg_parser.error("--confirm-t8 is required for tenant chwrr")
+    if args.command == "history" and args.weather_scope is not None and args.dry_run:
+        arg_parser.error("--dry-run is not supported together with --weather-scope")
     configure_cli_logging()
     try:
         if args.command == "history" and args.weather_scope is not None:
             if not args.weather_scope.strip():
                 raise ConfigurationError("weather scope must not be empty")
-            if args.dry_run:
-                raise ConfigurationError("scoped history does not support dry-run")
             parse_history_window(args.start, args.end)
             asyncio.run(submit_scoped_history(args.start, args.end, args.weather_scope))
             return 0

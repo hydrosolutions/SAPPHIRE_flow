@@ -244,11 +244,15 @@ def apply_station_group(
 
 def _render(plan: GroupPlan, *, applied: bool) -> str:
     verb = "APPLIED" if applied else "DRY RUN (nothing written)"
+    if plan.group_exists:
+        exists = "yes — reusing"
+    else:
+        exists = "no — created" if applied else "no — would create"
     lines = [
         f"{verb}",
         f"  group:   {plan.name}  [{plan.group_id}]",
         f"  tenant:  {plan.tenant_id}",
-        f"  exists:  {'yes — reusing' if plan.group_exists else 'no — would create'}",
+        f"  exists:  {exists}",
     ]
     if plan.members_to_add:
         joined = ", ".join(code for code, _ in plan.members_to_add)

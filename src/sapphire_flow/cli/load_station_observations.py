@@ -379,14 +379,15 @@ def _qc_after_store(
 def _print_qc(report: Stage1QcReport, usable: int, args: argparse.Namespace) -> int:
     counts = report.counts
     _out(f"  QC rule version: {report.rule_version}")
-    _out(
-        "  QC: "
-        + ", ".join(
-            f"{counts[key]} {key}"
-            for key in ("passed", "failed", "suspect", "unchecked", "unjudged")
+    keys = ("passed", "failed", "suspect", "unchecked", "unjudged")
+    if not report.stale and not any(counts[key] for key in keys):
+        _out("  QC: no new readings to check (already stored and checked earlier)")
+    else:
+        _out(
+            "  QC: "
+            + ", ".join(f"{counts[key]} {key}" for key in keys)
+            + " (unchecked and unjudged = no rule could judge the reading)"
         )
-        + " (unchecked and unjudged = no rule could judge the reading)"
-    )
     if not report.baseline_ran:
         _out("  history-based check not run: no baseline yet")
     _out(

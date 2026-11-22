@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import copy
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -9,6 +10,7 @@ import pytest
 from sapphire_flow.cli import load_station_observations as lso
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
 from sapphire_flow.config.qc_rules import resolve_qc_rules
+from sapphire_flow.services.station_observation_qc import Stage1QcReport
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditEventType, WaterLevelGaugeType
 from sapphire_flow.types.ids import TenantId
@@ -205,6 +207,38 @@ class TestQcOnLoad:
         )
         assert {o.qc_rule_version for o in stored} == {"1.2-datum"}
         assert all(o.qc_status.value != "raw" for o in stored)
+
+    def test_repeating_an_applied_load_says_there_is_nothing_new_to_check(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig = Rig(_station())
+        assert rig.run("water-level", ["--apply"]) == 0
+        first = capsys.readouterr().out
+        assert "QC: 0 passed" not in first
+        assert rig.run("water-level", ["--apply"]) == 0
+        second = capsys.readouterr().out
+        assert "rows written or changed: 0" in second
+        assert "no new readings to check" in second
+        assert "0 passed" not in second
+
+    def test_a_stale_check_is_not_reported_as_nothing_to_check(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        report = Stage1QcReport(
+            counts={
+                key: 0
+                for key in ("passed", "failed", "suspect", "unchecked", "unjudged")
+            },
+            rule_version="1.2-datum",
+            zero_rule_groups=(),
+            stale=True,
+            baseline_ran=True,
+            statuses={},
+        )
+        lso._print_qc(report, 0, argparse.Namespace(lookback_days=30))
+        out = capsys.readouterr().out
+        assert "no new readings to check" not in out
+        assert "0 passed" in out
 
     def test_no_datum_is_refused_unless_allowed(
         self, capsys: pytest.CaptureFixture[str]
