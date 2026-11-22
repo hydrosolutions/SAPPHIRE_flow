@@ -28,6 +28,11 @@ Ubuntu 24.04 amd64 host. This is single-host, single-release evidence for a dedi
 new-install host, not a production recommendation. Existing deployments keep their
 current runbooks.
 
+For a separate system with operational ingestion and local forecast variants,
+use the [operational comparison preparation guide](deployment/operational-comparison.md)
+with deployment support. Its broader execution recipe is still being qualified.
+That guide is a preparation checklist, not an available installation path.
+
 ## 1. Copy the generic examples into private storage
 
 Use a checkout with its [Python/uv environment](../README.md#developer-quick-start)
