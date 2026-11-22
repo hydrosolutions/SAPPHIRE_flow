@@ -53,6 +53,7 @@ from sapphire_flow.services.station_rating import (
     stage_range,
 )
 from sapphire_flow.services.write_principal import (
+    TENANT_REFUSAL_FOR_CLI,
     enforce_tenant_isolation,
     resolve_run_principal,
 )
@@ -111,6 +112,11 @@ _KIND_CHOICES = {
     "gauge-reading": ObservationValueKind.GAUGE_READING,
     "level-masl": ObservationValueKind.LEVEL_MASL,
 }
+
+
+def _refusal_text(exc: Exception) -> str:
+    """Never print the target tenant or station id of a tenant mismatch."""
+    return TENANT_REFUSAL_FOR_CLI if isinstance(exc, TenantIsolationError) else str(exc)
 
 
 def _out(text: str) -> None:
@@ -210,7 +216,7 @@ def run_load(
         raws = to_raw_observations(rows, station, parameter, kind)
     except (DatumRequiredError, TenantIsolationError) as exc:
         log.error("load_observations_refused", error=str(exc))
-        _out(f"REFUSED: {exc}")
+        _out(f"REFUSED: {_refusal_text(exc)}")
         return EXIT_REFUSED
     except ConfigurationError as exc:
         log.error("load_observations_invalid", error=str(exc))
@@ -569,7 +575,7 @@ def run_rating(
         )
     except (DatumRequiredError, RatingRefusedError, TenantIsolationError) as exc:
         log.error("rating_refused", error=str(exc))
-        _out(f"REFUSED: {exc}")
+        _out(f"REFUSED: {_refusal_text(exc)}")
         return EXIT_REFUSED
     except ConfigurationError as exc:
         log.error("rating_invalid", error=str(exc))
@@ -678,7 +684,7 @@ def run_derive(
         derived = derive_discharge(levels, curve)
     except TenantIsolationError as exc:
         log.error("derive_refused", error=str(exc))
-        _out(f"REFUSED: {exc}")
+        _out(f"REFUSED: {_refusal_text(exc)}")
         return EXIT_REFUSED
     except (ConfigurationError, RatingConversionError) as exc:
         log.error("derive_invalid", error=str(exc))

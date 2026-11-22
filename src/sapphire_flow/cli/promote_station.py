@@ -31,7 +31,10 @@ from sapphire_flow.services.station_promotion import (
     plan_promotion,
 )
 from sapphire_flow.services.station_readiness import ReadinessStores
-from sapphire_flow.services.write_principal import resolve_run_principal
+from sapphire_flow.services.write_principal import (
+    TENANT_REFUSAL_FOR_CLI,
+    resolve_run_principal,
+)
 from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
@@ -125,7 +128,7 @@ def run_promote(
         )
     except TenantIsolationError as exc:
         log.error("promote_station_refused", error=str(exc))
-        _out(f"REFUSED: {exc}")
+        _out(f"REFUSED: {TENANT_REFUSAL_FOR_CLI}")
         return EXIT_REFUSED
     except ConfigurationError as exc:
         log.error("promote_station_invalid", error=str(exc))

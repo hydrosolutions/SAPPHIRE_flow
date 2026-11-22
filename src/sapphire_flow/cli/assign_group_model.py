@@ -29,7 +29,10 @@ from sapphire_flow.services.group_model_assignment import (
     apply_group_assignment,
     plan_group_assignment,
 )
-from sapphire_flow.services.write_principal import resolve_run_principal
+from sapphire_flow.services.write_principal import (
+    TENANT_REFUSAL_FOR_CLI,
+    resolve_run_principal,
+)
 from sapphire_flow.store.audit_log_store import PgAuditLogStore
 from sapphire_flow.store.model_store import PgModelStore
 from sapphire_flow.store.station_group_store import PgStationGroupStore
@@ -98,9 +101,13 @@ def run_assign(
             principal=principal,
             clock=clock,
         )
-    except (AssignmentRefusedError, TenantIsolationError) as exc:
+    except AssignmentRefusedError as exc:
         log.error("assign_group_model_refused", error=str(exc))
         _out(f"REFUSED: {exc}")
+        return EXIT_REFUSED
+    except TenantIsolationError as exc:
+        log.error("assign_group_model_refused", error=str(exc))
+        _out(f"REFUSED: {TENANT_REFUSAL_FOR_CLI}")
         return EXIT_REFUSED
     except ConfigurationError as exc:
         log.error("assign_group_model_invalid", error=str(exc))

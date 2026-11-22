@@ -158,6 +158,17 @@ class TestRun:
         assert entry.detail is not None
         assert entry.detail["outcome"] == "rejected_tenant_mismatch"
 
+    def test_tenant_mismatch_message_does_not_reveal_foreign_ids(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        owner = TenantId(uuid4())
+        station = _station(tenant_id=owner)
+        Rig(station).run("water-level", ["--apply"])
+        out = capsys.readouterr().out
+        assert "--tenant" in out
+        assert str(owner) not in out
+        assert str(station.id) not in out
+
     def test_unknown_station_and_bad_csv_exit_2(self) -> None:
         assert Rig().run("water-level", []) == 2
         assert Rig(_station()).run("water-level", [], text="t,x\n1,2\n") == 2

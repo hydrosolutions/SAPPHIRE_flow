@@ -95,7 +95,7 @@ An administrator meets three command styles: `uv run python -m sapphire_flow.cli
 
 ## Gateway runbook lines that still demand a go-ahead
 
-**Update (PR #593):** the go-ahead lines below, and the runbook's "The tool lists the job reference" line (the tool saves it in the state file and does not print it back), were aligned with the guide and the code in PR #593. The table is kept as the record of what was changed.
+**Update (PR #593):** the go-ahead lines below, and the runbook's "The tool lists the job reference" line (the tool saves it in the state file and does not print it back), were aligned with the guide and the code in PR #593; the one paragraph that PR missed (lines 100-103, "the owner or the Gateway admin starts it ... If that is not confirmed, stop") was aligned in the 2026-11-22 onboarding cleanup PR. The table is kept as the record of what was changed.
 
 The standing rule (an administrator may start the IFS backfill, recording it in the evidence folder) contradicts these lines of `docs/operations/recap-gateway-runbook.md` as it stands on the guide branch (verified by grep, 2026-11-17):
 

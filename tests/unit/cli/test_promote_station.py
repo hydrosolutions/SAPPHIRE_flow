@@ -152,6 +152,20 @@ class TestRun:
         )
         assert _run(world, BASE, allowed=True, audit=FakeAuditLogStore()) == 3
 
+    def test_other_tenant_message_does_not_reveal_the_owner(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        owner = TenantId(uuid4())
+        world = _ready()
+        world.stations.update_station(
+            dataclasses.replace(world.station, tenant_id=owner)
+        )
+        _run(world, BASE, allowed=True, audit=FakeAuditLogStore())
+        out = capsys.readouterr().out
+        assert "--tenant" in out
+        assert str(owner) not in out
+        assert str(world.station.id) not in out
+
 
 class TestMain:
     def test_main_sets_config_env_without_leaking(

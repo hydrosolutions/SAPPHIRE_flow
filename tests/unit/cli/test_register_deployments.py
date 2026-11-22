@@ -13,6 +13,7 @@ from sapphire_flow.cli.register_deployments import (
     _build_specs,
     _flow_source_root,
     _register_one,
+    main,
     register_all,
 )
 
@@ -1176,3 +1177,20 @@ class TestEra5RefreshRegistration:
                 signature(Flow.adeploy).bind(sourced, **kwargs)
                 assert kwargs["schedule"].timezone == "UTC"
                 assert kwargs["schedule"].cron == "35 0 * * *"
+
+
+class TestMainHelp:
+    def test_help_exits_without_registering(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch(
+                "sapphire_flow.cli.register_deployments.register_all",
+                new=AsyncMock(),
+            ) as register,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            main(["--help"])
+        assert exit_info.value.code == 0
+        assert "register_deployments" in capsys.readouterr().out
+        register.assert_not_called()

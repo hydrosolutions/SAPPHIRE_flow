@@ -38,6 +38,12 @@ if TYPE_CHECKING:
     from sapphire_flow.types.training import TrainingUnit
 
 
+TENANT_REFUSAL_FOR_CLI = (
+    "the target is not in the tenant given by --tenant "
+    "(details are in the log and audit row)"
+)
+
+
 def resolve_run_principal(
     tenant_store: TenantStore,
     identity_config: DeploymentIdentityConfig,
