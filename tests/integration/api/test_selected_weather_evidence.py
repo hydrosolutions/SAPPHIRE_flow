@@ -151,11 +151,18 @@ def test_standard_selected_corruption_is_unavailable(
     elif fault == "hash":
         evidence = replace(evidence, snapshot_sha256="0" * 64)
     elif fault in ("truncated", "oversized"):
-        snapshot = (
-            b"invalid"
-            if fault == "truncated"
-            else zlib.compress(b" " * (128 * 1024 * 1024 + 1))
-        )
+        if fault == "truncated":
+            snapshot = b"invalid"
+        else:
+            compressor = zlib.compressobj()
+            size = 384 * 1024 * 1024 + 1
+            snapshot = (
+                b"".join(
+                    compressor.compress(b" " * min(65536, size - offset))
+                    for offset in range(0, size, 65536)
+                )
+                + compressor.flush()
+            )
         evidence = replace(
             evidence,
             snapshot=snapshot,
@@ -242,7 +249,7 @@ def test_large_selected_capture_persists_and_reads_with_default_configuration(
     assert evidence is not None and evidence.snapshot is not None
     payload = json.loads(zlib.decompress(evidence.snapshot))
     # Expand an opaque capture field without changing station/weather identities.
-    payload["capacity_probe"] = "x" * (33 * 1024 * 1024)
+    payload["capacity_probe"] = "x" * (129 * 1024 * 1024)
     snapshot = zlib.compress(json.dumps(payload).encode())
     digest = hashlib.sha256(snapshot).hexdigest()
     manifest = json.loads(evidence.manifest_json)

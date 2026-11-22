@@ -1,4 +1,3 @@
-import json
 import zlib
 
 import pytest
@@ -12,31 +11,44 @@ from sapphire_flow.services.selected_weather_evidence import (
 )
 
 
+def _compressed_string_payload(value_bytes: int, trailing: bytes = b"") -> bytes:
+    compressor = zlib.compressobj()
+    chunks = [compressor.compress(b'{"data":"')]
+    for offset in range(0, value_bytes, 65536):
+        chunks.append(compressor.compress(b"x" * min(65536, value_bytes - offset)))
+    chunks.append(compressor.compress(b'"}' + trailing))
+    chunks.append(compressor.flush())
+    return b"".join(chunks)
+
+
 class TestBoundedWeatherSnapshot:
     @pytest.mark.parametrize(
         "limit",
         [DEFAULT_SELECTED_WEATHER_EVIDENCE_BYTES, MAX_SELECTED_WEATHER_EVIDENCE_BYTES],
     )
     def test_exact_limit_and_one_byte_over(self, limit: int) -> None:
-        raw = b'{"data":"' + b"x" * (limit - 11) + b'"}'
-        assert len(raw) == limit
-        compressed = zlib.compress(raw)
+        compressed = _compressed_string_payload(limit - 11)
         value = restore_bounded_weather_snapshot(compressed, max_bytes=limit)["data"]
         assert isinstance(value, str)
         assert len(value) == limit - 11
+        del value
         with pytest.raises(ValueError, match="oversized or malformed"):
-            restore_bounded_weather_snapshot(zlib.compress(raw + b" "), max_bytes=limit)
+            restore_bounded_weather_snapshot(
+                _compressed_string_payload(limit - 11, trailing=b" "), max_bytes=limit
+            )
 
     def test_higher_reader_ceiling_preserves_old_capture_configuration(self) -> None:
-        raw = b'{"data":"' + b"x" * DEFAULT_SELECTED_WEATHER_EVIDENCE_BYTES + b'"}'
-        compressed = zlib.compress(raw)
+        value_bytes = 128 * 1024 * 1024
+        compressed = _compressed_string_payload(value_bytes)
         with pytest.raises(ValueError, match="oversized or malformed"):
             restore_bounded_weather_snapshot(
                 compressed, max_bytes=DEFAULT_SELECTED_WEATHER_EVIDENCE_BYTES
             )
-        assert restore_bounded_weather_snapshot(
+        value = restore_bounded_weather_snapshot(
             compressed, max_bytes=MAX_SELECTED_WEATHER_EVIDENCE_BYTES
-        ) == json.loads(raw)
+        )["data"]
+        assert isinstance(value, str)
+        assert len(value) == value_bytes
 
     @pytest.mark.parametrize("fault", ["truncated", "trailing", "concatenated"])
     def test_invalid_stream_fails_closed(self, fault: str) -> None:
@@ -51,13 +63,19 @@ class TestBoundedWeatherSnapshot:
                 damaged, max_bytes=MAX_SELECTED_WEATHER_EVIDENCE_BYTES
             )
 
-    @pytest.mark.parametrize("limit", [0, -1, 134217729])
+    @pytest.mark.parametrize("limit", [0, -1, 402653185])
     def test_invalid_limit_is_rejected(self, limit: int) -> None:
         with pytest.raises(ValueError, match="invalid selected weather evidence limit"):
             restore_bounded_weather_snapshot(zlib.compress(b"{}"), max_bytes=limit)
 
 
-def test_full_cmal_capture_opt_in_and_default_reader() -> None:
+@pytest.mark.parametrize(
+    ("station_count", "lower_mib", "upper_mib"),
+    [(6, 32, 96), pytest.param(21, 128, 288, marks=pytest.mark.slow)],
+)
+def test_full_cmal_capture_opt_in_and_default_reader(
+    station_count: int, lower_mib: int, upper_mib: int
+) -> None:
     import random
 
     from sapphire_flow.config.deployment import DeploymentConfig
@@ -75,7 +93,7 @@ def test_full_cmal_capture_opt_in_and_default_reader() -> None:
     from sapphire_flow.types.ids import ModelId
     from tests.fakes.weather_capacity import cmal_capacity_inputs
 
-    inputs = cmal_capacity_inputs()
+    inputs = cmal_capacity_inputs(station_count=station_count)
     model_id = ModelId("capacity_fixture")
 
     def capture(limit: int) -> ForecastEvidence:
@@ -102,10 +120,12 @@ def test_full_cmal_capture_opt_in_and_default_reader() -> None:
         WeatherEvidenceCaptureError, match="selected group evidence capture failed"
     ):
         capture(OperationalWeatherConfig().max_evidence_bytes)
-    evidence = capture(MAX_SELECTED_WEATHER_EVIDENCE_BYTES)
+    evidence = capture(upper_mib * 1024 * 1024)
     assert evidence.snapshot is not None
     assert (
-        32 * 1024 * 1024 < len(zlib.decompress(evidence.snapshot)) <= 96 * 1024 * 1024
+        lower_mib * 1024 * 1024
+        < len(zlib.decompress(evidence.snapshot))
+        <= upper_mib * 1024 * 1024
     )
     # Readers use the absolute bound, independent of current capture config.
     assert OperationalWeatherConfig().max_evidence_bytes == 32 * 1024 * 1024

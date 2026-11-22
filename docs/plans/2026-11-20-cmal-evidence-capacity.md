@@ -95,3 +95,10 @@ runtime baseline/headroom checks remain required; no host setting was changed.
 At the measured compression ratio, six duplicated per-station snapshots are
 about 9.2 MiB per issuance before row/index/WAL/backup overhead. No retention
 policy changes or data deletion accompany the increase.
+
+## Full-group successor
+
+The [21-station capacity plan](2026-11-22-cmal-21-station-evidence-capacity.md)
+supersedes the 128 MiB absolute ceiling and six-station worker qualification.
+The original six-station results remain historical evidence, not qualification
+for a larger group. The 32 MiB default and separate station-cache bounds remain.

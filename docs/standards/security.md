@@ -2406,10 +2406,15 @@ evidence to cover measured valid seven-day histories above the initial 16 MiB
 budget. Per-document, parsing-node, curve-count, response and candidate caps are
 unchanged; existing forecast-input history keeps its separate limits.
 
-Selected operational-weather evidence has a 128 MiB absolute decoded JSON ceiling;
+Selected operational-weather evidence has a 384 MiB absolute decoded JSON ceiling;
 its capture default remains 32 MiB, with explicit deployment opt-in for larger groups.
 Store, API, retry and selected replay readers share bounded decompression and reject
 truncated/trailing streams. This is separate from the station-history projection
 32 MiB aggregate budget above; legacy unselected evidence behavior is unchanged.
 Larger capture qualification must include reader memory/concurrency and preserve
 read compatibility after configuration rollback.
+
+The 21-station Nepal opt-in is capped at 288 MiB capture after qualification, below
+the absolute reader ceiling. Worker capture/validation is qualified below 3 GiB;
+fresh readers remain below 2 GiB each, paired reads below 4 GiB. Retain a compatible
+reader after rollback; pre-increase images cannot read evidence above 128 MiB.
