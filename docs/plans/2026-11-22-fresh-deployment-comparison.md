@@ -80,6 +80,29 @@ provisioning or commissioning. N0 alone is READY after the review recorded below
 N1–N4 and K0 remain DRAFT until their concrete input/import/operational boundary is
 settled; do not turn conditional descriptions into executable instructions.
 
+### N0 completion and N1 preparation
+
+Read-only N0 inventory completed on 22 November. Private evidence contains the
+complete job/mount/configuration inventory, six verified active artifact hashes,
+release metadata checks, bounded coverage/sizing and a comparison contract.
+No source jobs, data or configuration were changed. The recorded registration
+recipe reproduces only a manual import, rather than all seven stored jobs; a
+durable provider-path input is also missing from that captured invocation.
+These are reconstruction gaps, not proof that no separate operator procedure exists.
+
+The owner subsequently supplied a protected local credential source containing
+Infomaniak account/cloud-project details. Authentication and provisioning rights
+remain unverified; no temporary server has been created.
+
+The [N1 implementation slices](2026-11-22-operational-deployment-recipe.md) separate
+the demonstrated optional-weather preview defects from preparation of a complete
+operator-assisted recipe, input reconstruction and commissioning. The paused
+installer's current scope remains unchanged. N1 as a whole and N2–N4 remain DRAFT;
+only individually reviewed implementation slices may become READY.
+Independent review of that bounded follow-up found no implementation blocker;
+the orchestrator marked **N1a only READY**, with explicit dormant-input and
+optional-job preview requirements. The complete operational recipe is not yet READY.
+
 ## Required-job matrix: prevent the original omission
 
 Keep this matrix in the private deployment record, derived from the actual complete
