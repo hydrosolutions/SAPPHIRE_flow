@@ -150,6 +150,12 @@ Use a bounded consistent export for actual transfer and separately verify file h
 Preserve missing inputs honestly; a successful deterministic pilot does not qualify
 the full model cohort or prove that live provider inputs are identical.
 
+Ask deployment support for the restore rehearsal's scope and failure results as
+well as its success result. Identity checks must include tenant identifiers and
+full column types, including geometry reference systems. An uncertain import
+commit requires inspection before retry; it must not trigger automatic deletion
+of an artifact that the database may already reference.
+
 Keep source authentication, Prefect state, execution claims and forecast results
 out of the new system. Retain source results separately as comparison evidence.
 Freeze input windows and comparison criteria before seeing target results. Begin

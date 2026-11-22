@@ -369,7 +369,45 @@ one-shot bootstrap role, seeded timestamp comparisons, complete constraint/index
 inventory, measurable no-write retry and file cleanup. The revised private packet
 addresses these and splits the next test into C1a (identity/artifact/rollback) and
 C1b (remaining catalogue and runtime grants). Owner review of those dispositions
-is pending; no implementation or transfer has been marked READY.
+was pending at that point; no implementation or transfer had been marked READY.
+
+### C1a synthetic catalogue qualification
+
+The owner merged #612, settling the recorded plan-review dispositions. The
+orchestrator admitted only C1a's private implementation and local synthetic test.
+One independent Claude patch review identified harness issues in Docker connectivity,
+full column-type comparison and failure cleanup. Resolved those before execution;
+the review did not itself run tests. Code, fixtures and full review reports remain
+private. No public importer or database migration was added.
+
+All **20 checks passed, zero skipped**, using source revision
+`097ccc303075599b20307442029380a637a6afd3`, its locked environment, schema `0090`
+and the source's pinned PostGIS image. The small synthetic catalogue preserves
+tenant/station/artifact identity, original training dates, separate training/current
+basin references and absence of external-import provenance. Existing stores read
+the restored records; placeholder artifact bytes are hashed, never loaded as a model.
+An exact repeat preserves row values, transaction identities and audit counts.
+
+Negative cases cover conflicting tenant identity, partial state, changed metadata
+or artifact bytes, schema and geometry-reference drift, partial file writes, late
+transaction failure and refused file cleanup. Commit-failure tests distinguish a
+definite rejection from an uncertain acknowledgement: the latter retains bytes,
+invalidates the connection and records a hold, tested both before and after a real
+commit. It is not an automatic recovery mechanism. The final full private suite,
+Ruff and strict Pyright checks pass; the two initial fault-injection failures and
+their corrections remain in the protected evidence.
+
+Both test attempts removed their owned database containers and networks; a separate
+readback found no rehearsal resources. Pre-existing containers remained present.
+Owned case artifact bytes were removed after retaining the test journals. The test
+used a dedicated bridge with a loopback-only database port, not an egress-denied
+network. It contacted no source deployment or provider and transferred no real data.
+
+C1a is complete only for this synthetic subset. C1b still covers the remaining
+catalogue and actual runtime-role permissions; owner-backed store reads do not prove
+those grants. C2 must exercise the ordinary pilot forecast path, and C3 must resolve
+the full input/trigger closure. Image/configuration/path qualification and the
+commissioning packet also remain open. N1c and target execution remain DRAFT.
 
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
