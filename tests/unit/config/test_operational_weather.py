@@ -54,6 +54,14 @@ class TestOperationalWeatherConfig:
             == 134217728
         )
         assert (
+            OperationalWeatherConfig(max_evidence_bytes=402653184).max_evidence_bytes
+            == 402653184
+        )
+        assert (
+            OperationalWeatherConfig(max_evidence_bytes=301989888).max_evidence_bytes
+            == 301989888
+        )
+        assert (
             OperationalWeatherConfig(max_evidence_bytes=1024).max_evidence_bytes == 1024
         )
 
@@ -73,7 +81,7 @@ class TestOperationalWeatherConfig:
             {"max_retained_past_lead_hours": True},
             {"max_future_receipts": 33},
             {"max_response_bytes": 0},
-            {"max_evidence_bytes": 134217729},
+            {"max_evidence_bytes": 402653185},
             {"max_evidence_bytes": True},
             {"max_evidence_bytes": 0},
             {"route": "typo"},

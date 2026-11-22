@@ -224,16 +224,24 @@ Capacity measured with actual typed codecs on 20 November: 380 native-hourly,
 four-channel days occupy **11,708,471 bytes in v1**, **11,730,261 in v2**;
 sequential Python allocation peak was **47,329,297 bytes** (not host RSS).
 Both meet the 12 MiB station gate for a proposed scoped 16 MiB cache. The global
-2 MiB default remains unchanged. Six station histories alone total
-**70,250,826 bytes**, above the default 32 MiB capture budget. The owner authorized a bounded
-increase: set `operational_weather.max_evidence_bytes = 134217728` in the
-explicit Nepal profile after deploying compatible readers. This opts the deployment
-into a 128 MiB decoded evidence ceiling; the global capture default stays 32 MiB.
-Qualify the complete six-station envelope below 96 MiB, not just its history.
-The 16 MiB station-cache setting remains separate. Do not discard native support
-or split immutable captures ad hoc. Larger groups need their own measurement.
-Measure complete captures, host memory headroom and source-response sizes before
-choosing concurrency; retain sequential preparation meanwhile.
+2 MiB default remains unchanged. The full 21-station static-encoder capture needs more than the original six-station
+128 MiB ceiling. After deploying compatible readers, opt the explicit Nepal
+profile into `operational_weather.max_evidence_bytes = 301989888` (288 MiB),
+below the shared 384 MiB absolute reader ceiling. The global capture default
+stays 32 MiB; the setting applies to every model in that deployment. The separate
+16 MiB station-cache setting is unchanged. Do not discard native support or split
+immutable captures to fit a limit.
+
+Linux qualification on 22 November: the live 365/11-day capture was 244,936,417
+decoded bytes. The conservative 380-day retained-weather/15-day envelope was
+255,522,016 decoded bytes, about 12.08 MB compressed. The latter keeps model
+inputs at the declared 365 days and uses synthetic future extension solely for
+capacity testing, never for forecasts. Actual capture followed by validation
+peaked at 2.26 GiB RSS under the owner-approved 3 GiB worker budget. Fresh API,
+retry and store validation stayed below 2 GiB; the concurrent API/retry maxima
+summed to 2.84 GiB. All 21 sequential store validations took about 8.1 minutes.
+These are capacity results, not completed deployment or operational forecasts.
+Larger payloads and higher concurrency require separate qualification.
 
 Current readers retain the v1/v2 layouts and old hashes. Radiation samples add
 vocabulary under `rad-int-v1`; old binaries cannot read those new samples.
@@ -259,10 +267,16 @@ After resolving group capture capacity, set `max_cache_bytes = 16777216` in the
 scoped Nepal `[operational_weather]` overlay and record the effective value.
 The unchanged global default is too small for this 365-day model.
 
-Capacity rollout: retain readers supporting 128 MiB even if the capture setting is
-later reduced. Each forecast row may retain its own copy of group evidence; measure
-compressed bytes, database/WAL growth and backup cost. No retention deletion is
-authorized. Before activation measure capture, restore and retry peak RSS below
-2 GiB per process, two concurrent readers below 4 GiB aggregate, and worker baseline
-plus evidence below 6 GiB of its 8 GiB limit. Reserve 4 GiB available host memory
-for the two reads. These bounds do not qualify higher API concurrency.
+Capacity rollout: once evidence above 128 MiB is stored, release 0.1.1174 is no
+longer a compatible rollback image. Retain a reader supporting 384 MiB; revert
+capture configuration and the new assignment while keeping that reader. Lowering
+the capture setting never makes existing evidence disposable. Each forecast row
+may retain a copy of group evidence: the measured compression suggests about
+242 MiB per 21-station issuance before database/index/WAL/backup overhead. Measure
+actual growth during the first authorized issuance; no retention deletion is authorized.
+
+Before activation refresh memory measurements: worker capture/validation below
+3 GiB, fresh API/retry/store readers below 2 GiB each, paired readers below 4 GiB,
+and worker baseline plus evidence below 6 GiB of its 8 GiB limit. Reserve at least
+4 GiB host MemAvailable after budgeting for the paired readers. These bounds do
+not qualify higher API concurrency.

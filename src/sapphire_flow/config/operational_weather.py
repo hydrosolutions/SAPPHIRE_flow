@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo  # noqa: TC003 - Pydantic runtime schema
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DEFAULT_SELECTED_WEATHER_EVIDENCE_BYTES = 32 * 1024 * 1024
-MAX_SELECTED_WEATHER_EVIDENCE_BYTES = 128 * 1024 * 1024
+MAX_SELECTED_WEATHER_EVIDENCE_BYTES = 384 * 1024 * 1024
 
 
 class OperationalPastWeatherRoute(StrEnum):
