@@ -36,6 +36,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
 from sapphire_flow.types.station_readiness import (
     CheckName,
     CheckStatus,
@@ -73,6 +74,12 @@ DEFAULT_LOOKBACK_DAYS = 30
 # forecast time (docs/operations/new-station-by-hand.md, "ERA5 trails real time").
 ERA5_LAG_DAYS = 8
 _WEATHER_PARAMETERS = ("precipitation", "temperature")
+# The Gateway history job stores reanalysis under its own source tag, not under the
+# binding's name (same mapping as the production reanalysis reader,
+# hybrid_reanalysis_factories.py). Both tags are always checked: readiness does not
+# know the deployment's reanalysis mode, so a host that once stored Gateway history
+# but reads another source could show a day as stored that the cycle would not find.
+_STORED_SOURCE_FOR_BINDING = {"era5_land": GATEWAY_HISTORY_SOURCE}
 _LISTED = 8
 _PASS, _FAIL, _NA = CheckStatus.PASS, CheckStatus.FAIL, CheckStatus.NOT_APPLICABLE
 
@@ -451,10 +458,17 @@ def check_weather_wait_facts(
         if model is not None
         else list(_WEATHER_PARAMETERS)
     )
+    stored_sources = sorted(
+        {
+            tag
+            for name in reanalysis
+            for tag in (name, _STORED_SOURCE_FOR_BINDING.get(name, name))
+        }
+    )
     gaps: list[str] = []
     for parameter in parameters if wanted else ():
         covered: set[date] = set()
-        for source in reanalysis:
+        for source in stored_sources:
             covered |= stores.forcing.fetch_covered_days(
                 [station.id],
                 source,
