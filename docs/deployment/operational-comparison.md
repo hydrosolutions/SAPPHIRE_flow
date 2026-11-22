@@ -99,11 +99,20 @@ including supplemental registration, must be repeatable without duplicates,
 refuse unexpected drift, and return only after all jobs are verified paused.
 Its logs must omit secrets, and its agency values must remain private.
 The normal registrar may initially create active schedules; do not rely on it
-to create paused jobs. Pause and read back every deployment and schedule before workers
-start. Account for target-created pending runs explicitly. On partial failure,
+to create paused jobs. The private comparison bootstrap instead reuses its job
+specifications and Prefect's existing API to create paused deployments with
+inactive schedules from the first write. This requires its own reviewed invocation
+and synthetic qualification; it is not a new public registrar command.
+Read back every deployment and schedule before workers start. Account for
+target-created pending runs explicitly. On partial failure,
 leave workers stopped and pools paused; inspect existing target state before retry.
 Repeated registration must refuse unapproved drift rather than silently overwrite
 parameters or reset schedules.
+
+Treat initial bootstrap separately from operational updates. The private bootstrap
+refuses worker/run history, partial or unknown jobs and configuration drift. An
+exact repeat only checks the stored paused definitions. It cannot be used to
+upgrade or repair a system after commissioning; follow its separate recovery plan.
 
 ## Reconstruct inputs, then commission
 

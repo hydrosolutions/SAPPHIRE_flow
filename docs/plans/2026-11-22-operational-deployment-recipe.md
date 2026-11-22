@@ -118,9 +118,12 @@ Before any execution, review those concrete bytes and a secret-safe semantic dif
 Do not copy the historical overlay chain and treat its length as completeness.
 
 Record all seven baseline jobs with required/manual-only/excluded disposition.
-The normal registrar handles the six known jobs; the additional local forecast
-variant needs an explicit, reviewed supplemental registration step using the same
-flow and supported Prefect API. Keep that deployment-specific step private for
+The registrar's `build_deployment_specs` defines the six known jobs; the additional
+local forecast variant uses the same flow and supported Prefect API. The private
+bootstrap submits all seven with `paused=True` and inactive UTC schedules on the
+first write. The ordinary registrar cannot express that initial paused contract,
+so do not invoke its command and then race the scheduler to pause the result.
+Keep the bounded bootstrap step private for
 this comparison; do not add an agency catalogue, arbitrary-flow registry or second
 public job schema. The runbook gives one maintained registration invocation that
 includes both normal and supplemental steps; leaving a hidden post-install patch
@@ -133,11 +136,13 @@ repeated invocation, read back and refuse unexpected parameters/variables rather
 than resetting unrelated settings. A partial registration failure leaves pools
 paused and workers stopped; retry must check the existing target inventory first.
 
-Create/verify paused pools before registration. Keep workers stopped while any
-scheduled deployments might be active; pause all registered deployments/schedules
-and inspect pending runs before starting workers. Registration itself is not
-activation. Discard only target-created pending runs under an explicit reviewed
-step; never carry them across commissioning as unintended backfills.
+Create/verify paused pools and queues before registration, with workers stopped.
+Verify all deployments and schedules remain paused/inactive after creation.
+Registration itself is not activation. This initial bootstrap refuses any worker
+history or flow runs, unknown/partial jobs and mismatched configuration. A matching
+repeat is read-only; a pools-only state is admissible only when it matches the
+paused contract. Do not use this command after commissioning. Pending-run recovery
+or partial-state recreation requires a separate reviewed target-only step.
 
 For each job compare desired -> rendered init -> registered definition -> pool,
 queue and actual child process. Use the existing NHS forecast configuration checker
@@ -252,7 +257,7 @@ all unit/integration shards and installation/rehearsal gates; the owner merged
 #607 as `af02ed67c`. N1a is complete. No registration, credential access or target
 operation was part of this implementation. N1b–d remain DRAFT.
 
-### N1b preparation evidence
+### N1b initial preparation (#608)
 
 Read-only follow-up completed the launch-variable inventory. One local forecast
 variant uses a command that reapplies environment overrides after the worker has
@@ -267,19 +272,18 @@ Compose recipe, per-service input references, seven-job contract and linked runb
 It derives from the pinned source base and records intentional target differences.
 The clean-environment, daemon-free render succeeds: eight services, the expected
 six normal registrar jobs, no builds or external volumes, and loopback-only HTTP.
-The additional local forecast remains an explicit supplemental registration
+The additional local forecast was recorded as an explicit supplemental registration
 requirement. The new [administrator guide](../deployment/operational-comparison.md)
 describes the preparation boundary without publishing agency values.
 
 This is not N1b completion or an offline pass. Application configuration bytes,
 data-bearing rating inputs and credential deliveries have not been copied; target
-image admission and host-path relocation remain unverified. The private runbook
-specifies the missing registration behavior but does not yet provide an executable
-invocation. Next, complete and review that bounded invocation, then qualify first
-and repeated registration, drift/partial failure and actual child configuration
-with synthetic inputs on isolated Prefect. Review the exact configuration semantic
-diff before approving target execution. N1c/N1d gates still apply before N2;
-no server was created and the source was not modified.
+image admission and host-path relocation remain unverified. At this stage the
+private runbook specified the missing registration behavior without an executable
+invocation. The next bounded step was its review and synthetic qualification.
+Review the exact configuration semantic diff before approving target execution.
+N1c/N1d gates still apply before N2; no server was created or source modified in
+this initial preparation pass.
 
 One independent Claude documentation review found no blockers. Clarified image
 roles, preview outcomes, paused-pool ordering, repeat-registration acceptance and
@@ -288,6 +292,36 @@ were already in the merged parent/implementation plans; no private configuration
 values or new agency data are added. Private bytes and runtime evidence were not
 examined by this reviewer: the preparation results above are author-recorded
 evidence, not independent execution qualification. N1b execution remains DRAFT.
+
+### N1b private registration qualification
+
+After #608 merged, one independent Claude plan review and one independent patch
+review covered the private bootstrap and synthetic tests. Resolved the identified
+scheduler race by submitting paused deployments and inactive schedules on the first
+write, reusing the registrar's specifications and existing Prefect APIs. Kept the
+helper, private inputs and full reports outside Git. The candidate's single init
+invocation now includes this bootstrap and its evidence output; the revised Compose
+recipe renders without launching services.
+
+The orchestrator admitted only this bounded implementation and isolated local
+qualification. All **18 private tests passed, zero skipped**, against Prefect
+client 3.6.25 and server 3.6.29. Evidence covers first registration, unchanged repeat
+identities/schedules, parameter and command drift refusal without writes, paused
+partial failure, CLI subprocess outcomes and environment/working-directory settings
+isolation. A live scheduler control generated work while all seven paused jobs
+generated none. A real child without the launch wrapper read the worker's synthetic
+overlay; with the wrapper it read the intended standard overlay through the
+existing TOML reader. The registrar's **83 unit regressions** also passed; private
+helper Ruff and Pyright checks passed.
+
+Temporary test containers and networks were removed. The pre-existing local stack
+was preserved. No cloud target was provisioned and the source service was untouched.
+These tests substitute synthetic flows: they do not prove actual provider paths,
+container UID/readability, agency configuration, image admission, station/model
+state or forecasts. N1b target execution remains DRAFT. Next preparation is the
+configuration semantic diff and bounded input-reconstruction manifest, followed by
+container-path qualification and the commissioning/cost/cleanup packet. N2 still
+requires the complete N1 gates; this is not an operational installation pass.
 
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
