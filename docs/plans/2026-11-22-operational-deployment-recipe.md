@@ -323,6 +323,54 @@ configuration semantic diff and bounded input-reconstruction manifest, followed 
 container-path qualification and the commissioning/cost/cleanup packet. N2 still
 requires the complete N1 gates; this is not an operational installation pass.
 
+### N1c reconstruction inventory
+
+Read-only source checks and local code tracing produced a private manifest covering
+35 candidate input tables, their explicit columns, foreign keys, trigger inventory
+and include/hold/exclude decisions. Column sets match the observed schema; nine
+physical column orders differ. No candidate table has a sequence-backed default.
+This is a selection specification, not an executable exporter or a completed restore.
+No measurements, geometry, artifact bytes or credentials were copied.
+
+The source release advanced after N0 while the schema stayed unchanged. The private
+candidate still pins the earlier release; image admission and configuration rebasing
+remain explicit gates. The originally admitted artifacts' hashes are unchanged in
+database metadata; byte verification must repeat at transfer.
+A newly present artifact does not expand the comparison: the original group model
+is still the only active group assignment in the bounded readback.
+
+The proposed reconstruction preserves domain identifiers and original training
+provenance. It accounts for model-training basin versions separately from current
+basins, and for artifacts that have no external-import provenance row. Tenant identity
+must be seeded in a reviewed fresh-target bootstrap before ordinary provisioning;
+existing delivery-operator privileges are not a general restore mechanism. Ordinary
+imports that create new IDs, rerun QC or promote models cannot silently substitute
+for this contract.
+
+Protected observation/rating closure remains held: immutable captures can disagree
+with corrected current observations, and complete batches can cross a selected time
+window. No trigger bypass or hash rewriting is proposed. The operational weather
+cache mixes inputs with execution attempts and is excluded; fresh target acquisition
+does not establish equal model inputs. A zero recent-observation pilot inventory
+is recorded as absence, not permission to fabricate history or weaken cycle gates.
+
+Next bounded work is a private catalogue-only synthetic restore, then a normal
+pilot-cycle check and full-group input-closure proof. The private packet specifies
+tenant/FK/provenance, drift refusal, transaction rollback, runtime-reader and role
+tests; protected evidence needs additional corrected-observation and complete-batch
+cases. Fixed issue/input windows, finite input row/byte caps, trigger-compatible
+closure, concrete role mapping and image/configuration qualification remain open.
+N1c and all target execution remain DRAFT; N2 still requires the complete N1 packet.
+
+One independent Claude review accepted these documentation changes as DRAFT after
+qualifying the artifact-hash evidence. Its implementation blockers are recorded
+privately: exact tenant identity checks beyond ordinary provisioning, a fixed
+one-shot bootstrap role, seeded timestamp comparisons, complete constraint/index
+inventory, measurable no-write retry and file cleanup. The revised private packet
+addresses these and splits the next test into C1a (identity/artifact/rollback) and
+C1b (remaining catalogue and runtime grants). Owner review of those dispositions
+is pending; no implementation or transfer has been marked READY.
+
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
 ```

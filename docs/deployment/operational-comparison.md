@@ -124,6 +124,32 @@ lineage or artifact provenance. Where ordinary import cannot preserve the requir
 inputs, review an exact input-only export/restore and a synthetic relational test
 first. A full database clone is not this procedure.
 
+Deployment support should give the administrator one private manifest with these
+decisions settled before import:
+
+| Input | Required decision |
+| --- | --- |
+| Tenant, stations, groups and bindings | Exact membership and identifiers; include referenced basin/static versions, not only current station metadata. |
+| Observations and ratings | Fixed UTC windows, units, QC rules/results and complete referenced provenance; distinguish missing data from data deliberately excluded. |
+| Trained models | Exact admitted artifact hashes, assignments and original training provenance; a newly added source artifact is not automatically included. |
+| Weather | Required history, provider budget and acquisition method; do not copy a cache that also contains execution attempts. |
+| Transfer | Named columns, dependency order, source snapshot, row/byte limits, target paths and receipt checks; refuse unresolved dependencies or exceeded limits. |
+
+Normal onboarding imports can create new identifiers, rerun QC or promote a model.
+Do not describe those operations as preserving the original input history. Where
+preserving identifiers is necessary, resolve tenant creation **before** ordinary
+provisioning creates a different identity. This needs a reviewed bootstrap sequence;
+it is not an instruction to edit existing tenant rows or widen database privileges.
+Preserve model-training basin references and the absence of external-import
+provenance where that is how the source artifact was created.
+
+Keep source and target release identities explicit. A source upgrade after inventory
+requires a deliberate recipe/image review. The earlier inventory timestamp is not
+a database snapshot: filtering by creation time cannot recover later-corrected data.
+Use a bounded consistent export for actual transfer and separately verify file hashes.
+Preserve missing inputs honestly; a successful deterministic pilot does not qualify
+the full model cohort or prove that live provider inputs are identical.
+
 Keep source authentication, Prefect state, execution claims and forecast results
 out of the new system. Retain source results separately as comparison evidence.
 Freeze input windows and comparison criteria before seeing target results. Begin
