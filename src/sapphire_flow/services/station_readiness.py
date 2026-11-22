@@ -15,7 +15,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import structlog
 
-from sapphire_flow.adapters.recap_gateway import RECAP_VARIABLES, guarded_recap_fetch
+from sapphire_flow.adapters.recap_gateway import (
+    RECAP_VARIABLES,
+    RecapDataUnavailableError,
+    guarded_recap_fetch,
+)
 from sapphire_flow.adapters.store_backed_reanalysis import StoreBackedReanalysisSource
 from sapphire_flow.exceptions import AdapterError, ConfigurationError
 from sapphire_flow.services.caravan_statics import (
@@ -531,6 +535,13 @@ def check_gateway_data(
             )
             for parameter in _WEATHER_PARAMETERS
         }
+    except RecapDataUnavailableError as exc:
+        log.warning("station_readiness_gateway_failed", cause=type(exc).__name__)
+        return unknown(
+            "the Gateway has no source data yet for the window starting "
+            f"{wanted[0].isoformat()} (Gateway code {exc.code or 'none'}); "
+            "usually the newest days, retry later"
+        )
     except (AdapterError, ConfigurationError, ImportError) as exc:
         log.warning("station_readiness_gateway_failed", cause=type(exc).__name__)
         return unknown(f"Gateway request failed ({type(exc).__name__})")

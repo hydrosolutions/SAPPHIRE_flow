@@ -89,6 +89,17 @@ class TestDryRunAndApply:
         assert "DRY RUN" in out and "'00001'" in out and "'research'" in out
         assert "trishuli_00001" in out
 
+    def test_dry_run_prints_no_id_but_apply_prints_the_stored_one(
+        self, rig: Rig, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rig.run(STAFF)
+        assert "id assigned on apply" in capsys.readouterr().out
+        rig.run([*STAFF, "--apply"])
+        stored = rig.stations.fetch_all_stations()[0]
+        out = capsys.readouterr().out
+        assert str(stored.id) in out
+        assert "id assigned on apply" not in out
+
     def test_apply_stores_one_onboarding_station_and_one_audit_row(
         self, rig: Rig
     ) -> None:

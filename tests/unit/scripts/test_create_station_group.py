@@ -242,6 +242,16 @@ class TestRender:
         text = _render(self._new_group_plan(), applied=False)
         assert "no — would create" in text
 
+    def test_dry_run_prints_no_group_id(self) -> None:
+        plan = self._new_group_plan()
+        text = _render(plan, applied=False)
+        assert "id assigned on apply" in text
+        assert str(plan.group_id) not in text
+
+    def test_applied_run_prints_the_group_id(self) -> None:
+        plan = self._new_group_plan()
+        assert str(plan.group_id) in _render(plan, applied=True)
+
     def test_applied_run_says_created(self) -> None:
         text = _render(self._new_group_plan(), applied=True)
         assert "no — created" in text

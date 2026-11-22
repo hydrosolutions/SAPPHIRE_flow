@@ -336,7 +336,9 @@ FAIL  gateway_data  precipitation missing 3 of 30 days: 2026-11-14, 2026-11-15, 
 
 If the Gateway or the key cannot be reached, or the station has no basin-average polygon
 binding, the line reads `UNKNOWN  gateway_data  <reason>; not a pass` and the command still
-exits 0 (exit 2 is only for a usage error or an unknown station). Every day present is a good
+exits 0 (exit 2 is only for a usage error or an unknown station). If the Gateway answers that it
+has no source data yet (usually for the newest days), the reason names the Gateway code and the
+start date of the requested window: retry later, it is not a fault of the station. Every day present is a good
 sign, not a guarantee: it is the same request the cycle makes.
 
 ## Part 0: a throwaway sandbox (rehearsal only)
@@ -393,8 +395,7 @@ echo $! > "$SANDBOX_DIR/pids/server.pid"
 
 Register the deployments you need. The registrar assumes the Docker image path `/app`; in a
 sandbox point it at your checkout and register only the two deployments this runbook uses.
-The command takes no options: do not run it with `--help` (it starts a real registration
-instead of printing help).
+The command takes no options; `--help` only prints a short description and registers nothing.
 
 ```bash
 SAPPHIRE_FLOW_SOURCE_ROOT=$PWD \
@@ -479,9 +480,9 @@ tool to change a station's code, network or tenant afterwards**: check `--tenant
 `--network` against the handover before you add `--apply`. `--gateway-name` is required. It must
 be lower-case letters, digits and underscores; it is only checked and printed into the "next
 steps" lines, it is not stored on the station. The command prints `DRY RUN (nothing written)` or
-`APPLIED`, the station, the gauge and a worked conversion example. The station id shown by the
-dry run is **not** the id `--apply` writes (a new one is drawn each time): take ids from the
-database, never from a dry run. Exit 0 ok, 1 refused or
+`APPLIED`, the station, the gauge and a worked conversion example. A dry run
+prints `id assigned on apply` instead of an id (a new one is drawn when `--apply` writes the
+station); `--apply` prints the stored id. Exit 0 ok, 1 refused or
 failed (the reason is in the log), 2 bad options. `forecast_targets` (what the station is
 forecast for) is not set here; Step 8 sets it.
 
@@ -519,8 +520,8 @@ SAPPHIRE_CONFIG=sandbox-config.toml uv run python scripts/create_station_group.p
 It prints `DRY RUN (nothing written)` or `APPLIED`, the group name and id, and the station
 codes it adds (`add:`), keeps (`already:`) or cannot use (`UNKNOWN:`, `OTHER TENANT:`; exit 1);
 a re-run with nothing to change says "no change (idempotent re-run)". An unknown code also
-prints the networks that have stations in the tenant. The group id printed by a dry run is not
-the id `--apply` writes (for a group that does not exist yet). Look both ids up in the database for 5b:
+prints the networks that have stations in the tenant. A dry run of a group that does not exist yet
+prints `id assigned on apply`; `--apply` prints the stored id. To look both ids up in the database for 5b:
 `select id from stations where code = '00001' and network = 'research'` and
 `select id from station_groups where name = 'my-group'` (add the tenant if several tenants use
 the same group name).

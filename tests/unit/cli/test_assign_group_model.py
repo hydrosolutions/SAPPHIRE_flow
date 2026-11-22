@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sapphire_flow.cli import assign_group_model as agm
 from sapphire_flow.config.deployment_identity import DeploymentIdentityConfig
+from sapphire_flow.exceptions import TenantIsolationError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ArtifactScope,
@@ -173,6 +174,20 @@ class TestAssignGroupModel:
         )
         assert rig.run(["--apply"]) == 3
         assert rig.assignments() == []
+
+    def test_tenant_mismatch_message_does_not_reveal_foreign_ids(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        foreign = uuid4()
+
+        def raise_mismatch(*args: object, **kwargs: object) -> object:
+            raise TenantIsolationError(f"not authorized to write to tenant {foreign}")
+
+        monkeypatch.setattr(agm, "plan_group_assignment", raise_mismatch)
+        assert Rig().run(["--apply"]) == 3
+        out = capsys.readouterr().out
+        assert "--tenant" in out
+        assert str(foreign) not in out
 
     def test_unknown_group_is_refused(self) -> None:
         rig = Rig()

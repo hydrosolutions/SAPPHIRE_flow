@@ -286,9 +286,10 @@ def _out(text: str) -> None:
 
 def render(station: StationConfig, request: StationRequest, *, applied: bool) -> str:
     gauge = station.water_level_gauge_type
+    station_ref = str(station.id) if applied else "id assigned on apply"
     lines = [
         "APPLIED" if applied else "DRY RUN (nothing written)",
-        f"  station: {station.code} / {station.network}  [{station.id}]",
+        f"  station: {station.code} / {station.network}  [{station_ref}]",
         f"  tenant:  {request.tenant_code}   name: {station.name}   status: onboarding",
         f"  where:   lon {station.location.lon}, lat {station.location.lat}, "
         f"{station.timezone}",

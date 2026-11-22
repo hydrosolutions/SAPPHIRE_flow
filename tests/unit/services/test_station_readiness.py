@@ -8,7 +8,10 @@ from uuid import uuid4
 import pandas as pd
 from shapely.geometry import box
 
-from sapphire_flow.adapters.recap_gateway import RecapTransientError
+from sapphire_flow.adapters.recap_gateway import (
+    RecapDataUnavailableError,
+    RecapTransientError,
+)
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.station_readiness import (
     ReadinessStores,
@@ -715,6 +718,15 @@ class TestGatewayData:
             self._world(), FakeEcmwf(error=RecapTransientError("secret"))
         )
         assert status is CheckStatus.UNKNOWN
+        assert "secret" not in detail
+
+    def test_source_data_missing_names_the_code_and_start_date(self) -> None:
+        error = RecapDataUnavailableError("secret url", code="source_data_missing")
+        status, detail = self._line(self._world(), FakeEcmwf(error=error))
+        assert status is CheckStatus.UNKNOWN
+        assert "source_data_missing" in detail
+        assert "2026-10-" in detail or "2026-11-" in detail
+        assert "retry later" in detail
         assert "secret" not in detail
 
     def test_missing_key_is_unknown(self) -> None:

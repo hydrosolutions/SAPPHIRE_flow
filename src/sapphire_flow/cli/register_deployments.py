@@ -19,7 +19,7 @@ import structlog
 from sapphire_flow.config.river_stations import ForecastConfigOverlay
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
 log = structlog.get_logger(__name__)
 
@@ -418,9 +418,18 @@ async def register_all() -> None:
     log.info("deployments.complete", count=len(specs))
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
+    import argparse
+
     from sapphire_flow.logging import configure_cli_logging
 
+    argparse.ArgumentParser(
+        prog="register_deployments",
+        description=(
+            "Register or update the Prefect deployments for every flow. Takes no "
+            "options; schedules and pools come from environment variables."
+        ),
+    ).parse_args(argv)
     configure_cli_logging()
     asyncio.run(register_all())
 

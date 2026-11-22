@@ -99,10 +99,12 @@ re-processed:
    The Gateway guide says repeating it is safe: it overwrites the same outputs.
 
 This is the only **shared** action in this checklist: it re-processes runs for every basin
-subscribed to `ifs__subdaily`, not just yours. So the **owner or the Gateway admin** starts
-it, not the station admin alone. Before starting, check which basins are subscribed, ask the
-Gateway admin which outputs in the 7-day window will be overwritten, and agree a time with
-the owners of any other deployment that uses the Gateway. If that is not confirmed, stop.
+subscribed to `ifs__subdaily`, not just yours. Under the owner's standing rule (2026-11-17) an
+administrator may start it without asking each time and writes the time, the job and the reason
+in the evidence folder. Before starting, it is still good practice to check which basins are
+subscribed, ask the Gateway admin which outputs in the 7-day window will be overwritten, and
+agree a time with the owners of any other deployment that uses the Gateway. If you cannot tell
+what the backfill would overwrite, ask before starting.
 The narrowest range that covers the forecast cycle named in your scope is enough.
 
 Good to know:

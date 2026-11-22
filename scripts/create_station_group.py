@@ -248,9 +248,12 @@ def _render(plan: GroupPlan, *, applied: bool) -> str:
         exists = "yes — reusing"
     else:
         exists = "no — created" if applied else "no — would create"
+    group_ref = (
+        str(plan.group_id) if applied or plan.group_exists else "id assigned on apply"
+    )
     lines = [
         f"{verb}",
-        f"  group:   {plan.name}  [{plan.group_id}]",
+        f"  group:   {plan.name}  [{group_ref}]",
         f"  tenant:  {plan.tenant_id}",
         f"  exists:  {exists}",
     ]
