@@ -21,6 +21,7 @@ from sapphire_flow.types.ids import StationId, TenantId
 from sapphire_flow.types.operational_weather import (
     FutureWeatherAttempt,
     FutureWeatherReceipt,
+    FutureWeatherRequest,
     FutureWeatherRequirement,
     FutureWeatherScope,
     WeatherAttemptState,
@@ -607,3 +608,72 @@ def test_cache_round_trip_normalizes_non_utc_session_timestamps(
             sa.text("SELECT set_config('TimeZone', :zone, true)"),
             {"zone": original_zone},
         )
+
+
+def test_same_issue_horizon_growth_gets_new_generation(
+    db_connection: sa.Connection, cache_key: WeatherCacheKey, principal: WritePrincipal
+) -> None:
+    store = PgOperationalWeatherCache(db_connection)
+    request = FutureWeatherRequest(
+        station_id=cache_key.station_id,
+        binding_fingerprint="b" * 64,
+        source="ifs_ecmwf",
+        issue_time=ISSUE,
+        requirements=(
+            FutureWeatherRequirement(
+                parameter="precipitation",
+                valid_times=tuple(
+                    ensure_utc(ISSUE + timedelta(days=i)) for i in range(11)
+                ),
+                member_ids=(0,),
+            ),
+        ),
+    )
+    first = store.begin(
+        key=cache_key,
+        principal=principal,
+        attempt_id=uuid4(),
+        issue_time=ISSUE,
+        started_at=ISSUE,
+        future_scopes=(request,),
+    )
+    store.finish(
+        attempt=first,
+        principal=principal,
+        completion=WeatherCacheCompletion(
+            finished_at=ISSUE,
+            past_outcome=WeatherLegOutcome(state=WeatherLegState.UNUSED),
+            future_attempts=(
+                FutureWeatherAttempt(
+                    scope=request,
+                    outcome=WeatherLegOutcome(
+                        state=WeatherLegState.UNAVAILABLE,
+                        reason=WeatherFailureReason.MISSING_SUPPORT,
+                    ),
+                ),
+            ),
+        ),
+        earliest_cycle=ISSUE - timedelta(days=1),
+    )
+    longer = replace(
+        request,
+        requirements=(
+            replace(
+                request.requirements[0],
+                valid_times=request.requirements[0].valid_times
+                + (ensure_utc(ISSUE + timedelta(days=11)),),
+            ),
+        ),
+    )
+    second = store.begin(
+        key=cache_key,
+        principal=principal,
+        attempt_id=uuid4(),
+        issue_time=ISSUE,
+        started_at=ISSUE,
+        future_scopes=(longer,),
+    )
+    entry = store.fetch(cache_key)
+    assert entry is not None
+    assert second.generation == first.generation + 1
+    assert entry.future_attempts[0].scope == longer

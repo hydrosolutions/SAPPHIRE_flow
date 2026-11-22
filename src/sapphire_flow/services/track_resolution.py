@@ -265,6 +265,10 @@ def resolve_candidate(
     grid: TimeGrid | None = None,
     first_period_start: UtcDatetime | None = None,
     eligibility_cutoff: UtcDatetime | None = None,
+    candidate_records_check: Callable[
+        [dict[StationId, list[WeatherForecastRecord]]], bool
+    ]
+    | None = None,
 ) -> AcceptedCandidate | None:
     """Pure fetch/validate half — NO store I/O (D7). Walks back from the
     cadence-floored ``nominal_now``, calling ``fetch_candidate`` per
@@ -357,7 +361,9 @@ def resolve_candidate(
                     complete[station_id] = records
                 else:
                     incomplete.add(station_id)
-            if complete:
+            if complete and (
+                candidate_records_check is None or candidate_records_check(complete)
+            ):
                 log.info(
                     "nwp.track_resolved",
                     track_features=sorted(track_request.key.features),

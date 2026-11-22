@@ -604,6 +604,21 @@ class ForecastInterfaceAdapter:
             for name, variable in variables.items()
         }
 
+    def future_feature_minima(self, time_step: timedelta) -> FeatureFetchHorizons:
+        """FI admission floors for the selected branch; EXACT stays strict."""
+        from forecast_interface.input.variable import HorizonSemantics
+
+        return {
+            FeatureName(name): FutureSteps(
+                value=variable.min_future_steps
+                if variable.horizon_semantics is HorizonSemantics.AT_MOST
+                and variable.min_future_steps is not None
+                else variable.future_steps
+            )
+            for _, variables in self._future_known_for_time_step(time_step)
+            for name, variable in variables.items()
+        }
+
     def _future_known_for_time_step(
         self, time_step: timedelta
     ) -> list[tuple[str, dict[str, FutureKnownVariable]]]:

@@ -102,6 +102,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.forecast_evidence import ForecastEvidence
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.model import ModelDataRequirements, StationModelInputs
+    from sapphire_flow.types.operational_weather import WeatherUse
+    from sapphire_flow.types.operational_weather_v2 import WeatherUseV2
     from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
 log = structlog.get_logger(__name__)
@@ -319,6 +321,7 @@ def _future_adequate(
     *,
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
     time_step: timedelta | None = None,
+    selected_weather: WeatherUse | WeatherUseV2 | None = None,
 ) -> bool:
     requirements = model.data_requirements
     if forcing_route is ForcingRoute.PER_TRACK and isinstance(
@@ -327,6 +330,28 @@ def _future_adequate(
         if time_step is None:
             raise ConfigurationError("per-track group coverage requires its time step")
         modes = model.future_feature_modes(time_step)
+        horizons = model.future_feature_horizons(time_step)
+        if selected_weather is not None:
+            from sapphire_flow.types.forcing_track import FutureSteps
+            from sapphire_flow.types.operational_weather import FutureWeatherUse
+            from sapphire_flow.types.operational_weather_v2 import FutureWeatherUseV2
+
+            if isinstance(
+                selected_weather.future, (FutureWeatherUse, FutureWeatherUseV2)
+            ):
+                minima = model.future_feature_minima(time_step)
+                delivered = {
+                    req.parameter: len(req.valid_times)
+                    for req in selected_weather.future.requirement.requirements
+                }
+                horizons = {
+                    name: FutureSteps(
+                        value=max(
+                            minima[name].value, delivered.get(str(name), value.value)
+                        )
+                    )
+                    for name, value in horizons.items()
+                }
         return all(
             assess_future_coverage(
                 future,
@@ -334,7 +359,7 @@ def _future_adequate(
                 required_steps=horizon.value,
                 ensemble_mode=modes[feature],
             ).adequate
-            for feature, horizon in model.future_feature_horizons(time_step).items()
+            for feature, horizon in horizons.items()
         )
     if not requirements.future_dynamic_features:
         return True
@@ -1056,7 +1081,9 @@ def run_group_forecast(
     expected = tuple(sorted(group.station_ids, key=str))
     unavailable = list(unavailable_members)
     serviceable_ids: list[StationId] = []
+    sources = dict(group_inputs.source_evidence)
     for sid in group_inputs.station_ids:
+        source = sources.get(sid)
         if _future_adequate(
             group_inputs.for_station(sid).future_dynamic,
             model,
@@ -1065,6 +1092,7 @@ def run_group_forecast(
             sid,
             forcing_route=group_inputs.forcing_route,
             time_step=group_inputs.time_step,
+            selected_weather=None if source is None else source.weather_use,
         ):
             serviceable_ids.append(sid)
         else:

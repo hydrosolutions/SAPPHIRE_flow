@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from uuid import UUID
 
+    from sapphire_flow.flows.operational_weather_horizon import CandidateHandoff
     from sapphire_flow.protocols.adapters import (
         CandidateAwareForecastSource,
         OperationalWeatherSource,
@@ -81,7 +82,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
-def _fatal_weather_reason(exc: Exception) -> WeatherFailureReason:
+def fatal_weather_reason(exc: Exception) -> WeatherFailureReason:
     from sqlalchemy.exc import SQLAlchemyError
 
     from sapphire_flow.adapters.recap_gateway import (
@@ -407,7 +408,7 @@ class OperationalWeatherRefresh:
         except Exception as exc:
             self.fail_past(
                 WeatherLegOutcome(
-                    state=WeatherLegState.FATAL, reason=_fatal_weather_reason(exc)
+                    state=WeatherLegState.FATAL, reason=fatal_weather_reason(exc)
                 )
             )
             raise
@@ -835,6 +836,7 @@ def resolve_selected_weather_tracks(
     fetch_candidate: Callable[
         [ForcingTrackKey, list[StationWeatherSource], UtcDatetime], RawFetchOutcome
     ],
+    negotiated_candidates: dict[ForcingTrackKey, CandidateHandoff] | None = None,
 ) -> dict[ForcingTrackKey, TrackFetchResult | None]:
     from sapphire_flow.services.operational_weather_projection import (
         future_receipt_scope,
@@ -894,31 +896,61 @@ def resolve_selected_weather_tracks(
             return fetch_candidate(key, bindings, cycle)
 
         try:
-            accepted = resolve_candidate(
-                track,
-                fetch_candidate=fetch,
-                expected_member_ids=members,
-                nominal_cycle_source=lambda cycle, nominal: (
-                    NwpCycleSource.PRIMARY
-                    if cycle == nominal
-                    else NwpCycleSource.FALLBACK
-                ),
-                nominal_now=issue_time,
-                issue_time=issue_time,
-                cycle_cadence_hours=policy.cycle_cadence_hours,
-                max_cycle_age_hours=policy.max_cycle_age_hours,
-                clock=clock,
-                id_gen=id_gen,
-                weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
-                earliest_cycle=earliest_cycle,
-                grid=None if context is None else context.grid,
-                first_period_start=None
-                if context is None
-                else context.first_period_start,
-                eligibility_cutoff=None
-                if context is None
-                else context.eligibility_cutoff,
-            )
+            if negotiated_candidates is not None and track.key in negotiated_candidates:
+                from sapphire_flow.flows.operational_weather_horizon import (
+                    UnavailableCandidate,
+                    common_prefix,
+                )
+
+                handoff = negotiated_candidates.pop(track.key)
+                accepted = (
+                    None if isinstance(handoff, UnavailableCandidate) else handoff
+                )
+                if accepted is not None and (
+                    context is not None
+                    or members != frozenset({0})
+                    or not earliest_cycle <= accepted.resolved_cycle <= issue_time
+                    or any(
+                        row.member_id != 0 or row.cycle_time != accepted.resolved_cycle
+                        for rows in accepted.complete_station_records.values()
+                        for row in rows
+                    )
+                    or common_prefix(
+                        accepted.complete_station_records,
+                        track=track,
+                        issue_time=issue_time,
+                    )
+                    != max(value.value for value in track.fetch_horizons.values())
+                ):
+                    raise WeatherProofError(
+                        "negotiated candidate differs from exact request"
+                    )
+            else:
+                accepted = resolve_candidate(
+                    track,
+                    fetch_candidate=fetch,
+                    expected_member_ids=members,
+                    nominal_cycle_source=lambda cycle, nominal: (
+                        NwpCycleSource.PRIMARY
+                        if cycle == nominal
+                        else NwpCycleSource.FALLBACK
+                    ),
+                    nominal_now=issue_time,
+                    issue_time=issue_time,
+                    cycle_cadence_hours=policy.cycle_cadence_hours,
+                    max_cycle_age_hours=policy.max_cycle_age_hours,
+                    clock=clock,
+                    id_gen=id_gen,
+                    weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
+                    earliest_cycle=earliest_cycle,
+                    grid=None if context is None else context.grid,
+                    first_period_start=None
+                    if context is None
+                    else context.first_period_start,
+                    eligibility_cutoff=None
+                    if context is None
+                    else context.eligibility_cutoff,
+                )
             retained = accepted is None and context is None
             if retained:
                 accepted = owner.retained_candidate(
@@ -984,7 +1016,7 @@ def resolve_selected_weather_tracks(
                 tuple(
                     request for requests in declared.values() for request in requests
                 ),
-                reason=_fatal_weather_reason(exc),
+                reason=fatal_weather_reason(exc),
             )
             raise
         results[track.key] = result

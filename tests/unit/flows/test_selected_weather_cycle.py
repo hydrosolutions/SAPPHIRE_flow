@@ -172,6 +172,7 @@ def _run_selected_cycle(
     expected_weather_error: str | None = None,
     consumed_future_count: int = 128,
     future_support_days: int | None = None,
+    negotiated_future: bool = False,
     data_use: ForecastDataUse = ForecastDataUse.STANDARD,
     weather_legs: Literal["both", "past", "future", "unused"] = "both",
     refresh_case: Literal[
@@ -413,7 +414,7 @@ def _run_selected_cycle(
                         execution_time > ISSUE
                         and refresh_case not in ("none", "rollover")
                     )
-                    or future_support_days is not None
+                    or (future_support_days is not None and not negotiated_future)
                     else WeatherAttemptState.COMPLETE
                 )
                 assert entry is not None and entry.state is expected_state
@@ -665,7 +666,8 @@ def _run_selected_cycle(
         elif refresh_case != "expired_success":
 
             def fail_future(*args: object, **kwargs: object) -> object:
-                require_pending()
+                if not negotiated_future:
+                    require_pending()
                 future.fetch_calls.append(ISSUE)
                 if refresh_case == "future_fatal":
                     raise RecapPayloadIntegrityError("synthetic invalid future source")
@@ -682,6 +684,20 @@ def _run_selected_cycle(
             assert all(
                 cache.fetch(key).state is WeatherAttemptState.FAILED for key in keys
             )
+            if negotiated_future:
+                from sapphire_flow.types.operational_weather import (
+                    WeatherFailureReason,
+                    WeatherLegState,
+                )
+
+                for key in keys:
+                    entry = cache.fetch(key)
+                    assert entry is not None
+                    assert entry.past_outcome.state is WeatherLegState.NOT_ATTEMPTED
+                    assert all(
+                        item.outcome.reason is WeatherFailureReason.INTEGRITY
+                        for item in entry.future_attempts
+                    )
             return []
         if refresh_case == "retained_corrupt":
             with pytest.raises(
@@ -848,7 +864,8 @@ def _run_selected_cycle(
             or (
                 leg == "future"
                 and (
-                    refresh_case == "retained_subset" or future_support_days is not None
+                    refresh_case == "retained_subset"
+                    or (future_support_days is not None and not negotiated_future)
                 )
             )
             else "current"
