@@ -1478,6 +1478,15 @@ When this map applies, the context packet should name: which touch trigger appli
 
 ### Touchpoint map: LINDAS / BAFU observation ingest
 
+Latest-timestamp lookup retains a correlated authority EXISTS with literal
+`OFFSET 0` so PostgreSQL can use the existing observation timestamp index rather
+than globally scanning the security-barrier authority view (issue 549). Only
+`PgObservationStore.fetch_latest_timestamp` uses this planning boundary. It shares
+all purpose validation and eligibility rules with ordinary readers; never remove
+the authority predicate or apply the planning boundary to other reads by default.
+Verify held/canonical fallback semantics and worker-role PostgreSQL query plans
+when changing this path.
+
 **Lockstep copy.** `flows/ingest_observations.py::_evaluate_qc_window` (with `_aggregate_qc_status`) has a deliberate copy in `services/station_observation_qc.py::run_stage1_qc` (Plan 540 M3b, used by `cli/load_station_observations.py`); a change to either must be made in both, and `tests/unit/services/test_station_observation_qc.py::TestParityWithLiveIngest` must still pass.
 
 **D1 unit-safe dispatch (build only, inactive by default).**

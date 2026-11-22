@@ -21,6 +21,61 @@ if TYPE_CHECKING:
 
 
 class TestObservationUnitReaders:
+    @pytest.mark.parametrize(
+        "purpose", [ObservationReadPurpose.TRUSTED, ObservationReadPurpose.QC_CONTEXT]
+    )
+    @pytest.mark.parametrize("tail_length", [1, 128])
+    def test_latest_skips_ineligible_tail(
+        self,
+        db_connection: sa.Connection,
+        station: tuple[StationId, TenantId],
+        purpose: ObservationReadPurpose,
+        tail_length: int,
+    ) -> None:
+        for offset in range(1, tail_length + 1):
+            db_connection.execute(
+                sa.insert(observations).values(
+                    id=uuid4(),
+                    station_id=station[0],
+                    timestamp=NOW + timedelta(hours=offset),
+                    parameter="discharge",
+                    source="measured",
+                    value=2.0,
+                    qc_status="raw",
+                )
+            )
+        hold(db_connection, station, start=NOW + timedelta(hours=1))
+        store = PgObservationStore(db_connection, purpose=purpose)
+        assert store.fetch_latest_timestamp(station[0], "discharge") == NOW
+
+    def test_latest_filters_station_and_parameter(
+        self, db_connection: sa.Connection, station: tuple[StationId, TenantId]
+    ) -> None:
+        from sapphire_flow.store.station_store import PgStationStore
+        from sapphire_flow.types.ids import StationId
+        from tests.conftest import make_station_config
+
+        other = make_station_config(station_id=StationId(uuid4()), code="2044")
+        PgStationStore(db_connection).store_station(other)
+        for sid, parameter in [(other.id, "discharge"), (station[0], "water_level")]:
+            db_connection.execute(
+                sa.insert(observations).values(
+                    id=uuid4(),
+                    station_id=sid,
+                    parameter=parameter,
+                    timestamp=NOW + timedelta(hours=1),
+                    source="measured",
+                    value=3.0,
+                    qc_status="raw",
+                )
+            )
+        assert (
+            PgObservationStore(db_connection).fetch_latest_timestamp(
+                station[0], "discharge"
+            )
+            == NOW
+        )
+
     def test_all_numeric_reads_and_latest_obey_hold(
         self, db_connection: sa.Connection, station: tuple[StationId, TenantId]
     ) -> None:

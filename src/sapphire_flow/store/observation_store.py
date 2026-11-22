@@ -18,6 +18,7 @@ from sapphire_flow.exceptions import DeliveryCollisionError
 from sapphire_flow.services.observation_history import check_history_bounds
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.store.bafu_unit_read_filter import (
+    latest_unit_read_predicate,
     unit_read_predicate,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -699,7 +700,7 @@ class PgObservationStore:
                 sa.and_(
                     observations_table.c.station_id == station_id,
                     observations_table.c.parameter == parameter,
-                    unit_read_predicate(observations_table, self._purpose),
+                    latest_unit_read_predicate(observations_table, self._purpose),
                 )
             )
         ).scalar_one_or_none()
