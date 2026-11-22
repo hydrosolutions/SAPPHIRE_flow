@@ -534,6 +534,10 @@ Run the normal registration CLI in the deployed environment; do not re-register
 unrelated deployments. The scope must match on repeat registration; existing
 operator parameters are preserved. Keep these values in the host's reviewed
 registration procedure so upgrades do not remove the schedule.
+Standard Compose `init` forwards the pair with empty defaults. External
+[deployment profiles](../deployment/profiles.md#installation-schema) can check
+that forwarding and preview the opt-in without registering it; operational
+execution remains outside the paused installer's supported subset.
 
 Parameters are `weather_scope`, `window_days=30`, `lag_days=8`, and `parameters`
 (default precipitation and temperature). Both day limits are strict integers

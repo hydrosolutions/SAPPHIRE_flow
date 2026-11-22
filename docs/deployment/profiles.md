@@ -123,6 +123,21 @@ not appends to, the manifest recipe. It describes desired configuration only.
 Actual schedule-name/cron/forwarding checks use the existing registrar. Obtain
 release inputs from the reviewed build record, not invented placeholders.
 
+For optional recurring ERA5 history refresh, supply both
+`SCHEDULE_REFRESH_OPERATIONAL_ERA5` (five-field UTC cron) and `SAPPHIRE_ERA5_WEATHER_SCOPE`
+in `[environment]`. These two exact names are supported; there is no default
+refresh schedule or scope. The standard Compose init forwards both, and the checker
+verifies that the complete recipe preserves them. An incomplete pair or invalid
+cron fails even if the refresh job is excluded by `ONLY`/`SKIP` selection.
+
+Preview reports the optional job's selection, pool and input origin, while
+redacting the supplied cron and scope. A complete valid pair excluded by selection
+is shown as skipped: the existing two-job configuration may still pass its normal
+checks. Selecting refresh remains outside the supported execution subset, so it
+cannot earn `PASS_OFFLINE` or a persistent installation plan. This check does not
+register, activate or prove successful weather ingestion; use the separately
+reviewed operational procedure for those steps.
+
 Ambient configuration/Compose selectors must agree with the explicit selection;
 conflicts fail without printing their values. Secret environment values are not
 read. Runtime `secret_bindings` contain delivery-file paths only. Paths are

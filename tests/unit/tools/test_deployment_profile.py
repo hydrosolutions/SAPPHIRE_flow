@@ -1095,6 +1095,192 @@ def standard_render(
     return selected, evaluated, actual, canonical
 
 
+@pytest.fixture
+def refresh_render(
+    standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+) -> tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]]:
+    selected, evaluated, _, canonical = standard_render
+    environment = dict(selected.installation.environment)
+    environment.update(
+        SCHEDULE_REFRESH_OPERATIONAL_ERA5="35 0 * * *",
+        SAPPHIRE_ERA5_WEATHER_SCOPE="private-scope-canary",
+        SAPPHIRE_ONLY_DEPLOYMENTS=(
+            "forecast-cycle,backup-database,refresh-operational-era5-history"
+        ),
+    )
+    selected = replace(
+        selected,
+        installation=replace(
+            selected.installation, environment=tuple(environment.items())
+        ),
+    )
+    return selected, evaluated, tool.render_compose(selected), canonical
+
+
+class TestOptionalRefreshPreview:
+    def test_real_compose_forwards_pair_and_previews_without_execution_coverage(
+        self,
+        refresh_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+    ) -> None:
+        from sapphire_flow.cli.register_deployments import build_deployment_specs
+
+        selected, evaluated, rendered, canonical = refresh_render
+        specs = build_deployment_specs(rendered["services"]["init"]["environment"])
+        refresh = next(s for s in specs if s.deployment_name.startswith("refresh-"))
+        assert (refresh.cron, refresh.parameters, refresh.work_pool_name) == (
+            "35 0 * * *",
+            (("weather_scope", "private-scope-canary"),),
+            "ingest",
+        )
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.diagnostics == ()
+        assert result.summary is EvaluationSummary.PENDING
+        assert "EXECUTION_EXTENSION_PENDING" in {i.code for i in result.pending_checks}
+        settings = {s.field: s for s in result.provenance}
+        prefix = "jobs.refresh-operational-era5-history"
+        assert settings[f"{prefix}.selection"].value == "enabled"
+        assert settings[f"{prefix}.pool"].value == "ingest"
+        for suffix in ("schedule", "parameters.weather_scope"):
+            setting = settings[f"{prefix}.{suffix}"]
+            assert setting.visibility == "redacted"
+            assert setting.default_status == "explicit"
+            assert setting.source == "registrar_spec_and_init_environment"
+        assert "private-scope-canary" not in repr(result)
+        assert "35 0 * * *" not in repr(result)
+
+    @pytest.mark.parametrize("selector", ["only", "skip"])
+    def test_excluded_refresh_is_explicitly_skipped(
+        self,
+        refresh_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        selector: str,
+    ) -> None:
+        selected, evaluated, _, canonical = refresh_render
+        environment = dict(selected.installation.environment)
+        if selector == "only":
+            environment["SAPPHIRE_ONLY_DEPLOYMENTS"] = "forecast-cycle,backup-database"
+        else:
+            environment.pop("SAPPHIRE_ONLY_DEPLOYMENTS")
+            environment["SAPPHIRE_SKIP_DEPLOYMENTS"] = (
+                "refresh-operational-era5-history"
+            )
+            overlay = selected.compose_files[-1]
+            overlay.write_text(
+                overlay.read_text().replace(
+                    "SAPPHIRE_ONLY_DEPLOYMENTS", "SAPPHIRE_SKIP_DEPLOYMENTS"
+                )
+            )
+        selected = replace(
+            selected,
+            installation=replace(
+                selected.installation, environment=tuple(environment.items())
+            ),
+        )
+        result = tool.check_wiring(
+            selected, evaluated, tool.render_compose(selected), canonical
+        )
+        assert result.diagnostics == ()
+        settings = {s.field: s for s in result.provenance}
+        assert settings["jobs.refresh-operational-era5-history.selection"].value == (
+            "skipped"
+        )
+        assert result.summary is (
+            EvaluationSummary.PASS_OFFLINE
+            if selector == "only"
+            else EvaluationSummary.PENDING
+        )
+        assert "private-scope-canary" not in repr(result)
+        assert "35 0 * * *" not in repr(result)
+
+    @pytest.mark.parametrize(
+        "change,code",
+        [
+            ("scope_drift", "SCHEDULE_FORWARDING_INVALID"),
+            ("cron_drift", "SCHEDULE_FORWARDING_INVALID"),
+            ("drop_scope", "REGISTRAR_INPUT_INVALID"),
+            ("drop_cron", "REGISTRAR_INPUT_INVALID"),
+            ("drop_pair", "SCHEDULE_FORWARDING_INVALID"),
+        ],
+    )
+    def test_changed_or_dropped_forwarding_refuses_safely(
+        self,
+        refresh_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        change: str,
+        code: str,
+    ) -> None:
+        selected, evaluated, rendered, canonical = refresh_render
+        env = rendered["services"]["init"]["environment"]
+        # Keep refresh filtered out to prove dormant inputs are checked too.
+        env["SAPPHIRE_ONLY_DEPLOYMENTS"] = "forecast-cycle,backup-database"
+        selected = replace(
+            selected,
+            installation=replace(
+                selected.installation,
+                environment=tuple(
+                    (k, env[k] if k == "SAPPHIRE_ONLY_DEPLOYMENTS" else v)
+                    for k, v in selected.installation.environment
+                ),
+            ),
+        )
+        if change == "scope_drift":
+            env["SAPPHIRE_ERA5_WEATHER_SCOPE"] = "other-private-canary"
+        elif change == "cron_drift":
+            env["SCHEDULE_REFRESH_OPERATIONAL_ERA5"] = "45 0 * * *"
+        else:
+            if change in {"drop_scope", "drop_pair"}:
+                env.pop("SAPPHIRE_ERA5_WEATHER_SCOPE")
+            if change in {"drop_cron", "drop_pair"}:
+                env.pop("SCHEDULE_REFRESH_OPERATIONAL_ERA5")
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert result.summary is EvaluationSummary.FAIL
+        assert code in {i.code for i in result.diagnostics}
+        assert "private-canary" not in repr(result)
+        assert "private-scope-canary" not in repr(result)
+
+    @pytest.mark.parametrize(
+        "change", ["missing_scope", "missing_cron", "invalid_cron", "preview_cron"]
+    )
+    def test_invalid_pair_refuses_even_when_refresh_is_excluded(
+        self,
+        refresh_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        change: str,
+    ) -> None:
+        selected, evaluated, _, canonical = refresh_render
+        env = dict(selected.installation.environment)
+        env["SAPPHIRE_ONLY_DEPLOYMENTS"] = "forecast-cycle,backup-database"
+        if change in {"invalid_cron", "preview_cron"}:
+            env["SCHEDULE_REFRESH_OPERATIONAL_ERA5"] = (
+                "private-invalid-cron" if change == "invalid_cron" else "@daily"
+            )
+        else:
+            env.pop(
+                "SAPPHIRE_ERA5_WEATHER_SCOPE"
+                if change == "missing_scope"
+                else "SCHEDULE_REFRESH_OPERATIONAL_ERA5"
+            )
+        selected = replace(
+            selected,
+            installation=replace(selected.installation, environment=tuple(env.items())),
+        )
+        result = tool.check_wiring(
+            selected, evaluated, tool.render_compose(selected), canonical
+        )
+        assert "REGISTRAR_INPUT_INVALID" in {i.code for i in result.diagnostics}
+        assert "private-invalid-cron" not in repr(result)
+
+    @pytest.mark.parametrize("selector", ["ONLY", "SKIP"])
+    def test_selection_cannot_invent_an_opt_in_without_its_pair(
+        self,
+        standard_render: tuple[Any, ProfileEvaluation, dict[str, Any], dict[str, Any]],
+        selector: str,
+    ) -> None:
+        selected, evaluated, rendered, canonical = standard_render
+        env = rendered["services"]["init"]["environment"]
+        env.pop("SAPPHIRE_ONLY_DEPLOYMENTS")
+        env[f"SAPPHIRE_{selector}_DEPLOYMENTS"] = "refresh-operational-era5-history"
+        result = tool.check_wiring(selected, evaluated, rendered, canonical)
+        assert "REGISTRAR_INPUT_INVALID" in {i.code for i in result.diagnostics}
+
+
 class TestStandardExecutionCoverage:
     def test_real_render_clears_only_evidenced_execution(
         self,
@@ -1107,6 +1293,10 @@ class TestStandardExecutionCoverage:
         assert result.summary is EvaluationSummary.PASS_OFFLINE
         assert "registered_job_overrides" in result.unverified_runtime
         assert "actual_image_identity" in result.unverified_runtime
+        assert not any(
+            item.field.startswith("jobs.refresh-operational-era5-history")
+            for item in result.provenance
+        )
 
     @pytest.mark.parametrize(
         "change",

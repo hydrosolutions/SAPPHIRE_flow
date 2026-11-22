@@ -747,7 +747,12 @@ def _check_execution_environment(
                 key: value
                 for key, value in supplied.items()
                 if key.startswith("SCHEDULE_")
-                or key in {"SAPPHIRE_ONLY_DEPLOYMENTS", "SAPPHIRE_SKIP_DEPLOYMENTS"}
+                or key
+                in {
+                    "SAPPHIRE_ONLY_DEPLOYMENTS",
+                    "SAPPHIRE_SKIP_DEPLOYMENTS",
+                    "SAPPHIRE_ERA5_WEATHER_SCOPE",
+                }
             }
         )
         if actual.get("SAPPHIRE_FLOW_SOURCE_ROOT") == "/app":
@@ -1168,8 +1173,19 @@ def _check_schedules(
     env = _ObservedEnvironment(_environment(services.get("init", {})))
     try:
         specs = build_deployment_specs(env)
-        for spec in specs:
-            if spec.cron is not None:
+        defaults = {spec.deployment_name: spec for spec in build_deployment_specs({})}
+        available = build_deployment_specs(
+            {
+                key: value
+                for key, value in env.entries.items()
+                if key not in {"SAPPHIRE_ONLY_DEPLOYMENTS", "SAPPHIRE_SKIP_DEPLOYMENTS"}
+            }
+        )
+        active = {spec.deployment_name for spec in specs}
+        for spec in available:
+            if spec.cron is not None and (
+                spec.deployment_name in active or spec.deployment_name not in defaults
+            ):
                 CronSim(spec.cron, datetime(2026, 1, 1, tzinfo=UTC))
     except (ValueError, TypeError, CronSimError):
         errors.append(
@@ -1187,7 +1203,12 @@ def _check_schedules(
     for key, value in supplied.items():
         if (
             key.startswith("SCHEDULE_")
-            or key in {"SAPPHIRE_SKIP_DEPLOYMENTS", "SAPPHIRE_ONLY_DEPLOYMENTS"}
+            or key
+            in {
+                "SAPPHIRE_SKIP_DEPLOYMENTS",
+                "SAPPHIRE_ONLY_DEPLOYMENTS",
+                "SAPPHIRE_ERA5_WEATHER_SCOPE",
+            }
         ) and (key not in env.accessed or env.entries.get(key) != value):
             errors.append(
                 diagnostic(
@@ -1199,7 +1220,6 @@ def _check_schedules(
                     "Compose recipe.",
                 )
             )
-    defaults = {spec.deployment_name: spec for spec in build_deployment_specs({})}
     if "SCHEDULE_COLLECT_BAFU_FORECASTS" not in env.entries:
         settings.append(
             EffectiveSetting(
@@ -1231,8 +1251,8 @@ def _check_schedules(
                     "Restore the matching default, ingest and backup worker commands.",
                 )
             )
-    active = {spec.deployment_name for spec in specs}
-    for name in defaults:
+    for spec in available:
+        name = spec.deployment_name
         settings.append(
             EffectiveSetting(
                 field=f"jobs.{name}.selection",
@@ -1242,15 +1262,18 @@ def _check_schedules(
                 visibility="value",
             )
         )
-    for spec in specs:
-        overridden = spec.cron != defaults[spec.deployment_name].cron
+    for spec in available:
+        standard = defaults.get(spec.deployment_name)
+        if spec.deployment_name not in active and standard is not None:
+            continue
+        overridden = standard is None or spec.cron != standard.cron
         # Names/pools originate in the fixed registrar, cron is deliberately redacted.
         settings.append(
             EffectiveSetting(
                 field=f"jobs.{spec.deployment_name}.schedule",
                 source="registrar_spec_and_init_environment",
                 operation="set" if overridden else "default",
-                value=None if overridden else defaults[spec.deployment_name].cron,
+                value=None if overridden else spec.cron,
                 visibility="redacted" if overridden else "value",
                 default_status="explicit" if overridden else "review",
             )
@@ -1265,6 +1288,17 @@ def _check_schedules(
                 default_status="review",
             )
         )
+        for parameter, _ in spec.parameters:
+            settings.append(
+                EffectiveSetting(
+                    field=f"jobs.{spec.deployment_name}.parameters.{parameter}",
+                    source="registrar_spec_and_init_environment",
+                    operation="set",
+                    value=None,
+                    visibility="redacted",
+                    default_status="explicit",
+                )
+            )
 
 
 class CheckedProfile(NamedTuple):
