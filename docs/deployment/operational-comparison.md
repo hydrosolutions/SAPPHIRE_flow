@@ -156,6 +156,14 @@ full column types, including geometry reference systems. An uncertain import
 commit requires inspection before retry; it must not trigger automatic deletion
 of an artifact that the database may already reference.
 
+Check restored catalogue access using separate connections authenticated as the
+actual worker and API database roles. An owner's successful import or read does
+not prove those services can use it. Verify required reads and permitted writes,
+refused privileged operations and rollback without broadening grants to make a
+test pass. Database-role checks do not replace authenticated HTTP checks or prove
+tenant-level confidentiality. Empty warm-start metadata and readable artifact
+records also do not prove a model can run.
+
 Keep source authentication, Prefect state, execution claims and forecast results
 out of the new system. Retain source results separately as comparison evidence.
 Freeze input windows and comparison criteria before seeing target results. Begin
