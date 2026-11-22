@@ -576,9 +576,13 @@ its weather history current needs the separate rolling refresh
 (`refresh-operational-era5-history`), which is **off unless the host sets both
 `SCHEDULE_REFRESH_OPERATIONAL_ERA5` (a UTC cron) and `SAPPHIRE_ERA5_WEATHER_SCOPE`** when it
 registers deployments ([orchestration standard](../standards/orchestration.md)). Without it
-stored history stops growing, and the readiness report says so in `weather_wait_facts`
-(status 2026-11-21: the Nepal host had no schedule yet and its history ended 26 October; this
-sentence will go stale). The refresh re-imports the last 30 days that
+stored history stops growing, and the readiness report says so in `weather_wait_facts`.
+Status 2026-11-22: the Nepal host runs it daily at 00:35 UTC for the weather scope `nepal21`, so
+a new Nepal station needs no separate schedule, but it is only refreshed once it is in the
+scope's `station_polygons` in the host config, in the station group and has its weather bindings
+(step 5b). If the scope and the group disagree, the refresh fails for every station, so change
+them together. Check `weather_wait_facts` after adding a station; other hosts must set both
+variables themselves. The refresh re-imports the last 30 days that
 ERA5 should already have, so a missed day is repaired by the next run; a longer outage needs a
 manual run of this job.
 
