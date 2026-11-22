@@ -35,6 +35,7 @@ from sapphire_flow.types.ids import (
     StationGroupId,
     StationId,
 )
+from sapphire_flow.types.nepal_onboarding import GATEWAY_HISTORY_SOURCE
 from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.station import (
     GatewayPolygonBindingRow,
@@ -561,6 +562,27 @@ class TestWeatherWaitFacts:
         status, detail = world.line("weather_wait_facts")
         assert status is CheckStatus.FAIL
         assert "precipitation missing 2 of 23 days: 2026-10-19, 2026-10-20" in detail
+
+    def test_gateway_history_is_found_under_its_stored_source_tag(self) -> None:
+        # The Nepal host binds reanalysis as "era5_land" but the history job stores
+        # it as GATEWAY_HISTORY_SOURCE; the binding name alone finds nothing.
+        world = World()
+        for role in (WeatherSourceRole.FORECAST, WeatherSourceRole.OPERATIONAL):
+            _bind(world, role, WeatherSourceStatus.ACTIVE)
+        world.stations.store_weather_source(
+            StationWeatherSource(
+                station_id=world.station.id,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        for parameter in ("precipitation", "temperature"):
+            _forcing(world, GATEWAY_HISTORY_SOURCE, range(1, 32), parameter)
+        status, detail = world.line("weather_wait_facts")
+        assert status is CheckStatus.PASS
+        assert "all 23 expected days present" in detail
 
     def test_passes_when_bound_and_every_day_stored(self) -> None:
         world = World()
