@@ -439,6 +439,9 @@ services:
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
       SCHEDULE_INGEST_WEATHER_HISTORY: ${SCHEDULE_INGEST_WEATHER_HISTORY:-0 6 * * *}
+      # Opt-in only: the registrar requires both inputs or neither.
+      SCHEDULE_REFRESH_OPERATIONAL_ERA5: ${SCHEDULE_REFRESH_OPERATIONAL_ERA5:-}
+      SAPPHIRE_ERA5_WEATHER_SCOPE: ${SAPPHIRE_ERA5_WEATHER_SCOPE:-}
       # Plan 146 D2: recap-Gateway snow-reanalysis ingest — a distinct time
       # from ingest-weather-history so the two never contend for the DB.
       SCHEDULE_INGEST_SNOW_REANALYSIS: ${SCHEDULE_INGEST_SNOW_REANALYSIS:-0 5 * * *}

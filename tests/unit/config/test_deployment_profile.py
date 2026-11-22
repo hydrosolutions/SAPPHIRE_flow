@@ -47,6 +47,40 @@ def write_installation(
 
 
 class TestSelectDeploymentProfile:
+    def test_refresh_inputs_are_explicit_installation_environment(
+        self, tmp_path: Path
+    ) -> None:
+        profile = write_profile(tmp_path)
+        installation = write_installation(
+            tmp_path,
+            '[environment]\nSCHEDULE_REFRESH_OPERATIONAL_ERA5 = "35 0 * * *"\n'
+            'SAPPHIRE_ERA5_WEATHER_SCOPE = "synthetic-scope"\n',
+        )
+        selected = select_deployment_profile(
+            profile_file=profile, installation_file=installation, ambient_environment={}
+        )
+        assert selected.installation is not None
+        assert dict(selected.installation.environment) == {
+            "SCHEDULE_REFRESH_OPERATIONAL_ERA5": "35 0 * * *",
+            "SAPPHIRE_ERA5_WEATHER_SCOPE": "synthetic-scope",
+        }
+
+    @pytest.mark.parametrize("key", ["SCHEDULE_UNKNOWN_ERA5", "SAPPHIRE_UNKNOWN_SCOPE"])
+    def test_refresh_support_does_not_admit_other_environment_keys(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        profile = write_profile(tmp_path)
+        installation = write_installation(
+            tmp_path, f'[environment]\n{key} = "private-canary"\n'
+        )
+        with pytest.raises(ProfileError, match="INSTALLATION_SCHEMA_INVALID") as error:
+            select_deployment_profile(
+                profile_file=profile,
+                installation_file=installation,
+                ambient_environment={},
+            )
+        assert "private-canary" not in str(error.value)
+
     @pytest.mark.parametrize(
         ("name", "overlay", "compose"),
         [

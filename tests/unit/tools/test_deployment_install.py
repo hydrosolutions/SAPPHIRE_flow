@@ -125,6 +125,47 @@ def cli(
 
 
 class TestPreview:
+    @pytest.mark.parametrize("selection", ["selected", "excluded"])
+    def test_refresh_installation_admission_follows_selected_jobs(
+        self, tmp_path: Path, checkout: Path, selection: str
+    ) -> None:
+        _, installation = fixture(tmp_path, checkout)
+        content = installation.read_text().replace(
+            "[environment]",
+            "[environment]\n"
+            'SCHEDULE_REFRESH_OPERATIONAL_ERA5 = "35 0 * * *"\n'
+            'SAPPHIRE_ERA5_WEATHER_SCOPE = "private-scope-canary"',
+        )
+        if selection == "selected":
+            content = content.replace(
+                'SAPPHIRE_ONLY_DEPLOYMENTS = "forecast-cycle,backup-database"',
+                'SAPPHIRE_ONLY_DEPLOYMENTS = "forecast-cycle,backup-database,'
+                'refresh-operational-era5-history"',
+            )
+        installation.write_text(content)
+        result = cli(tmp_path, checkout)
+        report = json.loads(result.stdout)
+        if selection == "selected":
+            assert result.returncode == 2, result.stdout + result.stderr
+            assert report["status"] == "REFUSED"
+            assert report["offline"]["summary"] == "PENDING"
+            assert "EXECUTION_EXTENSION_PENDING" in {
+                item["code"] for item in report["offline"]["pending_checks"]
+            }
+        else:
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert report["status"] == "PLAN_READY"
+            assert report["offline"]["summary"] == "PASS_OFFLINE"
+            settings = {s["field"]: s for s in report["offline"]["provenance"]}
+            assert (
+                settings["jobs.refresh-operational-era5-history.selection"]["value"]
+                == "skipped"
+            )
+        assert report["daemon_contacted"] is False
+        assert report["credentials_read"] is False
+        assert not (tmp_path / "state").exists()
+        assert "private-scope-canary" not in result.stdout + result.stderr
+
     def test_real_external_preview_preserves_provenance_without_runtime(
         self,
         tmp_path: Path,

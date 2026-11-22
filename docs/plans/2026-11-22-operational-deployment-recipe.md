@@ -234,7 +234,22 @@ filtering and real Compose boundary with the tests above. Full report stays loca
 
 The orchestrator marks **N1a READY**. N1b–d execution remains DRAFT until concrete
 packets are reviewed. Owner approval/merge and release admission remain separate
-from orchestrator readiness. No implementation or deployment occurred in this pass.
+from orchestrator readiness. No deployment occurred in either pass.
+
+### N1a implementation
+
+The bounded repair now admits and forwards the two exact optional inputs, previews
+optional jobs without a default-map lookup, checks scope forwarding and redacts
+private schedules/parameters. A filtered-out pair is still validated and explicitly
+shown as skipped. Selecting refresh remains pending and the installation preview
+refuses it; neither supplied preserves the existing defaults and two-job behavior.
+
+One independent Claude patch review found no blockers. Incorporated its advisory
+cron-parity check for dormant optional jobs, dormant installation-preview coverage,
+precise failure assertions and absent-pair selection regressions. Existing excluded
+default-job behavior is unchanged. Normal source CI and owner approval/merge remain
+the completion gates; no registration, credential access or target operation is
+part of this implementation. N1b–d remain DRAFT.
 
 ```json
 {"phases":[{"id":"N1a","status":"READY","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
