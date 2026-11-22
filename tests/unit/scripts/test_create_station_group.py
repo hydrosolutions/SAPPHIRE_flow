@@ -23,6 +23,7 @@ from sapphire_flow.types.tenant import DEFAULT_TENANT_ID, Tenant
 from sapphire_flow.types.write_principal import WritePrincipal
 from scripts.create_station_group import (
     GroupPlan,
+    _render,
     apply_station_group,
     plan_station_group,
 )
@@ -224,6 +225,27 @@ class TestPlanning:
         )
 
         assert plan.is_noop is True
+
+
+class TestRender:
+    def _new_group_plan(self) -> GroupPlan:
+        return plan_station_group(
+            name="g",
+            station_codes=["2009"],
+            network="bafu",
+            tenant_id=DEFAULT_TENANT_ID,
+            station_store=_FakeStationLookup({"2009": StationId(uuid4())}),
+            group_store=_FakeGroupStore(),
+        )
+
+    def test_dry_run_says_would_create(self) -> None:
+        text = _render(self._new_group_plan(), applied=False)
+        assert "no — would create" in text
+
+    def test_applied_run_says_created(self) -> None:
+        text = _render(self._new_group_plan(), applied=True)
+        assert "no — created" in text
+        assert "would create" not in text
 
 
 class TestApplying:

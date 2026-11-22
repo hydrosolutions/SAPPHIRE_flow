@@ -243,7 +243,6 @@ class TestScopedHistory:
     @pytest.mark.parametrize(
         "extra",
         [
-            ["--dry-run"],
             ["--weather-scope", ""],
             ["--start", "2020-01-01"],
             ["--end", "2019-01-01T00:00:00Z"],
@@ -277,6 +276,37 @@ class TestScopedHistory:
                 ]
             )
             == 1
+        )
+
+    def test_dry_run_with_scope_is_a_usage_error_with_a_reason(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("must reject before config, database or submission")
+
+        monkeypatch.setattr(onboard_nepal, "load_deployment_identity_config", forbidden)
+        monkeypatch.setattr(onboard_nepal, "submit_scoped_history", forbidden)
+        with pytest.raises(SystemExit) as exc:
+            onboard_nepal.main(
+                [
+                    "history",
+                    "--config",
+                    "missing.toml",
+                    "--tenant",
+                    "chwrr",
+                    "--confirm-t8",
+                    "--weather-scope",
+                    "test",
+                    "--start",
+                    "2020-01-01T00:00:00Z",
+                    "--end",
+                    "2020-02-01T00:00:00Z",
+                    "--dry-run",
+                ]
+            )
+        assert exc.value.code == 2
+        assert "--dry-run is not supported together with --weather-scope" in (
+            capsys.readouterr().err
         )
 
     def test_submits_only_three_parameters(

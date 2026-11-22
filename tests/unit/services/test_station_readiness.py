@@ -336,6 +336,22 @@ class TestGroupAndModel:
     def test_station_in_no_group_fails(self) -> None:
         assert World().line("group_and_model")[0] is CheckStatus.FAIL
 
+    def test_without_model_a_group_with_no_assignment_says_so(self) -> None:
+        world = World()
+        world.groups.store_group(
+            StationGroup(
+                id=StationGroupId(uuid4()),
+                name="g1",
+                station_ids=frozenset({world.station.id}),
+                created_at=NOW,
+                tenant_id=world.station.tenant_id,
+            )
+        )
+        status, detail = world.line("group_and_model")
+        assert status is CheckStatus.PASS
+        assert "assignments=none" in detail
+        assert "no model assigned yet" in detail
+
     def test_requested_model_must_be_actively_assigned(self) -> None:
         world = World()
         self._group(world, ModelAssignmentStatus.ACTIVE)
