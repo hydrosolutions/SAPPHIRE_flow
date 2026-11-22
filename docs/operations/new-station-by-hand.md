@@ -15,9 +15,27 @@ discharge checked, `cmal_small` imported, one 10-day forecast stored. The sandbo
 used a Swiss-trained model on synthetic data: it proves the plumbing, **not** a forecast
 anyone should read.
 
+## What you can and cannot rehearse offline
+
+On a laptop with only the repository you can run Part 0, Steps 3, 4 (with the test package
+below), 5a, 5b, 6 and 7, and the Step 8 dry run. Everything else needs something only
+hydrosolutions holds:
+
+| Needs | Steps | Who supplies it |
+|---|---|---|
+| The Gateway key and a registered, subscribed station | Gateway registration and subscription, Step 5c (weather history), `station_readiness --check-gateway`, the first forecast cycle | hydrosolutions (key, Gateway access) |
+| A trained model artifact file with its provenance values | "Model and first forecast", items 1 and 2; so Step 8 `--apply` and the first cycle | The model team ([model onboarding guide](model-onboarding.md)) |
+| An approved basin handover (`<handover>/package`) | Step 4 for a real station | hydrosolutions, from the basin extraction and review |
+
+Without a model assignment the Step 8 dry run always ends `REFUSED` (conditions 4 and 6 always
+fail, 7 usually does, and 5 if the weather bindings are missing); that is the expected result
+of an offline rehearsal, not a fault.
+
 ## Step order
 
-Run in this order; "needs" says what must exist before the step works.
+The sections below follow the step numbers, so "Model and first forecast" appears after
+Step 8 but is **run before it** (rows 11 and 12 of the table). Run in this order; "needs" says
+what must exist before the step works.
 
 | Order | Step | Needs first | Tool |
 |---|---|---|---|
@@ -54,8 +72,13 @@ Run in this order; "needs" says what must exist before the step works.
 - **Start with a new, empty evidence folder.** The Gateway tool keeps a state file per
   folder and refuses to repeat an upload it recorded as confirmed (see
   [Before Part 0](#before-part-0-register-the-station-with-the-gateway)).
-- Run everything from a checkout of this repository (`uv sync` once). All Python snippets
-  below use `uv run python - <<'EOF' ... EOF`.
+- Run everything from a checkout of this repository. Install once, **before anything else**:
+  `uv sync --extra aquacast` (without the extra the basin import prints a `No module named
+  'aquacast'` error and the model import fails). All Python snippets below use
+  `uv run python - <<'EOF' ... EOF`.
+- **Replace the example values.** The commands use the Trishuli example (code `00001`,
+  network `research`, tenant `chwrr`). Use your own station code, network and tenant in every
+  command; `create_station list` shows which tenants and networks exist.
 - **Two lists in the Gateway runbook.** [recap-gateway-runbook.md](recap-gateway-runbook.md)
   has an *admin checklist* (steps 1 to 7: 1 Prepare, 2 Register, 3 Reconcile, 4 Subscribe,
   5 History, 6 Resume, 7 Status) and, further down, a *technical list* with different numbers
@@ -331,9 +354,9 @@ its data**. That is the point of a throwaway sandbox; keep anything you need els
 Use the `16-3.4` image: `16-3.5` has no arm64 build. On Apple-silicon laptops `16-3.4` also
 prints a `linux/amd64` platform warning and runs under emulation (slow but fine).
 
-Install the model extra once: `uv sync --extra aquacast`. Without it a `No module named
-'aquacast'` message appears during the basin import and the model import fails with `model
-'cmal_small' is not discoverable`.
+The model extra (`uv sync --extra aquacast`, see Rules) must be installed. Without it a `No
+module named 'aquacast'` message appears during the basin import and the model import fails
+with `model 'cmal_small' is not discoverable`.
 
 Create a config file outside the checkout, for example `sandbox-config.toml`:
 
@@ -369,7 +392,9 @@ echo $! > "$SANDBOX_DIR/pids/server.pid"
 ```
 
 Register the deployments you need. The registrar assumes the Docker image path `/app`; in a
-sandbox point it at your checkout and register only the two deployments this runbook uses:
+sandbox point it at your checkout and register only the two deployments this runbook uses.
+The command takes no options: do not run it with `--help` (it starts a real registration
+instead of printing help).
 
 ```bash
 SAPPHIRE_FLOW_SOURCE_ROOT=$PWD \
@@ -449,10 +474,14 @@ uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code 00001 \
 ```
 
 `--code` and `--network` must equal the handover package's, or the basin import holds the
-basin. The pair is unique across all tenants (a duplicate is refused). The Gateway name must be
-lower-case letters, digits and underscores; it is only checked and printed into the "next
+basin. The pair is unique across all tenants (a duplicate is refused), and **this guide has no
+tool to change a station's code, network or tenant afterwards**: check `--tenant`, `--code` and
+`--network` against the handover before you add `--apply`. `--gateway-name` is required. It must
+be lower-case letters, digits and underscores; it is only checked and printed into the "next
 steps" lines, it is not stored on the station. The command prints `DRY RUN (nothing written)` or
-`APPLIED`, the station, the gauge and a worked conversion example. Exit 0 ok, 1 refused or
+`APPLIED`, the station, the gauge and a worked conversion example. The station id shown by the
+dry run is **not** the id `--apply` writes (a new one is drawn each time): take ids from the
+database, never from a dry run. Exit 0 ok, 1 refused or
 failed (the reason is in the log), 2 bad options. `forecast_targets` (what the station is
 forecast for) is not set here; Step 8 sets it.
 
@@ -460,6 +489,20 @@ forecast for) is not set here; Step 8 sets it.
 
 This one has a tool: `uv run python -m sapphire_flow.cli.import_basin_package --package-dir <handover>/package`
 ([importer runbook](basin-static-importer-runbook.md)). Expect the log line `basin_importer.cli.report` with `accepted=1`, `imported_basins=1`, `onboarding_held=0`.
+
+**Sandbox without a handover (optional, unverified).** For a real station the package comes from
+hydrosolutions. For an offline rehearsal the repository holds one test package,
+`tests/fixtures/basin_static/nepal-dhm-basins` (see the README next to it): station code
+`123`, network `dhm`, polygon name `g_123`. Create the station record in Step 3 with that code
+and network and use `--package-dir tests/fixtures/basin_static/nepal-dhm-basins`; wherever this
+guide says `00001` and `research`, read `123` and `dhm`, and `g_123` for `g_00001`. Not yet
+rehearsed as-is: the 2026-11-22 walkthrough copied the package, changed its code and recomputed
+its checksums (the manifest checksums are written `sha256:<hex>`). If the import holds a basin,
+the importer report names the reason; compare code and network first. The package declares the
+Gateway name `nepal_dhm_v1` (the `original_gateway_hru_name` in Step 5b); your runtime name is
+the one you register. Import the basin before a model is assigned to the group, because an
+assigned model makes missing static attributes a hold reason. This package is a test fixture:
+never use it for a real station.
 
 ## Step 5: group, weather scope, weather history
 
@@ -476,8 +519,11 @@ SAPPHIRE_CONFIG=sandbox-config.toml uv run python scripts/create_station_group.p
 It prints `DRY RUN (nothing written)` or `APPLIED`, the group name and id, and the station
 codes it adds (`add:`), keeps (`already:`) or cannot use (`UNKNOWN:`, `OTHER TENANT:`; exit 1);
 a re-run with nothing to change says "no change (idempotent re-run)". An unknown code also
-prints the networks that have stations in the tenant. Look up the station id for 5b:
-`select id from stations where code = '00001' and network = 'research'`.
+prints the networks that have stations in the tenant. The group id printed by a dry run is not
+the id `--apply` writes (for a group that does not exist yet). Look both ids up in the database for 5b:
+`select id from stations where code = '00001' and network = 'research'` and
+`select id from station_groups where name = 'my-group'` (add the tenant if several tenants use
+the same group name).
 
 **5b. Weather scope.** Add to the config file (ids from 5a):
 
@@ -502,7 +548,7 @@ for other tenants. `--confirm-package-joins` is always required.
 
 ```bash
 uv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --config sandbox-config.toml \
-  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins --apply
+  --tenant chwrr --confirm-t8 --weather-scope trishuli --confirm-package-joins   # first without --apply, then add it
 ```
 
 **5c. Weather history.** First make sure the Gateway side is done: the name is **subscribed**
@@ -517,10 +563,24 @@ uv run python -m sapphire_flow.cli.onboard_nepal history --config sandbox-config
   --confirm-t8 --weather-scope trishuli --start 2022-03-01T00:00:00Z --end 2026-11-09T00:00:00Z
 ```
 
+There is no dry run for this command when `--weather-scope` is given: `--dry-run` is refused
+(today with an unhelpful `ConfigurationError` line and no reason).
+
 Success means the job was submitted, not finished: wait for the worker to log `Completed`, then
 check `select parameter, count(*), min(valid_time), max(valid_time) from historical_forcing group by 1`.
 The Gateway's ERA5 trails real time by about 8 days: that gap is filled at forecast time by the
 operational product (created by `weather-bindings` in 5b).
+
+**Keeping the history current.** This job imports a fixed window once. A host that is to keep
+its weather history current needs the separate rolling refresh
+(`refresh-operational-era5-history`), which is **off unless the host sets both
+`SCHEDULE_REFRESH_OPERATIONAL_ERA5` (a UTC cron) and `SAPPHIRE_ERA5_WEATHER_SCOPE`** when it
+registers deployments ([orchestration standard](../standards/orchestration.md)). Without it
+stored history stops growing, and the readiness report says so in `weather_wait_facts`
+(status 2026-11-21: the Nepal host had no schedule yet and its history ended 26 October; this
+sentence will go stale). The refresh re-imports the last 30 days that
+ERA5 should already have, so a missed day is repaired by the next run; a longer outage needs a
+manual run of this job.
 
 ## Step 6: observations, datum, rating, quality checks
 
@@ -677,6 +737,19 @@ expected (the lookback ends yesterday and ERA5 lags by about 8 days; the operati
 they are not counted as missing: that line tells you whether to wait for the Gateway backfill
 or fix a binding. The report does not show the outcome of the station's last forecast cycle
 (read it in the cycle logs). Hand the output to the hydrologist.
+
+Read the lines, not only the count: how many pass depends on what you gave it. A first offline
+run with no model and no Gateway data shows fewer passes than the "13 passed" in the examples
+below (no `--model` makes `statics` not applicable). Without `--model`, `group_and_model`
+passes whenever the station is in a group, even when it prints `assignments=none`; give
+`--model` to make it fail unless that model has an ACTIVE assignment, and read the
+`assignments=` part before you treat the station as ready for promotion. `rating_curve` reads
+NOT_APPLICABLE while discharge is not a forecast target and not derived from water level alone: a
+station that lists `discharge` among its measured parameters (as the Step 3 example does) shows
+NOT_APPLICABLE until Step 8 sets the target, even if a curve is already stored. A repeated
+`load_station_observations ... --apply` of the same file reports `rows written or changed: 0`
+and `0 passed`: nothing new was written and the quality checks were not repeated; it is not a
+failure.
 
 **Operational readiness is not the same as enough history for training.** The counted lines
 answer "can the forecast cycle run for this station with the model assigned to it". Whether the
