@@ -1,5 +1,5 @@
 ---
-status: READY (N1a only; N1b–d execution remains DRAFT)
+status: N1a COMPLETE; N1b–d execution remains DRAFT
 created: 2026-11-22
 owner: deployment orchestrator
 baseline: 5dd6232ec
@@ -23,7 +23,7 @@ exports. Public documentation describes the procedure; actual configurations,
 credentials, schedules, station lists, model choices and evidence stay private.
 
 This plan separates a small code repair from preparation of the concrete operational
-recipe. Only the code repair can become implementation-ready in this review.
+recipe. The initial review admitted only the code repair, now complete.
 Preparation of later packets is read-only/offline work; their execution still
 requires review of the completed recipe, data handling and commissioning boundary.
 No host creation, data transfer, registration or activation is authorized by this
@@ -232,7 +232,7 @@ drift checks and paused-pool creation in N1b, outside this repair. The review us
 bounded code excerpts; the implementation must still verify the full parser,
 filtering and real Compose boundary with the tests above. Full report stays local.
 
-The orchestrator marks **N1a READY**. N1b–d execution remains DRAFT until concrete
+The initial review marked **N1a READY**. N1b–d execution remains DRAFT until concrete
 packets are reviewed. Owner approval/merge and release admission remain separate
 from orchestrator readiness. No deployment occurred in either pass.
 
@@ -247,10 +247,48 @@ refuses it; neither supplied preserves the existing defaults and two-job behavio
 One independent Claude patch review found no blockers. Incorporated its advisory
 cron-parity check for dormant optional jobs, dormant installation-preview coverage,
 precise failure assertions and absent-pair selection regressions. Existing excluded
-default-job behavior is unchanged. Normal source CI and owner approval/merge remain
-the completion gates; no registration, credential access or target operation is
-part of this implementation. N1b–d remain DRAFT.
+default-job behavior is unchanged. Final source CI passed on `bb15c9aea`, including
+all unit/integration shards and installation/rehearsal gates; the owner merged
+#607 as `af02ed67c`. N1a is complete. No registration, credential access or target
+operation was part of this implementation. N1b–d remain DRAFT.
+
+### N1b preparation evidence
+
+Read-only follow-up completed the launch-variable inventory. One local forecast
+variant uses a command that reapplies environment overrides after the worker has
+prepared the child environment; its stored environment alone is not the execution
+contract. Manual-job working directory, observation concurrency and parameters
+that need explicit fresh-registration values are now recorded privately. Different
+workers also mount different input bytes at the same container pathname. Preserve
+that service distinction; do not deduplicate by basename.
+
+A protected candidate now contains the profile, installation inputs, consolidated
+Compose recipe, per-service input references, seven-job contract and linked runbook.
+It derives from the pinned source base and records intentional target differences.
+The clean-environment, daemon-free render succeeds: eight services, the expected
+six normal registrar jobs, no builds or external volumes, and loopback-only HTTP.
+The additional local forecast remains an explicit supplemental registration
+requirement. The new [administrator guide](../deployment/operational-comparison.md)
+describes the preparation boundary without publishing agency values.
+
+This is not N1b completion or an offline pass. Application configuration bytes,
+data-bearing rating inputs and credential deliveries have not been copied; target
+image admission and host-path relocation remain unverified. The private runbook
+specifies the missing registration behavior but does not yet provide an executable
+invocation. Next, complete and review that bounded invocation, then qualify first
+and repeated registration, drift/partial failure and actual child configuration
+with synthetic inputs on isolated Prefect. Review the exact configuration semantic
+diff before approving target execution. N1c/N1d gates still apply before N2;
+no server was created and the source was not modified.
+
+One independent Claude documentation review found no blockers. Clarified image
+roles, preview outcomes, paused-pool ordering, repeat-registration acceptance and
+inventory reconciliation. The named provider/model terms and inventory counts
+were already in the merged parent/implementation plans; no private configuration
+values or new agency data are added. Private bytes and runtime evidence were not
+examined by this reviewer: the preparation results above are author-recorded
+evidence, not independent execution qualification. N1b execution remains DRAFT.
 
 ```json
-{"phases":[{"id":"N1a","status":"READY","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
+{"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
 ```

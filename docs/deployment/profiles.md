@@ -24,6 +24,10 @@ Matching hosted lifecycle qualification is required; the installer guide records
 the tested release/host combination and restart limits. There is no new manifest
 schema or secret-manager dependency.
 
+Broader operational recipes use the
+[comparison preparation guide](operational-comparison.md). It explains the private
+job inventory and runtime evidence still required beyond this offline checker.
+
 ## Selection and file ownership
 
 ```bash
