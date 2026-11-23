@@ -143,6 +143,20 @@ it is not an instruction to edit existing tenant rows or widen database privileg
 Preserve model-training basin references and the absence of external-import
 provenance where that is how the source artifact was created.
 
+For inputs with capture provenance, deployment support must check complete batches,
+not only timestamps. A batch can include a reading outside the forecast window;
+removing its provenance can make the restore fail. An older capture may also conflict
+with a corrected current observation. Do not drop that history to make import work:
+it can change which readings the system accepts. Stop and resolve the reconstruction
+method before transfer; fresh ingestion is a different comparison contract.
+
+Include database-generated ordering in the transfer inventory. An ordinary column-
+default check can miss identity columns, and some history readers select the latest
+record by that order. Preserve the required selection semantics and qualify subsequent
+writes; do not assume insertion order or a sequence reset is safe. Deployment support
+owns this check. The [reconstruction plan](../plans/2026-11-22-operational-deployment-recipe.md#c3a-capture-constraints-and-inventory-correction)
+records the tested boundary and remaining work.
+
 Keep source and target release identities explicit. A source upgrade after inventory
 requires a deliberate recipe/image review. The earlier inventory timestamp is not
 a database snapshot: filtering by creation time cannot recover later-corrected data.
