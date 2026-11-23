@@ -150,6 +150,13 @@ historical table does not prove the forecast used it. Record the selected issue
 instant and input windows in UTC separately from display timezone and local-day
 checks. Recheck these contracts when source and target releases differ.
 
+Inventory observations used for diagnostics as well as model values. Rejected
+discharge can contribute to rating warnings, and recent accepted observations
+after the last complete model day can determine freshness without entering the
+model's history. Deployment support must derive these separate windows from the
+actual reader and compare its exclusions and warnings. Copying only accepted
+model values can change the comparison even when the forecast numbers match.
+
 Normal onboarding imports can create new identifiers, rerun QC or promote a model.
 Do not describe those operations as preserving the original input history. Where
 preserving identifiers is necessary, resolve tenant creation **before** ordinary
@@ -164,6 +171,12 @@ removing its provenance can make the restore fail. An older capture may also con
 with a corrected current observation. Do not drop that history to make import work:
 it can change which readings the system accepts. Stop and resolve the reconstruction
 method before transfer; fresh ingestion is a different comparison contract.
+
+Check references inside batch records as well as database foreign keys. A capture
+can occur in several batches, linking further readings and history outside the
+initial window. Measure the complete linked set against the agreed station scope
+and size limits. If it exceeds them, hold the transfer and resolve the scope;
+do not clip the batch or silently switch to a smaller evidence set.
 
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest

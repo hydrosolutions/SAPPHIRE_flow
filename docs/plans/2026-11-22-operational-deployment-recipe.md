@@ -657,3 +657,44 @@ This closes only the bounded ordering-method question. Full consumed-input and
 recursive provenance closure, concrete snapshot/transfer qualification, chosen
 release/weather requirements and N1b/N1d execution gates remain open. C3b/C3c are
 not complete; N1b–d execution and N2 remain DRAFT.
+
+### C3b2: full-window census and reconstruction specification
+
+Prepare a bounded census before implementing a real exporter. Distinguish reader
+roots, supporting evidence and actually consumed inputs. Derive aligned model
+history, rejected-discharge lineage and trailing freshness windows from the chosen
+release's readers and merged model requirements. Freeze issue/validation instants,
+cohort and configuration together; the earlier diagnostic interval is not a trial
+snapshot. Include competing derived records and actual newest-delivery selection.
+Distinguish recomputed-but-unpersisted evidence, stale persisted evidence and the
+final consumed days. Classify native-capture versus legacy-custody bindings and
+preserve their different eligibility guards. Each table/read needs explicit covered,
+checked-empty or unchecked status; totals with unchecked dependencies are lower
+bounds, not complete transfer budgets.
+
+The private companion specification defines capture/batch/sighting expansion,
+commit-payload references, scope/measurement compatibility and finite refusal caps.
+Count minimum complete-batch support separately from the full provenance closure;
+neither authorizes discarding history. Resolve an excessive or incompatible closure
+before choosing a smaller transfer contract. Original manifests and qualification
+records remain immutable; use a linked amendment.
+
+| Slice | Deliverable | Acceptance / dependency |
+| --- | --- | --- |
+| C3b2a — local census proof | Private fixed-schema diagnostic, synthetic graph fixtures and existing reader regressions | Multi-hop/shared-batch closure, JSON references, outside-window support, corrections, scope/cap refusal and actual reader controls. Review and admission precede implementation; no source access. |
+| C3b2b — aggregate source census | Private count/size/held-reason report from one bounded read-only snapshot | C3b2a and patch review; actual selected job/worker configuration parses consistently; no substituted selector, lock-taking reader or detailed data export. Complete window and cohort, no sampling or truncated success. |
+| C3b2c — composed reconstruction rehearsal | Private manifest amendment and integrated synthetic restore/receipt proof | Full table/column/trigger dependencies resolved, including remaining observation-version/provisional inputs; combine observations, batches and derived evidence with actual role reads and history/diagnostic parity. No real-data transfer authority. |
+
+The runtime rating reader takes locks. A source read-only diagnostic must not call
+it, strip its locks or reconcile source data. Qualify any narrower diagnostic
+against the real reader locally and label its limits. Configuration refusal holds
+the actual-route census; a constructed selector is diagnostic evidence only.
+Weather/release admission, trial windows, provider budgets and commissioning still
+belong to C3c/N1b/N1d. These slices do not make N2 READY.
+
+One independent Claude plan review identified four technical gaps, now addressed:
+selection categories, coverage claims, evidence-mode guards and exact mapping of
+issue, validation and weather-cycle instants. The orchestrator admits **C3b2a local
+qualification only**; C3b2b/C3b2c remain DRAFT. Full review and the concrete companion
+specification stay private. No new implementation or runtime qualification is
+claimed by this specification update.
