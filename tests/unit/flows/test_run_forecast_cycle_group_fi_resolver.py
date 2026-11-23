@@ -279,6 +279,7 @@ def _run_cycle(
     models: dict[ModelId, object] | None,
     monkeypatch: pytest.MonkeyPatch | None = None,
     discovered: dict[ModelId, object] | None = None,
+    model_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if discovered is not None:
         assert monkeypatch is not None
@@ -301,6 +302,7 @@ def _run_cycle(
             forcing_store=stores.forcing_store,
             adapter=FakeWeatherForecastSource(result={}),
             models=models,  # type: ignore[arg-type]
+            model_ids=model_ids,
             config=_make_alerting_config(),
             qc_rules=_empty_qc_rules(),
             clock=_clock,
@@ -729,3 +731,13 @@ class TestGroupMemberInputIsolationInCycle:
         else:
             assert exclusions == []
         assert _predict_batch_failures(events) == []
+
+
+def test_scoped_cycle_retains_stations_with_only_group_assignments() -> None:
+    stores, sid_a, sid_b = _seed_group_of_two()
+    events = _run_cycle(
+        stores,
+        models={_GROUP_MODEL_ID: _wrapped_group_adapter()},
+        model_ids=[str(_GROUP_MODEL_ID)],
+    )
+    _assert_two_stations_forecast(stores, sid_a, sid_b, events)

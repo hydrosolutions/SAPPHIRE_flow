@@ -10,7 +10,7 @@ import pytest
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
 )
-from sapphire_flow.types.enums import QcStatus, WarmUpSource
+from sapphire_flow.types.enums import ForecastDataUse, QcStatus, WarmUpSource
 from sapphire_flow.types.rating_reconciliation import RatingWindowRead
 from tests.conftest import make_observation
 from tests.unit.services.test_operational_inputs import (
@@ -393,6 +393,8 @@ def _assemble_daily_discharge(
     missing_values: dict[int, float | None] | None = None,
     gated: bool = True,
     rating_samples: bool = True,
+    unassessed_days: frozenset[int] = frozenset(),
+    data_use: ForecastDataUse = ForecastDataUse.PROVISIONAL_RATING,
 ) -> tuple:
     import json
 
@@ -437,6 +439,9 @@ def _assemble_daily_discharge(
                     parameter="discharge",
                     timestamp=start + timedelta(days=i),
                     value=100.0 + i,
+                    qc_status=QcStatus.QC_UNCHECKED
+                    if i in unassessed_days
+                    else QcStatus.QC_PASSED,
                 ),
                 value=(missing_values or {}).get(i, 100.0 + i),
                 id=uuid4(),
@@ -519,7 +524,9 @@ def _assemble_daily_discharge(
         clock=lambda: issue,
         forecast_horizon_steps=1,
         time_step=timedelta(days=1),
-        rating_inputs=native,
+        rating_inputs=native
+        if data_use is ForecastDataUse.PROVISIONAL_RATING
+        else None,
     )
     return assembly, adapter, recording, group
 
@@ -579,7 +586,7 @@ def test_q7_p30_delivered_column_tolerance_remains_whole_column() -> None:
     assert assembly.inputs is not None
     assert assembly.inputs.past_targets.height == 30
     assert adapter.data_requirements.lookback_steps == 30
-    assert "discharge" not in dict(adapter.data_requirements.declared_lookbacks)
+    assert dict(adapter.data_requirements.declared_lookbacks)["discharge"] == 7
     assert len(adapter.assess_group_inputs(assembly.inputs)) == 1
 
 
@@ -997,3 +1004,64 @@ def test_success_coverage_fault_does_not_change_admission(
     assert outcome.failure is None
     assert set(outcome.results) == group.station_ids
     assert recording.predict_inputs is not None
+
+
+@pytest.mark.parametrize("q_lookback", [7, 30])
+@pytest.mark.parametrize("omitted", [set(range(30)), {0, 29}, {1}])
+@pytest.mark.parametrize("max_nan", [0, 30])
+def test_standard_group_declared_discharge_window_and_predict_gate(
+    q_lookback: int, omitted: set[int], max_nan: int
+) -> None:
+    from sapphire_flow.adapters import forecast_interface as fi
+    from sapphire_flow.types.enums import InputQualityCategory
+
+    assembly, adapter, recording, group = _assemble_daily_discharge(
+        omitted,
+        q_lookback=q_lookback,
+        max_nan=max_nan,
+        data_use=ForecastDataUse.STANDARD,
+        unassessed_days=frozenset(range(23)),
+    )
+    assert assembly.inputs is not None
+    assert assembly.inputs.past_targets.height == q_lookback
+    assert assembly.inputs.past_dynamic.height == 30
+    for _, evidence in assembly.inputs.source_evidence:
+        assert all(
+            obs.timestamp >= assembly.inputs.issue_time - timedelta(days=q_lookback)
+            for obs in evidence.observations
+        )
+    if q_lookback == 7:
+        from sapphire_flow.types.enums import ObservationQcCoverage
+
+        assert all(
+            m.observation_qc_coverage is ObservationQcCoverage.ALL_CHECKED
+            for m in assembly.metadata_by_station.values()
+        )
+    assert all(m.input_lineage is None for m in assembly.metadata_by_station.values())
+    # Fixture day 28 has only rating-derived data, never measured observations.
+    missing = len((omitted | {28}) & set(range(30 - q_lookback, 30)))
+    assert assembly.inputs.past_targets["discharge"].is_nan().sum() == missing
+    outcome = _run_daily_assembly(assembly, adapter, recording, group)
+    assert outcome.failure is None
+    if missing > max_nan:
+        assert recording.predict_inputs is None
+        assert outcome.results == {}
+        return
+    assert recording.predict_inputs is not None
+    delivered = (
+        next(iter(recording.predict_inputs.stations.values()))
+        .dynamic[timedelta(days=1)]
+        .data[fi.FISpatialRepresentation.POINT]
+        .past_known["obs"]["discharge"]
+        .data
+    )
+    assert delivered.height == q_lookback
+    assert delivered["discharge"].is_nan().sum() == missing
+    forecast = next(iter(outcome.results.values())).forecasts[0]
+    assert forecast.data_use is ForecastDataUse.STANDARD
+    assert forecast.input_lineage is None
+    assert any(
+        flag.category is InputQualityCategory.OBSERVATION
+        and f"{missing} of {q_lookback} assembly slots" in flag.detail
+        for flag in forecast.input_quality_flags
+    )

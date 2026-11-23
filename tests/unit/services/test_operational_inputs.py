@@ -2252,3 +2252,95 @@ class TestNativeRecapHistoryAssembly:
         assert frame["timestamp"].to_list() == [start, start + timedelta(days=1)]
         assert frame["precipitation"].to_list() == pytest.approx([24.0, 48.0])
         assert frame["temperature"].to_list() == pytest.approx([7.0, 9.0])
+
+
+@pytest.mark.parametrize("observed_days", [(), (2,), (1, 2, 3)])
+@pytest.mark.parametrize("tolerance", [0, 3])
+def test_standard_daily_group_missing_discharge_reaches_fi_gate(
+    observed_days: tuple[int, ...], tolerance: int
+) -> None:
+    import polars as pl
+
+    from sapphire_flow.adapters import forecast_interface as fi
+    from sapphire_flow.types.ids import StationGroupId
+    from sapphire_flow.types.model import GroupModelInputs
+    from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import (
+        SyntheticGroupFIModel,
+    )
+
+    raw = SyntheticGroupFIModel()
+    spec = raw.input_requirement.dynamic.pop(timedelta(hours=1))
+    dynamic = spec.data[fi.FISpatialRepresentation.POINT]
+    dynamic.past_known["obs"]["discharge"] = fi.PastKnownVariable(
+        lookback=3, max_nan=tolerance, unit=fi.Unit.M3_PER_S
+    )
+    raw.input_requirement.dynamic[timedelta(days=1)] = spec
+    model = fi.ForecastInterfaceAdapter(raw, station_code_resolver=lambda _: "gauge-a")
+    sid = StationId(uuid4())
+    station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+        _make_stores_and_sources(sid, with_obs=False, with_nwp=False, with_state=False)
+    )
+    obs_store.store_observations(
+        [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=_ISSUE - timedelta(days=day),
+                value=float(day),
+                rng=random.Random(day),
+            )
+            for day in observed_days
+        ]
+    )
+    result = assemble_station_operational_inputs(
+        station_id=sid,
+        model=model,
+        model_id=_MODEL_ID,
+        issue_time=_ISSUE,
+        cycle_time=_CYCLE,
+        nwp_source=_NWP_SOURCE,
+        forcing_source=reanalysis,
+        weather_forecast_store=nwp_store,
+        obs_store=obs_store,
+        station_store=station_store,
+        basin_store=basin_store,
+        model_state_store=state_store,
+        clock=_clock,
+        forecast_horizon_steps=1,
+        time_step=timedelta(days=1),
+    )
+    assert result is not None
+    inputs, metadata = result
+    frame = inputs.data.past_targets
+    assert frame["timestamp"].to_list() == [
+        _ISSUE - timedelta(days=n) for n in (3, 2, 1)
+    ]
+    assert frame["discharge"].is_nan().sum() == 3 - len(observed_days)
+    assert frame.filter(pl.col("discharge").is_finite())["discharge"].to_list() == [
+        float(n) for n in (3, 2, 1) if n in observed_days
+    ]
+    assert metadata.input_lineage is None
+    if not observed_days:
+        assert metadata.observation_staleness_hours is None
+    group = GroupModelInputs(
+        group_id=StationGroupId(uuid4()),
+        station_ids=(sid,),
+        past_targets=frame.with_columns(pl.lit(str(sid)).alias("station_id")),
+        past_dynamic=pl.DataFrame(
+            schema={"station_id": pl.String, "timestamp": pl.Datetime("us", "UTC")}
+        ),
+        future_dynamic=pl.DataFrame(
+            {
+                "timestamp": [_ISSUE + timedelta(days=n) for n in (1, 2, 3)],
+                "station_id": [str(sid)] * 3,
+                "precipitation": [1.0] * 3,
+                "temperature": [5.0] * 3,
+            }
+        ),
+        static=None,
+        issue_time=_ISSUE,
+        time_step=timedelta(days=1),
+        forecast_horizon_steps=1,
+    )
+    issues = model.assess_group_inputs(group)
+    assert bool(issues) == (3 - len(observed_days) > tolerance)

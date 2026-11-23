@@ -27,6 +27,7 @@ from sapphire_flow.services.training_data import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AggregationMethod,
+    ArtifactScope,
     EnsembleMode,
     ForcingRoute,
     FutureWeatherPolicy,
@@ -86,6 +87,7 @@ class OperationalInputMetadata:
     # from the observations and carried here.
     observation_qc_coverage: ObservationQcCoverage
     input_lineage: ForecastInputLineage | None = None
+    normalized_discharge_steps: int | None = None
     # Group schema conformance must not erase pre-fill temporal/column gaps.
     past_forcing_before_conformance: pl.DataFrame | None = field(
         default=None, compare=False, repr=False
@@ -1156,6 +1158,23 @@ def _normalize_provisional_discharge(
     ).with_columns(pl.col("discharge").fill_null(float("nan")))
 
 
+def _normalize_standard_discharge(
+    frame: pl.DataFrame, *, start: UtcDatetime, end: UtcDatetime
+) -> pl.DataFrame:
+    calendar = pl.DataFrame(
+        {"timestamp": pl.datetime_range(start, end, "1d", closed="left", eager=True)}
+    )
+    if frame.is_empty():
+        return calendar.with_columns(pl.lit(float("nan")).alias("discharge"))
+    # Validate labels before casting, preserving the provisional route's rules.
+    validated = _normalize_provisional_discharge(frame, start=start, end=end)
+    return (
+        calendar.cast({"timestamp": validated.schema["timestamp"]})
+        .join(validated, on="timestamp", how="left", validate="1:1")
+        .with_columns(pl.col("discharge").cast(pl.Float64).fill_null(float("nan")))
+    )
+
+
 def assemble_station_operational_inputs(
     station_id: StationId,
     model: StationForecastModel | GroupForecastModel,
@@ -1231,7 +1250,24 @@ def assemble_station_operational_inputs(
     # comment here called `past_dynamic`'s different, unresampled cadence
     # legitimate — it is the defect, not an exemption: a model declaring a
     # daily step was handed whatever cadence the reanalysis happened to have.
+    normalize_standard_discharge = (
+        rating_inputs is None
+        and getattr(model, "artifact_scope", None) is ArtifactScope.GROUP
+        and requirements_override is None
+        and time_step == timedelta(days=1)
+        and model.data_requirements.required_past_targets == frozenset({"discharge"})
+        and reqs.target_parameters == frozenset({"discharge"})
+        and isinstance(model, GroupInputGate)
+    )
+    target_lookback_steps = (
+        dict(reqs.declared_lookbacks).get("discharge", reqs.lookback_steps)
+        if normalize_standard_discharge
+        else reqs.lookback_steps
+    )
     past_targets_start, past_targets_end = aligned_lookback_bounds(
+        issue_time, target_lookback_steps, time_step
+    )
+    past_dynamic_start, _ = aligned_lookback_bounds(
         issue_time, reqs.lookback_steps, time_step
     )
 
@@ -1377,7 +1413,11 @@ def assemble_station_operational_inputs(
         and isinstance(model, GroupInputGate)
     )
     try:
-        if normalize_discharge:
+        if normalize_standard_discharge:
+            past_targets = _normalize_standard_discharge(
+                past_targets, start=past_targets_start, end=past_targets_end
+            )
+        elif normalize_discharge:
             past_targets = _normalize_provisional_discharge(
                 past_targets, start=past_targets_start, end=past_targets_end
             )
@@ -1385,7 +1425,7 @@ def assemble_station_operational_inputs(
         # Exact daily alignment above makes this validation-only cast lossless.
         cadence_targets = (
             past_targets.cast({"timestamp": pl.Datetime("us", "UTC")})
-            if normalize_discharge
+            if normalize_discharge or normalize_standard_discharge
             else past_targets
         )
         validate_time_step_cadence(
@@ -1451,7 +1491,7 @@ def assemble_station_operational_inputs(
         per_target_counts = {
             p: (
                 int(past_targets[p].is_finite().sum())
-                if normalize_discharge
+                if normalize_discharge or normalize_standard_discharge
                 else past_targets[p].drop_nulls().len()
             )
             if p in past_targets.columns
@@ -1459,14 +1499,14 @@ def assemble_station_operational_inputs(
             for p in reqs.target_parameters
         }
         lookback_got = min(per_target_counts.values())
-        if lookback_got < reqs.lookback_steps:
+        if lookback_got < target_lookback_steps:
             log.warning(
                 "operational_inputs.short_lookback",
                 station_id=str(station_id),
                 issue_time=str(issue_time),
                 representative_model_id=str(model_id),
                 per_target_counts=per_target_counts,
-                lookback_needed=reqs.lookback_steps,
+                lookback_needed=target_lookback_steps,
                 lookback_got=lookback_got,
             )
 
@@ -1484,7 +1524,7 @@ def assemble_station_operational_inputs(
             # `past_targets` uses. The naive `lookback_start`/`issue_time`
             # window has a partial bucket at both ends whenever `issue_time`
             # is not itself a boundary (any 06/12/18Z cycle for a daily model).
-            start=past_targets_start,
+            start=past_dynamic_start,
             end=past_targets_end,
             parameters=past_dynamic_features,
         )
@@ -1697,6 +1737,9 @@ def assemble_station_operational_inputs(
         observation_staleness_hours=observation_staleness_hours,
         observation_qc_coverage=observation_qc_coverage,
         input_lineage=rating_lineage,
+        normalized_discharge_steps=target_lookback_steps
+        if normalize_standard_discharge
+        else None,
         nwp_age_hours=nwp_age_hours,
     )
 

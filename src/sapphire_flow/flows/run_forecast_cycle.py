@@ -2471,6 +2471,125 @@ def _with_group_station_code_resolvers(
     return with_group_station_code_resolvers(models, station_store)
 
 
+def _parse_model_selection(
+    model_ids: object, data_use: ForecastDataUse
+) -> frozenset[ModelId] | None:
+    selected_model_ids: frozenset[ModelId] | None = None
+    if model_ids is not None:
+        if data_use is not ForecastDataUse.STANDARD:
+            raise ConfigurationError("model_ids is supported only for standard cycles")
+        if (
+            not isinstance(model_ids, list)
+            or not model_ids
+            or any(
+                not isinstance(value, str)
+                or not value
+                or value.strip() != value
+                or any(character.isspace() for character in value)
+                for value in model_ids
+            )
+        ):
+            raise ConfigurationError(
+                "model_ids must contain non-empty model identifiers"
+            )
+        selected_model_ids = frozenset(ModelId(value) for value in model_ids)
+        if len(selected_model_ids) != len(model_ids):
+            raise ConfigurationError("model_ids must not contain duplicates")
+
+    return selected_model_ids
+
+
+def _select_cycle_models(
+    models: dict[ModelId, ForecastModel],
+    selected_model_ids: frozenset[ModelId] | None,
+    config: DeploymentConfig,
+) -> dict[ModelId, ForecastModel]:
+    if selected_model_ids is not None:
+        if (
+            config.daily_evaluation is not None
+            and ModelId(config.daily_evaluation.model_id) not in selected_model_ids
+        ):
+            raise ConfigurationError(
+                "model_ids must include the configured daily evaluation model"
+            )
+        unknown = selected_model_ids - models.keys()
+        if unknown:
+            raise ConfigurationError(
+                f"model_ids contains unknown models: {', '.join(sorted(unknown))}"
+            )
+        models = {
+            mid: model for mid, model in models.items() if mid in selected_model_ids
+        }
+
+    return models
+
+
+def _select_cycle_assignments(
+    model_assignments: dict[StationId, list[ModelAssignment]],
+    operational: list[StationConfig],
+    models: dict[ModelId, ForecastModel],
+    group_store: StationGroupStore | None,
+    selected_model_ids: frozenset[ModelId] | None,
+) -> tuple[dict[StationId, list[ModelAssignment]], list[StationConfig]]:
+    active_model_assignments: dict[StationId, list[ModelAssignment]] = {
+        sid: [
+            assignment
+            for assignment in assignments
+            if assignment.status is ModelAssignmentStatus.ACTIVE
+            and (
+                selected_model_ids is None or assignment.model_id in selected_model_ids
+            )
+        ]
+        for sid, assignments in model_assignments.items()
+    }
+    if selected_model_ids is not None:
+        from sapphire_flow.services.run_group_forecast import discover_group_runs
+
+        selected_stations = {
+            sid for sid, assignments in active_model_assignments.items() if assignments
+        }
+        if group_store is not None:
+            selected_stations.update(
+                sid
+                for group, _ in discover_group_runs(dict(models), group_store)
+                for sid in group.station_ids
+            )
+        operational = [
+            station for station in operational if station.id in selected_stations
+        ]
+
+    return active_model_assignments, operational
+
+
+def _scoped_group_weather_pairs(
+    selected_model_ids: frozenset[ModelId] | None,
+    models: dict[ModelId, ForecastModel],
+    operational: list[StationConfig],
+    group_store: StationGroupStore | None,
+    provisional_pairs: frozenset[tuple[StationId, ModelId]] | None,
+) -> frozenset[tuple[StationId, ModelId]] | None:
+    from sapphire_flow.services.run_group_forecast import discover_group_runs
+    from sapphire_flow.types.enums import ArtifactScope
+
+    if (
+        selected_model_ids is None
+        or provisional_pairs is not None
+        or group_store is None
+        or any(
+            getattr(model, "artifact_scope", None) is not ArtifactScope.GROUP
+            for model in models.values()
+        )
+    ):
+        return provisional_pairs
+    operational_ids = {station.id for station in operational}
+    return frozenset(
+        (sid, mid)
+        for group, mid in discover_group_runs(dict(models), group_store)
+        for sid in group.station_ids
+        if sid in operational_ids
+    )
+
+
 def _selected_weather_owner_dependencies(
     *,
     config: DeploymentConfig,
@@ -2745,6 +2864,7 @@ def run_forecast_cycle_flow(
     operational_weather_cache: object | None = None,
     operational_weather_adapter: object | None = None,
     operational_weather_principal: object | None = None,
+    model_ids: list[str] | None = None,
 ) -> ForecastCycleResult:
     operator_request = _parse_operator_retry(operator_daily_retry, cycle_time, data_use)
     flow_t0 = time.perf_counter()
@@ -2756,6 +2876,8 @@ def run_forecast_cycle_flow(
         raise ConfigurationError(
             "standard cycle cannot receive provisional rating inputs"
         )
+
+    selected_model_ids = _parse_model_selection(model_ids, data_use)
 
     created_http_client: Any = None
     operational_http_session: Any = None
@@ -3092,6 +3214,8 @@ def run_forecast_cycle_flow(
 
             models = discover_models()
 
+        models = _select_cycle_models(models, selected_model_ids, config)
+
         # Plan 312: a GROUP-scoped ForecastInterface model needs a
         # `station_code_resolver` for input conversion and predict_batch.
         # `discover_models()` wraps FI models WITHOUT one, so the cycle
@@ -3242,10 +3366,21 @@ def run_forecast_cycle_flow(
         # (Plan 100's locked all-status DB-drift contract). The ACTIVE-only view
         # below is what forecasting, input assembly, and alert-priority consume
         # (Plan 124 — station path must match the group path's active-only rule).
-        active_model_assignments: dict[StationId, list] = {
-            sid: _active_only(assignments)
-            for sid, assignments in model_assignments.items()
-        }
+        active_model_assignments, operational = _select_cycle_assignments(
+            model_assignments,
+            operational,
+            models,
+            cast("StationGroupStore | None", group_store),
+            selected_model_ids,
+        )
+
+        selected_group_weather_pairs = _scoped_group_weather_pairs(
+            selected_model_ids,
+            models,
+            operational,
+            cast("StationGroupStore | None", group_store),
+            provisional_weather_pairs,
+        )
         all_thresholds: dict[StationId, list[StationThreshold]] = {
             s.id: station_store.fetch_thresholds(s.id)  # type: ignore[union-attr]
             for s in operational
@@ -3396,7 +3531,7 @@ def run_forecast_cycle_flow(
                     if isinstance(adapter, CandidateAwareForecastSource)
                     else None,
                     issue_time=resolved_cycle_time,
-                    eligible_group_pairs=provisional_weather_pairs,
+                    eligible_group_pairs=selected_group_weather_pairs,
                     gap_config=config.weather_gap_fill,
                 )
                 errors.extend(prepared_weather.refusal_messages)
@@ -3456,7 +3591,7 @@ def run_forecast_cycle_flow(
                     clock=clock,
                     id_gen=id_gen,
                     fetch_candidate=selected_fetch_candidate,
-                    eligible_group_pairs=provisional_weather_pairs,
+                    eligible_group_pairs=selected_group_weather_pairs,
                 )
                 prepared_weather = negotiated.prepared
                 weather_refresh = OperationalWeatherRefresh(

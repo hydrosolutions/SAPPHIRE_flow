@@ -367,3 +367,29 @@ Swiss runtime qualification remains required before the first production run:
 verify the pinned model's trainer/finetune schema, exact weather/discharge coverage,
 approved donor, registered deployment and a bounded resource/time budget. No pilot
 configuration or learning-rate defaults are claimed by the template.
+
+### Standard model-scoped issuance
+
+The forecast cycle accepts `model_ids=["cmal_nepal_static_encoder"]` with
+`data_use="standard"`. Omit `model_ids` to retain normal discovery. The selector
+filters installed models and active assignments in memory; group-only selections
+use the operational group members for both weather preparation and bounded horizon
+negotiation. It does not assign,
+activate or promote anything. Empty, duplicate, unknown or whitespace-bearing
+identifiers are refused, as is selection on a provisional-rating run. If the
+configuration enables daily evaluation, its configured model must be selected too;
+use a dedicated configuration for an independent model-only deployment.
+
+Standard UTC-daily FI group models declaring discharge-only past targets receive
+an explicit calendar of NaNs where accepted discharge observations are absent.
+The target's own declared lookback is preserved even when weather needs a longer
+window. FI's unchanged `max_nan` gate decides whether prediction may proceed;
+this does not impute discharge, create observations, pad future weather or add
+rating lineage. Missing discharge remains visible in observation-quality flags.
+Other target/cadence routes and provisional rating evidence checks are unchanged.
+
+For the Nepal static encoder, qualify this standard route independently of the
+existing CMAL-small provisional deployment. Check persisted forecasts and API
+listing/detail, model/artifact identity, finite ordered quantiles, actual horizon,
+missing-input flags and recurrence before declaring it operational. A completed
+Prefect run alone does not establish that this model produced forecasts.
