@@ -2852,7 +2852,12 @@ Do not change persisted v1/v2 dataclasses or weaken receipt coverage. Tests:
 `test_operational_weather_horizon`, `test_selected_weather_fi_cycle`, selected
 cycle/failure boundaries, track resolution and v1 compatibility. Only uniform
 ceiling, single-member, all-AT_MOST group tracks negotiate; other routes retain
-strict requests. All group members and a contiguous issue-start prefix required.
+strict requests. Require all group members by default, or all explicitly selected
+station/model pairs when the cycle passes eligibility to both preparation and
+negotiation. Never derive selection from weather availability or bindings. Missing
+eligible pairs or out-of-selection projections leave strict requests unchanged
+without negotiation or candidate acquisition. Overlapping models cannot satisfy
+each other's missing assignments. Require a contiguous issue-start prefix.
 
 ### Configured fine-tuning (issue 538)
 

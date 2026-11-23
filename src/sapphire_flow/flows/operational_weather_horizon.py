@@ -107,6 +107,7 @@ def negotiate_weather_horizons(
     fetch_candidate: Callable[
         [ForcingTrackKey, list[StationWeatherSource], UtcDatetime], RawFetchOutcome
     ],
+    eligible_group_pairs: frozenset[tuple[StationId, ModelId]] | None = None,
 ) -> NegotiatedWeather:
     if group_store is None:
         return NegotiatedWeather(prepared=prepared, candidates={})
@@ -124,6 +125,13 @@ def negotiate_weather_horizons(
                 or adapter.expected_member_ids(track.key) != frozenset({0})
                 or len({h.value for h in track.fetch_horizons.values()}) != 1
                 or any(item.assignment not in group_pairs for item in track.assignments)
+                or (
+                    eligible_group_pairs is not None
+                    and any(
+                        item.assignment not in eligible_group_pairs
+                        for item in track.assignments
+                    )
+                )
             ):
                 continue
             ceiling = next(iter(track.fetch_horizons.values())).value
@@ -143,9 +151,16 @@ def negotiate_weather_horizons(
             else:
                 floor = max(floors)
                 station_ids = {item.assignment[0] for item in track.assignments}
-                # Preparation must include each discovered group in full.
+                assignment_pairs = {item.assignment for item in track.assignments}
+                # Eligibility comes from selection, never available weather or bindings.
                 if any(
-                    not set(group.station_ids) <= station_ids
+                    not {
+                        (sid, mid)
+                        for sid in group.station_ids
+                        if eligible_group_pairs is None
+                        or (sid, mid) in eligible_group_pairs
+                    }
+                    <= assignment_pairs
                     for group, mid in groups
                     if any(item.assignment[1] == mid for item in track.assignments)
                 ):

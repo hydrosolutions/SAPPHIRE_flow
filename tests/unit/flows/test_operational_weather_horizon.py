@@ -172,6 +172,8 @@ def negotiate_case(
     ensemble: bool = False,
     unequal: bool = False,
     failure: Exception | None = None,
+    eligible_group_pairs: frozenset[tuple[StationId, ModelId]] | None = None,
+    extra_model_stations: frozenset[StationId] | None = None,
 ) -> tuple[NegotiatedWeather, list[UtcDatetime]]:
     from typing import cast
 
@@ -267,6 +269,29 @@ def negotiate_case(
             created_at=ISSUE,
         )
     )
+    models = {mid: model}
+    if extra_model_stations is not None:
+        extra_mid = ModelId("other")
+        models[extra_mid] = model
+        groups.store_group_model_assignment(
+            GroupModelAssignment(
+                group_id=gid,
+                model_id=extra_mid,
+                time_step=step,
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=1,
+                created_at=ISSUE,
+            )
+        )
+        track = replace(
+            track,
+            assignments=track.assignments
+            + tuple(
+                replace(item, assignment=AssignmentKey((item.assignment[0], extra_mid)))
+                for item in track.assignments
+                if item.assignment[0] in extra_model_stations
+            ),
+        )
     assignments = {
         (item.assignment[0], item.assignment[1]): AssignmentWeatherRequirement(
             past=None,
@@ -329,13 +354,13 @@ def negotiate_case(
                 sid: BasinAverageForecast(
                     nwp_source="ifs_ecmwf", cycle_time=cycle, values=values
                 )
-                for sid in members
+                for sid in (source.station_id for source in sources)
             },
         )
 
     result = negotiate_weather_horizons(
         prepared=prepared,
-        models={mid: model},
+        models=models,
         group_store=groups,
         forecast_bindings=bindings,
         adapter=cast("CandidateAwareForecastSource", Source()),
@@ -347,7 +372,14 @@ def negotiate_case(
         clock=lambda: ISSUE,
         id_gen=uuid4,
         fetch_candidate=fetch,
+        eligible_group_pairs=eligible_group_pairs,
     )
+    assert result.prepared.resolver == prepared.resolver
+    assert tuple(item.key for item in result.prepared.projections) == tuple(
+        item.key for item in prepared.projections
+    )
+    if not result.candidates:
+        assert result.prepared == prepared
     return result, calls
 
 
@@ -409,3 +441,49 @@ def test_negotiation_fatal_is_deferred_for_attempt_recording() -> None:
     assert result.failure is failure
     assert result.candidates == {}
     assert calls == [ISSUE]
+
+
+def test_explicit_eligible_subset_negotiates_complete_prefix() -> None:
+    first = request().assignments[0].assignment
+    result, calls = negotiate_case(
+        partial_group=True, eligible_group_pairs=frozenset({first})
+    )
+    assert result.failure is None
+    assert calls == [ISSUE]
+    future = result.prepared.assignments[first].future
+    assert future is not None
+    assert {len(req.valid_times) for req in future.requirements} == {11}
+    assert {
+        h.value for h in result.prepared.projections[0].assignment_horizons.values()
+    } == {11}
+
+
+@pytest.mark.parametrize("selection", ["missing_member", "outside_selection", "empty"])
+def test_incomplete_or_unselected_pairs_keep_strict_request(selection: str) -> None:
+    pairs = [item.assignment for item in request().assignments]
+    eligible = {"missing_member": pairs, "outside_selection": pairs[1:], "empty": []}[
+        selection
+    ]
+    result, calls = negotiate_case(
+        partial_group=True, eligible_group_pairs=frozenset(eligible)
+    )
+    assert result.failure is None
+    assert result.candidates == {}
+    assert calls == []
+
+
+@pytest.mark.parametrize("include_missing_pair", [False, True])
+def test_overlapping_models_require_their_own_eligible_members(
+    include_missing_pair: bool,
+) -> None:
+    pairs = {item.assignment for item in request().assignments}
+    first, second = (StationId(UUID(int=i)) for i in (1, 2))
+    pairs.add((first, ModelId("other")))
+    if include_missing_pair:
+        pairs.add((second, ModelId("other")))
+    result, calls = negotiate_case(
+        eligible_group_pairs=frozenset(pairs), extra_model_stations=frozenset({first})
+    )
+    assert result.failure is None
+    assert calls == ([] if include_missing_pair else [ISSUE])
+    assert bool(result.candidates) is not include_missing_pair

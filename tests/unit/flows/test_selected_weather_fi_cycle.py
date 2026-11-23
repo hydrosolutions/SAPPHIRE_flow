@@ -74,6 +74,16 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     uniform_horizon: bool = False,
     refresh_case: Literal["none", "future_fatal"] = "none",
 ) -> None:
+    from sapphire_flow.flows import operational_weather_horizon as horizon
+
+    original_negotiate = horizon.negotiate_weather_horizons
+    selections: list[object] = []
+
+    def capture_selection(**kwargs: Any) -> horizon.NegotiatedWeather:
+        selections.append(kwargs["eligible_group_pairs"])
+        return original_negotiate(**kwargs)
+
+    monkeypatch.setattr(horizon, "negotiate_weather_horizons", capture_selection)
     if gap_age is not None or operational_support_days is not None:
         original_fetch = FixtureOperationalApi.operational
 
@@ -214,6 +224,13 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
         negotiated_future=uniform_horizon,
         future_support_days=support_days,
     )
+    assert selections
+    expected_selection = (
+        frozenset({(UUID(int=1), "selected_weather_fixture")})
+        if data_use is ForecastDataUse.PROVISIONAL_RATING
+        else None
+    )
+    assert all(selection == expected_selection for selection in selections)
     assert forecasts is not None and len(forecasts) == expected
     if refresh_case == "future_fatal":
         return

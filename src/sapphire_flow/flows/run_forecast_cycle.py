@@ -3456,6 +3456,7 @@ def run_forecast_cycle_flow(
                     clock=clock,
                     id_gen=id_gen,
                     fetch_candidate=selected_fetch_candidate,
+                    eligible_group_pairs=provisional_weather_pairs,
                 )
                 prepared_weather = negotiated.prepared
                 weather_refresh = OperationalWeatherRefresh(

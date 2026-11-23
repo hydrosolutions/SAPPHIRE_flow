@@ -218,7 +218,11 @@ ingestion. Keep global capabilities unchanged. The selected UTC-daily control
 route negotiates a common complete prefix for FI group models whose future
 variables all explicitly permit a shorter horizon and share one ceiling. The
 static encoder can use 1–15 complete days; with 11 available it receives 11,
-without padding. All group stations must have support. Leading/interior holes
+without padding. All group stations must have support unless the cycle explicitly
+selects eligible station/model pairs. In that case every selected pair must be
+prepared and supported; missing bindings or weather cannot shrink that selection.
+The Nepal static encoder may therefore run for its 17 operational opt-ins while
+four other group stations remain onboarding. This does not promote those stations. Leading/interior holes
 reject that candidate and trigger the existing bounded cycle walk-back.
 Exact, mixed, station-only and ensemble requirements keep their strict selected
 request behavior. A full 15 days requires issue-day 00Z with starts through
