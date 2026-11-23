@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any, Literal
 from uuid import UUID
 
 import pandas as pd
@@ -70,6 +71,8 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     support_days: int | None,
     operational_support_days: int | None,
     gap_age: int | None,
+    uniform_horizon: bool = False,
+    refresh_case: Literal["none", "future_fatal"] = "none",
 ) -> None:
     if gap_age is not None or operational_support_days is not None:
         original_fetch = FixtureOperationalApi.operational
@@ -91,6 +94,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
             return response
 
         monkeypatch.setattr(FixtureOperationalApi, "operational", limited_support)
+    delivered_steps = (support_days or 15) if uniform_horizon else 10
     step = timedelta(days=1)
     requirement = fi.InputRequirement(
         targets={
@@ -121,7 +125,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
                         future_known={
                             "nwp": {
                                 "precipitation": fi.FutureKnownVariable(
-                                    future_steps=10,
+                                    future_steps=15 if uniform_horizon else 10,
                                     max_nan=0,
                                     unit=fi.Unit.MM,
                                     horizon_semantics=horizon_policy,
@@ -130,7 +134,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
                                     else None,
                                 ),
                                 "temperature": fi.FutureKnownVariable(
-                                    future_steps=3,
+                                    future_steps=15 if uniform_horizon else 3,
                                     max_nan=0,
                                     unit=fi.Unit.DEG_C,
                                     horizon_semantics=horizon_policy,
@@ -156,15 +160,17 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
                         metadata=fi.VariableMetadata(
                             unit=fi.Unit.M3_PER_S,
                             timedelta=step,
-                            forecast_horizon=10,
+                            forecast_horizon=delivered_steps,
                             offset=0,
                         ),
                         deterministic=fi.DeterministicData(
                             data=pl.DataFrame(
                                 {
-                                    "issue_datetime": [ISSUE] * 10,
-                                    "datetime": [ISSUE + step * i for i in range(10)],
-                                    "value": [30.0] * 10,
+                                    "issue_datetime": [ISSUE] * delivered_steps,
+                                    "datetime": [
+                                        ISSUE + step * i for i in range(delivered_steps)
+                                    ],
+                                    "value": [30.0] * delivered_steps,
                                 }
                             )
                         ),
@@ -187,6 +193,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     forecasts = _run_selected_cycle(
         monkeypatch,
         group_run=True,
+        refresh_case=refresh_case,
         capture_fault="none",
         lookback_days=30,
         model_override=adapter,
@@ -198,10 +205,18 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
         expected_weather_error="past weather is blocked: missing_support"
         if operational_support_days is not None
         else None,
-        consumed_future_count=88,
+        consumed_future_count=(
+            min(delivered_steps, 6) * 8 + max(delivered_steps - 6, 0) * 4
+        )
+        * 2
+        if uniform_horizon
+        else 88,
+        negotiated_future=uniform_horizon,
         future_support_days=support_days,
     )
     assert forecasts is not None and len(forecasts) == expected
+    if refresh_case == "future_fatal":
+        return
     assert (recording.predict_inputs is not None) == bool(expected)
     if recording.predict_inputs is not None:
         delivered = (
@@ -211,8 +226,13 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
         )
         assert delivered.past_known["obs"]["discharge"].data.height == 30
         assert delivered.past_known["reanalysis"]["precipitation"].data.height == 30
-        assert delivered.future_known["nwp"]["precipitation"].data.height == 10
-        assert delivered.future_known["nwp"]["temperature"].data.height == 3
+        assert (
+            delivered.future_known["nwp"]["precipitation"].data.height
+            == delivered_steps
+        )
+        assert delivered.future_known["nwp"]["temperature"].data.height == (
+            delivered_steps if uniform_horizon else 3
+        )
     if gap_age is not None:
         forecast = forecasts[0]
         assert forecast.evidence is not None and forecast.evidence.snapshot is not None
@@ -231,3 +251,75 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
             if "Missing weather data estimated" in flag.detail
         ]
         assert bool(warnings) == (gap_age < 5)
+
+
+@pytest.mark.parametrize("days", [1, 3, 11, 15])
+def test_selected_group_uses_bounded_prefix_without_padding(
+    monkeypatch: pytest.MonkeyPatch, days: int
+) -> None:
+    test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
+        monkeypatch,
+        0,
+        1,
+        ForecastDataUse.STANDARD,
+        HorizonSemantics.AT_MOST,
+        days,
+        None,
+        None,
+        uniform_horizon=True,
+    )
+
+
+def test_negotiated_fatal_refresh_records_failed_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
+        monkeypatch,
+        0,
+        0,
+        ForecastDataUse.STANDARD,
+        HorizonSemantics.AT_MOST,
+        None,
+        None,
+        None,
+        uniform_horizon=True,
+        refresh_case="future_fatal",
+    )
+
+
+def test_selected_handoff_rejects_changed_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from sapphire_flow.flows import operational_weather_horizon as horizon
+    from sapphire_flow.services.operational_weather_proof import WeatherProofError
+    from sapphire_flow.services.track_resolution import AcceptedCandidate
+
+    original = horizon.negotiate_weather_horizons
+
+    def changed_cycle(**kwargs: Any) -> horizon.NegotiatedWeather:
+        result = original(**kwargs)
+        return replace(
+            result,
+            candidates={
+                key: replace(candidate, resolved_cycle=ISSUE + timedelta(days=1))
+                if isinstance(candidate, AcceptedCandidate)
+                else candidate
+                for key, candidate in result.candidates.items()
+            },
+        )
+
+    monkeypatch.setattr(horizon, "negotiate_weather_horizons", changed_cycle)
+    with pytest.raises(WeatherProofError, match="negotiated candidate differs"):
+        test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
+            monkeypatch,
+            0,
+            1,
+            ForecastDataUse.STANDARD,
+            HorizonSemantics.AT_MOST,
+            11,
+            None,
+            None,
+            uniform_horizon=True,
+        )

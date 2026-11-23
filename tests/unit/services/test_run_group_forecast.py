@@ -2963,3 +2963,78 @@ class TestStationResultExclusivity:
         )
         with pytest.raises(ValueError, match="exactly one outcome"):
             service._StationResultOutcome(result=None, rejected=payload, issue=issue)
+
+
+def test_unselected_at_most_group_keeps_strict_track_admission() -> None:
+    from forecast_interface.input.variable import HorizonSemantics
+
+    from sapphire_flow.adapters import forecast_interface as fi
+    from sapphire_flow.types.enums import ForcingRoute
+    from sapphire_flow.types.group_input import GroupMemberInputReason
+    from tests.unit.adapters.test_forecast_interface_adapter_nan_gate import (
+        RecordingFIForecastModel,
+    )
+
+    group = _make_group(StationId(uuid4()))
+    inputs = replace(_make_group_inputs(group), forcing_route=ForcingRoute.PER_TRACK)
+    requirement = fi.InputRequirement(
+        targets={
+            "discharge": fi.TargetSpec(
+                unit=fi.Unit.M3_PER_S,
+                representations=frozenset({fi.OutputRepresentation.DETERMINISTIC}),
+            )
+        },
+        dynamic={
+            _STEP: fi.SpatialInputSpec(
+                data={
+                    fi.FISpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputSpec(
+                        future_known={
+                            "nwp": {
+                                "precipitation": fi.FutureKnownVariable(
+                                    future_steps=3,
+                                    min_future_steps=1,
+                                    horizon_semantics=HorizonSemantics.AT_MOST,
+                                    max_nan=0,
+                                    unit=fi.Unit.MM,
+                                    ensemble_mode=fi.FIEnsembleMode.ENSEMBLE,
+                                )
+                            }
+                        }
+                    )
+                }
+            )
+        },
+    )
+    recording = RecordingFIForecastModel(
+        fi.ModelFailure(
+            model_name="fixture",
+            issue_datetime=_ISSUE,
+            cause=fi.FailureCause.INPUT_DATA,
+            message="must not predict",
+        ),
+        artifact_scope=fi.FIArtifactScope.GROUP,
+        requirement=requirement,
+    )
+    outcome = service.run_group_forecast(
+        group=group,
+        group_inputs=inputs,
+        metadata_by_station=_make_metadata_by_station(inputs.station_ids),
+        assignment=_make_assignment(group),
+        model=fi.ForecastInterfaceAdapter(recording),
+        artifact_store=FakeModelArtifactStore(),
+        qc_checker=_QcChecker(),
+        qc_rules=_empty_qc_rules(),
+        qc_overrides=[],
+        baselines_by_station={},
+        nwp_cycle_reference_time=_CYCLE,
+        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        config=_make_config(),
+        clock=_clock,
+        id_gen=_id_gen(),
+        rng=random.Random(42),
+    )
+    assert outcome.results == {}
+    assert {item.reason for item in outcome.unavailable_members} == {
+        GroupMemberInputReason.INSUFFICIENT_FUTURE
+    }
+    assert recording.predict_inputs is None

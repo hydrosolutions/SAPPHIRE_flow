@@ -214,11 +214,24 @@ Daily radiation conserves energy through duration weighting; signed thermal
 flux is valid. Missing support remains missing and is never gap-filled.
 
 Add these exact names to the scoped Nepal NWP capabilities only after qualifying
-ingestion. Keep global capabilities unchanged. Qualify the 15-day future request
-with issue-day 00Z, past end equal to future start at midnight, and normalized
-starts through lead 354 (end 360). An older cycle provides only 14 days and does
-not satisfy the selected route's full 15-day request. The model's AT_MOST
-contract has not been changed.
+ingestion. Keep global capabilities unchanged. The selected UTC-daily control
+route negotiates a common complete prefix for FI group models whose future
+variables all explicitly permit a shorter horizon and share one ceiling. The
+static encoder can use 1–15 complete days; with 11 available it receives 11,
+without padding. All group stations must have support. Leading/interior holes
+reject that candidate and trigger the existing bounded cycle walk-back.
+Exact, mixed, station-only and ensemble requirements keep their strict selected
+request behavior. A full 15 days requires issue-day 00Z with starts through
+lead354 (end360); older00Z cycles can provide shorter supported prefixes.
+The model returns its actual horizon and DATA_AVAILABILITY warning on a short
+run. Longer horizons carry greater uncertainty; preserve all output quantiles.
+
+The negotiation retains at most65,536 raw records across single-member tracks;
+it reuses the accepted candidate rather than fetching twice. Overflow refuses
+that track. Final attempts and receipts describe exactly the chosen days; old
+v1/v2 evidence bytes are unchanged. A same-day retry gets a new cache generation,
+so an11-day receipt remains valid when a later refresh supplies12days.
+Nonzero-grid/subdaily and non00Z long-range qualification remain separate work.
 
 Capacity measured with actual typed codecs on 20 November: 380 native-hourly,
 four-channel days occupy **11,708,471 bytes in v1**, **11,730,261 in v2**;

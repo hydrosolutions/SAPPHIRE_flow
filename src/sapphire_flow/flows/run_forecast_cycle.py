@@ -3425,6 +3425,39 @@ def run_forecast_cycle_flow(
                 weather_earliest_cycle = ensure_utc(
                     clock() - timedelta(hours=config.nwp_max_fallback_age_hours)
                 )
+
+                def selected_fetch_candidate(
+                    key: ForcingTrackKey,
+                    bindings: list[StationWeatherSource],
+                    candidate: UtcDatetime,
+                ) -> RawFetchOutcome:
+                    return fetch_forcing_candidate_task.with_options(
+                        retries=resolution_policy.max_retries
+                    )(
+                        cast("CandidateAwareForecastSource", adapter),
+                        key,
+                        bindings,
+                        candidate,
+                    )
+
+                from sapphire_flow.flows.operational_weather_horizon import (
+                    negotiate_weather_horizons,
+                )
+
+                negotiated = negotiate_weather_horizons(
+                    prepared=prepared_weather,
+                    models=models,
+                    group_store=cast("StationGroupStore | None", group_store),
+                    forecast_bindings=forecast_bindings,
+                    adapter=cast("CandidateAwareForecastSource", adapter),
+                    policy=resolution_policy,
+                    issue_time=resolved_cycle_time,
+                    earliest_cycle=weather_earliest_cycle,
+                    clock=clock,
+                    id_gen=id_gen,
+                    fetch_candidate=selected_fetch_candidate,
+                )
+                prepared_weather = negotiated.prepared
                 weather_refresh = OperationalWeatherRefresh(
                     specs=prepared_weather.specs,
                     cache=cast(
@@ -3442,6 +3475,20 @@ def run_forecast_cycle_flow(
                     ),
                 )
                 weather_refresh.begin()
+                if negotiated.failure is not None:
+                    from sapphire_flow.flows.operational_weather_refresh import (
+                        fatal_weather_reason,
+                    )
+
+                    weather_refresh.fail_future(
+                        tuple(
+                            request
+                            for spec in prepared_weather.specs
+                            for request in spec.future_requests
+                        ),
+                        reason=fatal_weather_reason(negotiated.failure),
+                    )
+                    raise negotiated.failure
                 past_starts = [
                     spec.past_requirement.start
                     for spec in prepared_weather.specs
@@ -3474,20 +3521,6 @@ def run_forecast_cycle_flow(
                             )
                         )
 
-                def selected_fetch_candidate(
-                    key: ForcingTrackKey,
-                    bindings: list[StationWeatherSource],
-                    candidate: UtcDatetime,
-                ) -> RawFetchOutcome:
-                    return fetch_forcing_candidate_task.with_options(
-                        retries=resolution_policy.max_retries
-                    )(
-                        cast("CandidateAwareForecastSource", adapter),
-                        key,
-                        bindings,
-                        candidate,
-                    )
-
                 selected_tracks = resolve_selected_weather_tracks(
                     projections=prepared_weather.projections,
                     forecast_bindings=forecast_bindings,
@@ -3500,6 +3533,7 @@ def run_forecast_cycle_flow(
                     store=weather_forecast_store,
                     owner=weather_refresh,
                     fetch_candidate=selected_fetch_candidate,
+                    negotiated_candidates=negotiated.candidates,
                 )
                 weather_completed = weather_refresh.finish(
                     earliest_cycle=weather_earliest_cycle

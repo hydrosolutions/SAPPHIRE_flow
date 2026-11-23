@@ -2841,3 +2841,15 @@ stay1/2. Preserve parent-chain authority in both daily readers, as-of redaction,
 verified exact output references, and operations-only actor/reason privacy in the
 evaluation serializer/contract. Run operator store/flow, daily recovery/one-shot,
 evaluation API and contract tests. See operations/operator-daily-retry.md.
+
+### Bounded selected group horizon
+
+`flows/operational_weather_horizon` negotiates an exact daily prefix before cache
+begin, using FI per-feature floors and the existing candidate walk-back. Trace
+prepare/resolver identity, group discovery, deferred fatal-attempt recording,
+accepted-candidate handoff, exact receipt commit, group adequacy and capture.
+Do not change persisted v1/v2 dataclasses or weaken receipt coverage. Tests:
+`test_operational_weather_horizon`, `test_selected_weather_fi_cycle`, selected
+cycle/failure boundaries, track resolution and v1 compatibility. Only uniform
+ceiling, single-member, all-AT_MOST group tracks negotiate; other routes retain
+strict requests. All group members and a contiguous issue-start prefix required.
