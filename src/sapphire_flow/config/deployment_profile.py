@@ -201,6 +201,7 @@ CONFIG_READER_COVERAGE: dict[str, str] = {
     "weather_forecast": "shared mapping parser; enabled providers remain pending",
     "cors": "pure exact-origin parser used by the API and wiring checker",
     "onboarding": "checked with parse_onboarding_config",
+    "fine_tuning": "per-run TOML validated by CLI/worker; not host defaults",
     "qc_rules": "checked with parse_qc_rules; legacy defaults labelled",
     "forecast_qc_rules": "checked with parse_forecast_qc_rules",
     "deployment_identity": "checked with parse_deployment_identity_config",

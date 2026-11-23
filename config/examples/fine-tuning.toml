@@ -1,0 +1,53 @@
+# Template only: replace every placeholder and choose fitting/evaluation periods
+# from the deployment's measured weather/discharge coverage before submission.
+schema_version = 1
+request_id = "REPLACE-WITH-A-NEW-UUID"
+
+[deployment]
+name = "train-models/REPLACE-WITH-REGISTERED-DEPLOYMENT"
+tenant = "REPLACE-WITH-AUTHORIZED-TENANT"
+operator = "REPLACE-WITH-OPERATOR"
+
+[model]
+id = "cmal_small"
+group_id = "REPLACE-WITH-ASSIGNED-GROUP-UUID"
+base_artifact_id = "REPLACE-WITH-APPROVED-DONOR-UUID"
+
+[data]
+# Existing hybrid selection uses MeteoSwiss products for CMAL's weather inputs.
+# Confirm all required variables and historic coverage on the target deployment.
+weather_source = "hybrid"
+time_step_hours = 24
+fitting_start = "REPLACE-WITH-UTC-ISO-DATE"
+fitting_end = "REPLACE-WITH-UTC-ISO-DATE"
+evaluation_start = "REPLACE-WITH-UTC-ISO-DATE"
+evaluation_end = "REPLACE-WITH-UTC-ISO-DATE"
+
+[training]
+seed = 42
+
+[training.parameters]
+# Model-owned schema: populate from the pinned model package documentation.
+# Aquacast mapping and Sandro's LoRA reference: docs/operations/aquacast-fine-tuning.md.
+# The following commented example uses the currently allowed CMAL-small
+# last_layer strategy; it is NOT a translation of the LoRA experiment.
+# Uncomment and choose dates/resources before use. Other models own their schema.
+#
+# [training.parameters.trainer]
+# train = ["1981-01-01", "2015-12-31"]
+# val = ["2016-01-01", "2016-12-31"]
+# optimizer = "adamw"
+# lr = 0.001
+# weight_decay = 0.001
+# batch_size = 512
+# max_epochs = 20
+#
+# [training.parameters.trainer.early_stopping]
+# patience = 5
+# # CMAL-small's template currently disables early stopping; patience alone
+# # does not enable it. See the mapping guide before choosing an epoch budget.
+#
+# [training.parameters.finetune]
+# strategy = "last_layer"
+# lr = 0.001
+# normalization = "pretrained"

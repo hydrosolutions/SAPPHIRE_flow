@@ -2853,3 +2853,21 @@ Do not change persisted v1/v2 dataclasses or weaken receipt coverage. Tests:
 cycle/failure boundaries, track resolution and v1 compatibility. Only uniform
 ceiling, single-member, all-AT_MOST group tracks negotiate; other routes retain
 strict requests. All group members and a contiguous issue-start prefix required.
+
+### Configured fine-tuning (issue 538)
+
+`config/fine_tuning.py` parses explicit requests into `types/fine_tuning.py`;
+`cli/fine_tune.py` uses Prefect idempotency and refuses conflicting request content
+or older deployment schemas. `services/fine_tuning.py` qualifies the model/group,
+tenant and donor; the optional `train_models_flow.fine_tuning` branch reuses normal
+training with explicit historical-source and evaluation-window selection.
+Ordinary callers retain their prior source, scope and evaluation behavior.
+Candidate retraining remains inactive. Config preview is not live preflight;
+worker authorization must remain independent of CLI checks. `store/fine_tuning.py`
+retains append-only receipts and scope locks; `flows/fine_tuning_evaluation.py`
+reuses hindcasts/skill with separate donor/candidate runs. `services/fine_tuning_review.py`
+checks the reviewed digest, tenant, roster and incumbent inside the CLI transaction.
+Never auto-promote, refit during evaluation retry, or broaden host grants. Source
+recording preserves returned provenance without filling missing weather. Shared
+`services/static_frames.py` aligns only null-typed static columns with an unambiguous
+peer type, for both group training and hindcasts; concrete conflicts stay errors.

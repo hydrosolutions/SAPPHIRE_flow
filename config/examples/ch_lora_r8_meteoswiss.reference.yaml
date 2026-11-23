@@ -1,0 +1,249 @@
+# CH-only LoRA r8 fine-tune of the global CMAL donor, MeteoSwiss RhiresD precipitation.
+# Byte-identical to lora_r8_era5.yaml except data.region_configs -> the meteoswiss-primary
+# region YAML, so `precipitation` carries RhiresD instead of ERA5-Land.
+name: ch_ft_lora_r8_meteoswiss
+output_dir: experiments/ch/lora_r8_meteoswiss
+seed: 42
+resolutions:
+- daily
+supervised:
+- daily
+window:
+  lookback_days: 210
+  forecast_days: 15
+  issue_hours:
+  - 0
+daily:
+  targets:
+  - discharge
+  is_target_in_past: true
+  past_dynamic:
+  - discharge
+  future_dynamic:
+  - precipitation
+  - mean_temperature
+  - thermal_net_radiation
+  - solar_net_radiation
+static_features:
+- area
+- slope
+- stream_gradient
+- lake_fraction
+- air_temperature
+- precip_annual
+- pet_annual
+- aet_annual
+- aridity_index
+- climate_moisture_index
+- snow_cover
+- snow_cover_max
+- glacier_fraction
+- cropland_fraction
+- pasture_fraction
+- clay_fraction
+- silt_fraction
+- sand_fraction
+- soil_organic_carbon
+- soil_water_content
+- karst_fraction
+- irrigated_fraction
+- p_mean
+- frac_snow
+- high_prec_freq
+- high_prec_dur
+- low_prec_freq
+- low_prec_dur
+- glc_pc_s01
+- glc_pc_s02
+- glc_pc_s03
+- glc_pc_s04
+- glc_pc_s05
+- glc_pc_s06
+- glc_pc_s07
+- glc_pc_s08
+- glc_pc_s09
+- glc_pc_s10
+- glc_pc_s11
+- glc_pc_s12
+- glc_pc_s13
+- glc_pc_s14
+- glc_pc_s15
+- glc_pc_s16
+- glc_pc_s17
+- glc_pc_s18
+- glc_pc_s19
+- glc_pc_s20
+- glc_pc_s21
+- glc_pc_s22
+- forest_fraction
+- permafrost_fraction
+- pnv_pc_s01
+- pnv_pc_s02
+- pnv_pc_s03
+- pnv_pc_s04
+- pnv_pc_s05
+- pnv_pc_s06
+- pnv_pc_s07
+- pnv_pc_s08
+- pnv_pc_s09
+- pnv_pc_s10
+- pnv_pc_s11
+- pnv_pc_s12
+- pnv_pc_s13
+- pnv_pc_s14
+- pnv_pc_s15
+- wet_pc_s01
+- wet_pc_s02
+- wet_pc_s03
+- wet_pc_s04
+- wet_pc_s05
+- wet_pc_s06
+- wet_pc_s07
+- wet_pc_s08
+- wet_pc_s09
+- wet_pc_sg1
+- wet_pc_sg2
+data:
+  data_root: ../workspace/data
+  basins_files:
+    train: configs/basins/ch_cmal_global.txt
+    val: configs/basins/ch_cmal_global.txt
+    test: configs/basins/ch_cmal_global.txt
+  regions:
+  - caravan_camels_ch
+  region_configs:
+    caravan_camels_ch: configs/regions/caravan_camels_ch_meteoswiss.yaml
+  splits:
+    train:
+    - '1981-01-01'
+    - '2015-12-31'
+    val:
+    - '2016-01-01'
+    - '2016-12-31'
+    test:
+    - '2017-01-01'
+    - '2020-12-31'
+  batch_size: 512
+  num_workers: 4
+  stride: 1
+  validator_daily:
+    validation_mode: drop_input_nan_target_forecast
+  quality_control:
+    splits:
+    - train
+    - val
+    - test
+    plausible_cap: 500
+    suspicious_threshold: 300
+    z_max: 3.0
+  augmentations:
+  - feature: discharge
+    p_channel: 0.4
+    p_random: 0.25
+    element_probability: 0.1
+model:
+  type: composed
+  hidden_size: 512
+  dropout_token: 0.0
+  dropout_backbone: 0.4
+  tokenizer:
+    type: factored
+    static:
+      network: mlp
+      hidden_dims:
+      - 100
+      - 64
+      - 16
+      activation:
+      - tanh
+      - tanh
+      - linear
+      dropout: 0.3
+    dynamic:
+      network: identity
+  backbone:
+    type: lstm
+    num_layers: 1
+    dropout: 0.4
+  head:
+    type: cmal
+    num_components: 3
+training:
+  max_epochs: 20
+  precision: bf16-mixed
+  optimizer:
+    optimizer:
+      type: adamw
+      lr: 0.001
+      weight_decay: 0.001
+  loss:
+    function: cmal_nll
+    weights:
+      daily: 1.0
+    lambda_mse: 0.0
+  augmentations:
+    target_noise:
+      enabled: true
+      sigma: 0.01
+      sigma_abs: 0.001
+  early_stopping:
+    enabled: true
+    patience: 5
+  checkpoint:
+    load: best
+  progress_bar: false
+  verbose_validation_every_n: 1
+inference:
+  strategy:
+    kind: point
+  n_aleatoric: 200
+  quantile_levels:
+  - 0.05
+  - 0.1
+  - 0.25
+  - 0.5
+  - 0.75
+  - 0.9
+  - 0.95
+  # stride 1, not 3: with stride 3 each horizon h only ever lands on calendar days t+h for
+  # issue days 3 apart, so horizons h, h+3, h+6... score on ONE THIRD of the test days and three
+  # different day-subsets alternate across the lead axis. That prints a 3-day sawtooth on every
+  # metric-vs-lead-time curve and swamps the rare-event flood panels. Stride 1 gives every
+  # horizon the same calendar coverage. Costs ~1 min per arm here.
+  stride: 1
+evaluation:
+  forecast_type: probabilistic
+  return_periods:
+  - 1
+  - 2
+  - 5
+  - 10
+  metrics:
+  - nse
+  - kge
+  - rmse
+  - mae
+  - pbias
+  - persistence_index
+  - high_flow_bias
+  - low_flow_bias
+  - peak_flow_ratio
+  - coverage_50
+  - coverage_80
+  - coverage_90
+  - precision
+  - recall
+  - f1
+  - mae_flood
+  - pod
+  - far
+  - csi
+  - peak_timing_error
+  - peak_magnitude_error
+finetuning:
+  strategy: lora
+  lr: 0.001
+  rank: 8
+  alpha: 16.0
+  lora_target: all
+  normalization: pretrained

@@ -465,6 +465,9 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     OBSERVATIONS_LOADED = "observations_loaded" # additive (Plan 540 M3a)
     RATING_CURVE_STORED = "rating_curve_stored" # additive (Plan 540 M3c)
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"  # cache tenant rejection
+    FINE_TUNING_STARTED = "fine_tuning_started"  # resolved fit request and source evidence
+    FINE_TUNING_RECEIPT = "fine_tuning_receipt"  # inactive candidate / evaluation evidence
+    FINE_TUNING_DECISION = "fine_tuning_decision"  # reviewed digest, operator and reason
     STATION_GROUP_CREATED = "station_group_created"  # additive (Plan 262 T3a)
     HUMAN_IDENTITY_LINKED = "human_identity_linked"  # additive (Plan 341 T1)
     HUMAN_GRANT_CHANGED = "human_grant_changed"      # additive (Plan 341 T1)
