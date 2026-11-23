@@ -328,7 +328,10 @@ requires the complete N1 gates; this is not an operational installation pass.
 Read-only source checks and local code tracing produced a private manifest covering
 35 candidate input tables, their explicit columns, foreign keys, trigger inventory
 and include/hold/exclude decisions. Column sets match the observed schema; nine
-physical column orders differ. No candidate table has a sequence-backed default.
+physical column orders differ. The initial default-only check missed an identity
+column: `rating_derived_discharge.stored_order` uses an owned sequence. The C3a
+amendment below supersedes the earlier blanket no-sequence finding; it does not
+qualify a sequence reset or derived-data restore.
 This is a selection specification, not an executable exporter or a completed restore.
 No measurements, geometry, artifact bytes or credentials were copied.
 
@@ -501,9 +504,60 @@ source deployment, provider, real data or cloud resources were involved.
 
 C2 is complete only for this synthetic native path. Applying the result to the real
 pilot still requires its admitted artifact, configuration and calendar to be checked.
-Next is C3's full input/trigger closure; image/configuration/path qualification and
+C3a's bounded capture result follows below. Full C3 input/trigger closure,
+image/configuration/path qualification and
 commissioning preparation remain open. N1c and all target execution remain DRAFT.
 
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
 ```
+
+
+### C3a capture constraints and inventory correction
+
+After #619 merged, one independent Claude plan review and one patch review covered
+this bounded local qualification. Resolved the findings on causal failure checks,
+role preconditions, frozen test identities, failure evidence and owned-resource
+cleanup. Full reports, fixtures and execution evidence remain private.
+
+All **23 tests passed, zero skipped** at source `9cce7b50`, using the same pinned
+PostGIS image, PostgreSQL 16.9 and schema 0090 as the earlier catalogue tests. This
+includes ten new checks and thirteen unchanged repository regressions. Ruff and
+strict Pyright passed. Frozen test identities matched both the execution ledger
+and JUnit results; earlier C1a/C1b/C2 evidence hashes remained unchanged.
+
+- A complete synthetic batch restored through the actual worker login with exact
+  observation/capture/batch/sighting content, identifiers and hashes. Replay changed
+  neither those rows' content/`xmin` nor table counts. The current-capture reader
+  matched the source for both the selected window and the complete batch.
+- Omitting the outside-window sighting, or that observation/capture/sighting together,
+  failed at commit with the expected completeness error and rolled back. A batch's
+  original provenance cannot be preserved by simply clipping its rows to a window.
+- A current capture inserted successfully, but an older capture for the corrected
+  observation failed its current-source guard. This rules out direct unchanged
+  insertion for that case; ordered historical replay was not tested. The reused
+  reader regression confirms that retained historical captures block legacy rating
+  eligibility even after an uncaptured correction, so dropping them is not equivalent.
+- Both cross-station sighting variants failed their composite foreign keys on insert,
+  with rollback and valid controls. Actual API sessions could read ordinary
+  observations but were denied all three raw capture tables. Reused regressions ran
+  as the fixture owner; these role results do not establish HTTP or tenant isolation.
+
+Schema-wide generated-column/default/sequence inspection found one such column among
+all 35 candidate tables: `rating_derived_discharge.stored_order`, GENERATED ALWAYS
+with an owned sequence. The recorded `station_rating_history` definition selects
+highest `stored_order`; this was definition inspection, not a derived-reader parity
+experiment. The private amendment references the unchanged original manifest hash.
+Derived ordering, legacy ordering-basis rows and sequence restoration remain held.
+
+Owned databases, container, network and child process group were removed; independent
+readback found no labelled resources and retained the baseline resources. No source
+contact, provider call, real-data transfer, cloud resource or application-code change.
+This qualifies only the synthetic capture constraints, not a production exporter,
+observation-version/audit reconstruction, complete protected-input closure or forecasts.
+
+Next, C3b must resolve the full cohort's actual consumed historical/protected inputs
+and ordering. C3c must establish artifact-derived FI/weather requirements, exact
+windows and finite input/provider budgets. Check which dependencies are required
+before designing further restoration machinery. N1b image/configuration/path checks,
+N1d commissioning/cost/cleanup and N2 execution remain DRAFT.
