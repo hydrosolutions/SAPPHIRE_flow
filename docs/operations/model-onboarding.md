@@ -328,6 +328,8 @@ A report with stored skill for both artifacts makes the candidate PENDING_APPROV
 this means ready for human review, not that coverage is complete or skill improved.
 
 Use the template in `config/examples/fine-tuning.toml`, replacing every placeholder.
+For Aquacast, consult the [configuration mapping and supplied LoRA reference](aquacast-fine-tuning.md).
+The research YAML is not interchangeable with CMAL-small's donor template.
 The same CLI provides:
 
 ```sh

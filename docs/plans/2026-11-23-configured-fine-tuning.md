@@ -76,3 +76,37 @@ are static_only and last_layer. The current imported donor's database dates span
 this does not establish the binary's true exposure. Keep holdout claims unverified.
 M3 remains a separately bounded, owner-approved deployment and qualification step;
 no live fine-tuning or promotion has been run.
+
+### Supplied Aquacast example — qualification follow-up
+
+Owner clarification: use CMAL-small to qualify the fine-tuning workflow now;
+CMAL is the eventual operational target. Keep the same configuration envelope,
+submission, evidence and admin-review path for both. The pilot does not commit
+CMAL-small to continued operation or imply activation of either candidate.
+
+The owner supplied `ch_lora_r8_meteoswiss.yaml` on 23 November. Preserve it as a
+research reference and use the existing single-file TOML envelope with the mapping
+in `docs/operations/aquacast-fine-tuning.md`. The operational schema at our pinned
+Aquacast revision already exposes LoRA parameters; our CMAL-small allowlist does
+not yet allow LoRA. The supplied reference has a different donor shape (512 hidden
+units, 210/15-day windows and radiation inputs versus 256, 30/10 and precipitation/
+temperature). Do not replace the existing donor template or silently change strategy.
+
+Before a LoRA pilot, qualify train/save/load/predict against the existing CMAL-small
+donor and review any allowlist change. Faithful reproduction of the supplied
+research run additionally requires resolving template-owned early-stopping and
+stride settings through the upstream operational contract. Declared checkpoint.load
+values alone do not establish the fine-tuner's returned weights; verify its actual
+checkpoint path at the pinned revision.
+No Aquacast changes, live training or model activation are part of this reference
+documentation update. The larger donor would require ordinary model onboarding.
+
+Next steps, in order:
+1. Include the reviewed reference and mapping documentation in PR #621; merge and
+   deployment remain owner decisions. M1/M2 implementation is unchanged.
+2. Qualify LoRA locally with CMAL-small through the pinned FI retrain boundary,
+   including artifact round-trip and prediction; review any required wrapper change.
+3. After deployment approval, run the bounded Swiss M3 experiment and inspect its
+   candidate/donor report. Admin approval remains separate from successful training.
+4. Reuse that workflow for CMAL after confirming its actual donor, input coverage
+   and onboarding status; coordinate with the model-onboarding owner to avoid overlap.

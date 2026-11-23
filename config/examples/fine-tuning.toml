@@ -28,4 +28,26 @@ seed = 42
 
 [training.parameters]
 # Model-owned schema: populate from the pinned model package documentation.
-# This template intentionally does not invent learning rates or training dates.
+# Aquacast mapping and Sandro's LoRA reference: docs/operations/aquacast-fine-tuning.md.
+# The following commented example uses the currently allowed CMAL-small
+# last_layer strategy; it is NOT a translation of the LoRA experiment.
+# Uncomment and choose dates/resources before use. Other models own their schema.
+#
+# [training.parameters.trainer]
+# train = ["1981-01-01", "2015-12-31"]
+# val = ["2016-01-01", "2016-12-31"]
+# optimizer = "adamw"
+# lr = 0.001
+# weight_decay = 0.001
+# batch_size = 512
+# max_epochs = 20
+#
+# [training.parameters.trainer.early_stopping]
+# patience = 5
+# # CMAL-small's template currently disables early stopping; patience alone
+# # does not enable it. See the mapping guide before choosing an epoch budget.
+#
+# [training.parameters.finetune]
+# strategy = "last_layer"
+# lr = 0.001
+# normalization = "pretrained"
