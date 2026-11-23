@@ -561,3 +561,53 @@ and ordering. C3c must establish artifact-derived FI/weather requirements, exact
 windows and finite input/provider budgets. Check which dependencies are required
 before designing further restoration machinery. N1b image/configuration/path checks,
 N1d commissioning/cost/cleanup and N2 execution remain DRAFT.
+
+### C3b/C3c read-only requirements investigation
+
+After #620 merged, a bounded runtime declaration probe and aggregate-only source
+queries narrowed the candidate dependencies. The probe instantiated the model
+template without loading artifact bytes or contacting providers. Its configuration
+hash matched the admitted group artifact's recorded import provenance; database
+metadata still matched the original artifact allowlist. This establishes a declared
+input contract, not artifact deserialization, byte verification or a successful run.
+Exact requirements, release identities and diagnostic counts remain private.
+
+The declared model tolerates missing target history but requires past weather and
+static attributes. Its future-weather minimum and maximum differ. The selected
+combined provider route supplies past weather directly for the inspected source
+configuration and midnight-aligned bounds. This conclusion applies to the target
+only if its release/configuration selects the same route and time contract;
+copying the historical forcing table is not a demonstrated prerequisite for that
+forecast path. Scheduled
+historical refresh still needs its own due-run and stored-coverage acceptance.
+Source and current code differ in selected future-weather admission, so the target
+release and delivered horizon must be reviewed explicitly before comparison.
+
+The diagnostic input window contains legacy derived-rating candidates with the
+ordering basis that C3a identified as incompatible with unchanged reinsertion.
+Candidate counts do not establish which records the runtime would consume. The
+forecast reader matches recomputed fingerprints/content, whereas the history reader
+uses stored ordering; one reader's success cannot qualify the other. Initial-window
+captures matched current measurements, but complete-batch expansion adds captures
+outside that window whose compatibility has not yet been checked. These separately
+timed probes are not a consistent export or a frozen comparison window.
+
+Next preparation must identify the consumed legacy subset and full expanded capture
+closure. Legacy selection must satisfy the actual reader: approved fingerprints,
+segment windows, current observation/selected-curve content equality and null
+capture identity on the legacy derived row, plus applicable mode/history guards.
+Then select and synthetically qualify a trigger-compatible reconstruction method.
+Do not discard approved history, rewrite its ordering basis or substitute
+fresh ingestion to avoid this gate. In parallel, settle the chosen release's model
+and weather contract, fixed issue windows, finite row/byte/request budgets and
+member-by-member eligibility evidence. A declaration's missing-data allowance is
+not permission to omit available source history. No broad importer is justified yet.
+
+C3b/C3c are not complete; N1b–d execution and N2 remain DRAFT. No provider fetch,
+artifact loading, measurement transfer, cloud provisioning or source mutation was
+performed. The administrator guide now explains these dependency checks.
+
+One independent Claude documentation review found no blockers. Clarified the
+source-versus-target weather condition and the exact legacy selection predicate.
+Runtime findings remain author-recorded; the reviewer checked supplied code and
+documentation excerpts, not the live source. Full report remains private.

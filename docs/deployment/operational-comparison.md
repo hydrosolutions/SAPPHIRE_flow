@@ -135,6 +135,21 @@ decisions settled before import:
 | Weather | Required history, provider budget and acquisition method; do not copy a cache that also contains execution attempts. |
 | Transfer | Named columns, dependency order, source snapshot, row/byte limits, target paths and receipt checks; refuse unresolved dependencies or exceeded limits. |
 
+Derive that manifest from the admitted model's runtime input declaration and the
+actual job's configuration. Check past targets, past weather, future weather,
+static attributes, aggregation, missing-data tolerances and forecast horizon
+separately. A model that tolerates missing discharge may still require complete
+weather. Its minimum accepted forecast length is not a promise of the desired
+operational horizon. Keep registered group membership, job eligibility and actual
+forecast coverage distinct; explain every omitted member.
+
+Confirm which weather route the forecast uses before selecting tables to copy.
+Forecast-time provider acquisition and scheduled historical refresh can be separate
+paths. Successful forecasts do not prove refresh is scheduled, and a populated
+historical table does not prove the forecast used it. Record the selected issue
+instant and input windows in UTC separately from display timezone and local-day
+checks. Recheck these contracts when source and target releases differ.
+
 Normal onboarding imports can create new identifiers, rerun QC or promote a model.
 Do not describe those operations as preserving the original input history. Where
 preserving identifiers is necessary, resolve tenant creation **before** ordinary
