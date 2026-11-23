@@ -17,14 +17,21 @@ assigned, or served automatically. A person decides that separately.
    rely on it for any other model.
 2. **A model that allows the strategy.** Each model lists the fine-tuning strategies
    this deployment permits, in its shim class (`FINETUNE_STRATEGIES`). Anything not
-   listed is refused. Currently `cmal_small`: `static_only`, `last_layer`. Adding one
+   listed is refused. Currently `cmal_small`: `static_only`, `last_layer`, `lora`. Adding one
    is a code change (one line + review), made after that strategy has been run.
+
 3. **An unchanged model template.** The donor records the hash of the model's
    config file. If the installed config differs, the run is refused before any
    training. Do not edit the vendored config file to change run behaviour; put
    run settings in the run parameters below.
 4. **Training data for the target stations** in the deployment database, over the
    training window you choose.
+
+For the configured single-command workflow and explicit admin review, use
+[configured fine-tuning](../operations/model-onboarding.md#configured-fine-tuning-issue-538).
+The [LoRA qualification record](../operations/aquacast-fine-tuning.md#local-lora-execution-qualification--23-november-2026)
+documents an actual-donor local execution check with synthetic inputs; Swiss skill
+and deployment qualification remain separate.
 
 ## Aquacast artifact compatibility after a dependency update
 
