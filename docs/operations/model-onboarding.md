@@ -319,7 +319,8 @@ fitting dates; unknown donor pretraining exposure prevents an independent-holdou
 claim even when the local fitting/evaluation periods are disjoint.
 
 The worker saves the candidate and its receipt atomically, without promotion.
-Candidate and donor hindcasts use the configured evaluation issue-time range;
+Candidate and donor bytes are checked against their retained receipt hashes before
+deserialization. Their hindcasts use the configured evaluation issue-time range;
 metric rows carry their actual valid-time periods and sample counts. Reports show
 station gaps and source/version evidence. They do not rank models: exact common
 observation samples and donor pretraining exposure have not been established.

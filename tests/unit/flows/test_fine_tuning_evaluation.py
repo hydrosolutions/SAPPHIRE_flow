@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.flows import fine_tuning_evaluation as module
 from sapphire_flow.services.fine_tuning_evidence import RecordingReanalysisSource
 from sapphire_flow.types.training import HindcastStepResult, TrainingUnit
@@ -17,9 +18,11 @@ from tests.unit.services.test_fine_tuning_review import candidate
 
 
 @pytest.mark.parametrize("missing_donor_skill", [False, True])
+@pytest.mark.parametrize("corrupt_artifact", ["none", "candidate", "donor"])
 def test_evaluation_separates_donor_and_candidate_on_requested_period(
     monkeypatch: pytest.MonkeyPatch,
     missing_donor_skill: bool,
+    corrupt_artifact: str,
 ) -> None:
     b = candidate()
     request = b.receipt.request
@@ -57,8 +60,7 @@ def test_evaluation_separates_donor_and_candidate_on_requested_period(
     monkeypatch.setattr(module, "compute_skills_task", skill)
     candidate_run, donor_run = uuid4(), uuid4()
     source = RecordingReanalysisSource(FakeWeatherReanalysisSource([]))
-    updated, result = module.evaluate_candidate(
-        b.receipt,
+    kwargs = dict(
         unit=TrainingUnit(
             model_id=request.model_id,
             station_id=None,
@@ -83,6 +85,22 @@ def test_evaluation_separates_donor_and_candidate_on_requested_period(
         deployment_config=None,
         clock=lambda: request.evaluation_end,
     )
+    if corrupt_artifact != "none":
+        corrupt_id = (
+            b.receipt.artifact_id
+            if corrupt_artifact == "candidate"
+            else request.base_artifact_id
+        )
+        fetch = b.artifacts.fetch_artifact
+        monkeypatch.setattr(
+            b.artifacts,
+            "fetch_artifact",
+            lambda aid: (aid, b"changed") if aid == corrupt_id else fetch(aid),
+        )
+        with pytest.raises(ArtifactIntegrityError, match="differs from its receipt"):
+            module.evaluate_candidate(b.receipt, **kwargs)
+        return
+    updated, result = module.evaluate_candidate(b.receipt, **kwargs)
     assert [call["hindcast_run_id"] for call in calls] == [candidate_run, donor_run]
     assert all(call["period_start"] == request.evaluation_start for call in calls)
     assert all(call["period_end"] == request.evaluation_end for call in calls)

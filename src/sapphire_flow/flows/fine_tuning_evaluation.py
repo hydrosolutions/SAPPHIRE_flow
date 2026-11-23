@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -8,6 +9,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.services.fine_tuning_evidence import canonical_json
@@ -56,6 +58,15 @@ def evaluate_candidate(
         retained = artifacts.fetch_artifact(artifact_id)
         if retained is None:
             raise ValueError(f"evaluation artifact {artifact_id} is unavailable")
+        expected_hash = (
+            receipt.artifact_sha256
+            if artifact_id == receipt.artifact_id
+            else receipt.donor_sha256
+        )
+        if hashlib.sha256(retained[1]).hexdigest() != expected_hash:
+            raise ArtifactIntegrityError(
+                f"evaluation artifact {artifact_id} differs from its receipt"
+            )
         source.reset()
         steps_by_station = run_hindcast_flow(
             model_id=request.model_id,
