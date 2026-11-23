@@ -870,7 +870,7 @@ class CmalSmall(AquacastShim):
     """
 
     CONFIG_FILENAME = "cmal_small.yaml"
-    FINETUNE_STRATEGIES = frozenset({"static_only", "last_layer"})
+    FINETUNE_STRATEGIES = frozenset({"static_only", "last_layer", "lora"})
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION
 

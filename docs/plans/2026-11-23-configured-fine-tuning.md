@@ -110,3 +110,15 @@ Next steps, in order:
    candidate/donor report. Admin approval remains separate from successful training.
 4. Reuse that workflow for CMAL after confirming its actual donor, input coverage
    and onboarding status; coordinate with the model-onboarding owner to avoid overlap.
+
+### Local qualification progress — after PR #621 merge
+
+PR #621 merged at `0580f652`. The pinned Aquacast/FI runtime completed a local
+CMAL-small LoRA rank-8/all-target one-epoch check against the hash-verified deployed
+donor, using one synthetic station and two CPU threads. Retrain, save/load and
+10-day prediction succeeded; the candidate's weights changed and survived the
+round-trip, with the donor unchanged. Details and limitations are recorded in
+`docs/operations/aquacast-fine-tuning.md`. The follow-up patch adds only `lora` to
+the existing CMAL-small strategy allowlist, preserving the donor YAML hash and all
+other model allowlists. Review and full CI are required before owner merge.
+The Swiss M3 run, actual-weather skill evaluation and activation remain pending.

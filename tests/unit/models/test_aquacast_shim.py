@@ -319,12 +319,12 @@ class TestCmalSmallFineTuneAllowlist:
             == "94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45"
         )
 
-    def test_permits_exactly_the_two_strategies_under_test(self) -> None:
+    def test_permits_only_qualified_fine_tuning_strategies(self) -> None:
         from sapphire_flow.models.aquacast import CmalSmall
 
         permitted = CmalSmall.FINETUNE_STRATEGIES
 
-        assert permitted == {"static_only", "last_layer"}
+        assert permitted == {"static_only", "last_layer", "lora"}
 
     def test_the_allowlist_reaches_the_template_aquacast_enforces(self) -> None:
         """aquacast refuses a strategy absent from the TEMPLATE's set; deleting the
@@ -336,7 +336,7 @@ class TestCmalSmallFineTuneAllowlist:
         small = CmalSmall()._inner._model_template.finetune_strategies  # pyright: ignore[reportPrivateUsage]
         pooled = CmalPoolPT()._inner._model_template.finetune_strategies  # pyright: ignore[reportPrivateUsage]
 
-        assert small == {"static_only", "last_layer"}
+        assert small == {"static_only", "last_layer", "lora"}
         assert pooled == frozenset()
 
     def test_train_refuses_a_finetune_block_so_a_missing_donor_cannot_cold_train(

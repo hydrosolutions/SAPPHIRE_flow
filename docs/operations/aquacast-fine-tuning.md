@@ -12,8 +12,8 @@ Aquacast's engine supports strategies including `full_model`, `last_layer`, `sta
 `lora_ensemble` and `svd_ensemble`. Its operational integration exposes
 `model.retrain` through ForecastInterface, with model-owned `trainer` and
 `finetune` configuration. Each model template must explicitly allow a strategy.
-SAPPHIRE's CMAL-small wrapper currently allows only `static_only` and `last_layer`.
-LoRA support in the library does not yet mean LoRA is qualified for this wrapper.
+SAPPHIRE's CMAL-small wrapper allows `static_only`, `last_layer` and `lora`.
+The local LoRA qualification below covers execution, not hydrological skill.
 
 References: [operational schema at our pin](https://github.com/hydrosolutions/aquacast/blob/cea602191534c37615c069c1c5416e2c99149668/aquacast/operational/config.py),
 [strategy examples](https://github.com/hydrosolutions/aquacast/blob/fc772226703940f26d29d8e62a5c39175851b2f8/docs/examples/finetune_sweep/README.md),
@@ -69,7 +69,7 @@ basin and region paths refer to the research workspace and are not bundled here.
 | Hidden size | 512 | 256 |
 | Lookback / horizon | 210 / 15 days | 30 / 10 days |
 | Future weather | Precipitation, mean temperature, thermal and solar net radiation | Precipitation and mean temperature |
-| Fine-tuning | LoRA, rank 8, alpha 16, all targets | Only static-only or last-layer currently allowed |
+| Fine-tuning | LoRA, rank 8, alpha 16, all targets | Static-only, last-layer and LoRA allowed |
 | Declared early stopping / checkpoint.load | Enabled, patience 5 / best | Disabled / last |
 | Training / inference stride | 1 / 1 | 7 / 3 |
 
@@ -94,10 +94,9 @@ lora_target = "all"
 normalization = "pretrained"
 ```
 
-This block currently fails CMAL-small's strategy allowlist. Qualification must
-check the pinned engine's LoRA train/serialize/deserialize/predict behavior against
-the existing donor before widening that allowlist. No architecture change is
-implied. If the intention is to reproduce the larger research model exactly,
+This block is accepted by CMAL-small's strategy allowlist following the local
+execution qualification below. No architecture change is implied.
+If the intention is to reproduce the larger research model exactly,
 onboard its matching donor and requirements through the existing model-onboarding
 process instead. Do not silently substitute last-layer fitting for LoRA.
 
@@ -109,3 +108,24 @@ equivalence. Faithful reproduction needs upstream agreement on unsupported
 early-stopping and stride controls; retain them as explicit gaps, not ignored
 TOML fields. SAPPHIRE's external hindcast issue schedule is separate
 from the research inference stride and must retain actual issue/valid timestamps.
+
+## Local LoRA execution qualification — 23 November 2026
+
+Using Aquacast 0.1.378 at the pinned revision, FI 0.1.20 and PyTorch 2.10.0,
+the deployed CMAL-small donor was copied read-only and verified against SHA-256
+`84f1a4ef5099b2a9b76783413d250e9016be4d0adea99e14277b61ae2f788a26`.
+A local experimental subclass enabled LoRA without changing the production wrapper
+during the check. Through the public shim methods, retraining, serialization,
+deserialization and a 10-day prediction succeeded. Seven weight matrices changed
+(static tokenizer, LSTM and CMAL head); saved/reloaded tensors matched exactly and
+all candidate tensors were finite. The donor file stayed unchanged.
+
+The bounded run used one synthetic station, 180 daily rows, train 2010-01-01 through
+2010-04-10, validation 2010-04-11 through 2010-06-29, one epoch, batch size 8,
+AdamW, learning rate 0.001, weight decay 0.001, seed 42 and the rank-8/alpha-16/all
+LoRA block above. Two CPU threads took about 2.54 seconds; Aquacast explicitly
+fell back from bf16-mixed to float32 on CPU. Synthetic statics and weather were
+test inputs only. These timing and output checks do not establish real Swiss
+coverage, training cost, improved skill or evaluation independence. No database
+candidate, production training job, model activation or Aquacast modification
+was made. The bounded Swiss pilot and admin review remain required.
