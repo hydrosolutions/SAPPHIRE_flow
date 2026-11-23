@@ -178,6 +178,11 @@ initial window. Measure the complete linked set against the agreed station scope
 and size limits. If it exceeds them, hold the transfer and resolve the scope;
 do not clip the batch or silently switch to a smaller evidence set.
 
+Require the inventory report to distinguish checked-empty inputs from inputs it
+has not checked. Keep raw records, supporting evidence and selected model inputs
+separate. Counts that omit unchecked dependencies are lower bounds, not a complete
+transfer budget; a successful local rehearsal does not clear those omissions.
+
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
 record by that order. Preserve the required selection semantics and qualify subsequent
