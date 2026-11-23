@@ -698,3 +698,50 @@ issue, validation and weather-cycle instants. The orchestrator admits **C3b2a lo
 qualification only**; C3b2b/C3b2c remain DRAFT. Full review and the concrete companion
 specification stay private. No new implementation or runtime qualification is
 claimed by this specification update.
+
+### C3b2a: local census qualification
+
+The private local diagnostic and synthetic suite are qualified at source
+`8ba58ade3ddd1b33d3a78e4e2a7978fd2135949d`, PostgreSQL 16.9/schema 0090:
+**43 checks passed**, no skips/errors/failures, after the final fixture changes.
+Ruff and strict Pyright passed. One independent Claude patch review preceded
+execution; findings were corrected or resolved against the actual reader code.
+Full review, helpers and frozen evidence remain private.
+
+The tested boundaries are:
+
+- Minimum batch support versus multi-hop provenance closure, shared-capture
+  deduplication, idempotence, exact/exceeded row caps and byte/round refusal.
+  Derived references join capture roots. Historical measurement mismatches,
+  missing parents and scope violations hold the diagnostic.
+- Canonical batch evidence and commit-payload membership/counts, including exact
+  batch/capture/sighting station and tenant agreement. A complete synthetic graph
+  restores through ordinary database guards and worker inserts.
+- A separately named read-only rating diagnostic agrees with the real reader for
+  legacy, native, approved-overlap, missing-capture, historical-capture-block and
+  unreconciled cases. It distinguishes stale persisted records from current
+  selections and preserves held-record details. Identity/datum/custody/window,
+  newest-delivery and raw six-hour occupancy barriers are exercised.
+- Actual observation-store reads separate accepted history, rejected candidates
+  and trailing freshness observations. Separate production controls cover measured
+  precedence, conditional rejection lineage and issue/validation/weather clocks;
+  these are not an end-to-end forecast or census-consumption parity result.
+
+The occupancy test deliberately uses 1,001 synthetic observations; the other graph
+fixtures stay small. A corrupt fingerprint response is injected at the read
+boundary, not written past database constraints. Normal admission rejects tied
+deliveries; a separate SQL-valid synthetic tie then tests the reader's defense.
+Neither test disables guards or broadens grants. The diagnostic requires a
+read-only repeatable-read connection, and a SQL tripwire refuses locking or writes.
+
+All owned local resources were removed. Independent Docker readback found no owned
+containers/networks; the driver recorded baseline resources unchanged and process
+and temporary-state cleanup. No live source access, provider call, artifact load,
+real-data transfer or cloud provisioning occurred in this qualification.
+
+This closes the bounded local C3b2a step. It does not qualify a source runner, the
+full cohort, a complete coverage manifest, observation-version/provisional closure,
+target-history API parity or the composed restore/receipt procedure. C3b2b requires
+actual job/worker configuration consistency and a separately admitted source-read
+envelope; C3b2c and N1b–d/N2 execution remain DRAFT. Unchecked dependencies remain
+explicit and their counts cannot establish a complete transfer budget.
