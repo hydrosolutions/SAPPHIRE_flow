@@ -172,6 +172,20 @@ writes; do not assume insertion order or a sequence reset is safe. Deployment su
 owns this check. The [reconstruction plan](../plans/2026-11-22-operational-deployment-recipe.md#c3a-capture-constraints-and-inventory-correction)
 records the tested boundary and remaining work.
 
+For an explicitly approved **temporary comparison**, new database bookkeeping
+values may replace the originals only after a synthetic rehearsal proves that
+measurements, QC, rating evidence and latest-record selection are preserved.
+Keep the original ordering values, their uncertainty and the source-to-target
+mapping in the required private reconstruction receipt. Renewed rows do not retain
+the runtime warning that their original insertion order was unknown. Therefore
+exclude model-performance evaluation until that warning can be preserved durably;
+forecast operation and history selection still need their own acceptance checks.
+This limited exception is not a general backup/restore procedure or evidence of
+the original chronology. Deployment support must verify the receipt against
+committed data and actual service-role reads before admitting the target. If the
+receipt is missing or a commit is uncertain, hold the target and inspect it before
+retrying; do not overwrite evidence or automatically remove committed data.
+
 Keep source and target release identities explicit. A source upgrade after inventory
 requires a deliberate recipe/image review. The earlier inventory timestamp is not
 a database snapshot: filtering by creation time cannot recover later-corrected data.

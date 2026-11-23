@@ -598,7 +598,9 @@ segment windows, current observation/selected-curve content equality and null
 capture identity on the legacy derived row, plus applicable mode/history guards.
 Then select and synthetically qualify a trigger-compatible reconstruction method.
 Do not discard approved history, rewrite its ordering basis or substitute
-fresh ingestion to avoid this gate. In parallel, settle the chosen release's model
+fresh ingestion to avoid this gate. The explicitly approved bookkeeping renewal
+below is a limited exception, with preserved scientific content and private
+uncertainty evidence. In parallel, settle the chosen release's model
 and weather contract, fixed issue windows, finite row/byte/request budgets and
 member-by-member eligibility evidence. A declaration's missing-data allowance is
 not permission to omit available source history. No broad importer is justified yet.
@@ -611,3 +613,47 @@ One independent Claude documentation review found no blockers. Clarified the
 source-versus-target weather condition and the exact legacy selection predicate.
 Runtime findings remain author-recorded; the reviewer checked supplied code and
 documentation excerpts, not the live source. Full report remains private.
+
+### C3b1: bounded derived-ordering rehearsal
+
+The owner approved renewing database bookkeeping while preserving measurements,
+QC, rating evidence and latest-record selection. For this temporary comparison
+only, the original-order warning may remain in the private reconstruction receipt
+rather than the new database. Model-performance evaluation is excluded until that
+warning can be preserved durably. This does not authorize operational adoption or
+claim the original chronology is known.
+
+One independent Claude plan review and one patch review informed the private
+synthetic helper and its tests; findings were addressed and reports remain local.
+At source `c52c02886b570a0b59941746349339654d4fc817`, PostgreSQL 16.9/schema 0090,
+all 26 frozen checks passed, with no skips, errors or failures. Ruff and strict
+Pyright passed. The rehearsal used two synthetic observations and five derived
+records, including migrated legacy and native records and a rejected observation.
+
+The helper carries every scientific column unchanged and omits only generated
+ordering and its basis from inserts. Single-row writes in observed source order
+let ordinary database guards assign new bookkeeping. It changes no grants,
+triggers, sequences or fingerprints. Tests cover the real legacy forecast-selection
+helper separately from the order-sensitive history projection through an actual
+API database connection, subsequent writes and worker privilege restrictions.
+They do not run a forecast or establish HTTP/tenant isolation.
+
+Receipt recovery is structurally read-only and checks committed rows, parent
+content and API history before producing an atomic, non-overwriting receipt.
+Tests cover late constraint failures and rollback, partial receipt writes,
+unexpected existing rows, parent/projection drift and simulated committed versus
+rolled-back acknowledgement loss. The latter is not a real network-fault test.
+A post-commit mismatch holds the database for inspection; it cannot roll back an
+already committed import. Runtime uncertainty disappears from renewed rows, as
+the owner accepted; the receipt retains the original values and warning.
+
+All owned local databases, container, network and process resources were removed;
+independent readback confirmed no labelled containers/networks remained and the
+driver recorded baseline resources preserved. No real-data transfer, provider
+call, artifact loading, cloud provisioning or source mutation was part of this
+rehearsal. Private helpers and full evidence are not public deployment commands.
+
+This closes only the bounded ordering-method question. Full consumed-input and
+recursive provenance closure, concrete snapshot/transfer qualification, chosen
+release/weather requirements and N1b/N1d execution gates remain open. C3b/C3c are
+not complete; N1b–d execution and N2 remain DRAFT.
