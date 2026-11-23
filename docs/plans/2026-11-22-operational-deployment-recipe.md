@@ -403,11 +403,56 @@ Owned case artifact bytes were removed after retaining the test journals. The te
 used a dedicated bridge with a loopback-only database port, not an egress-denied
 network. It contacted no source deployment or provider and transferred no real data.
 
-C1a is complete only for this synthetic subset. C1b still covers the remaining
-catalogue and actual runtime-role permissions; owner-backed store reads do not prove
-those grants. C2 must exercise the ordinary pilot forecast path, and C3 must resolve
-the full input/trigger closure. Image/configuration/path qualification and the
-commissioning packet also remain open. N1c and target execution remain DRAFT.
+C1a is complete only for this synthetic subset. The C1b result below covers the
+remaining catalogue and actual runtime-role permissions; owner-backed store reads
+alone do not prove those grants. C2 must exercise the ordinary pilot forecast path,
+and C3 must resolve the full input/trigger closure. Image/configuration/path
+qualification and the commissioning packet also remain open. N1c and target
+execution remain DRAFT.
+
+### C1b catalogue dependencies and runtime-role qualification
+
+After #615 merged, the orchestrator admitted this bounded private qualification
+following one independent Claude plan review and one independent Claude patch
+review. Resolved the review findings before execution: check excluded-table counts
+around the restore, and exercise ambiguous weather binding under the owner role
+without implying an unqualified worker write. Full reports and test code stay
+private; execution evidence below is author-recorded, not reviewer-executed.
+
+All **55 checks passed, zero skipped**, against the same source revision, locked
+environment, schema and pinned PostGIS image as C1a (PostgreSQL 16.9). The fixture
+covers all 20 catalogue-candidate tables, not the complete 35-table input manifest.
+It adds group membership and assignments, weather/polygon bindings, thresholds,
+QC baseline/regime metadata and external artifact provenance. Warm-start metadata
+remains empty. Two artifact records share non-loadable placeholder bytes; this does
+not qualify multi-file transfer or a working model. C1a's code and proof hashes
+remain unchanged.
+
+New connections authenticated as the actual worker and API roles read the restored
+catalogue through existing stores or explicitly bounded SQL. Role attributes,
+memberships and grants were unchanged by synthetic password setup. The checks prove
+selected metadata writes, public-schema creation and owner-role escalation are
+denied; the existing worker assignment write succeeds and rolls back. Both roles
+are denied access to the existing Prefect database. Statement denials return
+SQLSTATE 42501; the connection-startup driver omits that code, so evidence records
+the explicit database-permission denial and successful application login separately.
+These ordinary database reads do not prove HTTP authorization or tenant confidentiality.
+
+Foreign-key and unique-constraint failures preserve catalogue state; a late invalid
+group membership rolls back the combined catalogue transaction. Multiple forecast
+weather sources are refused by the existing reader, not by a database uniqueness
+constraint. Excluded table counts remain unchanged. Initial runs exposed fixture
+issues with PostgreSQL's infinite role-expiry value and the one-station-per-basin
+constraint; the corrected full suite, Ruff and strict Pyright pass without changing
+production schema or grants.
+
+Every attempt removed its owned container and network; independent readback found
+none remaining. Pre-existing containers remained present, case journals were retained
+and temporary artifact bytes were removed. No source deployment, provider, real data
+or cloud resources were involved. C1b is complete only for this synthetic scope.
+Next is C2's ordinary pilot-cycle check; C3 input closure, N1b image/configuration/path
+qualification and N1d commissioning preparation remain open. N1c and target execution
+remain DRAFT.
 
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}
