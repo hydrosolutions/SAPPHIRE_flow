@@ -72,6 +72,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     operational_support_days: int | None,
     gap_age: int | None,
     uniform_horizon: bool = False,
+    scoped_standard: bool = False,
     refresh_case: Literal["none", "future_fatal"] = "none",
 ) -> None:
     from sapphire_flow.flows import operational_weather_horizon as horizon
@@ -200,9 +201,33 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     monkeypatch.setattr(
         adapter, "alert_eligibility", AlertEligibility.SKILL_FORECAST, raising=False
     )
+
+    def scoped_configuration(
+        stores: Any, groups: Any, config: Any, mid: Any
+    ) -> dict[str, object]:
+        from dataclasses import replace
+
+        from sapphire_flow.types.enums import StationStatus
+        from sapphire_flow.types.ids import StationId
+
+        group = groups.fetch_groups_for_model(mid)[0]
+        extra = StationId(UUID(int=999))
+        station = stores["station_store"].fetch_station(StationId(UUID(int=1)))
+        stores["station_store"].store_station(
+            replace(
+                station,
+                id=extra,
+                code="onboarding",
+                station_status=StationStatus.ONBOARDING,
+            )
+        )
+        groups.store_group(replace(group, station_ids=group.station_ids | {extra}))
+        return {"model_ids": [str(mid)]}
+
     forecasts = _run_selected_cycle(
         monkeypatch,
         group_run=True,
+        configure_cycle=scoped_configuration if scoped_standard else None,
         refresh_case=refresh_case,
         capture_fault="none",
         lookback_days=30,
@@ -227,7 +252,7 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
     assert selections
     expected_selection = (
         frozenset({(UUID(int=1), "selected_weather_fixture")})
-        if data_use is ForecastDataUse.PROVISIONAL_RATING
+        if data_use is ForecastDataUse.PROVISIONAL_RATING or scoped_standard
         else None
     )
     assert all(selection == expected_selection for selection in selections)
@@ -241,7 +266,9 @@ def test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
             .dynamic[step]
             .data[fi.FISpatialRepresentation.BASIN_AVERAGE]
         )
-        assert delivered.past_known["obs"]["discharge"].data.height == 30
+        assert delivered.past_known["obs"]["discharge"].data.height == (
+            7 if data_use is ForecastDataUse.STANDARD else 30
+        )
         assert delivered.past_known["reanalysis"]["precipitation"].data.height == 30
         assert (
             delivered.future_known["nwp"]["precipitation"].data.height
@@ -340,3 +367,20 @@ def test_selected_handoff_rejects_changed_cycle(
             None,
             uniform_horizon=True,
         )
+
+
+def test_scoped_standard_group_negotiates_only_operational_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_selected_native_fi_preserves_q7_p30_nan_gate_and_unequal_horizons(
+        monkeypatch,
+        0,
+        1,
+        ForecastDataUse.STANDARD,
+        HorizonSemantics.AT_MOST,
+        11,
+        None,
+        None,
+        uniform_horizon=True,
+        scoped_standard=True,
+    )

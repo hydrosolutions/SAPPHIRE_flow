@@ -704,9 +704,8 @@ class ForecastInterfaceAdapter:
         past_dynamic_features: set[str] = set()
         lookback_steps = 1
         # Plan 239 T1b review (major): keep each forcing variable's OWN declared
-        # lookback alongside the collapsed maximum. Only forcing features are
-        # recorded — a target's past history travels the target channel and is
-        # not what `past_forcing_flags` judges.
+        # lookback alongside the collapsed maximum. Target history uses its own
+        # window too; forcing diagnostics select only forcing feature names.
         #
         # Per name this is a MAX across branches, NOT a conflict check. Unlike a
         # declared aggregation or unit — where two different values for one name
@@ -718,12 +717,11 @@ class ForecastInterfaceAdapter:
         declared_lookback: dict[str, int] = {}
         for name, variable in past_variables:
             lookback_steps = max(lookback_steps, variable.lookback)
-            if name in req.targets:
-                continue
-            past_dynamic_features.add(name)
             declared_lookback[name] = max(
                 declared_lookback.get(name, 0), variable.lookback
             )
+            if name not in req.targets:
+                past_dynamic_features.add(name)
 
         # Plan 228 review fixer round (blocker): a model's DECLARED
         # per-variable aggregation (`PastKnownVariable.aggregation` /

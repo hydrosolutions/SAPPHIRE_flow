@@ -249,7 +249,7 @@ def test_projection_excludes_target_history_from_past_dynamic_features() -> None
     req = adapter.data_requirements
     assert req.target_parameters == frozenset({"discharge"})
     assert req.required_past_targets == frozenset({"discharge"})
-    assert "discharge" not in dict(req.declared_lookbacks)
+    assert dict(req.declared_lookbacks)["discharge"] == req.lookback_steps
     # discharge is target history, not forcing — it must be excluded.
     assert "discharge" not in req.past_dynamic_features
     assert req.past_dynamic_features == frozenset()

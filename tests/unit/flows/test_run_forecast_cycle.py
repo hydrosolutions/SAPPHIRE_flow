@@ -10332,3 +10332,88 @@ expected_delivery_offset_hours = 4.5
         assert empty.enabled is False
         assert empty.scratch_path is None
         assert empty.stac_base_url is None
+
+
+@pytest.mark.parametrize(
+    "selection", [[], [""], [" bad"], ["bad id"], ["same", "same"]]
+)
+def test_invalid_model_selection_fails_before_store_setup(selection: list[str]) -> None:
+    with pytest.raises(ConfigurationError, match="model_ids"):
+        run_forecast_cycle_flow.fn(model_ids=selection)
+
+
+def test_provisional_cycle_rejects_model_selection_before_store_setup() -> None:
+    from sapphire_flow.types.enums import ForecastDataUse
+
+    with pytest.raises(ConfigurationError, match="only for standard"):
+        run_forecast_cycle_flow.fn(
+            model_ids=["cmal_nepal_static_encoder"],
+            data_use=ForecastDataUse.PROVISIONAL_RATING,
+        )
+
+
+@pytest.mark.parametrize("selection", [None, [str(_MODEL_ID)], ["not_installed"]])
+def test_model_selection_filters_assignments_and_unrelated_stations(
+    selection: list[str] | None,
+) -> None:
+    from tests.unit.flows.test_run_forecast_cycle_group_fi_resolver import _Stores
+
+    stores = _Stores()
+    sid, unrelated_sid = StationId(uuid4()), StationId(uuid4())
+    other_id = ModelId("unselected_model")
+    for station, mid in ((sid, _MODEL_ID), (unrelated_sid, other_id)):
+        _build_station_and_stores(
+            station,
+            mid,
+            stores.station_store,
+            stores.obs_store,
+            stores.nwp_store,
+            stores.artifact_store,
+            stores.forcing_store,
+        )
+    stores.station_store.store_model_assignment(
+        ModelAssignment(
+            station_id=sid,
+            model_id=other_id,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=0,
+            created_at=_NOW,
+        )
+    )
+    kwargs = dict(
+        station_store=stores.station_store,
+        obs_store=stores.obs_store,
+        weather_forecast_store=stores.nwp_store,
+        forecast_store=stores.forecast_store,
+        model_state_store=stores.state_store,
+        artifact_store=stores.artifact_store,
+        alert_store=stores.alert_store,
+        baseline_store=stores.baseline_store,
+        basin_store=stores.basin_store,
+        forcing_store=stores.forcing_store,
+        adapter=FakeWeatherForecastSource(result={}),
+        models={_MODEL_ID: _SmallFakeModel()},
+        config=_make_config(),
+        qc_rules=_empty_qc_rules(),
+        clock=_clock,
+        rng=random.Random(42),
+        model_ids=selection,
+    )
+    if selection == ["not_installed"]:
+        with pytest.raises(ConfigurationError, match="unknown models"):
+            run_forecast_cycle_flow(**kwargs)
+        assert (
+            stores.forecast_store.fetch_forecasts_in_range(
+                sid, _NOW - timedelta(days=1), _NOW + timedelta(days=1)
+            )
+            == []
+        )
+        return
+    result = run_forecast_cycle_flow(**kwargs)
+    if selection is None:
+        assert result.stations_failed == 2
+    else:
+        assert result.stations_failed == 0
+        assert result.forecasts_stored == 1
+    assert len(stores.station_store.fetch_model_assignments(sid)) == 2

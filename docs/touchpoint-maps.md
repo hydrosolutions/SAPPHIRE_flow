@@ -2876,3 +2876,15 @@ Never auto-promote, refit during evaluation retry, or broaden host grants. Sourc
 recording preserves returned provenance without filling missing weather. Shared
 `services/static_frames.py` aligns only null-typed static columns with an unambiguous
 peer type, for both group training and hindcasts; concrete conflicts stay errors.
+
+### Standard scoped FI group runs
+
+`run_forecast_cycle_flow.model_ids` filters installed models and active assignments
+before weather preparation and execution; raw drift-check assignments remain
+intact. Preserve unscoped defaults and reject provisional selection. Daily FI group
+past-discharge alignment in `operational_inputs` uses the FI adapter's declared
+target lookback and leaves NaNs to the existing gate. `run_group_forecast` keeps
+missing-discharge quality flags without provisional lineage. Test absent/partial
+history, strict tolerance, unequal weather/target lookbacks, unrelated assignments,
+invalid selection before writes, existing selected-weather receipts and rating
+hard failures. Future weather must never be padded by this target alignment.
