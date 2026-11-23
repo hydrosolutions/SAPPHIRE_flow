@@ -293,3 +293,70 @@ Before activation refresh memory measurements: worker capture/validation below
 and worker baseline plus evidence below 6 GiB of its 8 GiB limit. Reserve at least
 4 GiB host MemAvailable after budgeting for the paired readers. These bounds do
 not qualify higher API concurrency.
+
+## Configured fine-tuning (issue 538)
+
+The opt-in `fine_tuning` request on `train-models` separates an experiment's
+weather source and fitting/evaluation periods from operational defaults. Its
+configuration includes an explicit model, approved donor, assigned group, tenant,
+operator, RNG seed and model-owned parameters. It operates on the whole group;
+station filters do not create a smaller group experiment.
+
+`python -m sapphire_flow.cli.fine_tune preview --config experiment.toml` validates
+configuration and displays its digest. This is not a live-data or authorization
+check. `start --config experiment.toml` submits the same request through the
+configured Prefect deployment. Reusing the request UUID returns the existing run;
+changing its content requires a new UUID. Old deployments without the request
+parameter are refused. The worker independently checks deployment-authorized
+tenant, group membership, assignment, donor and warm-start support before fitting.
+
+For the Swiss pilot, choose `data.weather_source = "hybrid"` to use the existing
+MeteoSwiss historical selection, including its explicitly recorded preliminary
+precipitation tail where applicable. Do not change operational source settings.
+Model-specific `training.parameters` must match the pinned model's schema; the
+orchestrator does not invent alternative CMAL parameters. Evaluation dates follow
+fitting dates; unknown donor pretraining exposure prevents an independent-holdout
+claim even when the local fitting/evaluation periods are disjoint.
+
+The worker saves the candidate and its receipt atomically, without promotion.
+Candidate and donor hindcasts use the configured evaluation issue-time range;
+metric rows carry their actual valid-time periods and sample counts. Reports show
+station gaps and source/version evidence. They do not rank models: exact common
+observation samples and donor pretraining exposure have not been established.
+A report with stored skill for both artifacts makes the candidate PENDING_APPROVAL;
+this means ready for human review, not that coverage is complete or skill improved.
+
+Use the template in `config/examples/fine-tuning.toml`, replacing every placeholder.
+The same CLI provides:
+
+```sh
+uv run python -m sapphire_flow.cli.fine_tune start --config experiment.toml
+uv run python -m sapphire_flow.cli.fine_tune review --artifact UUID --tenant CODE --operator NAME
+uv run python -m sapphire_flow.cli.fine_tune approve --artifact UUID --tenant CODE --operator NAME --reviewed-sha256 DIGEST --reason "review rationale"
+uv run python -m sapphire_flow.cli.fine_tune reject --artifact UUID --tenant CODE --operator NAME --reviewed-sha256 DIGEST --reason "review rationale"
+uv run python -m sapphire_flow.cli.fine_tune evaluate --config experiment.toml --artifact UUID
+```
+
+Review reads the persisted report, including its digest; approval/rejection never
+trusts edited local JSON. These commands use the trusted host operations identity
+from `SAPPHIRE_CONFIG` (or `--host-config`), its writable-tenant allowlist and
+`deployment.promotion_allowed`. This is an operations command, not a new human
+login or bearer-token write API. Approval atomically supersedes the incumbent,
+activates the candidate and records the operator, reason and reviewed digest.
+A changed roster, incumbent or report refuses approval. An identical repeated
+admin decision is a no-op; a conflicting decision fails.
+
+The worker serializes fitting/evaluation for each tenant/model/group on a dedicated
+PostgreSQL advisory connection; admin decisions acquire the same scope lock.
+No database transaction stays open for the duration of fitting. Ordinary operational
+forecasts keep reading the active artifact. This lock does not reserve CPU/RAM or
+exclude unrelated operational jobs: schedule the pilot around measured host load.
+A repeated request with a retained candidate refuses to fit again. Evaluation
+failure leaves it TRAINING/inactive with an incomplete receipt; `evaluate` retries
+that candidate without fitting again. A deliberate new fit requires a new request
+UUID. Successful training does not authorize deployment or live promotion.
+
+Swiss runtime qualification remains required before the first production run:
+verify the pinned model's trainer/finetune schema, exact weather/discharge coverage,
+approved donor, registered deployment and a bounded resource/time budget. No pilot
+configuration or learning-rate defaults are claimed by the template.

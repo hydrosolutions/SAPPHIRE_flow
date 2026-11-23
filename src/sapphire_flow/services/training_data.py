@@ -12,6 +12,7 @@ from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
 )
+from sapphire_flow.services.static_frames import align_null_static_types
 from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
@@ -635,7 +636,7 @@ def assemble_group_training_data(
     past_targets_parts: list[pl.DataFrame] = []
     past_dynamic_parts: list[pl.DataFrame] = []
     future_dynamic_parts: list[pl.DataFrame] = []
-    static_parts: list[pl.DataFrame] = []
+    static_parts: list[tuple[StationId, pl.DataFrame]] = []
     valid_station_ids: list[StationId] = []
 
     for station_id in group.station_ids:
@@ -658,7 +659,7 @@ def assemble_group_training_data(
         past_dynamic_parts.append(data.past_dynamic.with_columns(sid_col))
         future_dynamic_parts.append(data.future_dynamic.with_columns(sid_col))
         if data.static is not None:
-            static_parts.append(data.static.with_columns(sid_col))
+            static_parts.append((station_id, data.static.with_columns(sid_col)))
         valid_station_ids.append(station_id)
 
     if not valid_station_ids:
@@ -678,7 +679,11 @@ def assemble_group_training_data(
         past_targets=_reorder(pl.concat(past_targets_parts)),
         past_dynamic=_reorder(pl.concat(past_dynamic_parts)),
         future_dynamic=_reorder(pl.concat(future_dynamic_parts)),
-        static=_reorder(pl.concat(static_parts)) if static_parts else None,
+        static=_reorder(
+            pl.concat([frame for _, frame in align_null_static_types(static_parts)])
+        )
+        if static_parts
+        else None,
         time_step=time_step,
         val_start=None,
     )

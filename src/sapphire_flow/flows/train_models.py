@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import random
+from contextlib import nullcontext
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from functools import partial
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -18,6 +21,11 @@ from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
+)
+from sapphire_flow.services.fine_tuning import qualify_fine_tuning_scope
+from sapphire_flow.services.fine_tuning_evidence import (
+    CandidateReceipt,
+    RecordingReanalysisSource,
 )
 from sapphire_flow.services.model_registry import (
     build_station_code_resolver,
@@ -36,19 +44,27 @@ from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
 )
+from sapphire_flow.store.fine_tuning import PgFineTuningReceipts, fitting_lock
+from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
 from sapphire_flow.types.training import TrainingResult, TrainingScope, TrainingUnit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
+    import sqlalchemy as sa
+
+    from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.stores import (
         AuditLogStore,
         HistoricalForcingStore,
         ModelArtifactStore,
+        SkillStore,
         StationGroupStore,
         StationStore,
     )
+    from sapphire_flow.services.fine_tuning import FineTuningScope
     from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.model import (
@@ -110,7 +126,7 @@ def _determine_scope_task(
     model_store: object,
     station_store: object,
     group_store: object,
-) -> object:
+) -> TrainingScope:
     return determine_training_scope(
         model_ids=model_ids,
         station_ids=station_ids,
@@ -371,6 +387,8 @@ def _store_artifact_task(
     audit_log_store: object = None,
     audited_writer: object = None,
     promote: bool = True,
+    receipt_for_artifact: object = None,
+    candidate_provenance: object = None,
 ) -> object:
 
     typed_principal = cast("WritePrincipal | None", principal)
@@ -399,6 +417,28 @@ def _store_artifact_task(
                 station_id=unit.station_id,
                 group_id=unit.group_id,
             )
+            if receipt_for_artifact is not None:
+                from sapphire_flow.types.auth import AuditEntry
+                from sapphire_flow.types.enums import AuditEventType
+
+                factory = cast(
+                    "Callable[[ArtifactId], CandidateReceipt]", receipt_for_artifact
+                )
+                receipt = factory(aid)
+                if audit is None:
+                    raise ConfigurationError(
+                        "fine-tuning candidate requires atomic audit storage"
+                    )
+                cast("AuditLogStore", audit).append_entry(
+                    AuditEntry.system(
+                        event_type=AuditEventType.FINE_TUNING_RECEIPT,
+                        target_type="model_artifact",
+                        target_id=str(aid),
+                        detail={"receipt": receipt.payload(), "sha256": receipt.sha256},
+                        ip_address=None,
+                        created_at=clock(),
+                    )
+                )
             return aid
         return store_and_promote_artifact(
             artifact_store=cast("ModelArtifactStore", store),
@@ -424,6 +464,26 @@ def _store_artifact_task(
     # tenant check inside the txn never rejects — no separate pre-authorize is
     # needed here (unlike the onboard flow, which has no pre-filter).
     writer = cast("AuditedWriter | None", audited_writer)
+    if receipt_for_artifact is not None:
+        from sapphire_flow.store.audited_writer import make_audited_stores
+
+        if writer is None or typed_audit is None or candidate_provenance is None:
+            raise ConfigurationError("fine-tuning requires atomic provenance storage")
+        with writer.begin() as connection:
+            stores = make_audited_stores(connection)
+            aid = cast(
+                "ArtifactId",
+                _run(
+                    stores["artifact_store"],
+                    stores["audit_log_store"],
+                    audit_rejection=False,
+                ),
+            )
+            finalize = cast(
+                "Callable[[ArtifactId, sa.Connection], None]", candidate_provenance
+            )
+            finalize(aid, connection)
+            return aid
     if writer is None or typed_audit is None:
         return _run(artifact_store, typed_audit, audit_rejection=True)
     # Inside the atomic txn: the internal tenant check is RAISE-ONLY (no
@@ -432,6 +492,28 @@ def _store_artifact_task(
         return _run(
             stores["artifact_store"], stores["audit_log_store"], audit_rejection=False
         )
+
+
+def _record_candidate_provenance(
+    artifact_id: ArtifactId,
+    connection: sa.Connection,
+    *,
+    base_artifact_id: ArtifactId,
+    donor_config: tuple[str | None, str | None, str | None, str | None, str | None],
+    run_config: dict,
+    station_ids: tuple[StationId, ...],
+) -> None:
+    from sapphire_flow.store.model_artifact_lineage import PgArtifactLineageWriter
+    from sapphire_flow.store.model_artifact_warm_start import PgWarmStartWriter
+
+    _record_warm_start_provenance(
+        warm_start_writer=PgWarmStartWriter(connection),
+        artifact_id=artifact_id,
+        base_artifact_id=base_artifact_id,
+        donor_config=donor_config,
+        run_config=run_config,
+    )
+    PgArtifactLineageWriter(connection).record(artifact_id, station_ids)
 
 
 @task(
@@ -470,6 +552,8 @@ def train_models_flow(
     # the model unchanged. Omitted, every model sees `{}` exactly as before.
     training_params: dict | None = None,
     base_artifact_id: str | None = None,
+    fine_tuning: dict[str, object] | None = None,
+    fine_tuning_candidate_id: str | None = None,
     model_store: object = None,
     station_store: object = None,
     group_store: object = None,
@@ -500,6 +584,39 @@ def train_models_flow(
     from sapphire_flow.types.auth import AuditEntry
     from sapphire_flow.types.datetime import ensure_utc
     from sapphire_flow.types.enums import AuditEventType
+
+    experiment = None
+    if fine_tuning_candidate_id is not None and fine_tuning is None:
+        raise ConfigurationError(
+            "evaluation retry requires the original fine-tuning configuration"
+        )
+    if fine_tuning is not None:
+        from sapphire_flow.config.fine_tuning import parse_fine_tuning
+
+        experiment = parse_fine_tuning(fine_tuning)
+        if any(
+            value is not None
+            for value in (
+                model_ids,
+                station_ids,
+                group_ids,
+                period_start,
+                period_end,
+                training_params,
+                base_artifact_id,
+            )
+        ):
+            raise ConfigurationError(
+                "configured fine-tuning cannot mix legacy run parameters"
+            )
+        model_ids = [str(experiment.model_id)]
+        group_ids = [str(experiment.group_id)]
+        base_artifact_id = str(experiment.base_artifact_id)
+        period_start = experiment.fitting_start.isoformat()
+        period_end = experiment.fitting_end.isoformat()
+        time_step_hours = experiment.time_step_hours
+        training_params = json.loads(experiment.training_parameters_json)
+        rng = random.Random(experiment.seed)
 
     # --- Production setup ---
     _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
@@ -550,8 +667,8 @@ def train_models_flow(
     # scheduled deployment always has both.
     run_principal = resolve_flow_run_principal(
         tenant_store=tenant_store,  # type: ignore[arg-type]
-        tenant_code=None,
-        operator=None,
+        tenant_code=experiment.tenant_code if experiment else None,
+        operator=experiment.operator if experiment else None,
     )
 
     if deployment_config is None:
@@ -570,7 +687,11 @@ def train_models_flow(
     # allowed when forcing_store is unavailable (e.g. caller-provided stores
     # without one) — empty-scope training short-circuits without
     # dereferencing forcing_source.
-    if forcing_source is None and forcing_store is not None:
+    if experiment is not None and forcing_store is None:
+        raise ConfigurationError(
+            "configured fine-tuning requires the historical forcing store"
+        )
+    if (forcing_source is None or experiment is not None) and forcing_store is not None:
         from sapphire_flow.adapters.hybrid_reanalysis_factories import (
             select_reanalysis_source,
         )
@@ -579,7 +700,12 @@ def train_models_flow(
         resolved_config = cast("DeploymentConfig", deployment_config)
         forcing_source = select_reanalysis_source(
             forcing_store=cast("HistoricalForcingStore", forcing_store),
-            mode=resolved_config.reanalysis_source,
+            mode=cast(
+                'Literal["single", "hybrid", "era5_land", "recap_era5_land"]',
+                experiment.weather_source.value,
+            )
+            if experiment
+            else resolved_config.reanalysis_source,
         )
 
     if model_store is None:
@@ -684,6 +810,27 @@ def train_models_flow(
         group_store=group_store,
     )
 
+    if experiment is not None:
+        if run_principal is None:
+            raise ConfigurationError(
+                "configured fine-tuning requires a trusted run principal"
+            )
+        if len(scope.units) != 1 or scope.units[0].group_id != experiment.group_id:
+            raise ConfigurationError(
+                "configured fine-tuning must resolve exactly its requested group"
+            )
+        selected_model = models.get(experiment.model_id)
+        if selected_model is None:
+            raise ConfigurationError("fine-tuning model was not discovered")
+        qualify_fine_tuning_scope(
+            experiment,
+            principal=run_principal,
+            groups=cast("StationGroupStore", group_store),
+            stations=cast("StationStore", station_store),
+            artifacts=cast("ModelArtifactStore", artifact_store),
+            model=selected_model,
+        )
+
     results: list[TrainingResult] = []
 
     # Plan 147 Slice E (G3/G6): filter to the run principal's tenant AFTER
@@ -743,237 +890,485 @@ def train_models_flow(
             authorized_units.append(unit)
         scope = TrainingScope(units=tuple(authorized_units))
 
-    for unit in scope.units:
-        model_instance = models.get(unit.model_id)
-        if model_instance is None:
-            results.append(
-                TrainingResult(
-                    training_unit=unit,
-                    artifact_id=None,
-                    hindcast_steps=[],
-                    skill_computed=False,
-                    error=f"model {unit.model_id} not found in discovered models",
-                )
+    guard: AbstractContextManager[None] = nullcontext()
+    receipts: PgFineTuningReceipts | None = None
+    recording_source: RecordingReanalysisSource | None = None
+    qualified: FineTuningScope | None = None
+    incumbent_ids: tuple[ArtifactId, ...] = ()
+    selected_model = models.get(experiment.model_id) if experiment else None
+    finish_evaluation: (
+        Callable[[CandidateReceipt, TrainingUnit, object], TrainingResult] | None
+    ) = None
+    if experiment is not None:
+        if _conn is None or run_principal is None or run_principal.tenant_id is None:
+            raise ConfigurationError(
+                "configured fine-tuning requires production receipt storage"
             )
-            continue
-
-        # T.2: assemble training data
-        data = _assemble_data_task(
-            unit=unit,
-            model=model_instance,
-            forcing_source=forcing_source,
-            obs_store=obs_store,
-            basin_store=basin_store,
-            station_store=station_store,
-            group_store=group_store,
+        connection = _conn
+        receipts = PgFineTuningReceipts(connection)
+        guard = fitting_lock(connection.engine, experiment, run_principal.tenant_id)
+        recording_source = RecordingReanalysisSource(
+            cast("WeatherReanalysisSource", forcing_source)
         )
+        forcing_source = recording_source
 
-        if data is None:
-            results.append(
-                TrainingResult(
-                    training_unit=unit,
-                    artifact_id=None,
-                    hindcast_steps=[],
-                    skill_computed=False,
-                    error="insufficient data",
+        def _finish_evaluation(
+            receipt: CandidateReceipt, unit: TrainingUnit, model: object
+        ) -> TrainingResult:
+            from dataclasses import replace
+
+            from sapphire_flow.config.paths import resolve_artifact_dir
+            from sapphire_flow.flows.fine_tuning_evaluation import evaluate_candidate
+            from sapphire_flow.services.fine_tuning_evidence import canonical_json
+            from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
+
+            now = cast("Callable[[], UtcDatetime]", clock)
+            candidate_run_id, donor_run_id = uuid4(), uuid4()
+            attempt = {
+                "state": "running",
+                "candidate_run_id": str(candidate_run_id),
+                "donor_run_id": str(donor_run_id),
+            }
+            with connection.engine.begin() as tx:
+                PgFineTuningReceipts(tx).append(
+                    replace(receipt, evaluation_json=canonical_json(attempt)),
+                    now(),
+                )
+            try:
+                updated, result = evaluate_candidate(
+                    receipt,
+                    unit=unit,
+                    candidate_run_id=candidate_run_id,
+                    donor_run_id=donor_run_id,
+                    model=cast("GroupForecastModel", model),
+                    artifacts=cast("ModelArtifactStore", artifact_store),
+                    source=recording_source,
+                    obs_store=obs_store,
+                    hindcast_store=hindcast_store,
+                    station_store=station_store,
+                    group_store=group_store,
+                    basin_store=basin_store,
+                    skill_store=cast("SkillStore", skill_store),
+                    flow_regime_store=flow_regime_store,
+                    deployment_config=deployment_config,
+                    clock=cast("Callable[[], UtcDatetime]", clock),
+                )
+            except Exception as exc:
+                attempt.update(state="incomplete", error_type=type(exc).__name__)
+                with connection.engine.begin() as tx:
+                    PgFineTuningReceipts(tx).append(
+                        replace(receipt, evaluation_json=canonical_json(attempt)),
+                        now(),
+                    )
+                raise
+            with connection.engine.begin() as tx:
+                PgFineTuningReceipts(tx).append(
+                    updated, cast("Callable[[], UtcDatetime]", clock)()
+                )
+                if result.skill_computed:
+                    PgModelArtifactStore(
+                        tx, resolve_artifact_dir()
+                    ).transition_artifact_status(
+                        receipt.artifact_id,
+                        ModelArtifactStatus.PENDING_APPROVAL,
+                    )
+            return result
+
+        finish_evaluation = _finish_evaluation
+
+    with guard:
+        if experiment is not None:
+            assert run_principal is not None
+            assert receipts is not None
+            # Recheck current ownership and roster after acquiring the scope lock.
+            qualified = qualify_fine_tuning_scope(
+                experiment,
+                principal=run_principal,
+                groups=cast("StationGroupStore", group_store),
+                stations=cast("StationStore", station_store),
+                artifacts=cast("ModelArtifactStore", artifact_store),
+                model=selected_model,
+            )
+            if qualified.group.station_ids != scope.units[0].station_ids:
+                raise ConfigurationError("group membership changed during preflight")
+            incumbent_ids = tuple(
+                sorted(
+                    cast(
+                        "ModelArtifactStore", artifact_store
+                    ).fetch_artifacts_by_status(
+                        experiment.model_id,
+                        ModelArtifactStatus.ACTIVE,
+                        group_id=experiment.group_id,
+                    ),
+                    key=str,
                 )
             )
-            continue
+            if fine_tuning_candidate_id is None:
+                receipts.refuse_retained_candidate(experiment)
 
-        # Plan 405 T1 — resolve the donor's config and REFUSE here, before any
-        # training happens and before anything is stored. Deliberately OUTSIDE
-        # the per-unit guard below: an unresolvable or contradictory donor
-        # provenance is an integrity failure like the SHA-256 mismatch further
-        # down, not a per-unit data shortfall, so it must abort the run loudly
-        # rather than be recorded as one failed unit and continued past.
-        donor_config: (
-            tuple[str | None, str | None, str | None, str | None, str | None] | None
-        ) = None
-        if typed_base_artifact_id is not None and warm_start_writer is not None:
-            donor_config = _resolve_donor_config_or_refuse(
-                warm_start_writer=warm_start_writer,
-                base_artifact_id=typed_base_artifact_id,
-                model=model_instance,
-            )
-
-        # T.3: train the model artifact. Wrapped so a raise from THIS call (the
-        # reanalysis-tail missing-value crash class, or the existing
-        # insufficient-data ValueError) is recorded as a failed unit and the
-        # run CONTINUES for the remaining units, instead of aborting the whole
-        # flow (Plan 130 Part B). Deliberately scoped to the training call
-        # only — a SHA-256 mismatch further down signals artifact-store
-        # corruption, a system-level integrity failure that must still abort
-        # the run loudly, not be swallowed per-unit.
-        try:
-            base_artifact = (
-                _load_base_artifact(
-                    model_instance, artifact_store, typed_base_artifact_id
+        for unit in scope.units:
+            model_instance = models.get(unit.model_id)
+            if model_instance is None:
+                results.append(
+                    TrainingResult(
+                        training_unit=unit,
+                        artifact_id=None,
+                        hindcast_steps=[],
+                        skill_computed=False,
+                        error=f"model {unit.model_id} not found in discovered models",
+                    )
                 )
-                if typed_base_artifact_id is not None
-                else None
-            )
-            artifact_bytes = _train_model_task(
+                continue
+
+            if experiment is not None and fine_tuning_candidate_id is not None:
+                from uuid import UUID
+
+                assert receipts is not None and finish_evaluation is not None
+                candidate_id = ArtifactId(UUID(fine_tuning_candidate_id))
+                receipt = receipts.latest(candidate_id)
+                if receipt.request.sha256 != experiment.sha256:
+                    raise ConfigurationError(
+                        "evaluation retry must use the original configuration"
+                    )
+                assert qualified is not None
+                if (
+                    frozenset(receipt.requested_stations) != qualified.group.station_ids
+                    or receipt.donor_sha256 != qualified.donor.sha256_hash
+                ):
+                    raise ConfigurationError(
+                        "evaluation retry scope or donor changed since fitting"
+                    )
+                record = cast(
+                    "ModelArtifactStore", artifact_store
+                ).fetch_artifact_record(candidate_id)
+                if (
+                    record is None
+                    or record.status is not ModelArtifactStatus.TRAINING
+                    or record.sha256_hash != receipt.artifact_sha256
+                    or record.model_id != experiment.model_id
+                    or record.group_id != experiment.group_id
+                ):
+                    raise ConfigurationError(
+                        "only an incomplete inactive candidate can resume evaluation"
+                    )
+                results.append(finish_evaluation(receipt, unit, model_instance))
+                continue
+
+            # T.2: assemble training data
+            data = _assemble_data_task(
                 unit=unit,
                 model=model_instance,
-                data=data,
+                forcing_source=forcing_source,
+                obs_store=obs_store,
+                basin_store=basin_store,
+                station_store=station_store,
+                group_store=group_store,
+            )
+
+            if data is None:
+                if experiment is not None:
+                    raise ConfigurationError(
+                        "fine-tuning has insufficient fitting data"
+                    )
+                results.append(
+                    TrainingResult(
+                        training_unit=unit,
+                        artifact_id=None,
+                        hindcast_steps=[],
+                        skill_computed=False,
+                        error="insufficient data",
+                    )
+                )
+                continue
+
+            if experiment is not None:
+                assert recording_source is not None
+                cast("AuditLogStore", audit_log_store).append_entry(
+                    AuditEntry.system(
+                        event_type=AuditEventType.FINE_TUNING_STARTED,
+                        target_type="fine_tuning_request",
+                        target_id=str(experiment.request_id),
+                        detail={
+                            "request": experiment.payload(),
+                            "configuration_sha256": experiment.sha256,
+                            "requested_stations": sorted(
+                                str(sid) for sid in unit.station_ids
+                            ),
+                            "fitted_stations": sorted(
+                                str(sid)
+                                for sid in cast("GroupTrainingData", data).station_ids
+                            ),
+                            "source_evidence": json.loads(recording_source.snapshot()),
+                        },
+                        ip_address=None,
+                        created_at=cast("Callable[[], UtcDatetime]", clock)(),
+                    )
+                )
+
+            # Plan 405 T1 — resolve the donor's config and REFUSE here, before any
+            # training happens and before anything is stored. Deliberately OUTSIDE
+            # the per-unit guard below: an unresolvable or contradictory donor
+            # provenance is an integrity failure like the SHA-256 mismatch further
+            # down, not a per-unit data shortfall, so it must abort the run loudly
+            # rather than be recorded as one failed unit and continued past.
+            donor_config: (
+                tuple[str | None, str | None, str | None, str | None, str | None] | None
+            ) = None
+            if typed_base_artifact_id is not None and warm_start_writer is not None:
+                donor_config = _resolve_donor_config_or_refuse(
+                    warm_start_writer=warm_start_writer,
+                    base_artifact_id=typed_base_artifact_id,
+                    model=model_instance,
+                )
+
+            # T.3: train the model artifact. Wrapped so a raise from THIS call (the
+            # reanalysis-tail missing-value crash class, or the existing
+            # insufficient-data ValueError) is recorded as a failed unit and the
+            # run CONTINUES for the remaining units, instead of aborting the whole
+            # flow (Plan 130 Part B). Deliberately scoped to the training call
+            # only — a SHA-256 mismatch further down signals artifact-store
+            # corruption, a system-level integrity failure that must still abort
+            # the run loudly, not be swallowed per-unit.
+            try:
+                base_artifact = (
+                    _load_base_artifact(
+                        model_instance, artifact_store, typed_base_artifact_id
+                    )
+                    if typed_base_artifact_id is not None
+                    else None
+                )
+                artifact_bytes = _train_model_task(
+                    unit=unit,
+                    model=model_instance,
+                    data=data,
+                    rng=rng,
+                    params=training_params,
+                    base_artifact=base_artifact,
+                )
+            except Exception as exc:  # flow-level guard, see docstring above
+                if experiment is not None:
+                    raise
+                log.error(
+                    "train_models.unit_training_failed",
+                    unit=_unit_shard(unit),
+                    model_id=str(unit.model_id),
+                    error=str(exc),
+                )
+                results.append(
+                    TrainingResult(
+                        training_unit=unit,
+                        artifact_id=None,
+                        hindcast_steps=[],
+                        skill_computed=False,
+                        error=str(exc),
+                    )
+                )
+                continue
+
+            receipt_factory: Callable[[ArtifactId], CandidateReceipt] | None = None
+            candidate_provenance = None
+            if experiment is not None:
+                assert run_principal is not None and run_principal.tenant_id is not None
+                assert qualified is not None and recording_source is not None
+                fitted = tuple(
+                    sorted(cast("GroupTrainingData", data).station_ids, key=str)
+                )
+
+                def build_receipt(
+                    aid: ArtifactId,
+                    artifact_bytes: bytes = artifact_bytes,
+                    fitted: tuple[StationId, ...] = fitted,
+                ) -> CandidateReceipt:
+                    assert experiment is not None
+                    assert (
+                        run_principal is not None
+                        and run_principal.tenant_id is not None
+                    )
+                    assert qualified is not None and recording_source is not None
+                    return CandidateReceipt(
+                        request=experiment,
+                        tenant_id=run_principal.tenant_id,
+                        artifact_id=aid,
+                        artifact_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+                        donor_sha256=qualified.donor.sha256_hash,
+                        incumbent_ids=incumbent_ids,
+                        requested_stations=tuple(
+                            sorted(qualified.group.station_ids, key=str)
+                        ),
+                        fitted_stations=fitted,
+                        fitting_sources_json=recording_source.snapshot(),
+                    )
+
+                receipt_factory = build_receipt
+                if donor_config is None:
+                    raise ConfigurationError(
+                        "fine-tuning requires resolved donor provenance"
+                    )
+                candidate_provenance = partial(
+                    _record_candidate_provenance,
+                    base_artifact_id=experiment.base_artifact_id,
+                    donor_config=donor_config,
+                    run_config=training_params or {},
+                    station_ids=fitted,
+                )
+
+            artifact_id = _store_artifact_task(
+                unit=unit,
+                artifact_bytes=artifact_bytes,
+                artifact_store=artifact_store,
+                clock=clock,
+                station_store=station_store,
+                group_store=group_store,
+                principal=run_principal,
+                audit_log_store=audit_log_store,
+                audited_writer=audited_writer,
+                # Plan 399 T3 — a retrained artifact is never auto-promoted.
+                promote=typed_base_artifact_id is None,
+                receipt_for_artifact=receipt_factory,
+                candidate_provenance=candidate_provenance,
+            )
+
+            # Plan 399 T3/T4 — warm-start provenance, right after the store, on the
+            # same pattern as basin lineage below. Only for a RETRAIN: a freshly
+            # trained artifact has no donor and records nothing (T4).
+            if (
+                experiment is None
+                and donor_config is not None
+                and warm_start_writer is not None
+            ):
+                _record_warm_start_provenance(
+                    warm_start_writer=warm_start_writer,
+                    artifact_id=cast("ArtifactId", artifact_id),
+                    base_artifact_id=cast("ArtifactId", typed_base_artifact_id),
+                    donor_config=donor_config,
+                    run_config=training_params or {},
+                )
+
+            # Plan 120 Task 2D: lineage AFTER store + promote. Trained subset —
+            # {unit.station_id} for a station-scoped unit, data.station_ids (the
+            # post-skip subset) for a group-scoped one, NOT unit.station_ids
+            # (the full pre-skip membership).
+            trained_station_ids: tuple[StationId, ...] = (
+                (unit.station_id,)
+                if unit.station_id is not None
+                else tuple(data.station_ids)  # type: ignore[union-attr]
+            )
+            if experiment is None:
+                _record_lineage_task(
+                    lineage_writer=lineage_writer,
+                    artifact_id=artifact_id,
+                    trained_station_ids=trained_station_ids,
+                )
+
+            # Verify SHA-256 hash before deserializing artifact
+            sha256_stored = artifact_store.fetch_artifact(artifact_id)
+            if sha256_stored is not None:
+                _, stored_bytes = sha256_stored
+                computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
+                stored_hash = hashlib.sha256(stored_bytes).hexdigest()
+                if computed_hash != stored_hash:
+                    raise ValueError(
+                        f"SHA-256 mismatch for artifact {artifact_id}: "
+                        f"computed={computed_hash[:8]}... stored={stored_hash[:8]}..."
+                    )
+
+            if experiment is not None:
+                assert receipts is not None and finish_evaluation is not None
+                receipt = receipts.latest(cast("ArtifactId", artifact_id))
+                results.append(finish_evaluation(receipt, unit, model_instance))
+                continue
+
+            # Deserialize artifact for hindcast
+            loaded_artifact = model_instance.deserialize_artifact(artifact_bytes)
+            hindcast_run_id = uuid4()
+
+            # T.4: run hindcast (as subflow)
+            hindcast_steps_raw = run_hindcast_flow(
+                model_id=unit.model_id,
+                artifact_id=artifact_id,
+                station_id=unit.station_id,
+                group_id=unit.group_id,
+                period_start=experiment.evaluation_start
+                if experiment
+                else unit.training_period_start,
+                period_end=experiment.evaluation_end
+                if experiment
+                else unit.training_period_end,
+                time_step=unit.time_step,
+                model=model_instance,
+                artifact=loaded_artifact,
+                forcing_source=forcing_source,
+                obs_store=obs_store,
+                hindcast_store=hindcast_store,
+                station_store=station_store,
+                group_store=group_store,
+                basin_store=basin_store,
+                clock=clock,
                 rng=rng,
-                params=training_params,
-                base_artifact=base_artifact,
+                hindcast_run_id=hindcast_run_id,
             )
-        except Exception as exc:  # flow-level guard, see docstring above
-            log.error(
-                "train_models.unit_training_failed",
-                unit=_unit_shard(unit),
-                model_id=str(unit.model_id),
-                error=str(exc),
+
+            # Flatten hindcast results to list[HindcastStepResult]
+            if isinstance(hindcast_steps_raw, dict):
+                hindcast_steps = [
+                    step for steps in hindcast_steps_raw.values() for step in steps
+                ]
+            else:
+                hindcast_steps = hindcast_steps_raw
+
+            # T.5: compute skills per station × parameter (task.map fan-out)
+            # task.map() with unmapped() store args requires an in-process runner
+            # (ThreadPoolTaskRunner). Stores hold SQLAlchemy connections that are not
+            # pickle-serializable — distributed/subprocess runners would fail.
+            skill_computed = False
+            station_ids_for_skill: list[StationId] = (
+                [unit.station_id]
+                if unit.station_id is not None
+                else list(unit.station_ids)
             )
+
+            assert isinstance(
+                model_instance, (StationForecastModel, GroupForecastModel)
+            )
+            target_parameters = model_instance.data_requirements.target_parameters
+            skill_pairs = [
+                (sid, param)
+                for sid in station_ids_for_skill
+                for param in sorted(target_parameters)
+            ]
+            # Plan 235 fixer round (major, D1 retry stability): mint ONE
+            # generation id per (station, parameter) pair HERE, before the
+            # fan-out, rather than leaving each mapped task instance's own
+            # `None` default to mint one internally — a Prefect retry of any
+            # ONE mapped task replays with its own already-bound id instead of
+            # minting a fresh one on every retry.
+            generation_ids = [uuid4() for _ in skill_pairs]
+            futures = compute_skills_task.map(
+                station_id=[sid for sid, _ in skill_pairs],
+                model_id=unmapped(unit.model_id),
+                artifact_id=unmapped(artifact_id),
+                parameter=[param for _, param in skill_pairs],
+                hindcast_run_id=unmapped(hindcast_run_id),
+                hindcast_store=unmapped(hindcast_store),
+                obs_store=unmapped(obs_store),
+                skill_store=unmapped(skill_store),
+                station_store=unmapped(station_store),
+                flow_regime_store=unmapped(flow_regime_store),
+                deployment_config=unmapped(deployment_config),
+                clock=unmapped(clock),
+                generation_id=generation_ids,
+            )
+            skill_results = [f.result() for f in futures]
+            skill_computed = any(scores for scores, _ in skill_results)
+
             results.append(
                 TrainingResult(
                     training_unit=unit,
-                    artifact_id=None,
-                    hindcast_steps=[],
-                    skill_computed=False,
-                    error=str(exc),
+                    artifact_id=artifact_id,
+                    hindcast_steps=hindcast_steps,
+                    skill_computed=skill_computed,
+                    error=None,
                 )
             )
-            continue
-
-        artifact_id = _store_artifact_task(
-            unit=unit,
-            artifact_bytes=artifact_bytes,
-            artifact_store=artifact_store,
-            clock=clock,
-            station_store=station_store,
-            group_store=group_store,
-            principal=run_principal,
-            audit_log_store=audit_log_store,
-            audited_writer=audited_writer,
-            # Plan 399 T3 — a retrained artifact is never auto-promoted.
-            promote=typed_base_artifact_id is None,
-        )
-
-        # Plan 399 T3/T4 — warm-start provenance, right after the store, on the
-        # same pattern as basin lineage below. Only for a RETRAIN: a freshly
-        # trained artifact has no donor and records nothing (T4).
-        if donor_config is not None and warm_start_writer is not None:
-            _record_warm_start_provenance(
-                warm_start_writer=warm_start_writer,
-                artifact_id=cast("ArtifactId", artifact_id),
-                base_artifact_id=cast("ArtifactId", typed_base_artifact_id),
-                donor_config=donor_config,
-                run_config=training_params or {},
-            )
-
-        # Plan 120 Task 2D: lineage AFTER store + promote. Trained subset —
-        # {unit.station_id} for a station-scoped unit, data.station_ids (the
-        # post-skip subset) for a group-scoped one, NOT unit.station_ids
-        # (the full pre-skip membership).
-        trained_station_ids: tuple[StationId, ...] = (
-            (unit.station_id,)
-            if unit.station_id is not None
-            else tuple(data.station_ids)  # type: ignore[union-attr]
-        )
-        _record_lineage_task(
-            lineage_writer=lineage_writer,
-            artifact_id=artifact_id,
-            trained_station_ids=trained_station_ids,
-        )
-
-        # Verify SHA-256 hash before deserializing artifact
-        sha256_stored = artifact_store.fetch_artifact(artifact_id)
-        if sha256_stored is not None:
-            _, stored_bytes = sha256_stored
-            computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
-            stored_hash = hashlib.sha256(stored_bytes).hexdigest()
-            if computed_hash != stored_hash:
-                raise ValueError(
-                    f"SHA-256 mismatch for artifact {artifact_id}: "
-                    f"computed={computed_hash[:8]}... stored={stored_hash[:8]}..."
-                )
-
-        # Deserialize artifact for hindcast
-        loaded_artifact = model_instance.deserialize_artifact(artifact_bytes)
-        hindcast_run_id = uuid4()
-
-        # T.4: run hindcast (as subflow)
-        hindcast_steps_raw = run_hindcast_flow(
-            model_id=unit.model_id,
-            artifact_id=artifact_id,
-            station_id=unit.station_id,
-            group_id=unit.group_id,
-            period_start=unit.training_period_start,
-            period_end=unit.training_period_end,
-            time_step=unit.time_step,
-            model=model_instance,
-            artifact=loaded_artifact,
-            forcing_source=forcing_source,
-            obs_store=obs_store,
-            hindcast_store=hindcast_store,
-            station_store=station_store,
-            group_store=group_store,
-            basin_store=basin_store,
-            clock=clock,
-            rng=rng,
-            hindcast_run_id=hindcast_run_id,
-        )
-
-        # Flatten hindcast results to list[HindcastStepResult]
-        if isinstance(hindcast_steps_raw, dict):
-            hindcast_steps = [
-                step for steps in hindcast_steps_raw.values() for step in steps
-            ]
-        else:
-            hindcast_steps = hindcast_steps_raw
-
-        # T.5: compute skills per station × parameter (task.map fan-out)
-        # NOTE: task.map() with unmapped() store args requires in-process task runner
-        # (ThreadPoolTaskRunner). Stores hold SQLAlchemy connections that are not
-        # pickle-serializable — distributed/subprocess runners would fail.
-        skill_computed = False
-        station_ids_for_skill: list[StationId] = (
-            [unit.station_id] if unit.station_id is not None else list(unit.station_ids)
-        )
-
-        assert isinstance(model_instance, (StationForecastModel, GroupForecastModel))
-        target_parameters = model_instance.data_requirements.target_parameters
-        skill_pairs = [
-            (sid, param)
-            for sid in station_ids_for_skill
-            for param in sorted(target_parameters)
-        ]
-        # Plan 235 fixer round (major, D1 retry stability): mint ONE
-        # generation id per (station, parameter) pair HERE, before the
-        # fan-out, rather than leaving each mapped task instance's own
-        # `None` default to mint one internally — a Prefect retry of any
-        # ONE mapped task replays with its own already-bound id instead of
-        # minting a fresh one on every retry.
-        generation_ids = [uuid4() for _ in skill_pairs]
-        futures = compute_skills_task.map(
-            station_id=[sid for sid, _ in skill_pairs],
-            model_id=unmapped(unit.model_id),
-            artifact_id=unmapped(artifact_id),
-            parameter=[param for _, param in skill_pairs],
-            hindcast_run_id=unmapped(hindcast_run_id),
-            hindcast_store=unmapped(hindcast_store),
-            obs_store=unmapped(obs_store),
-            skill_store=unmapped(skill_store),
-            station_store=unmapped(station_store),
-            flow_regime_store=unmapped(flow_regime_store),
-            deployment_config=unmapped(deployment_config),
-            clock=unmapped(clock),
-            generation_id=generation_ids,
-        )
-        skill_results = [f.result() for f in futures]
-        skill_computed = any(scores for scores, _ in skill_results)
-
-        results.append(
-            TrainingResult(
-                training_unit=unit,
-                artifact_id=artifact_id,
-                hindcast_steps=hindcast_steps,
-                skill_computed=skill_computed,
-                error=None,
-            )
-        )
 
     return results

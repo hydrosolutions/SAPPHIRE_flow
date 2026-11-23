@@ -119,6 +119,7 @@ def promote_artifact(
     audit_log_store: AuditLogStore | None = None,
     now: UtcDatetime | None = None,
     audit_rejection: bool = True,
+    expected_active_ids: frozenset[ArtifactId] | None = None,
 ) -> None:
     """Transition existing ACTIVE artifacts to SUPERSEDED, then activate new_id.
 
@@ -176,6 +177,15 @@ def promote_artifact(
         station_id=station_id,
         group_id=group_id,
     )
+    if (
+        expected_active_ids is not None
+        and frozenset(existing_active) != expected_active_ids
+    ):
+        from sapphire_flow.exceptions import ConfigurationError
+
+        raise ConfigurationError("active model changed since fitting; review refused")
+    # Reuse this exact checked list: never re-read and supersede an unreviewed
+    # concurrent incumbent. The unique-active index rejects a competing insert.
     for old_id in existing_active:
         artifact_store.transition_artifact_status(
             old_id, ModelArtifactStatus.SUPERSEDED
