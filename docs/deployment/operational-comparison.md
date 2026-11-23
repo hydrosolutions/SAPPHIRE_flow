@@ -157,6 +157,11 @@ model's history. Deployment support must derive these separate windows from the
 actual reader and compare its exclusions and warnings. Copying only accepted
 model values can change the comparison even when the forecast numbers match.
 
+A forecast's permitted lookup window and a scheduled ingestion window are separate
+settings. Derive the inventory window from the deployed model's requirements;
+neither setting proves that the required history exists. Keep unavailable members
+in the report, and stop if the full declared scope exceeds the inventory limits.
+
 Normal onboarding imports can create new identifiers, rerun QC or promote a model.
 Do not describe those operations as preserving the original input history. Where
 preserving identifiers is necessary, resolve tenant creation **before** ordinary

@@ -745,3 +745,50 @@ target-history API parity or the composed restore/receipt procedure. C3b2b requi
 actual job/worker configuration consistency and a separately admitted source-read
 envelope; C3b2c and N1b–d/N2 execution remain DRAFT. Unchecked dependencies remain
 explicit and their counts cannot establish a complete transfer budget.
+
+### C3b2b: source-inventory runner
+
+The deployment owner reports that the registered job, worker and actual forecast
+child now load the intended configuration consistently. Treat this as a resolved
+handoff prerequisite, then recheck exact runtime identities before any inventory.
+Configuration success does not resolve the separately investigated station-input
+exclusions. Keep every admitted member in the ledger; this slice does not observe
+weather-dependent availability exclusions. Owner-reported exclusions remain an
+external status note, not a computed census result.
+
+The private runner specification separates three gates:
+
+| Slice | Deliverable | Acceptance / dependency |
+| --- | --- | --- |
+| B0 — packet and local driver | Typed private execution packet and bounded runner around the qualified helper | First measure a bounded 365-day, multi-station feasibility case; then exact configuration/cohort/clock refusal, actual model requirement selection, aggregate-output protection, real worker-role read-only transaction and cleanup tests; independent plan and patch review |
+| B1 — source preflight | Exact image/package/config/job/child and cohort readback | B0 qualification and patch review; selected model constructor inspected in the matching runtime without trained weights or provider calls; concrete packet and source envelope admitted before execution |
+| B2 — aggregate census | One bounded snapshot report | B1; unchanged query/process/row/byte/output limits; full declared observation/rating/capture scope or HOLD; explicit unchecked categories and lower-bound totals |
+
+Model history derives from the deployed declaration and selected route, not the
+rating lookup allowance or recurring-ingestion window. Group and ordinary
+multi-model paths retain their existing requirement-selection behavior. Inspect
+only selected model constructors; broad plugin discovery can skip failures and
+must not silently reduce the cohort. No trained weights, forecast run or weather
+request is needed for this inventory slice.
+
+The report separates raw roots, supporting evidence and reader results. Weather
+content, artifact bytes, unresolved protected/history dependencies and final
+consumed tensors remain unchecked. Configuration/job checks bracket the database
+snapshot but do not make the filesystem and scheduler atomic with it. No complete
+transfer budget, forecast readiness or reconstruction pass follows from this report.
+
+One independent Claude plan review identified seven issues, resolved in the private
+contract: process memory/CPU limits, non-vacuous empty-input coverage, exact
+requirement/read mapping, reused-query bounds, feasibility measurement, narrower
+exclusion claims and a closed output schema. Preserve the real outer rating-window
+guard; splitting requests to evade it is not an accepted fix. Empty dependency-key
+queries do not establish checked-empty table coverage. Failed timing or resource
+qualification stops before source execution; limits are not automatically raised.
+
+The orchestrator admits **B0 local implementation only**. B1/B2, C3b2c and
+N1b–d/N2 execution remain DRAFT. Full review and concrete runtime details stay
+private; no implementation or live-read result is claimed.
+
+```json
+{"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
+```
