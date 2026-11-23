@@ -450,9 +450,59 @@ Every attempt removed its owned container and network; independent readback foun
 none remaining. Pre-existing containers remained present, case journals were retained
 and temporary artifact bytes were removed. No source deployment, provider, real data
 or cloud resources were involved. C1b is complete only for this synthetic scope.
-Next is C2's ordinary pilot-cycle check; C3 input closure, N1b image/configuration/path
-qualification and N1d commissioning preparation remain open. N1c and target execution
-remain DRAFT.
+C2's ordinary pilot-cycle result follows below. C3 input closure, N1b
+image/configuration/path qualification and N1d commissioning preparation remain open.
+N1c and target execution remain DRAFT.
+
+### C2 synthetic climatology pilot qualification
+
+After #616 merged, one independent Claude plan review and one patch review covered
+the bounded private test. Resolved findings about exact expected outcomes, persisted
+health, failure journals, store wiring and owned-resource cleanup before execution.
+The orchestrator admitted only this local synthetic qualification. Full reports and
+test code remain private; runtime results are author-recorded, not reviewer-executed.
+
+All **five integration cases passed, zero skipped**, on source revision
+`1ae664d3c85c1869c52c9c338b490af01f1a6b3a`, its frozen offline environment and schema
+`0090`. The same pinned PostGIS image ran PostgreSQL 16.9. The decorated forecast
+cycle ran in-process with isolated Prefect and real PostgreSQL stores authenticated
+as the worker role. Existing model, assembly, forecast QC and persistence behavior
+were unchanged. This does not qualify a scheduled worker, release image or HTTP API.
+
+The existing native climatology model used a small synthetic serialized artifact.
+Empty history at midnight and 06:00 UTC, a 24-hour accepted-history control and the
+same observations marked QC-failed each produced one forecast with five daily steps
+and seven quantiles. All 35 values matched the saved artifact; the three midnight
+outputs were identical. Persisted input snapshots contained one resampled day only
+for the accepted-history control. Rejected observations stayed excluded; no history
+was fabricated. Missing the active artifact produced no forecast and the expected
+failed-cycle and persisted station-dark diagnostics.
+
+Observed reads covered the preceding complete UTC day, plus a separate midnight-to-
+06:00 freshness window for the 06:00 issue. Forecast valid times remained issue time
+plus daily increments. These are the tested native model's conventions, not a new
+hydrological-day or display-timezone policy. The four successful cases remained
+**degraded**, with persisted fallback-only alert suppression and no alert/model-state
+rows. Missing observations were logged; no distinct persisted missing-observation
+flag was added. Existing runoff-only input-quality diagnostics remained visible.
+
+The first attempt exposed an incorrect test expectation: source-checkout evidence is
+marked incomplete because release-image identity is unavailable. The corrected test
+requires that exact reason and verifies saved input/artifact hashes without inventing
+an image digest. Complete runtime evidence remains an image-admission dependency.
+The final five-case suite, **60 existing model/input-assembly regressions**, Ruff and
+strict Pyright passed. Frozen C1a/C1b proof hashes remain unchanged.
+
+Both attempts removed their owned containers, networks, processes, Prefect state and
+artifact bytes; independent label readback found no remaining Docker resources.
+Pre-existing containers were preserved. The Python socket tripwire was checked, but
+does not cover libpq or subprocesses; this is not host-wide egress isolation. No
+source deployment, provider, real data or cloud resources were involved.
+
+C2 is complete only for this synthetic native path. Applying the result to the real
+pilot still requires its admitted artifact, configuration and calendar to be checked.
+Next is C3's full input/trigger closure; image/configuration/path qualification and
+commissioning preparation remain open. N1c and all target execution remain DRAFT.
 
 ```json
 {"phases":[{"id":"N1a","status":"COMPLETE","depends_on":["N0"]},{"id":"N1b","status":"DRAFT","depends_on":["N1a"]},{"id":"N1c","status":"DRAFT","depends_on":["N1b"]},{"id":"N1d","status":"DRAFT","depends_on":["N1b","N1c"]}],"next_execution":"N2 only after N1a–d acceptance","preparation":"read-only/offline drafting allowed; no target mutations"}

@@ -164,6 +164,13 @@ test pass. Database-role checks do not replace authenticated HTTP checks or prov
 tenant-level confidentiality. Empty warm-start metadata and readable artifact
 records also do not prove a model can run.
 
+For the pilot, verify consumed inputs and diagnostics as well as stored forecast
+values. A climatology model can produce forecasts from its saved calendar values
+with no recent observations; that does not prove observation or weather ingestion
+is working. Check missing-history diagnostics, QC exclusions and fallback alert
+suppression separately. A source-checkout test without release-image identity also
+leaves forecast evidence incomplete, even when its input snapshots are available.
+
 Keep source authentication, Prefect state, execution claims and forecast results
 out of the new system. Retain source results separately as comparison evidence.
 Freeze input windows and comparison criteria before seeing target results. Begin
