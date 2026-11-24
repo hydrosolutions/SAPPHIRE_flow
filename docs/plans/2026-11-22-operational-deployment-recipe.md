@@ -889,3 +889,68 @@ migration or deployment change is introduced; full evidence remains private.
 ```json
 {"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
 ```
+
+### Disposable paused-startup qualification
+
+A separate temporary Infomaniak host qualified the private operator-assisted
+startup recipe with published release **0.1.1184**. Archive, immutable image IDs,
+source labels and installed versions matched. Normal migration, tenant and role
+initialization completed once. Seven long-running services, three worker
+heartbeats, six configuration contexts at UID 1000 and the actual non-root worker/API
+processes passed their checks. Seven required jobs, three pools and three queues
+remained paused, schedules inactive, and flow-run count zero. Recurring weather
+refresh was included in registration; it was not executed.
+
+Docker 29.1.3 suppressed the loopback port on the internal-only edge network. A
+separately reviewed correction added an IPv4 host-access bridge to the edge proxy
+alone, preserving internal application/worker networks, provider zero-egress rules
+and operator-only SSH. Only the edge container was recreated; all other container
+IDs and start times were preserved. Host-loopback health returned 200, unauthenticated
+access 401, a fresh consumer 200 and the revoked consumer 401. Public API access was
+blocked. This finite topology belongs to the private recipe, not an extension of
+the public paused installer.
+
+The first provider allocation failed before boot after selecting a reserved-address
+network. Its resources were deleted before one corrected attempt on the standard
+instance network. Both attempts were cleaned up within the original time/budget
+envelope. Independent provider read-back matched the original inventory; the test
+server, automatic port, security group and key were absent, the local test key was
+removed and the cleanup watchdog exited. No persistent provider volume or floating
+address reservation was created. Full evidence and review reports remain private.
+
+Source actions were limited to metadata and whitelisted configuration reads. All
+eleven input-file hashes were unchanged. A concurrent live API update and worker
+restarts were observed; the source baseline must be refreshed for comparison.
+The owner subsequently chose to follow the current model setup after its separate
+weather-input issue is resolved. Earlier artifact/cohort packets remain immutable;
+that decision requires a new explicit packet, not silently adding current bindings.
+
+This is **startup-only** evidence. It does not qualify input reconstruction,
+provider acquisition, actual scheduled execution, trained-model readiness or
+forecast parity. Ordinary tenant provisioning here does not settle the separate
+identity-preserving reconstruction bootstrap. B0 integration, B1/B2 and the
+remaining reconstruction/commissioning gates retain their prior status. The
+[administrator guide](../deployment/operational-comparison.md#verify-the-paused-installation)
+now records the reusable startup checks and their limits.
+
+### Current-model route preparation
+
+The owner's comparison choice also requires accounting for the current declared-grid
+route. A private planner revision keeps deliberately unused stored observations
+separate from query roots and preserves every admitted member. It uses the existing
+FI projection and time-grid helpers, requires explicit matching weather-grid and
+absent-rating qualifications, and pins the relevant complete application files.
+These are supplied local qualifications, not observed source facts. The unchanged
+aggregate report cannot represent this omission safely, so its planning bridge
+refuses declared-only and mixed cohorts rather than reporting a partial set as a
+complete target check. No application time-grid or model behavior changes.
+
+One independent Claude amendment review required explicit omissions and independent
+implementation pins; both were adopted before implementation. The single patch review
+found a mutable omission-boundary defect; immutable typed collections and ledger
+checks fixed it with regressions. All 216 combined private unit tests and six
+application period-input tests pass, as do Ruff, formatting and strict types. This is preparation evidence only. Installed-constructor and
+identity readback, complete SQL integration, final frozen helper regressions and
+an omission-aware aggregate contract remain prerequisites to completing B0; B1/B2
+remain DRAFT. The corrected operational release and successful current-model
+qualification are external prerequisites for the new comparison packet.
