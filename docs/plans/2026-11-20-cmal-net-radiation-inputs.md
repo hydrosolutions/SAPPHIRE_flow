@@ -160,6 +160,12 @@ introducing another persisted wrapper. One schedule helper is authoritative for
 both fetched and stored rows: ERA5 intervals are exactly 1h; IFS normalized start
 lead is 3-hourly below 144h and 6-hourly from 144h; 00Z maximum end lead is 360h,
 other admitted cycles 72h. Validate alignment and `lead + duration <= horizon`.
+
+**24 November correction:** the non-midnight classification above is superseded
+for 12z by [the reviewed horizon correction](2026-11-24-ifs12-radiation-intervals.md).
+00z and 12z share the documented 360h maximum; 06z/18z remain conservatively
+limited to 72h pending separate qualification. Available Gateway support still
+determines the complete forecast horizon.
 Deriving duration from this qualified schedule is allowed; deriving it from the
 next surviving row across a gap is forbidden. Future records lack per-row revision,
 so their radiation fingerprint includes the contract and normalization revision.

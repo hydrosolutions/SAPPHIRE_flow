@@ -58,6 +58,16 @@ class GatewayIntervalQualification:
 UNQUALIFIED_INTERVALS = GatewayIntervalQualification()
 
 
+def qualified_ifs_horizon_hours(source_run: UtcDatetime) -> int:
+    if (
+        source_run.utcoffset() != timedelta(0)
+        or source_run.hour % 6
+        or any((source_run.minute, source_run.second, source_run.microsecond))
+    ):
+        raise ValueError("IFS horizon requires a six-hour UTC source cycle")
+    return 360 if source_run.hour in (0, 12) else 72
+
+
 def qualified_interval_duration(
     start: UtcDatetime,
     source_run: UtcDatetime,
@@ -89,7 +99,7 @@ def qualified_interval_duration(
         raise ValueError("IFS interval requires a six-hour source cycle")
     lead = (start - source_run).total_seconds() / 3600
     step = 3 if lead < 144 else 6
-    maximum = 360 if source_run.hour == 0 else 72
+    maximum = qualified_ifs_horizon_hours(source_run)
     if lead < 0 or lead % step or lead + step > maximum:
         raise ValueError("interval exceeds the qualified source schedule")
     return timedelta(hours=step)

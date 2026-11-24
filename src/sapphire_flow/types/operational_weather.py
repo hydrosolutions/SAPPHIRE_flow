@@ -10,6 +10,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.recap_intervals import (
     RADIATION_CONTRACT_REVISION,
     RADIATION_PARAMETERS,
+    qualified_ifs_horizon_hours,
     qualified_interval_duration,
 )
 from sapphire_flow.types.time_grid import TimeGrid
@@ -96,7 +97,7 @@ def qualified_ifs_daily_support(
         (cycle_time.minute, cycle_time.second, cycle_time.microsecond)
     ):
         raise ValueError("unsupported Recap forecast cycle")
-    maximum = 360 if cycle_time.hour == 0 else 72
+    maximum = qualified_ifs_horizon_hours(cycle_time)
     if day < cycle_time or day + timedelta(days=1) > cycle_time + timedelta(
         hours=maximum
     ):
@@ -202,7 +203,7 @@ class OperationalWeatherSample:
             raise ValueError("IFS source run must use a real six-hour cycle")
         lead = (self.valid_time - self.source_run).total_seconds() / 3600
         step = 3 if lead < 144 else 6
-        max_lead = 360 if self.source_run.hour == 0 else 72
+        max_lead = qualified_ifs_horizon_hours(self.source_run)
         if lead < 0 or lead > max_lead or lead % step:
             raise ValueError("unsupported IFS lead grid")
         if (
@@ -297,7 +298,8 @@ def daily_weather_value(
         if cursor > end:
             raise ValueError("daily weather sample crosses the period boundary")
         if row.source is OperationalWeatherSource.IFS and cursor > (
-            row.source_run + timedelta(hours=360 if row.source_run.hour == 0 else 72)
+            row.source_run
+            + timedelta(hours=qualified_ifs_horizon_hours(row.source_run))
         ):
             missing = True
     if missing or cursor < end:
