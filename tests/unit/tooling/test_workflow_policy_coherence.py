@@ -41,12 +41,21 @@ class TestTaggingPolicy:
         policy = _normalized(_REPO_ROOT / "docs/standards/cicd.md")
 
         assert (
-            "Each non-docs-only PR advances the sole `RELEASE_TARGET` patch "
-            "once from its tested base, including tooling PRs." in policy
+            "TEMPORARY development-phase rule (`DEV_PHASE_ALLOW_UNCHANGED_TARGET` "
+            "in `tools/release_target.py`" in policy
         )
         assert (
-            "head and merge targets must agree and equal base patch+1 with "
-            "unchanged major/minor." in policy
+            "each non-docs-only PR advances the target patch once from its "
+            "tested base, including tooling PRs." in policy
+        )
+        assert (
+            "With the rule off, head and merge targets must agree and equal "
+            "base patch+1 with unchanged major/minor." in policy
+        )
+        assert (
+            "In development-phase mode same-target landings are allowed; the "
+            "owner instead checks before each release that the target is above "
+            "the release state" in policy
         )
         assert "The only exemption is strictly docs-only changes." in policy
         assert (
