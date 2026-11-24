@@ -2,8 +2,12 @@
 
 Use this guide with deployment support to prepare a separate temporary system
 from an existing deployment. Keep the existing system running unchanged. The
-procedure is currently **preparation-only**: a reviewed private execution runbook
-and its runtime qualification are still required before installation.
+public procedure remains **preparation-only**: execution requires a reviewed
+private runbook for the selected runtime. A disposable paused startup has now been
+qualified for one recorded release; the
+[implementation history](../plans/2026-11-22-operational-deployment-recipe.md#disposable-paused-startup-qualification)
+records its evidence and limits. Input reconstruction and forecasting remain
+separate qualifications.
 
 The [persistent installer](profile-installation.md) supports a narrower paused,
 two-job installation. It does not yet install or commission this broader
@@ -114,6 +118,41 @@ refuses worker/run history, partial or unknown jobs and configuration drift. An
 exact repeat only checks the stored paused definitions. It cannot be used to
 upgrade or repair a system after commissioning; follow its separate recovery plan.
 
+## Verify the paused installation
+
+The private runbook must pin the delivered image pair and matching source files,
+verify their identities on the new host, and use fresh storage and local credentials.
+Start the database and orchestration server, then run the reviewed initialization
+and paused-registration sequence with workers stopped. Verify every required job,
+queue and pool is paused, every schedule is inactive, and no flow runs exist before
+starting workers. Preserve the completed init container when starting dependent
+services; an explicit `--no-deps` operation requires checking those dependencies
+first. Do not rerun initialization as an incidental part of starting the edge proxy.
+
+Check configuration through the actual service user and each distinct forecast
+selection. Confirm worker heartbeats, application health and API access from the
+intended operator location. For server-only access, test the host loopback address:
+an internal container health check alone does not prove the published port works.
+Verify unauthenticated rejection, access with a fresh scoped token, and rejection
+after revocation; keep token values out of logs and evidence. Recheck paused state
+and zero runs after workers start.
+
+In the qualified Docker setup, an internal-only edge network suppressed the host
+port mapping. The private recipe therefore attached the edge proxy alone to an
+additional IPv4 host-access bridge. Application and worker networks remained
+internal, the sole published port bound to host loopback, and the provider firewall
+allowed only operator SSH with no outbound access. If this topology is used,
+verify the actual port and network assignments and firewall rules; a successful
+Compose render is insufficient. Close temporary bootstrap egress before workers
+start. Provider access for commissioning needs its own bounded authorization.
+
+Record startup results separately from input and forecast results. An empty station
+response proves authenticated API wiring, not station readiness. Successful ordinary
+tenant provisioning also does not qualify the identity-preserving reconstruction
+sequence below. Keep the source read-only, record concurrent source changes, and
+verify deletion of every owned server, disk, address, network resource and temporary
+key when the disposable test ends, including failed provisioning attempts.
+
 ## Reconstruct inputs, then commission
 
 Prepare a bounded input manifest before transferring data. Use existing
@@ -138,7 +177,9 @@ decisions settled before import:
 Derive that manifest from the admitted model's runtime input declaration and the
 actual job's configuration. Check past targets, past weather, future weather,
 static attributes, aggregation, missing-data tolerances and forecast horizon
-separately. A model that tolerates missing discharge may still require complete
+separately. Some model routes deliberately omit stored observations whose time
+periods have not been verified as compatible with the model. Record that omission explicitly; it is neither a
+checked-empty input nor permission to relabel the observations. A model that tolerates missing discharge may still require complete
 weather. Its minimum accepted forecast length is not a promise of the desired
 operational horizon. Keep registered group membership, job eligibility and actual
 forecast coverage distinct; explain every omitted member.
