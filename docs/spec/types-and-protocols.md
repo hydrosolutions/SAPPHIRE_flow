@@ -7180,3 +7180,15 @@ one-shot execution. `DailyRuntimeStore.claim_operator_retry` admits it atomicall
 `DailyAttemptSnapshot` may carry either operational claim. Automatic ordinals and
 manual/replay semantics are unchanged. Public evaluation diagnostics identify the
 operational trigger without disclosing actor/reason.
+
+### Optional group batch hindcasting
+
+`protocols/forecast_model.py::BatchGroupHindcastModel` is an optional SAP3
+capability: `supports_batch_hindcast` reflects the wrapped model, and
+`hindcast_batch(artifact, inputs: tuple[GroupModelInputs, ...], rng)` returns a
+mapping from original issue time to the existing station prediction mapping.
+The FI adapter uses upstream `BatchHindcastModel.hindcast`; this adds no upstream
+contract. Inputs contain 1..7 unique increasing issues, one group/cadence/horizon,
+and the existing legacy hindcast forcing route. Eligibility is per station/issue.
+Missing station/issue results are failures, never zero or empty success. The shared
+runner records original artifact/run/issue identities on every stored forecast.

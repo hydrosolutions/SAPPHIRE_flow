@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from itertools import batched
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -17,6 +18,10 @@ from sqlalchemy.exc import (
 )
 
 from sapphire_flow.exceptions import ConfigurationError, StoreError
+from sapphire_flow.protocols.forecast_model import (
+    BatchGroupHindcastModel,
+    GroupInputGate,
+)
 from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
@@ -56,7 +61,7 @@ from sapphire_flow.types.training import HindcastStepResult
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -80,6 +85,19 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+DEFAULT_HINDCAST_ISSUE_BATCH_SIZE = 7
+
+
+def resolve_hindcast_issue_batch_size(
+    model: object, requested: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE
+) -> int:
+    if isinstance(requested, bool) or not 1 <= requested <= 7:
+        raise ValueError("issue_batch_size must be within 1..7")
+    if isinstance(model, BatchGroupHindcastModel) and model.supports_batch_hindcast:
+        return requested
+    return 1
+
 
 _CONNECTION_FATAL_KEYWORDS = frozenset(
     {
@@ -661,7 +679,9 @@ def run_group_hindcast(
     hindcast_run_id: UUID,
     forecast_horizon_steps: int | None = None,
     lookback_steps: int = 720,
+    issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
 ) -> dict[StationId, list[HindcastStepResult]]:
+    size = resolve_hindcast_issue_batch_size(model, issue_batch_size)
     station_configs = {
         sid: station_store.fetch_station(sid) for sid in group.station_ids
     }
@@ -747,194 +767,234 @@ def run_group_hindcast(
         sid: [] for sid in group.station_ids
     }
 
-    for issue_time in _issue_times(period_start, period_end, time_step):
-        inputs_batch: dict[StationId, StationModelInputs] = {}
-        skipped: dict[StationId, str] = {}
+    def prepared_groups() -> Iterator[GroupModelInputs]:
+        for issue_time in _issue_times(period_start, period_end, time_step):
+            inputs_batch: dict[StationId, StationModelInputs] = {}
+            skipped: dict[StationId, str] = {}
 
-        for sid in group.station_ids:
-            cfg = station_configs[sid]
-            if cfg is None:
-                skipped[sid] = f"station {sid} not found"
-                continue
-            try:
-                inputs = _assemble_hindcast_inputs(
-                    station_id=sid,
-                    issue_time=issue_time,
-                    lookback_steps=lookback_steps,
-                    time_step=time_step,
-                    forecast_horizon_steps=forecast_horizon_steps,
-                    required_features=required_features,
-                    all_forcing=all_forcing_map.get(sid, []),
-                    all_observations=all_obs_map.get(sid, []),
-                    weather_sources=weather_sources_map[sid],
-                    static_attributes=static_map.get(sid),
-                    parameter=parameter_map.get(sid, "discharge"),
-                    declared_lookback_steps=model.data_requirements.lookback_steps,
-                    aggregation_methods=resolved_aggregation_methods(
-                        model.data_requirements
-                    ),
-                )
-                if inputs is None:
-                    skipped[sid] = "insufficient data"
-                else:
-                    inputs_batch[sid] = inputs
-            except Exception as exc:
-                if is_connection_fatal(exc):
-                    log.error(
-                        "hindcast.connection_failed",
+            for sid in group.station_ids:
+                cfg = station_configs[sid]
+                if cfg is None:
+                    skipped[sid] = f"station {sid} not found"
+                    continue
+                try:
+                    inputs = _assemble_hindcast_inputs(
+                        station_id=sid,
+                        issue_time=issue_time,
+                        lookback_steps=lookback_steps,
+                        time_step=time_step,
+                        forecast_horizon_steps=forecast_horizon_steps,
+                        required_features=required_features,
+                        all_forcing=all_forcing_map.get(sid, []),
+                        all_observations=all_obs_map.get(sid, []),
+                        weather_sources=weather_sources_map[sid],
+                        static_attributes=static_map.get(sid),
+                        parameter=parameter_map.get(sid, "discharge"),
+                        declared_lookback_steps=model.data_requirements.lookback_steps,
+                        aggregation_methods=resolved_aggregation_methods(
+                            model.data_requirements
+                        ),
+                    )
+                    if inputs is None:
+                        skipped[sid] = "insufficient data"
+                    else:
+                        inputs_batch[sid] = inputs
+                except Exception as exc:
+                    if is_connection_fatal(exc):
+                        log.error(
+                            "hindcast.connection_failed",
+                            station_id=str(sid),
+                            issue_time=str(issue_time),
+                            error_type=type(exc).__qualname__,
+                            exc_info=True,
+                        )
+                        raise StoreError(
+                            f"Connection-fatal: {type(exc).__qualname__}"
+                        ) from exc
+                    if isinstance(
+                        exc,
+                        (
+                            OperationalError,
+                            InterfaceError,
+                            InternalError,
+                            psycopg.Error,
+                        ),
+                    ):
+                        error_fields_: dict[str, str] = {
+                            "error_type": type(exc).__qualname__
+                        }
+                        skipped[sid] = type(exc).__qualname__
+                    else:
+                        error_fields_ = {"error": str(exc)}
+                        skipped[sid] = str(exc)
+                    log.warning(
+                        "hindcast.step_failed",
                         station_id=str(sid),
                         issue_time=str(issue_time),
-                        error_type=type(exc).__qualname__,
-                        exc_info=True,
+                        **error_fields_,
                     )
-                    raise StoreError(
-                        f"Connection-fatal: {type(exc).__qualname__}"
-                    ) from exc
-                if isinstance(
-                    exc,
-                    (OperationalError, InterfaceError, InternalError, psycopg.Error),
-                ):
-                    error_fields_: dict[str, str] = {
-                        "error_type": type(exc).__qualname__
-                    }
-                    skipped[sid] = type(exc).__qualname__
-                else:
-                    error_fields_ = {"error": str(exc)}
-                    skipped[sid] = str(exc)
-                log.warning(
-                    "hindcast.step_failed",
-                    station_id=str(sid),
-                    issue_time=str(issue_time),
-                    **error_fields_,
+
+            for sid, reason in skipped.items():
+                per_station[sid].append(
+                    HindcastStepResult(
+                        issue_time=issue_time, success=False, error=reason
+                    )
                 )
 
-        for sid, reason in skipped.items():
-            per_station[sid].append(
-                HindcastStepResult(issue_time=issue_time, success=False, error=reason)
+            if not inputs_batch:
+                continue
+
+            t0 = time.perf_counter()
+            group_inputs = _stack_hindcast_inputs(group.id, inputs_batch)
+            t1 = time.perf_counter()
+            log.info(
+                "group_inputs.stacking_completed",
+                group_id=str(group.id),
+                station_count=len(inputs_batch),
+                issue_time=str(issue_time),
+                duration_ms=round((t1 - t0) * 1000, 1),
             )
 
-        if not inputs_batch:
-            continue
+            yield group_inputs
 
-        t0 = time.perf_counter()
-        group_inputs = _stack_hindcast_inputs(group.id, inputs_batch)
-        t1 = time.perf_counter()
-        log.info(
-            "group_inputs.stacking_completed",
-            group_id=str(group.id),
-            station_count=len(inputs_batch),
-            issue_time=str(issue_time),
-            duration_ms=round((t1 - t0) * 1000, 1),
-        )
-
+    log.info(
+        "hindcast.issue_batching",
+        hindcast_run_id=str(hindcast_run_id),
+        issue_batch_size=size,
+    )
+    for chunk in batched(prepared_groups(), size):
         try:
-            batch_results = model.predict_batch(
-                artifact=artifact,
-                inputs=group_inputs,
-                rng=rng,
-            )
+            if size > 1 and isinstance(model, BatchGroupHindcastModel):
+                by_issue = model.hindcast_batch(artifact, chunk, rng)
+            else:
+                by_issue = {
+                    chunk[0].issue_time: model.predict_batch(artifact, chunk[0], rng)
+                }
+            if set(by_issue) - {item.issue_time for item in chunk}:
+                raise ValueError("hindcast returned unrequested issue dates")
         except Exception as exc:
             if is_connection_fatal(exc):
-                log.error(
-                    "hindcast.connection_failed",
-                    issue_time=str(issue_time),
-                    error_type=type(exc).__qualname__,
-                    exc_info=True,
-                )
                 raise StoreError(f"Connection-fatal: {type(exc).__qualname__}") from exc
-            if isinstance(
-                exc, (OperationalError, InterfaceError, InternalError, psycopg.Error)
-            ):
-                log.warning(
-                    "hindcast.batch_predict_failed",
-                    issue_time=str(issue_time),
-                    error_type=type(exc).__qualname__,
-                )
-                err = type(exc).__qualname__
-            else:
-                log.warning(
-                    "hindcast.batch_predict_failed",
-                    issue_time=str(issue_time),
-                    error=str(exc),
-                )
-                err = str(exc)
-            for sid in inputs_batch:
-                per_station[sid].append(
-                    HindcastStepResult(issue_time=issue_time, success=False, error=err)
-                )
-            continue
-
-        for sid, (ensembles, _) in batch_results.items():
-            param_name: str | None = None
-            try:
-                for param_name, ensemble in ensembles.items():
-                    if ensemble.parameter != param_name:
-                        raise ValueError(
-                            f"Dict key '{param_name}' != ensemble.parameter "
-                            f"'{ensemble.parameter}'"
-                        )
-                    hindcast = HindcastForecast(
-                        id=HindcastForecastId(uuid4()),
-                        station_id=sid,
-                        model_id=model_id,
-                        model_artifact_id=artifact_id,
-                        hindcast_step=issue_time,
-                        forcing_type=ForcingType.REANALYSIS,
-                        representation=ensemble.representation,
-                        hindcast_run_id=hindcast_run_id,
-                        ensemble=ensemble,
-                        created_at=clock(),
-                    )
-                    hindcast_store.store_hindcast(hindcast)
-                per_station[sid].append(
-                    HindcastStepResult(issue_time=issue_time, success=True)
-                )
-            except Exception as exc:
-                if is_connection_fatal(exc):
-                    log.error(
-                        "hindcast.connection_failed",
-                        station_id=str(sid),
-                        issue_time=str(issue_time),
-                        parameter=param_name or "<unknown>",
-                        error_type=type(exc).__qualname__,
-                        exc_info=True,
-                    )
-                    raise StoreError(
-                        f"Connection-fatal: {type(exc).__qualname__}"
-                    ) from exc
+            error = (
+                type(exc).__qualname__
                 if isinstance(
                     exc,
                     (OperationalError, InterfaceError, InternalError, psycopg.Error),
-                ):
-                    log.error(
-                        "hindcast.store_failed",
-                        station_id=str(sid),
-                        issue_time=str(issue_time),
-                        parameter=param_name or "<unknown>",
-                        error_type=type(exc).__qualname__,
-                        exc_info=True,
-                    )
+                )
+                else str(exc)
+            )
+            log.warning(
+                "hindcast.batch_predict_failed", error=error, issue_count=len(chunk)
+            )
+            for item in chunk:
+                for sid in item.station_ids:
                     per_station[sid].append(
                         HindcastStepResult(
-                            issue_time=issue_time,
-                            success=False,
-                            error=type(exc).__qualname__,
+                            issue_time=item.issue_time, success=False, error=error
                         )
                     )
-                else:
-                    log.error(
-                        "hindcast.store_failed",
-                        station_id=str(sid),
-                        issue_time=str(issue_time),
-                        parameter=param_name or "<unknown>",
-                        exc_info=True,
+            continue
+        for item in chunk:
+            issue_time = item.issue_time
+            batch_results = by_issue.get(issue_time, {})
+            if set(batch_results) - set(item.station_ids):
+                raise ValueError("hindcast returned unrequested stations")
+            missing_ids = set(item.station_ids) - set(batch_results)
+            gate_reasons = (
+                {
+                    problem.station_id: problem.reason.value
+                    for problem in model.assess_group_inputs(item)
+                }
+                if missing_ids and isinstance(model, GroupInputGate)
+                else {}
+            )
+            for sid in missing_ids:
+                per_station[sid].append(
+                    HindcastStepResult(
+                        issue_time=issue_time,
+                        success=False,
+                        error=gate_reasons.get(
+                            sid,
+                            "no usable model output; see hindcast_member_failed log",
+                        ),
                     )
+                )
+            for sid, (ensembles, _) in batch_results.items():
+                param_name: str | None = None
+                try:
+                    for param_name, ensemble in ensembles.items():
+                        if ensemble.parameter != param_name:
+                            raise ValueError(
+                                f"Dict key '{param_name}' != ensemble.parameter "
+                                f"'{ensemble.parameter}'"
+                            )
+                        hindcast = HindcastForecast(
+                            id=HindcastForecastId(uuid4()),
+                            station_id=sid,
+                            model_id=model_id,
+                            model_artifact_id=artifact_id,
+                            hindcast_step=issue_time,
+                            forcing_type=ForcingType.REANALYSIS,
+                            representation=ensemble.representation,
+                            hindcast_run_id=hindcast_run_id,
+                            ensemble=ensemble,
+                            created_at=clock(),
+                        )
+                        hindcast_store.store_hindcast(hindcast)
                     per_station[sid].append(
-                        HindcastStepResult(
-                            issue_time=issue_time,
-                            success=False,
-                            error=str(exc),
-                        )
+                        HindcastStepResult(issue_time=issue_time, success=True)
                     )
+                except Exception as exc:
+                    if is_connection_fatal(exc):
+                        log.error(
+                            "hindcast.connection_failed",
+                            station_id=str(sid),
+                            issue_time=str(issue_time),
+                            parameter=param_name or "<unknown>",
+                            error_type=type(exc).__qualname__,
+                            exc_info=True,
+                        )
+                        raise StoreError(
+                            f"Connection-fatal: {type(exc).__qualname__}"
+                        ) from exc
+                    if isinstance(
+                        exc,
+                        (
+                            OperationalError,
+                            InterfaceError,
+                            InternalError,
+                            psycopg.Error,
+                        ),
+                    ):
+                        log.error(
+                            "hindcast.store_failed",
+                            station_id=str(sid),
+                            issue_time=str(issue_time),
+                            parameter=param_name or "<unknown>",
+                            error_type=type(exc).__qualname__,
+                            exc_info=True,
+                        )
+                        per_station[sid].append(
+                            HindcastStepResult(
+                                issue_time=issue_time,
+                                success=False,
+                                error=type(exc).__qualname__,
+                            )
+                        )
+                    else:
+                        log.error(
+                            "hindcast.store_failed",
+                            station_id=str(sid),
+                            issue_time=str(issue_time),
+                            parameter=param_name or "<unknown>",
+                            exc_info=True,
+                        )
+                        per_station[sid].append(
+                            HindcastStepResult(
+                                issue_time=issue_time,
+                                success=False,
+                                error=str(exc),
+                            )
+                        )
 
     return per_station

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar, cast
 
@@ -14,9 +15,13 @@ from forecast_interface import (
     ArtifactScope as FIArtifactScope,
 )
 from forecast_interface import (
+    BatchHindcastModel as FIBatchHindcastModel,
+)
+from forecast_interface import (
     DeterministicData,
     DynamicInputs,
     DynamicInputSpec,
+    EpistemicUncertaintyData,
     FailureCause,
     ForecastFlag,
     ForecastModel,
@@ -67,7 +72,7 @@ from sapphire_flow.exceptions import (
     ModelPredictionFailure,
     UnsupportedModelRequirementError,
 )
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     AggregationMethod,
@@ -435,6 +440,62 @@ def _station_variables_for_single_station(
         f"prediction; expected {_STATION_SCOPE_KEY!r} or one station, got: "
         f"{station_keys}"
     )
+
+
+def _merge_hindcast_frames(
+    cohort: list[GroupModelInputs], selected: list[str], name: str, keys: list[str]
+) -> pl.DataFrame:
+    frames: list[pl.DataFrame] = []
+    for item in cohort:
+        frame = getattr(item, name)
+        if not isinstance(frame, pl.DataFrame):
+            raise ConfigurationError(f"missing hindcast frame: {name}")
+        frames.append(frame.filter(pl.col("station_id").is_in(selected)))
+    merged = pl.concat(frames, how="vertical_relaxed").unique()
+    if merged.is_empty():
+        return merged
+    if merged.unique(subset=keys).height != merged.height:
+        raise ConfigurationError(f"conflicting hindcast input rows: {name}")
+    return merged.sort(keys)
+
+
+def _hindcast_variable_at_issue(
+    variable: VariableOutput, issue: UtcDatetime, requested: set[UtcDatetime]
+) -> VariableOutput | None:
+    payload = {name: getattr(variable, name) for name in type(variable).model_fields}
+    has_values = False
+    for name in ("deterministic", "quantiles", "trajectories", "epistemic_uncertainty"):
+        container: (
+            DeterministicData
+            | QuantileData
+            | TrajectoryData
+            | EpistemicUncertaintyData
+            | None
+        ) = getattr(variable, name)
+        if container is None:
+            continue
+        # Apply the same FI-0.1.20 UTC boundary convention as valid times.
+        # Aquacast 0.1.378 emits UTC wall times without a Polars timezone.
+        frame = container.data.with_columns(
+            pl.col("issue_datetime").cast(pl.Datetime("us", "UTC"))
+        )
+        if frame["issue_datetime"].null_count():
+            raise ModelOutputError("batch hindcast returned null issue times")
+        if set(frame["issue_datetime"].to_list()) - requested:
+            raise ModelOutputError("batch hindcast returned unrequested issues")
+        frame = frame.filter(pl.col("issue_datetime") == issue)
+        if frame.is_empty():
+            payload[name] = None
+        else:
+            fields = {
+                key: getattr(container, key) for key in type(container).model_fields
+            }
+            fields["data"] = frame
+            payload[name] = type(container).model_validate(fields)
+            has_values = has_values or name != "epistemic_uncertainty"
+    if variable.status is not VariableStatus.FAILURE and not has_values:
+        return None
+    return VariableOutput.model_validate(payload)
 
 
 def _ensembles_from_station_variables(
@@ -1411,6 +1472,151 @@ class ForecastInterfaceAdapter:
                 )
             raise ModelOutputError("model produced no usable output")
         return forecasts
+
+    @property
+    def supports_batch_hindcast(self) -> bool:
+        advertised = getattr(self._model, "supports_batch_hindcast", True)
+        return advertised is True and isinstance(self._model, FIBatchHindcastModel)
+
+    def hindcast_batch(
+        self,
+        artifact: ModelArtifact,
+        inputs: tuple[GroupModelInputs, ...],
+        rng: random.Random,
+    ) -> dict[
+        UtcDatetime, dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]
+    ]:
+        if not self.supports_batch_hindcast or not isinstance(
+            self._model, FIBatchHindcastModel
+        ):
+            raise ConfigurationError("wrapped model does not support FI batch hindcast")
+        if not 1 <= len(inputs) <= 7:
+            raise ValueError("hindcast batch requires 1..7 issues")
+        inputs = tuple(
+            replace(item, issue_time=ensure_utc(item.issue_time)) for item in inputs
+        )
+        issues = tuple(item.issue_time for item in inputs)
+        if issues != tuple(sorted(set(issues))):
+            raise ValueError("hindcast issues must be unique and increasing")
+        self._assert_single_deliverable_dynamic_branch()
+        self._validate_artifact_grid(artifact)
+        first = inputs[0]
+        for item in inputs:
+            self._input_grid(item.time_grid, item.time_step)
+            if (item.group_id, item.time_step, item.forecast_horizon_steps) != (
+                first.group_id,
+                first.time_step,
+                first.forecast_horizon_steps,
+            ) or item.forcing_route is not ForcingRoute.LEGACY_SUPERSET:
+                raise ConfigurationError("incompatible hindcast batch input context")
+        results: dict[
+            UtcDatetime,
+            dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]],
+        ] = {issue: {} for issue in issues}
+        errors: dict[tuple[UtcDatetime, StationId], str] = {}
+        cohorts: dict[tuple[StationId, ...], list[GroupModelInputs]] = {}
+        for item in inputs:
+            problems = self.assess_group_inputs(item)
+            excluded = {problem.station_id for problem in problems}
+            for problem in problems:
+                errors[item.issue_time, problem.station_id] = problem.reason.value
+            eligible = tuple(sorted(set(item.station_ids) - excluded, key=str))
+            if eligible:
+                cohorts.setdefault(eligible, []).append(item)
+        for station_ids, cohort in cohorts.items():
+            try:
+                codes = {self._station_code(sid): sid for sid in station_ids}
+                if len(codes) != len(station_ids):
+                    raise ConfigurationError(
+                        "duplicate station codes in hindcast cohort"
+                    )
+                if len(cohort) == 1:
+                    results[cohort[0].issue_time] = self.predict_batch(
+                        artifact, cohort[0], rng
+                    )
+                    continue
+                selected = [str(sid) for sid in station_ids]
+
+                if any(
+                    (item.static is None) != (cohort[0].static is None)
+                    for item in cohort
+                ):
+                    raise ConfigurationError("inconsistent hindcast static context")
+                merged = replace(
+                    cohort[0],
+                    station_ids=station_ids,
+                    past_targets=_merge_hindcast_frames(
+                        cohort, selected, "past_targets", ["station_id", "timestamp"]
+                    ),
+                    past_dynamic=_merge_hindcast_frames(
+                        cohort, selected, "past_dynamic", ["station_id", "timestamp"]
+                    ),
+                    future_dynamic=_merge_hindcast_frames(
+                        cohort, selected, "future_dynamic", ["station_id", "timestamp"]
+                    ),
+                    static=_merge_hindcast_frames(
+                        cohort, selected, "static", ["station_id"]
+                    )
+                    if cohort[0].static is not None
+                    else None,
+                )
+                requested = {item.issue_time for item in cohort}
+                result = self._model.hindcast(
+                    artifact,
+                    inputs=self._model_inputs_from_group_data(merged),
+                    issue_datetimes=[item.issue_time for item in cohort],
+                    rng=rng,
+                )
+                output = _output_from_result(result)
+                if set(output.variables) - set(codes):
+                    raise ModelOutputError("batch hindcast returned unknown stations")
+                for code, variables in output.variables.items():
+                    for issue in requested:
+                        sliced = {
+                            name: value
+                            for name, variable in variables.items()
+                            if (
+                                value := _hindcast_variable_at_issue(
+                                    variable, issue, requested
+                                )
+                            )
+                            is not None
+                        }
+                        missing = [
+                            name
+                            for name, variable in variables.items()
+                            if variable.status is not VariableStatus.FAILURE
+                            and name not in sliced
+                        ]
+                        if missing:
+                            errors[issue, codes[code]] = (
+                                "missing issue block: " + ", ".join(sorted(missing))
+                            )
+                            continue
+                        ensembles = _ensembles_from_station_variables(
+                            station_id=codes[code],
+                            station_key=code,
+                            station_vars=sliced,
+                            issue_datetime=issue,
+                        )
+                        if ensembles:
+                            results[issue][codes[code]] = (ensembles, None)
+            except (ModelOutputError, ConfigurationError, ValueError) as exc:
+                for item in cohort:
+                    results[item.issue_time].clear()
+                    for sid in station_ids:
+                        errors[item.issue_time, sid] = f"{type(exc).__name__}: {exc}"
+        for item in inputs:
+            for sid in set(item.station_ids) - set(results[item.issue_time]):
+                log.warning(
+                    "forecast_interface.hindcast_member_failed",
+                    station_id=str(sid),
+                    issue_time=str(item.issue_time),
+                    reason=errors.get(
+                        (item.issue_time, sid), "missing or failed model output"
+                    ),
+                )
+        return results
 
     def _iter_dynamic_specs(
         self, req: InputRequirement

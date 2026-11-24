@@ -10,7 +10,11 @@ from uuid import UUID, uuid4
 from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 
-from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
+from sapphire_flow.services.hindcast import (
+    DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
+    run_group_hindcast,
+    run_station_hindcast,
+)
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.ids import (  # noqa: TC001
     ArtifactId,
@@ -93,6 +97,7 @@ def _run_group_hindcast_task(
     clock: Callable[[], UtcDatetime],
     rng: random.Random,
     hindcast_run_id: UUID,
+    issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
 ) -> dict[StationId, list[HindcastStepResult]]:
     return run_group_hindcast(
         model=model,
@@ -111,6 +116,7 @@ def _run_group_hindcast_task(
         clock=clock,
         rng=rng,
         hindcast_run_id=hindcast_run_id,
+        issue_batch_size=issue_batch_size,
     )
 
 
@@ -152,6 +158,7 @@ def run_hindcast_flow(
     rng: object = None,
     hindcast_run_id: UUID | None = None,
     config: object = None,
+    issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
 ) -> list[HindcastStepResult] | dict[StationId, list[HindcastStepResult]]:
     from datetime import UTC, datetime
 
@@ -316,4 +323,5 @@ def run_hindcast_flow(
             clock=clock,
             rng=rng,
             hindcast_run_id=hindcast_run_id,
+            issue_batch_size=issue_batch_size,
         )

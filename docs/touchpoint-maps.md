@@ -2917,3 +2917,25 @@ missing-discharge quality flags without provisional lineage. Test absent/partial
 history, strict tolerance, unequal weather/target lookbacks, unrelated assignments,
 invalid selection before writes, existing selected-weather receipts and rating
 hard failures. Future weather must never be padded by this target alignment.
+
+### Multi-issue group hindcasts
+
+`services/hindcast.py` buffers up to seven prepared issues for models implementing
+`BatchGroupHindcastModel` and advertising inner capability. Unsupported models and
+an explicit size of one retain per-issue prediction. Station-scoped hindcasts are
+unchanged. `flows/run_hindcast.py` exposes `issue_batch_size` (1..7); fine-tuning
+receipts record the effective size alongside each hindcast run ID.
+
+`adapters/forecast_interface.py` applies the NaN gate per station/issue, partitions
+eligible cohorts, rejects conflicting overlapping input rows, and calls FI
+`BatchHindcastModel.hindcast`. It splits output by row issue time before existing
+ensemble conversion. Missing/failed station-issue products remain failures; no
+forecast is relabelled with the batch's scalar issue time. FI 0.1.20's UTC boundary
+convention applies equally to issue and valid timestamps. The Aquacast shim checks
+inner capability; its unconditional forwarding method alone is not evidence.
+
+Batch size changes stochastic draw allocation. Fixed inputs, ordering, size and
+seed are repeatable, but quantiles need not be identical across sizes. Preserve
+batch size and run identities when comparing scientific results. Full-period
+input prefetch remains; only the additional prepared-issue buffer is bounded.
+See `docs/operations/batched-hindcast-qualification.md` for qualification limits.

@@ -721,6 +721,7 @@ class TestFISurfaceDelegation:
         shim._inner = _FakeInnerWithoutHindcast(  # noqa: SLF001
             input_requirement=_native_requirement()
         )
+        assert shim.supports_batch_hindcast is False
         inputs = fi.ModelInputs(
             stations={
                 "gauge-a": _canonical_station_inputs(

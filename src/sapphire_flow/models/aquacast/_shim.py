@@ -811,6 +811,12 @@ class AquacastShim:
     def deserialize_artifact(self, raw: bytes) -> TrainedArtifact:
         return self._inner.deserialize_artifact(raw)
 
+    @property
+    def supports_batch_hindcast(self) -> bool:
+        from forecast_interface import BatchHindcastModel
+
+        return isinstance(self._inner, BatchHindcastModel)
+
     def hindcast(
         self,
         artifact: TrainedArtifact,

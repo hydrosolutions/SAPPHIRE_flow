@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     import random
 
+    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import ArtifactScope
     from sapphire_flow.types.group_input import GroupMemberInputIssue
@@ -121,3 +122,18 @@ class GroupInputGate(Protocol):
     def assess_group_inputs(
         self, inputs: GroupModelInputs
     ) -> tuple[GroupMemberInputIssue, ...]: ...
+
+
+@runtime_checkable
+class BatchGroupHindcastModel(Protocol):
+    @property
+    def supports_batch_hindcast(self) -> bool: ...
+
+    def hindcast_batch(
+        self,
+        artifact: ModelArtifact,
+        inputs: tuple[GroupModelInputs, ...],
+        rng: random.Random,
+    ) -> dict[
+        UtcDatetime, dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]
+    ]: ...

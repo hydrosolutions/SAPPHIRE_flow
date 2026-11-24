@@ -13,6 +13,7 @@ from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.services.fine_tuning_evidence import canonical_json
+from sapphire_flow.services.hindcast import resolve_hindcast_issue_batch_size
 from sapphire_flow.types.training import TrainingResult
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ def evaluate_candidate(
     clock: Callable[[], UtcDatetime],
 ) -> tuple[CandidateReceipt, TrainingResult]:
     request = receipt.request
+    issue_batch_size = resolve_hindcast_issue_batch_size(model)
 
     def evaluate(
         artifact_id: ArtifactId,
@@ -86,6 +88,7 @@ def evaluate_candidate(
             clock=clock,
             rng=random.Random(request.seed),
             hindcast_run_id=run_id,
+            issue_batch_size=issue_batch_size,
         )
         if not isinstance(steps_by_station, dict):
             raise ValueError(
@@ -145,6 +148,7 @@ def evaluate_candidate(
         return {
             "artifact_id": str(artifact_id),
             "hindcast_run_id": str(run_id),
+            "issue_batch_size": issue_batch_size,
             "coverage": coverage,
             "metrics": metrics,
             "source_evidence": json.loads(source.snapshot()),

@@ -110,6 +110,8 @@ def test_evaluation_separates_donor_and_candidate_on_requested_period(
         request.base_artifact_id,
     ]
     report = json.loads(updated.evaluation_json)
+    assert report["candidate"]["issue_batch_size"] == calls[0]["issue_batch_size"]
+    assert report["donor"]["issue_batch_size"] == calls[1]["issue_batch_size"]
     assert report["candidate"]["metrics"][0]["score"] is None
     assert result.skill_computed is (not missing_donor_skill)
     assert report["state"] == ("incomplete" if missing_donor_skill else "complete")
