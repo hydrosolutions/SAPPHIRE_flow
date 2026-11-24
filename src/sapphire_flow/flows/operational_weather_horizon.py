@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
 # SINGLE control: measured Nepal candidate <=21*4*116 = 9,744 rows.
 MAX_NEGOTIATED_RECORDS = 65_536
+_DEFAULT_MINIMUM_HORIZON = FutureSteps(value=1)
 log = structlog.get_logger(__name__)
 
 
@@ -130,6 +131,7 @@ def negotiate_weather_horizons(
         [ForcingTrackKey, list[StationWeatherSource], UtcDatetime], RawFetchOutcome
     ],
     eligible_group_pairs: frozenset[tuple[StationId, ModelId]] | None = None,
+    minimum_horizon: FutureSteps = _DEFAULT_MINIMUM_HORIZON,
 ) -> NegotiatedWeather:
     if group_store is None:
         return NegotiatedWeather(prepared=prepared, candidates={})
@@ -193,7 +195,10 @@ def negotiate_weather_horizons(
                     break
                 floors.extend(value.value for value in minima.values())
             else:
-                floor = max(floors)
+                floor = max(*floors, minimum_horizon.value)
+                if floor > ceiling:
+                    candidates[track.key] = UnavailableCandidate()
+                    continue
                 station_ids = {item.assignment[0] for item in track.assignments}
                 assignment_pairs = {item.assignment for item in track.assignments}
                 # Eligibility comes from selection, never available weather or bindings.

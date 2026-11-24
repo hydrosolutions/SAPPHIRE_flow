@@ -3,10 +3,11 @@ from __future__ import annotations
 import dataclasses
 import random
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import polars as pl
 import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
@@ -1068,3 +1069,67 @@ class TestRatingCurveBinding:
         fc = _make_forecast(station_a.id, mid, aid, rating_curve_id=curve_b)
         with pytest.raises(sqlalchemy.exc.IntegrityError):
             store.store_forecast(fc)
+
+
+class TestDeclaredForecastPeriods:
+    def test_roundtrip_keeps_negative_start_lead_and_immutable_period(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.db.metadata import forecasts
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import AggregationMethod
+        from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+        from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        period = ForecastPeriodDefinition(
+            grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+            label=PeriodLabel.START,
+            aggregation=AggregationMethod.MEAN,
+        )
+        first = period.grid.floor(_ISSUED_A)
+        ensemble = ForecastEnsemble.from_members(
+            station_id=sid,
+            issued_at=_ISSUED_A,
+            parameter="discharge",
+            units="m³/s",
+            time_step=period.grid.step,
+            period_definition=period,
+            values=pl.DataFrame(
+                {
+                    "valid_time": [first, first + period.grid.step],
+                    "member_id": [0, 0],
+                    "value": [10.0, 12.0],
+                }
+            ),
+        )
+        forecast = dataclasses.replace(_make_forecast(sid, mid, aid), ensemble=ensemble)
+        store.store_forecast(forecast)
+        fetched = store.fetch_forecast(forecast.id)
+        assert fetched is not None
+        assert fetched.ensemble.period_definition == period
+        assert fetched.ensemble.values["valid_time"].min() == first
+        leads = (
+            db_connection.execute(
+                sa.select(forecast_values.c.lead_time_hours)
+                .where(forecast_values.c.forecast_id == forecast.id)
+                .order_by(forecast_values.c.lead_time_hours)
+            )
+            .scalars()
+            .all()
+        )
+        assert leads == [-6, 18]
+        with (
+            pytest.raises(sa.exc.DBAPIError, match="immutable"),
+            db_connection.begin_nested(),
+        ):
+            db_connection.execute(
+                forecasts.update()
+                .where(forecasts.c.id == forecast.id)
+                .values(period_definition=None)
+            )

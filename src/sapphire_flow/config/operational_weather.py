@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo  # noqa: TC003 - Pydantic runtime schema
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from sapphire_flow.types.forcing_track import FutureSteps
+
 DEFAULT_SELECTED_WEATHER_EVIDENCE_BYTES = 32 * 1024 * 1024
 MAX_SELECTED_WEATHER_EVIDENCE_BYTES = 384 * 1024 * 1024
 
@@ -33,7 +35,12 @@ class OperationalWeatherConfig(BaseModel):
         le=MAX_SELECTED_WEATHER_EVIDENCE_BYTES,
         strict=True,
     )
+    minimum_negotiated_horizon_days: int = Field(default=1, ge=1, le=15, strict=True)
     max_future_receipts: int = Field(default=32, ge=1, le=32, strict=True)
+
+    @property
+    def negotiated_horizon_minimum(self) -> FutureSteps:
+        return FutureSteps(value=self.minimum_negotiated_horizon_days)
 
     @model_validator(mode="after")
     def validate_history_bounds(self) -> Self:

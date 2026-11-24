@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
     from sapphire_flow.types.ids import ModelId, StationId
 
 
@@ -25,6 +26,26 @@ class ForecastEnsemble:
     forecast_horizon_steps: int
     time_step: timedelta
     model_id: ModelId | None = None
+    period_definition: ForecastPeriodDefinition | None = None
+
+    def __post_init__(self) -> None:
+        period = self.period_definition
+        if period is None:
+            return
+        from sapphire_flow.types.time_grid import PeriodLabel
+
+        if period.grid.step != self.time_step:
+            raise ValueError("forecast period step differs from ensemble step")
+        if self.values.schema.get("valid_time") != pl.Datetime("us", "UTC"):
+            raise ValueError("period forecast timestamps must be UTC microseconds")
+        first = period.grid.floor(self.issued_at)
+        if period.label is PeriodLabel.END:
+            first += self.time_step
+        expected = [
+            first + i * self.time_step for i in range(self.forecast_horizon_steps)
+        ]
+        if self.values["valid_time"].unique().sort().to_list() != expected:
+            raise ValueError("forecast values differ from declared period grid")
 
     @property
     def member_count(self) -> int:
@@ -46,6 +67,7 @@ class ForecastEnsemble:
         time_step: timedelta,
         values: pl.DataFrame,
         model_id: ModelId | None = None,
+        period_definition: ForecastPeriodDefinition | None = None,
     ) -> ForecastEnsemble:
         if "member_id" not in values.columns:
             raise ValueError("members DataFrame must have 'member_id' column")
@@ -71,6 +93,7 @@ class ForecastEnsemble:
             forecast_horizon_steps=horizon,
             time_step=time_step,
             model_id=model_id,
+            period_definition=period_definition,
         )
 
     @classmethod
@@ -83,6 +106,7 @@ class ForecastEnsemble:
         time_step: timedelta,
         values: pl.DataFrame,
         model_id: ModelId | None = None,
+        period_definition: ForecastPeriodDefinition | None = None,
     ) -> ForecastEnsemble:
         if "quantile" not in values.columns:
             raise ValueError("quantiles DataFrame must have 'quantile' column")
@@ -115,4 +139,5 @@ class ForecastEnsemble:
             forecast_horizon_steps=horizon,
             time_step=time_step,
             model_id=model_id,
+            period_definition=period_definition,
         )

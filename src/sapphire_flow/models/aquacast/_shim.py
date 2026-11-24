@@ -510,19 +510,18 @@ def _variable_output_outbound(
 ) -> VariableOutput:
     if name != _DISCHARGE or var.metadata.unit is not Unit.MM_PER_DAY:
         return var
+    metadata = var.metadata.model_copy(update={"unit": Unit.M3_PER_S})
     if var.status is VariableStatus.FAILURE and not any(
         (var.deterministic, var.quantiles, var.trajectories, var.epistemic_uncertainty)
     ):
-        return var.model_copy(
-            update={"metadata": var.metadata.model_copy(update={"unit": Unit.M3_PER_S})}
-        )
+        return var.model_copy(update={"metadata": metadata})
     try:
         factor = _discharge_scale(area_km2=area_km2, station=station, to_aquacast=False)
     except AreaConversionError:
         return _area_variable_failure(var, name=name)
     return var.model_copy(
         update={
-            "metadata": var.metadata.model_copy(update={"unit": Unit.M3_PER_S}),
+            "metadata": metadata,
             "deterministic": _scaled_data_container(var.deterministic, factor=factor),
             "quantiles": _scaled_data_container(var.quantiles, factor=factor),
             "trajectories": _scaled_data_container(var.trajectories, factor=factor),
@@ -891,5 +890,13 @@ class CmalNepalStaticEncoder(AquacastShim):
     """Supplied daily CMAL static encoder; requires both net radiation inputs."""
 
     CONFIG_FILENAME = "cmal_nepal_static_encoder.yaml"
+    model_tier = ModelTier.SKILL
+    alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION
+
+
+class CmalNepalStaticEncoder20261123(AquacastShim):
+    """23 November artifact: daily START18UTC, explicit missing-Q tolerance."""
+
+    CONFIG_FILENAME = "cmal_nepal_static_encoder_20261123.yaml"
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION

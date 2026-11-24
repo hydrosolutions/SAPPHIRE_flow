@@ -251,3 +251,41 @@ class TestForecastFreshness:
             forecast_freshness(issued_at=START, as_of=START, policy=None).freshness
             is OverviewFreshness.UNKNOWN
         )
+
+
+@pytest.mark.parametrize("label", ["start", "end"])
+def test_declared_daily_period_remains_visible_until_physical_end(label: str) -> None:
+    from sapphire_flow.types.enums import AggregationMethod
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+
+    grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    period = ForecastPeriodDefinition(
+        grid=grid, label=PeriodLabel(label), aggregation=AggregationMethod.MEAN
+    )
+    start = grid.floor(START)
+    stamp = start if label == "start" else start + grid.step
+    value = ForecastEnsemble.from_quantiles(
+        station_id=StationId(UUID(int=1)),
+        issued_at=START,
+        parameter="discharge",
+        units="m³/s",
+        time_step=grid.step,
+        period_definition=period,
+        values=pl.DataFrame(
+            {
+                "valid_time": [stamp] * 7,
+                "quantile": [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95],
+                "value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            }
+        ),
+    )
+    result = compact_forecast_series(value, as_of=START)
+    assert result.availability is OverviewAvailability.AVAILABLE
+    assert result.support_start == start
+    assert result.support_end == start + grid.step
+    assert result.points[0].valid_time == stamp
+    assert (
+        compact_forecast_series(value, as_of=ensure_utc(start + grid.step)).availability
+        is OverviewAvailability.EXPIRED
+    )

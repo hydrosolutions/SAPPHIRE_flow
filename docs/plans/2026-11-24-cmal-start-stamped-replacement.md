@@ -234,3 +234,38 @@ then enable recurrence only after successful operational qualification. Preserve
 ```json
 {"phases":[{"id":"review_plan","depends_on":[]},{"id":"dependencies_contract","depends_on":["review_plan"]},{"id":"operational_grid","depends_on":["dependencies_contract"]},{"id":"qualification_review_pr","depends_on":["operational_grid"]},{"id":"release_activation","depends_on":["qualification_review_pr"],"gate":"owner merge and approved release"}]}
 ```
+
+
+### Output slice implementation evidence (24 November)
+
+The dependent output slice registers the new CPU-only model and retains immutable
+period metadata through ensembles, PostgreSQL and summary/detail/overview/chart
+JSON. Native checkpoint → shim → FI adapter qualification produced 15 daily
+periods × 7 finite quantiles, mean m³/s, START 18UTC, preserving the actual issue.
+This uses synthetic inputs and is not a live-forecast or accuracy claim.
+
+The independent Claude patch review found no blockers. Its chart endpoint follow-up
+is implemented; the daily evaluation reader now explicitly refuses declared periods.
+Mixed-period pooling remains fail-closed, and activation keeps combination disabled.
+Restricted-role dashboard checks found and fixed the bootstrap read-column list;
+new and migrated roles both receive only the safe period-column read grant.
+Legacy/rejected rows without stored period metadata remain unknown; rejected-output
+period persistence is not claimed by this slice. Review reports remain local.
+
+Still required after owner merge and release: qualify/import the supplied artifact
+against real station statics, deploy the isolated new-model worker without changing
+the legacy worker image/routing, prepare real V2 weather, run a manual forecast,
+publish under the owner's approved scope and verify reviewer API/dashboard results.
+No activation, station promotion, or live forecast success is claimed here.
+
+
+Daily CMAL source-cycle policy (owner confirmed 24 November): apply
+`config/overlays/nepal-cmal-daily.toml` only to the isolated CMAL job and worker.
+Its 12-hour UTC candidate cadence admits **00z and 12z only**, including fallback;
+06z and 18z are reserved for later use. This cycle policy is independent of the
+model's START18UTC aggregation boundary. `minimum_negotiated_horizon_days = 11`
+refuses short candidates and walks back within the existing age bound. Use the
+longest common complete prefix from an accepted cycle, up to the model's 15 days;
+never silently reduce below 11 or synthesize missing periods. Existing jobs keep
+their defaults. Verify the merged registered-job and actual-worker config both
+contain these settings before activation; changing this file does not deploy it.

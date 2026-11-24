@@ -467,3 +467,32 @@ class TestUpstreamRejectionReporting:
 
         report = _issue_report(predicted, config, [issue], [issue])
         assert "available" in report
+
+
+class TestCmalNepalStaticEncoder20261123:
+    def test_cpu_configuration_and_known_grid_contract(self) -> None:
+        from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+        from sapphire_flow.models.aquacast import CmalNepalStaticEncoder20261123
+        from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
+
+        model = CmalNepalStaticEncoder20261123()
+        assert (
+            model.config_hash
+            == "a35365043a62ffb75cc943dba9f72dc7daabcdcb138be879d5834cd83dc71bc3"
+        )
+        req = ForecastInterfaceAdapter(model).data_requirements
+        assert req.time_grid == ModelTimeGrid(
+            grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+            label=PeriodLabel.START,
+        )
+        assert req.lookback_steps == 365
+        assert req.forecast_horizon_steps == 15
+        assert len(req.static_features) == 78
+        spec = next(
+            iter(model.input_requirement.dynamic[timedelta(days=1)].data.values())
+        )
+        past = {name: v for ns in spec.past_known.values() for name, v in ns.items()}
+        assert past["discharge"].max_nan == 365
+        assert all(
+            value.max_nan == 0 for name, value in past.items() if name != "discharge"
+        )

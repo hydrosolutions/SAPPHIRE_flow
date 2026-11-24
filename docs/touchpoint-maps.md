@@ -2948,3 +2948,16 @@ seed are repeatable, but quantiles need not be identical across sizes. Preserve
 batch size and run identities when comparing scientific results. Full-period
 input prefetch remains; only the additional prepared-issue buffer is bounded.
 See `docs/operations/batched-hindcast-qualification.md` for qualification limits.
+
+
+### Declared forecast output periods
+
+`types/forecast_period.py` and the boundary codec define immutable period metadata.
+The FI adapter validates the declaration and output labels; forecast storage,
+summary/detail and network overview preserve it. Migration 0091 adds nullable
+JSONB, read grants and immutable-header protection. Null remains legacy/unknown.
+Check the ensemble/adapter tests, forecast-store PostgreSQL round-trip and
+network-overview physical-support tests when changing this boundary. Legacy
+hindcast, skill and event review must not silently score these periods; ensemble
+combination requires identical definitions. Input evidence includes the delivered
+grid only for declared-grid inputs, preserving legacy snapshot bytes.

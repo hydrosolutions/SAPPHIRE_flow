@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         NwpCycleSource,
         QcStatus,
     )
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
     from sapphire_flow.types.ids import ForecastId, ModelId, StationId
 
 
@@ -36,3 +37,4 @@ class ForecastSummaryRow:
     # Plan 402 T3: the forecast's QC flags — [] when none, distinct from
     # `raw` (not yet checked). Visible to every authenticated role (D13).
     qc_flags: tuple[QcFlag, ...] = ()
+    period_definition: ForecastPeriodDefinition | None = None

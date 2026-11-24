@@ -1735,3 +1735,39 @@ class TestBuildCombinedForecastsInputQuality:
         assert len(forecasts) == 1
         assert forecasts[0].input_quality == InputQualityLevel.FULL
         assert forecasts[0].input_quality_flags == ()
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_pool_preserves_period_and_refuses_unknown_mixture(mixed: bool) -> None:
+    from sapphire_flow.types.enums import AggregationMethod
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+
+    period = ForecastPeriodDefinition(
+        grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+        label=PeriodLabel.START,
+        aggregation=AggregationMethod.MEAN,
+    )
+    values = pl.DataFrame(
+        {
+            "valid_time": [period.grid.floor(_NOW)] * 2,
+            "member_id": [0, 1],
+            "value": [10.0, 12.0],
+        }
+    )
+    known = ForecastEnsemble.from_members(
+        station_id=_STATION,
+        issued_at=_NOW,
+        parameter="discharge",
+        units="m³/s",
+        time_step=period.grid.step,
+        period_definition=period,
+        values=values,
+    )
+    other = replace(known, period_definition=None) if mixed else known
+    inputs = {_MODEL_A: {"discharge": known}, _MODEL_B: {"discharge": other}}
+    if mixed:
+        with pytest.raises(ValueError, match="different period definitions"):
+            combine_ensembles_pooled(inputs)
+    else:
+        assert combine_ensembles_pooled(inputs)["discharge"].period_definition == period

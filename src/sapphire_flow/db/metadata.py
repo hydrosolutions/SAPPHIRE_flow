@@ -1247,6 +1247,11 @@ forecasts = sa.Table(
     # always has, while every new row carries its declared step. Tightening to
     # NOT NULL is a later release, per cicd.md's one-version compatibility rule.
     sa.Column("time_step_seconds", sa.Integer, nullable=True),
+    sa.Column("period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.CheckConstraint(
+        "period_definition IS NULL OR jsonb_typeof(period_definition) = 'object'",
+        name="ck_forecasts_period_definition",
+    ),
     sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
         "nwp_cycle_source",

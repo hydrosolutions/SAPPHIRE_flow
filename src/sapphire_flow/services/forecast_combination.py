@@ -111,6 +111,10 @@ def combine_ensembles_pooled(
             continue
 
         common_valid_times: set[datetime] | None = None
+        if len({ensemble.period_definition for _, ensemble in eligible}) > 1:
+            raise ValueError(
+                "cannot combine forecasts with different period definitions"
+            )
         for model_id, ensemble in eligible:
             n_members = ensemble.values["member_id"].n_unique()
             # D2 — completeness is counted BOTH ways: row count AND
@@ -183,6 +187,7 @@ def combine_ensembles_pooled(
             parameter=param,
             units=ref_ensemble.units,
             time_step=ref_ensemble.time_step,
+            period_definition=ref_ensemble.period_definition,
             values=merged,
             model_id=POOLED_MODEL_ID,
         )
@@ -232,6 +237,19 @@ def combine_ensembles_bma(
     result: dict[str, ForecastEnsemble] = {}
     for param in all_params:
         member_dfs: list[pl.DataFrame] = []
+        if (
+            len(
+                {
+                    items[param].period_definition
+                    for items in eligible.values()
+                    if param in items
+                }
+            )
+            > 1
+        ):
+            raise ValueError(
+                "cannot combine forecasts with different period definitions"
+            )
         ref_ensemble: ForecastEnsemble | None = None
         global_offset = 0
 
@@ -268,6 +286,7 @@ def combine_ensembles_bma(
             units=ref_ensemble.units,
             time_step=ref_ensemble.time_step,
             values=merged,
+            period_definition=ref_ensemble.period_definition,
             model_id=BMA_MODEL_ID,
         )
 

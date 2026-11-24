@@ -69,6 +69,25 @@ def overview_case(
             time_step=timedelta(days=1),
             issued_at=native.issued_at,
         )
+        if getattr(request, "param", "raw") == "declared_period":
+            from sapphire_flow.types.enums import AggregationMethod
+            from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+            from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+
+            grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+            shift = grid.floor(native.issued_at) - native.issued_at
+            ensemble = replace(
+                ensemble,
+                values=frame.with_columns(
+                    (pl.col("valid_time") + shift).alias("valid_time")
+                ),
+                forecast_horizon_steps=10,
+                period_definition=ForecastPeriodDefinition(
+                    grid=grid,
+                    label=PeriodLabel.START,
+                    aggregation=AggregationMethod.MEAN,
+                ),
+            )
         native = replace(
             native, ensemble=ensemble, representation=EnsembleRepresentation.QUANTILES
         )
@@ -941,3 +960,36 @@ class TestOverviewTimeAndDataValidators:
         assert body["latest"]["sample"]["qc_status"] == "qc_unchecked"
         assert body["hourly"] == first.json()["items"][0]["water_level"]["hourly"]
         assert second.headers["etag"] != first.headers["etag"]
+
+
+@pytest.mark.parametrize("overview_case", ["declared_period"], indirect=True)
+def test_declared_period_is_exposed_to_reviewer_in_overview_and_detail(
+    overview_case: tuple,
+) -> None:
+    _, client, _, ordinary, network, _ = overview_case
+    expected = {
+        "step_seconds": 86400,
+        "origin_seconds": 64800,
+        "label": "start",
+        "aggregation": "mean",
+    }
+    overview = client.get(
+        f"/api/v1/networks/{network}/overview", params={"data_use": "standard"}
+    )
+    assert overview.status_code == 200, overview.text
+    entry = overview.json()["items"][0]["forecasts"][0]
+    assert entry["period_definition"] == expected
+    detail = client.get(f"/api/v1/forecasts/{ordinary.id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["period_definition"] == expected
+    assert detail.json()["ensemble"]["period_definition"] == expected
+    listing = client.get(
+        f"/api/v1/stations/{ordinary.station_id}/forecasts",
+        params={
+            "data_use": "standard",
+            "start": ordinary.issued_at.isoformat(),
+            "end": (ordinary.issued_at + timedelta(days=1)).isoformat(),
+        },
+    )
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["items"][0]["period_definition"] == expected
