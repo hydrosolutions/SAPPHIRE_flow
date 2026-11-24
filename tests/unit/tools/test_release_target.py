@@ -702,7 +702,8 @@ class TestDevPhase:
         with pytest.raises(target.ReleaseIdentityError, match="release target"):
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
 
-    def test_multiple_merge_bases_refuse(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("bump", [False, True])
+    def test_multiple_merge_bases_refuse(self, tmp_path: Path, bump: bool) -> None:
         repository(tmp_path)
         for name in ("x", "y"):
             git(tmp_path, "checkout", "-b", name, "main")
@@ -713,6 +714,9 @@ class TestDevPhase:
         git(tmp_path, "merge", "--no-ff", "y", "-m", "x2")
         git(tmp_path, "checkout", "-b", "y2", "y")
         git(tmp_path, "merge", "--no-ff", "x", "-m", "y2")
+        if bump:  # a valid base+1 bump must not bypass the merge-base check
+            (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4\n")
+            git(tmp_path, "commit", "-am", "bump")
         base = git(tmp_path, "rev-parse", "x2")
         head = git(tmp_path, "rev-parse", "y2")
         git(tmp_path, "checkout", "x2")
@@ -720,10 +724,11 @@ class TestDevPhase:
         with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
 
-    def test_no_merge_base_refuses(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("raw", [b"1.2.3\n", b"1.2.4\n"])
+    def test_no_merge_base_refuses(self, tmp_path: Path, raw: bytes) -> None:
         base = repository(tmp_path)
         git(tmp_path, "checkout", "--orphan", "orphan")
-        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        (tmp_path / "RELEASE_TARGET").write_bytes(raw)
         git(tmp_path, "add", "-A")
         git(tmp_path, "commit", "-m", "orphan")
         head = git(tmp_path, "rev-parse", "HEAD")
@@ -733,6 +738,8 @@ class TestDevPhase:
             "merge",
             "--no-ff",
             "--allow-unrelated-histories",
+            "-X",
+            "theirs",
             "orphan",
             "-m",
             "tested merge",
@@ -740,9 +747,10 @@ class TestDevPhase:
         with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
 
+    @pytest.mark.parametrize("pr_target", [b"1.2.3\n", b"1.2.4\n"])
     @pytest.mark.parametrize("raw", [None, b"garbage"])
     def test_missing_or_invalid_merge_base_target_refuses(
-        self, tmp_path: Path, raw: bytes | None
+        self, tmp_path: Path, raw: bytes | None, pr_target: bytes
     ) -> None:
         repository(tmp_path)
         if raw is None:
@@ -751,7 +759,7 @@ class TestDevPhase:
             (tmp_path / "RELEASE_TARGET").write_bytes(raw)
         git(tmp_path, "commit", "-am", "bad ancestor target")
         git(tmp_path, "checkout", "-b", "pr")
-        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        (tmp_path / "RELEASE_TARGET").write_bytes(pr_target)
         git(tmp_path, "add", "-A")
         git(tmp_path, "commit", "-m", "pr")
         head = git(tmp_path, "rev-parse", "HEAD")
@@ -760,7 +768,7 @@ class TestDevPhase:
         git(tmp_path, "add", "-A")
         git(tmp_path, "commit", "-m", "base")
         base = git(tmp_path, "rev-parse", "HEAD")
-        git(tmp_path, "merge", "--no-ff", "pr", "-m", "tested merge")
+        git(tmp_path, "merge", "--no-ff", "-X", "theirs", "pr", "-m", "tested merge")
         with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
 
@@ -842,3 +850,57 @@ class TestDevPhase:
         git(tmp_path, "checkout", "main")
         git(tmp_path, "merge", "--no-ff", "second", "-m", "second merge")
         target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("dev", [False, True], ids=["strict", "dev"])
+class TestGateInvariantsBothModes:
+    """Identity, parent and commit-object checks run before either target rule."""
+
+    @pytest.fixture(autouse=True)
+    def mode(self, dev: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(target, "DEV_PHASE_ALLOW_UNCHANGED_TARGET", dev)
+
+    def test_wrong_head_checkout_refuses(self, tmp_path: Path) -> None:
+        base, head, merge = merged_pr(tmp_path)
+        git(tmp_path, "checkout", head)
+        with pytest.raises(target.ReleaseIdentityError, match="HEAD"):
+            target.check_pr(tmp_path, base, head, merge)
+
+    def test_reversed_parents_refuse(self, tmp_path: Path) -> None:
+        base, head, merge = merged_pr(tmp_path)
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, head, base, merge)
+
+    def test_single_parent_refuses(self, tmp_path: Path) -> None:
+        base = repository(tmp_path)
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4\n")
+        git(tmp_path, "commit", "-am", "single")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, base, head, head)
+
+    def test_non_commit_object_refuses(self, tmp_path: Path) -> None:
+        base, head, merge = merged_pr(tmp_path)
+        tree = git(tmp_path, "rev-parse", f"{head}^{{tree}}")
+        with pytest.raises(target.ReleaseIdentityError, match="commit objects"):
+            target.check_pr(tmp_path, base, tree, merge)
+
+    @pytest.mark.parametrize("identity", ["checkout", "parents", "short_sha"])
+    def test_docs_pr_keeps_identity_checks(self, tmp_path: Path, identity: str) -> None:
+        repository(tmp_path)
+        base, head, merge = prose_pr(tmp_path, {"docs/guide.md": "prose"})
+        if identity == "checkout":
+            git(tmp_path, "checkout", head)
+            message = "HEAD"
+        elif identity == "parents":
+            base, head = head, base
+            message = "parents"
+        else:
+            base = base[:12]
+            message = "SHA"
+        with pytest.raises(target.ReleaseIdentityError, match=message):
+            target.check_pr(tmp_path, base, head, merge)
+
+    def test_exact_docs_pr_passes(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        target.check_pr(tmp_path, *prose_pr(tmp_path, {"docs/guide.md": "prose"}))
