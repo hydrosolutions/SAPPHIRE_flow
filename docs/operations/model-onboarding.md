@@ -449,3 +449,14 @@ longest common complete prefix from an accepted cycle, up to the model's 15 days
 never silently reduce below 11 or synthesize missing periods. Existing jobs keep
 their defaults. Verify the merged registered-job and actual-worker config both
 contain these settings before activation; changing this file does not deploy it.
+
+
+Compatibility: API map contract 3.2 adds optional `period_definition`. Stored
+legacy periods stay SQL NULL and the API omits the new field for those rows,
+preserving existing response bytes. The default negotiated minimum is omitted
+from serialized configuration to preserve existing execution/snapshot fingerprints;
+non-default minima (including CMAL's 11) remain part of execution identity.
+Legacy inserts omit the new nullable column as well.
+Role bootstrapping grants period-column reads only when revision 0091's column
+exists, so historical schema upgrade/downgrade checks remain supported. Diagnostic
+forecast snapshots include the safe period metadata without exposing lineage.

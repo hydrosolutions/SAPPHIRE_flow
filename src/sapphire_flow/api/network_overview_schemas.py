@@ -76,7 +76,9 @@ class ForecastGapResponse(OverviewSchema):
 
 
 class OverviewForecastResponse(OverviewSchema):
-    period_definition: ForecastPeriodPayload | None = None
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     model_id: str
     parameter: str | None
     data_use: ForecastDataUse

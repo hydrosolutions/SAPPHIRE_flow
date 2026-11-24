@@ -581,8 +581,18 @@ GRANT SELECT (
         "version", "warm_up_source", "warm_up_state_age_hours",
         "observation_staleness_hours", "created_at", "updated_at", "parameter",
         "units", "qc_status", "qc_flags", "input_quality", "input_quality_flags",
-        "rating_curve_id", "weather_evidence_version", "period_definition"
+        "rating_curve_id", "weather_evidence_version"
 ) ON public.forecasts TO sapphire_api, sapphire_worker;
+DO $$ BEGIN
+ IF EXISTS (
+  SELECT 1 FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'forecasts'
+    AND column_name = 'period_definition'
+ ) THEN
+  GRANT SELECT (period_definition) ON public.forecasts TO sapphire_api, sapphire_worker;
+ END IF;
+END $$;
+
 GRANT SELECT (
     "data_use", "id", "attempt_id", "station_id", "model_id", "model_artifact_id",
         "group_id", "issued_at", "parameter", "units", "representation",

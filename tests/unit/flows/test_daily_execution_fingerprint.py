@@ -156,3 +156,26 @@ class TestExecutionFingerprint:
         assert execution_configuration_sha256(config) == execution_configuration_sha256(
             changed
         )
+
+
+def test_nondefault_daily_horizon_changes_execution_identity() -> None:
+    from sapphire_flow.config.operational_weather import (
+        OperationalPastWeatherRoute,
+        OperationalWeatherConfig,
+    )
+
+    config = _make_config().model_copy(
+        update={
+            "operational_weather": OperationalWeatherConfig(
+                route=OperationalPastWeatherRoute.RECAP_COMBINED
+            )
+        }
+    )
+    policy = config.operational_weather.model_copy(
+        update={"minimum_negotiated_horizon_days": 11}
+    )
+    changed = config.model_copy(update={"operational_weather": policy})
+    assert policy.model_dump()["minimum_negotiated_horizon_days"] == 11
+    assert execution_configuration_sha256(changed) != execution_configuration_sha256(
+        config
+    )

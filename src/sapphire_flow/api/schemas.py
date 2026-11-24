@@ -198,7 +198,9 @@ class LatestObservationsResponse(PaginatedResponse[LatestStationObservationRespo
 
 
 class _ForecastSummaryFields(BaseModel):
-    period_definition: ForecastPeriodPayload | None = None
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     id: str
     station_id: str
     model_id: str
@@ -262,7 +264,9 @@ class ForecastSummary(_ForecastSummaryFields):
 
 
 class EnsembleResponse(BaseModel):
-    period_definition: ForecastPeriodPayload | None = None
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     representation: str
     parameter: str
     units: str = Field(description="Unit for every series value, e.g. discharge m³/s.")

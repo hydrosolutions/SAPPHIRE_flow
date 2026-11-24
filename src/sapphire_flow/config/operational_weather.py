@@ -35,7 +35,9 @@ class OperationalWeatherConfig(BaseModel):
         le=MAX_SELECTED_WEATHER_EVIDENCE_BYTES,
         strict=True,
     )
-    minimum_negotiated_horizon_days: int = Field(default=1, ge=1, le=15, strict=True)
+    minimum_negotiated_horizon_days: int = Field(
+        default=1, ge=1, le=15, strict=True, exclude_if=lambda value: value == 1
+    )
     max_future_receipts: int = Field(default=32, ge=1, le=32, strict=True)
 
     @property

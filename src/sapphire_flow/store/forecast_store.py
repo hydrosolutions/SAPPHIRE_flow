@@ -985,10 +985,10 @@ def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
         model_artifact_id=forecast.model_artifact_id,
         issued_at=forecast.issued_at,
         time_step_seconds=int(forecast.ensemble.time_step.total_seconds()),
-        period_definition=(
-            forecast.ensemble.period_definition.content
+        **(
+            {"period_definition": forecast.ensemble.period_definition.content}
             if forecast.ensemble.period_definition is not None
-            else None
+            else {}
         ),
         nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
         nwp_cycle_source=forecast.nwp_cycle_source.value,
