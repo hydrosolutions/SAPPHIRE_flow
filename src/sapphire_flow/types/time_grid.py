@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, cast
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -11,6 +12,11 @@ if TYPE_CHECKING:
 
 _DAY = timedelta(days=1)
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class PeriodLabel(Enum):
+    START = "start"
+    END = "end"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -59,6 +65,14 @@ class TimeGrid:
         if ensure_utc(anchor) != start:
             start = ensure_utc(start + self.step)
         return start, ensure_utc(start + steps * self.step)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelTimeGrid:
+    """Physical period boundaries and the model's timestamp convention."""
+
+    grid: TimeGrid
+    label: PeriodLabel
 
 
 def _require_count(steps: object) -> None:

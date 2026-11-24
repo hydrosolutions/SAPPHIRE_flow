@@ -1814,6 +1814,7 @@ class StationModelInputs:
     forecast_horizon_steps: int
     time_step: timedelta
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET  # Plan 151 D10 discriminant
+    time_grid: ModelTimeGrid | None = None
 ```
 
 `forcing_route` is the **explicit** legacy-vs-per-track discriminant (Plan 151 D10) — set by
@@ -1847,6 +1848,7 @@ class GroupModelInputs:
     forecast_horizon_steps: int
     time_step: timedelta
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
+    time_grid: ModelTimeGrid | None = None
 
     def for_station(self, station_id: StationId) -> StationInputData:
         """Slice stacked DataFrames for one station."""
@@ -1900,6 +1902,7 @@ class StationTrainingData:
     static: pl.DataFrame | None      # single-row scalar catchment attributes; None if not needed
     time_step: timedelta
     val_start: UtcDatetime | None    # if set, data after this time is validation holdout
+    time_grid: ModelTimeGrid | None = None
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class GroupTrainingData:
@@ -1916,6 +1919,7 @@ class GroupTrainingData:
     static: pl.DataFrame | None      # stacked: station_id + attribute columns; None if not needed
     time_step: timedelta
     val_start: UtcDatetime | None    # group-wide validation split
+    time_grid: ModelTimeGrid | None = None
 
     def for_station(self, station_id: StationId) -> StationTrainingData:
         """Slice stacked DataFrames for one station."""
@@ -1946,6 +1950,7 @@ class ModelDataRequirements:
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()  # per-parameter FI-declared aggregation, e.g. frozenset({("discharge", AggregationMethod.MAX)})
     declared_lookbacks: frozenset[tuple[str, int]] = frozenset()  # forcing-only FI-declared lookback, e.g. frozenset({("precipitation", 45), ("temperature", 14)})
     required_past_targets: frozenset[str] | None = None  # None=legacy unspecified; empty=no target history
+    time_grid: ModelTimeGrid | None = None
 ```
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
@@ -6625,6 +6630,19 @@ minutes in `[0, step)`, measured from UTC midnight. `alignable` requires equal
 step and phase. `fine.nests_into(coarse)` requires a divisible step and a phase
 difference divisible by the fine step. `require_common_time_grid` rejects empty
 or incompatible groups.
+
+`ModelTimeGrid(grid: TimeGrid, label: PeriodLabel)` adds an explicit START or END
+label. `ModelDataRequirements.time_grid` projects a fully known FI anchor from
+the single future-forced branch; a partial anchor refuses, and a fully unknown
+anchor retains `None`. Its step must equal the sole supported time step.
+Existing multi-branch delivery refusal remains in force, so other branch anchors
+cannot silently enter prediction. Station/group input and training containers
+carry the delivered declaration without moving timestamps. FI validates the
+actual series against it. The adapter refuses unknown/mismatched artifact grids
+at deserialization, prediction and warm-start retraining for declared models.
+Newly trained artifacts are checked on their next load/prediction, not at the
+return from `train`. This boundary slice does not qualify operational assembly,
+historical training/scoring or output-period persistence.
 
 `floor` returns the last grid boundary at/before an aware instant.
 `lookback_bounds` returns complete past physical periods, excluding the bucket in
