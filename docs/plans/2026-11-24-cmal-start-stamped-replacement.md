@@ -60,7 +60,8 @@ its latest visible tag 0.1.390 does not. Merged FI 0.2.10 at
 TimeGrid, PeriodLabel and output temporal metadata. Pin exact tested revisions.
 Use FI's native declaration, never Aquacast's private delivery-contract keyword.
 
-Base main is bfad9765 (release target 0.1.1183), including the quantile-skill fix.
+Base main is b9734fc6 (release target 0.1.1184), including the quantile-skill and
+observation spike-QC fixes. This integration's release target is 0.1.1185.
 M2a selected-weather preparation
 is merged. Model/observation/FI/output consumers remain on the old contract:
 the shim rebuilds ModelInputs without grid metadata, the FI adapter does not
