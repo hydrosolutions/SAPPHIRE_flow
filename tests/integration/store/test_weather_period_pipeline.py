@@ -116,9 +116,11 @@ class ForecastSource:
 
 
 @pytest.mark.parametrize("missing_offsets", [(), (3,)], ids=["complete", "short-gap"])
+@pytest.mark.parametrize("negotiated", [False, True], ids=["resolve", "handoff"])
 def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
     db_connection: sa.Connection,
     missing_offsets: tuple[int, ...],
+    negotiated: bool,
 ) -> None:
     station = make_station_config(station_id=SID)
     stations = PgStationStore(db_connection)
@@ -160,7 +162,7 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
         resolver=resolver,
         config=OperationalWeatherConfig(),
     )
-    request = period_request()
+    request = period_request(horizons=(3, 3) if negotiated else (2, 3))
     past = PastWeatherRequirementV2(
         grid=GRID,
         start=snapshot.window.start,
@@ -205,7 +207,7 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
         key=track,
         assignment=AssignmentKey((SID, MID)),
         assignment_horizons={
-            FeatureName("precipitation"): FutureSteps(value=2),
+            FeatureName("precipitation"): FutureSteps(value=3 if negotiated else 2),
             FeatureName("temperature"): FutureSteps(value=3),
         },
     )
@@ -219,7 +221,36 @@ def test_refresh_storage_gap_capture_and_api_share_one_period_identity(
         return forecast_source.fetch_requirement(track, sources, cycle)
 
     earliest = ensure_utc(ISSUE - timedelta(hours=60))
+    handoffs = None
+    if negotiated:
+        from sapphire_flow.services.track_projection import resolve_tracks
+        from sapphire_flow.services.track_resolution import resolve_candidate
+        from sapphire_flow.types.enums import FutureWeatherPolicy, NwpCycleSource
+
+        resolved = resolve_tracks([projection])[0]
+        candidate = resolve_candidate(
+            resolved,
+            fetch_candidate=lambda cycle: fetch(track, [source], cycle),
+            expected_member_ids=frozenset({0}),
+            nominal_cycle_source=lambda cycle, nominal: (
+                NwpCycleSource.PRIMARY if cycle == nominal else NwpCycleSource.FALLBACK
+            ),
+            nominal_now=ISSUE,
+            issue_time=ISSUE,
+            cycle_cadence_hours=24,
+            max_cycle_age_hours=60,
+            clock=lambda: ISSUE,
+            id_gen=uuid4,
+            weather_policy=FutureWeatherPolicy.RECAP_COMPLETE_DAILY,
+            earliest_cycle=earliest,
+            grid=GRID,
+            first_period_start=FIRST,
+            eligibility_cutoff=ISSUE,
+        )
+        assert candidate is not None
+        handoffs = {track: candidate}
     resolve_selected_weather_tracks(
+        negotiated_candidates=handoffs,
         projections=(projection,),
         forecast_bindings={SID: replace(source, nwp_source="ifs_ecmwf")},
         adapter=forecast_source,

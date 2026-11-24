@@ -8,7 +8,9 @@ from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
 from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
 from sapphire_flow.adapters.recap_operational import (
     future_binding_fingerprint,
+    future_binding_fingerprint_v2,
     operational_binding_fingerprint,
+    operational_binding_fingerprint_v2,
 )
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.operational_weather_refresh import StationWeatherRefresh
@@ -37,11 +39,16 @@ from sapphire_flow.types.operational_weather import (
     WeatherCacheKey,
     require_midnight,
 )
+from sapphire_flow.types.operational_weather_v2 import (
+    FutureWeatherRequestV2,
+    PastWeatherRequirementV2,
+)
 from sapphire_flow.types.recap_intervals import (
     RADIATION_PARAMETERS,
     UNQUALIFIED_INTERVALS,
     GatewayIntervalContract,
 )
+from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -56,13 +63,14 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import StationGroupStore, StationStore
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.operational_weather import WeatherParameter
     from sapphire_flow.types.station import ModelAssignment, StationWeatherSource
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AssignmentWeatherRequirement:
-    past: PastWeatherRequirement | None
-    future: FutureWeatherRequest | None
+    past: PastWeatherRequirement | PastWeatherRequirementV2 | None
+    future: FutureWeatherRequest | FutureWeatherRequestV2 | None
     ensemble_mode: EnsembleMode
 
 
@@ -81,6 +89,7 @@ class PreparedWeatherRefresh:
     resolver: FrozenWeatherResolver
     projections: tuple[ForcingRequired, ...]
     refusal_messages: tuple[str, ...] = ()
+    grid: TimeGrid | None = None
 
 
 def prepare_weather_refresh(
@@ -98,7 +107,6 @@ def prepare_weather_refresh(
 ) -> PreparedWeatherRefresh:
     from types import MappingProxyType
 
-    require_midnight(issue_time)
     scheduled = {
         (sid, assignment.model_id): assignment.time_step
         for sid, assignments in active_model_assignments.items()
@@ -132,6 +140,27 @@ def prepare_weather_refresh(
                         )
                     }
                 )
+    declarations = {models[mid].data_requirements.time_grid for _, mid in scheduled}
+    grid = None
+    if declarations and declarations != {None}:
+        if len(declarations) != 1 or None in declarations:
+            raise ConfigurationError(
+                "selected weather assignments have different time grids"
+            )
+        declaration = next(iter(declarations))
+        assert declaration is not None
+        if (
+            eligible_group_pairs is None
+            or declaration.label is not PeriodLabel.START
+            or declaration.grid.step != timedelta(days=1)
+        ):
+            raise ConfigurationError(
+                "declared weather grid requires explicitly selected daily START groups"
+            )
+        grid = declaration.grid
+    if grid is None:
+        require_midnight(issue_time)
+    period_start = issue_time if grid is None else grid.floor(issue_time)
     mappings: dict[StationWeatherSource, GatewayPolygonRef] = {}
     projections: list[ForcingRequired] = []
     weather_parameters = WEATHER_PARAMETERS
@@ -175,16 +204,17 @@ def prepare_weather_refresh(
         past = (
             None
             if not requirements.past_dynamic_features
-            else PastWeatherRequirement(
+            else _past_requirement(
+                grid=grid,
                 start=ensure_utc(
-                    issue_time
+                    period_start
                     - step
                     * max(
                         lookbacks.get(name, requirements.lookback_steps)
                         for name in requirements.past_dynamic_features
                     )
                 ),
-                end=issue_time,
+                end=period_start,
                 parameters=tuple(
                     name
                     for name in weather_parameters
@@ -237,29 +267,55 @@ def prepare_weather_refresh(
                 )
             )
             members = tuple(sorted(adapter.expected_member_ids(key)))
-            future = FutureWeatherRequest(
-                station_id=sid,
-                source=source.nwp_source,
-                binding_fingerprint=future_binding_fingerprint(
+            fingerprint = future_binding_fingerprint(
+                source,
+                ref,
+                members,
+                parameters=tuple(
+                    name for name in weather_parameters if name in horizons
+                ),
+                interval_qualification=qualification,
+            )
+            if grid is not None:
+                fingerprint = future_binding_fingerprint_v2(
                     source,
                     ref,
                     members,
+                    grid,
                     parameters=tuple(
                         name for name in weather_parameters if name in horizons
                     ),
                     interval_qualification=qualification,
-                ),
-                issue_time=issue_time,
-                requirements=tuple(
-                    FutureWeatherRequirement(
-                        parameter=name,
-                        member_ids=members,
-                        valid_times=tuple(
-                            ensure_utc(issue_time + step * day) for day in range(count)
-                        ),
-                    )
-                    for name, count in sorted(horizons.items())
-                ),
+                )
+            future_requirements = tuple(
+                FutureWeatherRequirement(
+                    parameter=name,
+                    member_ids=members,
+                    valid_times=tuple(
+                        ensure_utc(period_start + step * day) for day in range(count)
+                    ),
+                )
+                for name, count in sorted(horizons.items())
+            )
+            future = (
+                FutureWeatherRequest(
+                    station_id=sid,
+                    source=source.nwp_source,
+                    binding_fingerprint=fingerprint,
+                    issue_time=issue_time,
+                    requirements=future_requirements,
+                )
+                if grid is None
+                else FutureWeatherRequestV2(
+                    station_id=sid,
+                    source=source.nwp_source,
+                    binding_fingerprint=fingerprint,
+                    issue_time=issue_time,
+                    requirements=future_requirements,
+                    grid=grid,
+                    first_period_start=period_start,
+                    eligibility_cutoff=issue_time,
+                )
             )
         assignments[(sid, mid)] = AssignmentWeatherRequirement(
             past=past, future=future, ensemble_mode=mode
@@ -282,9 +338,10 @@ def prepare_weather_refresh(
         combined_past = (
             None
             if not pasts
-            else PastWeatherRequirement(
+            else _past_requirement(
+                grid=grid,
                 start=min(item.start for item in pasts),
-                end=issue_time,
+                end=period_start,
                 parameters=tuple(
                     sorted({name for item in pasts for name in item.parameters})
                 ),
@@ -293,17 +350,31 @@ def prepare_weather_refresh(
         requests = () if prior is None else prior.future_requests
         if future is not None and future not in requests:
             requests += (future,)
+        past_parameters = (
+            combined_past.parameters
+            if combined_past is not None
+            else LEGACY_WEATHER_PARAMETERS
+        )
+        past_fingerprint = (
+            operational_binding_fingerprint(
+                source,
+                ref,
+                parameters=past_parameters,
+                interval_qualification=qualification,
+            )
+            if grid is None
+            else operational_binding_fingerprint_v2(
+                source,
+                ref,
+                grid,
+                parameters=past_parameters,
+                interval_qualification=qualification,
+            )
+        )
         specs[sid] = StationWeatherRefresh(
             key=WeatherCacheKey(
                 station_id=sid,
-                binding_fingerprint=operational_binding_fingerprint(
-                    source,
-                    ref,
-                    parameters=combined_past.parameters
-                    if combined_past is not None
-                    else LEGACY_WEATHER_PARAMETERS,
-                    interval_qualification=qualification,
-                ),
+                binding_fingerprint=past_fingerprint,
             ),
             source=source,
             past_requirement=combined_past,
@@ -313,7 +384,9 @@ def prepare_weather_refresh(
             )
             + (
                 ()
-                if past is None or future is None or gap_config is None
+                if not isinstance(past, PastWeatherRequirement)
+                or future is None
+                or gap_config is None
                 else (
                     RetainedPastRequirement(
                         past=past,
@@ -329,7 +402,8 @@ def prepare_weather_refresh(
             )
             | (
                 frozenset({future.binding_fingerprint})
-                if past is not None
+                if grid is None
+                and past is not None
                 and future is not None
                 and all(req.member_ids == (0,) for req in future.requirements)
                 and future.binding_fingerprint
@@ -364,4 +438,19 @@ def prepare_weather_refresh(
         resolver=FrozenWeatherResolver(bindings=tuple(mappings.items())),
         projections=tuple(projections),
         refusal_messages=tuple(refusals),
+        grid=grid,
+    )
+
+
+def _past_requirement(
+    *,
+    grid: TimeGrid | None,
+    start: UtcDatetime,
+    end: UtcDatetime,
+    parameters: tuple[WeatherParameter, ...],
+) -> PastWeatherRequirement | PastWeatherRequirementV2:
+    if grid is None:
+        return PastWeatherRequirement(start=start, end=end, parameters=parameters)
+    return PastWeatherRequirementV2(
+        grid=grid, start=start, end=end, parameters=parameters
     )

@@ -907,9 +907,10 @@ def resolve_selected_weather_tracks(
                     None if isinstance(handoff, UnavailableCandidate) else handoff
                 )
                 if accepted is not None and (
-                    context is not None
-                    or members != frozenset({0})
-                    or not earliest_cycle <= accepted.resolved_cycle <= issue_time
+                    members != frozenset({0})
+                    or not earliest_cycle
+                    <= accepted.resolved_cycle
+                    <= (issue_time if context is None else context.eligibility_cutoff)
                     or any(
                         row.member_id != 0 or row.cycle_time != accepted.resolved_cycle
                         for rows in accepted.complete_station_records.values()
@@ -919,6 +920,7 @@ def resolve_selected_weather_tracks(
                         accepted.complete_station_records,
                         track=track,
                         issue_time=issue_time,
+                        context=context,
                     )
                     != max(value.value for value in track.fetch_horizons.values())
                 ):
