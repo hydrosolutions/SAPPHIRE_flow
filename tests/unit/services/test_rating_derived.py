@@ -1,6 +1,12 @@
+from __future__ import annotations
+
+import json
 from dataclasses import replace
 from datetime import timedelta
-from uuid import uuid4
+from enum import StrEnum, auto
+from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,6 +17,9 @@ from sapphire_flow.services.rating_derived import (
 from sapphire_flow.types.enums import QcStatus
 from sapphire_flow.types.rating_derived import NativeFeedCustody
 from tests.unit.services.test_provisional_discharge import NOW, inputs
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.rating_derived import RatingDerivedDischarge
 
 
 class TestRatingDerived:
@@ -244,3 +253,158 @@ class TestNativeCaptureDerivation:
                 at=NOW,
                 **kwargs,
             )
+
+
+class GoldenCase(StrEnum):
+    CUSTODY_VERIFIED = auto()
+    CUSTODY_ASSUMED = auto()
+    NATIVE_VERIFIED = auto()
+    NATIVE_ASSUMED = auto()
+    NONCANONICAL_ASSUMED = auto()
+    BELOW = auto()
+    ABOVE = auto()
+    RAW = auto()
+    QC_FAILED = auto()
+    MISSING = auto()
+    NAN = auto()
+    POSITIVE_INF = auto()
+    NEGATIVE_INF = auto()
+    NEGATIVE_DISCHARGE = auto()
+    INVALID_INTERPOLATION = auto()
+
+
+def golden_derivation(case: GoldenCase) -> RatingDerivedDischarge:
+    from sapphire_flow.types.enums import InterpolationMethod
+    from sapphire_flow.types.ids import (
+        ObservationId,
+        RatingCurveId,
+        RatingReferenceProofId,
+        StationId,
+        TenantId,
+    )
+    from sapphire_flow.types.native_capture import (
+        CanonicalProviderIdentity,
+        CapturedLevelReference,
+        CapturedSourceVersion,
+        CaptureId,
+        NativeCapture,
+    )
+    from sapphire_flow.types.rating_derived import NativeCaptureFeed
+    from sapphire_flow.types.rating_reference import (
+        AssumedCurveSnapshot,
+        curve_snapshot,
+        measurement_snapshot,
+    )
+    from tests.unit.types.test_rating_reference import assumed_reference
+
+    obs, curve, original_feed, reference = inputs()
+    curve = replace(
+        curve,
+        id=RatingCurveId(UUID(int=1)),
+        station_id=StationId(UUID(int=2)),
+        created_at=NOW,
+        points=[
+            {**point, "metadata": {"label": "synthetic café 雪", "checked": True}}
+            for point in curve.points
+        ],
+        interpolation=InterpolationMethod.LOG_LINEAR
+        if case is GoldenCase.INVALID_INTERPOLATION
+        else curve.interpolation,
+    )
+    values = {
+        GoldenCase.BELOW: 0.5,
+        GoldenCase.ABOVE: 3.0,
+        GoldenCase.NEGATIVE_DISCHARGE: -1.0,
+        GoldenCase.MISSING: None,
+        GoldenCase.NAN: float("nan"),
+        GoldenCase.POSITIVE_INF: float("inf"),
+        GoldenCase.NEGATIVE_INF: float("-inf"),
+    }
+    status = {
+        GoldenCase.RAW: QcStatus.RAW,
+        GoldenCase.QC_FAILED: QcStatus.QC_FAILED,
+        GoldenCase.MISSING: QcStatus.MISSING,
+    }.get(case, obs.qc_status)
+    obs = replace(
+        obs,
+        id=ObservationId(UUID(int=3)),
+        station_id=curve.station_id,
+        created_at=NOW,
+        value=values.get(case, obs.value),
+        qc_status=status,
+        qc_context_segment=7,
+        qc_flags=[]
+        if case is GoldenCase.RAW
+        else [replace(flag, detail="synthetic café 雪") for flag in obs.qc_flags],
+    )
+    custody = NativeFeedCustody(
+        tenant_id=TenantId(UUID(int=5)),
+        station_id=curve.station_id,
+        endpoint=original_feed.endpoint,
+        api_station_id=original_feed.api_station_id,
+        evidence_reference="synthetic custody",
+        start=NOW - timedelta(days=1),
+        end=NOW + timedelta(days=1),
+    )
+    reference = replace(
+        reference,
+        id=RatingReferenceProofId(UUID(int=6)),
+        tenant_id=custody.tenant_id,
+        station_id=curve.station_id,
+        rating_curve_id=curve.id,
+        curve=curve_snapshot(curve),
+    )
+    evidence = (
+        assumed_reference(reference)
+        if case
+        in {
+            GoldenCase.CUSTODY_ASSUMED,
+            GoldenCase.NATIVE_ASSUMED,
+            GoldenCase.NONCANONICAL_ASSUMED,
+        }
+        else reference
+    )
+    if case is GoldenCase.NONCANONICAL_ASSUMED:
+        evidence = replace(
+            assumed_reference(reference),
+            curve=AssumedCurveSnapshot(
+                content=json.dumps(json.loads(reference.curve.content), indent=1)
+            ),
+        )
+    feed: NativeFeedCustody | NativeCaptureFeed = custody
+    if case in {GoldenCase.NATIVE_VERIFIED, GoldenCase.NATIVE_ASSUMED}:
+        feed = NativeCaptureFeed(
+            capture=NativeCapture(
+                id=CaptureId(UUID(int=7)),
+                source_version=CapturedSourceVersion(
+                    observation_id=obs.id,
+                    station_id=obs.station_id,
+                    tenant_id=custody.tenant_id,
+                    measurement=measurement_snapshot(obs),
+                    provider=CanonicalProviderIdentity.parse(
+                        custody.endpoint, custody.api_station_id
+                    ),
+                    level_reference=CapturedLevelReference.GAUGE_ZERO,
+                ),
+            )
+        )
+    return derive_rating_sample(
+        obs,
+        curve,
+        file_id=UUID(int=8),
+        file_sha256="a" * 64,
+        delivered_on="2026-09-08",
+        feed=feed,
+        reference=evidence,
+        at=NOW,
+    )
+
+
+class TestFrozenRatingBytes:
+    @pytest.mark.parametrize("case", list(GoldenCase))
+    def test_pre_optimization_content_and_fingerprint(self, case: GoldenCase) -> None:
+        fixture = Path(__file__).parents[2] / "fixtures/rating_derivation_bytes.json"
+        golden = json.loads(fixture.read_text())["cases"][case]
+        result = golden_derivation(case)
+        assert result.content == golden["content"]
+        assert result.fingerprint == golden["fingerprint"]
