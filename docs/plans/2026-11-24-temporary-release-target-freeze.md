@@ -3,7 +3,7 @@ status: DRAFT
 ---
 # Temporary: stop requiring a release-target bump in every PR
 
-**Status:** DRAFT rev 2, 2026-11-24 (Claude and Codex round 1: both NEEDS CHANGES, folded). No plan ID yet (owner grants IDs). HIGH RISK under
+**Status:** DRAFT rev 3, 2026-11-24 (rounds 1 and 2: Claude and Codex both NEEDS CHANGES, folded; round 3 pending). No plan ID yet (owner grants IDs). HIGH RISK under
 `AGENTS.md` (release identity and CI). Needs owner approval and independent Claude and
 Codex reviews before it is marked READY. Nothing here is implemented.
 
@@ -26,130 +26,119 @@ published and deployed.
 Temporarily allow PRs to leave `RELEASE_TARGET` unchanged. Keep the target honest when it
 does change. Revert this rule when the owner declares the rapid-development phase over.
 
-## Proposed rule (dev phase)
-Define "the PR did not touch the target" as: head target == merge-base target (the target
-on the branch point), not head == current base. For a non-docs PR the lint check passes if
-1. **the PR did not touch the target** and the tested merge target equals the base target
-   (normal case; also covers a branch that went stale because a bump PR landed on main
-   after it was cut: head X, merge X+1 passes), or
-2. **the PR bumped by exactly one patch** over the base and the merge target equals the head
-   target (existing arithmetic, used for deliberate bumps).
+## Change 1 (this plan's implementation PR): the target rule
+Let A = target at the merge-base, B = target at the tested base (merge first parent),
+H = head target, M = merged target. "Untouched" means H == A (not H == B).
+For a non-docs PR, lint passes if
+1. **untouched** (H == A) and M == B (normal case; also a branch gone stale because a bump
+   landed on main after it was cut: A = H = X, B = M = X+1), or
+2. **bumped exactly one patch over the tested base** (H == B+1) and M == H (deliberate bump).
 
-Still fails: head more than +1 over the tested base, a decrease relative to the merge-base,
-a malformed file, a changed major/minor, a merge target that matches neither case,
-**and a PR that already bumped after another bump landed** (merge-base X, head X+1, base
-X+1: "touched" but not base+1). That last case is deliberate: the message tells the author to
-drop the bump commit. It is the common freeze-phase case (every open PR that already bumps
-goes red once another bump lands, it does not merely conflict), and `test_release_target.py:595-610`
-already pins this rejection; keep it. Edge: merge-base X, base X+1, head X+2 passes rule 2
-(arithmetic is relative to the tested base).
-Merge-base handling: use `merge-base --all` as at release_target.py:234; zero or more than one
-base fails closed; a missing or invalid target at the merge-base fails closed. "Decrease" is
-head < merge-base target; rule-2 arithmetic uses the tested base (first parent). The docs-only exemption is
-unchanged. (Review finding B1: comparing head to the current base alone would only move
-the conflict from every PR to every release, because a stale branch after a bump would fail
-the existing "merge target differs from PR head target" check.)
+Truth table (A, B, H, M; major/minor unchanged):
 
-Release publication is unchanged. `tools/release_identity.py publish` still requires the
-requested version to equal `RELEASE_TARGET` at the source commit (release_identity.py:939)
-and to be greater than the current release state. So before each release a small bump PR
-lands on main. Agents prepare it; the owner merges and publishes (AGENTS.md). This moves
-the cost from every PR to every release.
+| Case | A | B | H | M | Result |
+|---|---|---|---|---|---|
+| Unchanged | X | X | X | X | pass (1) |
+| Base+1 | X | X | X+1 | X+1 | pass (2) |
+| Stale branch after a bump | X | X+1 | X | X+1 | pass (1) |
+| Two PRs both bumped | X | X+1 | X+1 | X+1 | **fail**: drop the bump commit |
+| Base+2 | X | X | X+2 | X+2 | fail |
+| Decrease (H < A) | X | X | X-1 | X-1 | fail |
+| Malformed, major/minor change, M matches neither | - | - | - | - | fail |
+| Zero or more than one merge-base (`merge-base --all`, release_target.py:234) | - | - | - | - | fail |
+| Missing or invalid target at the merge-base | - | - | - | - | fail (see below) |
 
-## Second change (SEPARATE PR, owner decides; higher risk): stop the stale-base race
-Evidence still owed before this is justified: for #637 record event base/head, `github.sha`,
-checkout SHA and the actual merge parents. Main advancing alone does not change the parents of
-an already created merge commit; the cause is unproven.
-`check_pr` currently requires the test merge to have parents exactly `[event base, head]`
-(release_target.py:226-232). When main moves between the PR event and the CI start, the
-event base is stale and lint fails with "event merge must have exactly base/head parents
-in order" although nothing is wrong (seen on #637, 2026-11-24).
+The "two bumped" row is deliberate and common: every open PR that already bumps goes red the
+moment another bump lands (it does not merely conflict). `test_release_target.py:595-610`
+already pins this; keep it. A = X, B = X+1, H = X+2 would pass rule 2 on paper but cannot be
+merged by git (both sides edit the same line); treat as unreachable.
 
-Proposal: require the merge to have exactly two parents with `parents[2] == head_sha`, and
-use the merge's own first parent as the base everywhere `base_sha` is used in `check_pr`
-(:222 object check, :226-229, :234 merge-base, :242 and :244 prose exemption, :249 via
-`next_target`). `HEAD == merge_sha` and the commit-object checks stay. The `--base-sha`
-CLI argument becomes optional and ignored in this mode, so `ci.yml:81` and
-`tools/private_verification_gates.sh:195` stay unchanged
-(`test_release_identity_workflow_policy.py:34-40` pins that command line). The base needs
-no "is on main" check: `pull_request` is limited to `branches: [main]` (ci.yml:6-7).
-The PR author cannot forge `github.sha`, so the practical risk is low; the owner still
-reviews this loosening explicitly.
-Trust boundary: the first parent is only internally consistent; nothing proves it is on main
-(`ci.yml:6-7` is caller provenance, not ancestry).
-**This change alone does not fix the race.** Three more consumers use the event base and must be
-in scope or the claim limited to one of four failure sources: `tools/check_map_contract_version.py`
-(gates.sh:197, ci.yml:102), and `tools/private_verification.py:296-298` (independently requires
-exact `[base, head]` parents; binding records the event base at :307, exports it at :448).
-The private-verification binding is an admission/evidence boundary; do not change it silently.
-Recommendation: land change 1 only; do change 2 after the owner sees the #637 evidence.
+Today multiple or zero merge-bases only disable the docs exemption, and a bump with a missing
+merge-base target still passes by arithmetic (release_target.py:239-252). The new rule makes
+both hard failures. `next_target` (:89-96) tolerates a missing base target only at
+`BOOTSTRAP_BASE_SHA`; keep that exception, otherwise a missing A is fatal. Tests for each.
+The docs-only exemption is unchanged (strict mode); in dev mode it is subsumed by rules 1 and 2.
 
-## Scope (files)
-- `tools/release_target.py`: new rule and first-parent base; a module constant
-  `DEV_PHASE_ALLOW_UNCHANGED_TARGET = True` guards it so reverting is one line.
-- `tests/unit/tools/test_release_target.py`: rewrite the eight `match="exactly once"`
-  cases (lines 135, 432, 457, 487, 496, 547, 561, 609); under the new rule most of those
-  PRs pass. "Existing tests unchanged" is false for this file. Also newly accepted
-  by the unchanged rule: `src/merge-only.py` case (:509-521) and, if the base arg is ignored,
-  the short-base-SHA case (:577-593); `test_concurrent_base_cannot_hide_pr_code_change` (:550),
-  `..._target_edit` (:595) and the rename/nonregular-file cases (:451/:461/:525) guard security
-  properties and must still fail. Keep strict-mode copies with the constant `False`. Recheck
-  `test_reversed_parents_refuse` (:77). Disabling the constant restores mandatory base
-  validation and exact event parents.
-- `tests/unit/tooling/test_workflow_policy_coherence.py`:42-60 asserts exact `cicd.md`
-  sentences; update with the paragraph.
-- `docs/standards/cicd.md`: lines ~562-564 and ~579-581 (exact event parents, old arithmetic), the paragraph "Each non-docs PR advances ..." (~545-548), the
-  "CI action-pin updates" text (:15-19), and the owner pre-merge checklist (~568-588,
-  including "owner must prevent same-target parallel landings", which is now the norm).
-- Also check `test_release_identity_workflow_policy.py:68-72` (greps release_target.py text).
-  After exit, delete the constant; a dead flag is a standing loosening.
-- `docs/plans/521-pr-release-target.md`: one-line pointer to this plan.
-- No change to `.github/workflows/ci.yml`, so `WORKFLOW_SHA256` does not move.
-- Out of scope: `WORKFLOW_SHA256` automation, release publication, branch protection,
-  merge queue, package versions. **This plan does not remove the hand-maintained
-  `WORKFLOW_SHA256` step for workflow or Dependabot pin PRs.** Only the release-number
-  half of that pain goes away.
+Accepted risk, stated: in dev mode nothing requires a code-changing PR to carry any bump.
+Workflow-code and Dependabot pin PRs no longer need a bump either; they still need the
+hand-made `WORKFLOW_SHA256` edit (not removed by this plan, `tools/ci_attest.py:122`).
 
-## Tests (red first)
-- unchanged target passes; base+1 passes; base+2 fails; decrease vs merge-base fails;
-  malformed fails; head target differs from merge target (when bumped) fails.
-- stale branch after a bump landed on main (head X, merge X+1) passes.
-- two PRs both bump +1: the second one's head equals the new base and passes only as
-  "untouched"; document the effect.
-- merge with 3 or more parents fails; `parents[2] != head` fails.
-- docs-only PR with unchanged target still passes; the prose exemption uses the first parent.
-- stale event base: merge parents `[newer main, head]` passes with the CLI base ignored.
-- constant `False` (monkeypatch) restores the exact-once rule, including the stale-parent
-  case.
-- existing release-identity and staging tests still pass.
+Release publication is unchanged: `tools/release_identity.py publish` needs a version equal to
+`RELEASE_TARGET` at the source (release_identity.py:938-941) and above the release state. It
+does not require a fresh bump if an advanced, unpublished target already exists, and an earlier
+same-source/version acknowledgment returns before the target check (:919-923). Before a release
+the owner checks the target is above the release state; if not, a small bump PR lands first.
+Agents prepare it; the owner merges and publishes (AGENTS.md). Cost moves from every PR to
+every release.
+
+Rollout: merge this change first, then tell authors of open bumped PRs to drop the bump commit.
+
+### Scope (change 1)
+- `tools/release_target.py`: rule above; constant `DEV_PHASE_ALLOW_UNCHANGED_TARGET = True`.
+  `False` restores the current exact-once arithmetic, mandatory `--base-sha` and exact event
+  parents unchanged (change 1 does not touch the parent check).
+- `tests/unit/tools/test_release_target.py`: parametrize the existing cases on the constant, so
+  the strict run keeps today's assertions unchanged; add dev-mode expectations where they
+  differ. Of the eight `exactly once` cases (135, 432, 457, 487, 496, 547, 561, 609), six pass in
+  dev mode (135, 432, 457, 487, 547, 561); 496 (1.2.2 -> 1.2.5) and 609 still fail with new
+  messages. Also pass in dev mode because the target is untouched: `test_concurrent_base_cannot_hide_pr_code_change`
+  (:550), the rename and nonregular-file cases (:451/:461/:525), the `src/merge-only.py` case
+  (:509-521); these are NOT security refusals in dev mode, only in strict mode. Still refused in
+  dev mode: :595 and the RELEASE_TARGET parametrization of :510. `test_reversed_parents_refuse`
+  (:77) is unchanged.
+- `tests/unit/tooling/test_workflow_policy_coherence.py:42-60`: pins `cicd.md:545-546` and the
+  "head and merge targets must agree and equal base patch+1" sentence; update both with the
+  paragraph. Also check `test_release_identity_workflow_policy.py:68-72` (greps
+  release_target.py text for any new constant).
+- `docs/standards/cicd.md`: paragraph :545-548; pin-update text :15-19 (a pin PR now needs only
+  the `WORKFLOW_SHA256` edit); :563 and :581; owner checklist from :584 (the "prevent same-target
+  parallel landings" rule is now the norm; add the pre-release target check).
+- `docs/plans/521-pr-release-target.md`: one-line pointer.
+- No `.github/workflows/ci.yml` change, so `WORKFLOW_SHA256` does not move.
+- Out of scope: `WORKFLOW_SHA256` automation, publication, branch protection, merge queue,
+  package versions, anything in change 2.
+
+### Tests (red first, change 1)
+- Every truth-table row, including both fail-closed merge-base rows and the bootstrap exception.
+- Unchanged workflow-code PR (`ci.yml` edit, target untouched) passes.
+- Constant `False` (monkeypatch) restores every existing assertion.
+- Same-target / different-source negative cases for the downstream readers (below).
+- Existing release-identity and staging tests still pass; full suite before merge.
+
+## Change 2 (SEPARATE PR, owner decides, higher risk): stale-base race
+Not part of change 1. Recommendation: do not start until the owner has seen the #637 evidence.
+Evidence owed: event base/head, `github.sha`, checkout SHA and actual merge parents for #637.
+Main advancing does not change the parents of an already created merge commit; the cause is
+unproven. Today `check_pr` requires parents exactly `[event base, head]` (release_target.py:226-232).
+
+Proposal if justified: require exactly two parents with `parents[2] == head_sha`, use the merge's
+first parent as the base everywhere `base_sha` is used in `check_pr` (:222, :226-229, :234,
+:242/:244, :249); keep `HEAD == merge_sha` and the commit-object checks; `--base-sha` optional
+and ignored (so `ci.yml:81` and `private_verification_gates.sh:195` stay unchanged, pinned by
+`test_release_identity_workflow_policy.py:34-40`). Trust boundary: the first parent is only
+internally consistent; nothing proves it is on main (`ci.yml:6-7` is caller provenance, not
+ancestry).
+It does not fix the race alone. Also consuming the event base: `tools/check_map_contract_version.py`
+(gates.sh:197, ci.yml:102) and `tools/private_verification.py:296-298` (exact `[base, head]`
+parents; binding at :307, exported at :448; same text in `cicd.md:2032`). The private-verification
+binding is an admission/evidence boundary and must not change silently. Change 2 would also
+carry its own tests: `parents[2] != head` and 3+ parents fail; stale event base passes with the
+CLI base ignored; short-base-SHA case (:577-593); the strict-mode constant restores exact parents.
 
 ## Risks
-- **Two PRs ship with the same version.** Harmless in development. `publish`
-  (release_identity.py:919-941) needs a version above the release state and equal to the
-  source target; reuse of a published version for a different source fails. It does NOT
-  require a fresh bump if an advanced, unpublished target already exists, and an earlier
-  same-source/version acknowledgment returns before the target check (:919-923).
-- **Forgotten bump before a release.** Caught only when the target is not above the release
+- **Two PRs ship with the same version.** Harmless in development; see publication above.
+- **Forgotten bump before a release.** Caught only if the target is not above the release
   state; the owner checklist must say so.
-- **Weaker parent check.** Mitigated by keeping `HEAD == merge_sha`, the head parent
-  check and commit-object checks. Owner reviews this item specifically.
-- **Downstream readers of the target.** `deployment_rehearsal.py:217` and
-  `deployment_smoke.py:229` use `RELEASE_TARGET` as the expected release version, and
-  `staging_release.py:207` compares it to the binding. With many commits sharing one
-  target, the extra protection is `SAPPHIRE_SOURCE_REVISION` plus staging's release-state, tag-object and
-  peeled-source checks (`staging_release.py:180-209`); `qualify_image_exporter.py:170-178` is a
-  fourth reader. Add same-target/different-source negative tests for these.
-- **Open PRs that already bump.** Valid only until another bump lands; then lint fails
-  (see rule) and the author drops the bump commit.
+- **Downstream readers of the target.** `deployment_rehearsal.py:217` and `deployment_smoke.py:229`
+  use it as the expected release version; `staging_release.py:207` compares it to the binding;
+  `qualify_image_exporter.py:170-178` binds it to a canonical release tag and source. With many
+  commits sharing one target, the distinguishing protection is `SAPPHIRE_SOURCE_REVISION` plus
+  staging's release-state, tag-object and peeled-source checks (`staging_release.py:180-209`).
+  A stale image with the same target passes version checks; add same-target/different-source
+  negative tests.
+- **Open PRs that already bump** fail lint once another bump lands (see rollout).
 
 ## Exit
-Revert when the owner says so: set the constant to `False` (or delete the branch of
-logic), restore the `cicd.md` paragraph and the exact-once tests and the policy-coherence
-strings, and run the full suite (required before merge). Record the date in
-this plan and move it to `archive/`.
-
-## Open questions for the owner
-1. Is landing a small bump PR before each release acceptable?
-2. Is the parent-check relaxation acceptable, or keep it strict and only allow the
-   unchanged target?
-3. Add a helper that recomputes `WORKFLOW_SHA256` (separate plan), or leave it?
+Revert when the owner says so: delete the constant and the dev-mode branch (a dead flag is a
+standing loosening), restore the `cicd.md` paragraph, the pin-update text and the policy-coherence
+strings, run the full suite. Record the date here and move the plan to `archive/`.
