@@ -444,16 +444,7 @@ class TestMergedDischargeGapDeclaration:
         assert model.config_hash == original_hash
 
 
-class _KnownUpstreamTimezoneError(RuntimeError):
-    pass
-
-
-class TestKnownUpstreamRejectionReporting:
-    @pytest.mark.xfail(
-        strict=True,
-        raises=_KnownUpstreamTimezoneError,
-        reason="AquaCast 0.1.378 total-rejection report compares naive and aware times",
-    )
+class TestUpstreamRejectionReporting:
     def test_total_rejection_report_accepts_fi_utc_issue_time(self) -> None:
         from datetime import UTC, datetime
 
@@ -474,18 +465,5 @@ class TestKnownUpstreamRejectionReporting:
             )
         }
 
-        try:
-            report = _issue_report(predicted, config, [issue], [issue])
-        except TypeError as exc:
-            traceback = exc.__traceback__
-            while traceback is not None and traceback.tb_next is not None:
-                traceback = traceback.tb_next
-            if (
-                str(exc) != "can't compare offset-naive and offset-aware datetimes"
-                or traceback is None
-                or traceback.tb_frame.f_code is not _issue_report.__code__
-            ):
-                raise
-            raise _KnownUpstreamTimezoneError(str(exc)) from exc
-
+        report = _issue_report(predicted, config, [issue], [issue])
         assert "available" in report

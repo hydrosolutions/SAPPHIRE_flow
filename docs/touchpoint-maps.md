@@ -229,6 +229,12 @@ once, retain inner total failures, and add explicit no-data `FAILURE` entries wi
 variable requiring conversion. Training/retraining remain strict and never silently
 train on a reduced station set. Other configuration/programming errors propagate.
 
+FI time-grid declarations survive shim conversion: preserve each requirement's
+anchor and the delivered ModelInputs grid, including when invalid-area members
+are removed. Unit conversion must not change period starts or lose their meaning.
+Test train/retrain/predict/hindcast at the shim boundary. This preservation does
+not establish operational assembly, artifact compatibility or live cutover.
+
 The supported locked daily CMAL path has one served cadence/horizon/offset per
 target, including relaxed horizons and batch hindcasts. Failed inbound members use
 that target's unambiguous returned metadata, canonical units, and no sibling flags

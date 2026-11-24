@@ -95,3 +95,29 @@ other latent upstream failure paths are not proved safe. A strict expected-failu
 test records the reporting defect and must be revisited when the upstream pin
 changes. A new failure on the actual default Nepal SAP path or a numerical/config
 regression still blocks adoption. No upstream issue was published by this change.
+
+## Start-stamped CMAL qualification (24 November)
+
+The isolated replacement-model branch pins Aquacast 0.1.396 at
+`fc772226703940f26d29d8e62a5c39175851b2f8` and merged FI 0.2.10 at
+`c1faa2e70b3832502efc5c22c99274635c027bb4`. Aquacast's dependency metadata
+still requests FI 0.1.20; the explicit uv override resolves both consumers to the
+same tested FI revision. The adapter's exact-version gate must match that pin.
+The owner requested no further Aquacast iteration. FI #23 now reserves the
+existing nullable integer `available_at_us` column. The shim preserves its values
+and dtype during unit conversion and value-column renaming. End-to-end adoption
+remains a release gate: observation availability must not be silently lost or treated as
+a physical value by unit conversion. Grid metadata preservation alone does not
+qualify the new model or authorize a live worker upgrade. Existing Rich/Torch
+compatibility exceptions remain in force.
+
+The prior rejection-report timezone defect is fixed in this revision. Its test
+is now an ordinary regression test rather than an expected failure. The actual
+23 November checkpoint loads with restricted Torch deserialization and declares
+a daily START grid at 18:00 UTC; its discharge tolerance is 365 missing days,
+while each of its four weather channels permits zero missing days. These are
+construction/contract checks, not proof of operational forecasts or model skill.
+
+FI 0.2.10 rejects duplicate output timestamps during construction. The adapter's
+independent valid-time count regression therefore injects a malformed copy after
+construction, retaining coverage of SAP's defensive check without relaxing FI.
