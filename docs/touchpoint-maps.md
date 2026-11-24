@@ -2920,10 +2920,10 @@ hard failures. Future weather must never be padded by this target alignment.
 
 ### Multi-issue group hindcasts
 
-`services/hindcast.py` buffers up to seven prepared issues for models implementing
+`services/hindcast.py` buffers a configurable number of prepared issues (default seven) for models implementing
 `BatchGroupHindcastModel` and advertising inner capability. Unsupported models and
 an explicit size of one retain per-issue prediction. Station-scoped hindcasts are
-unchanged. `flows/run_hindcast.py` exposes `issue_batch_size` (1..7); fine-tuning
+unchanged. `flows/run_hindcast.py` exposes `issue_batch_size` (any positive integer); fine-tuning
 receipts record the effective size alongside each hindcast run ID.
 
 `adapters/forecast_interface.py` applies the NaN gate per station/issue, partitions
@@ -2939,3 +2939,12 @@ seed are repeatable, but quantiles need not be identical across sizes. Preserve
 batch size and run identities when comparing scientific results. Full-period
 input prefetch remains; only the additional prepared-issue buffer is bounded.
 See `docs/operations/batched-hindcast-qualification.md` for qualification limits.
+
+
+Availability metadata is per variable (`available_at_us:<parameter>`) through
+past-known FI projection, including training and group hindcasts. Unknown becomes
+nullable Int64 null; do not substitute `Observation.created_at`, forecast issue,
+or measurement time. Keep future-known series separate. Test absent/all-null and
+known metadata, sorted/null-preserving conversion, mixed batch schemas, and
+conflicting overlaps in the FI adapter tests. Larger batch requests (including
+years of daily issues) retain the existing context and uniqueness guards.

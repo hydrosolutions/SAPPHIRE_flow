@@ -53,3 +53,24 @@ The leakage sample does not qualify other models' past-known channels. Capabilit
 support is an FI contract, not a substitute for deployment/model qualification.
 The adapter contains malformed cohort outputs and records per-member failures;
 this does not silently retry or convert a failed output into a successful one.
+
+
+## Testing controls after dependency update
+
+`run_hindcast_flow(issue_batch_size=...)` accepts any positive integer: for
+example 366 daily issues, or 1827 to cover a five-year daily period with room for
+leap days. The default remains seven; it was a conservative buffer choice, not a
+measured optimum or an Aquacast limit. A smaller final batch is flushed normally.
+Larger requests keep more overlapping prepared windows and outputs in memory;
+no full-network multi-year memory/runtime qualification has been performed.
+
+Aquacast 0.1.396 splits observed-input batches into per-issue calls before masking.
+A real seven-date run confirmed advancing issue cutoffs and admitted observations.
+The earlier shared-cutoff suspicion was incorrect; no upstream defect is claimed.
+Do not assume large outer batches imply vectorized CMAL inference or a speedup.
+
+For testing, unknown availability is explicitly null at the FI boundary. Supplied
+per-variable availability is preserved; no period-closure assumption is generated.
+Aquacast currently masks observations with unknown availability and may return
+DATA_AVAILABILITY warnings. Such outputs do not qualify full-input model skill.
+No production deployment or replacement hindcast run is part of this change.

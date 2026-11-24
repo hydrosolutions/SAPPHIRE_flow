@@ -92,8 +92,8 @@ DEFAULT_HINDCAST_ISSUE_BATCH_SIZE = 7
 def resolve_hindcast_issue_batch_size(
     model: object, requested: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE
 ) -> int:
-    if isinstance(requested, bool) or not 1 <= requested <= 7:
-        raise ValueError("issue_batch_size must be within 1..7")
+    if type(requested) is not int or requested < 1:
+        raise ValueError("issue_batch_size must be a positive integer")
     if isinstance(model, BatchGroupHindcastModel) and model.supports_batch_hindcast:
         return requested
     return 1

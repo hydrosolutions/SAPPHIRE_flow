@@ -442,6 +442,17 @@ def _station_variables_for_single_station(
     )
 
 
+def _availability_expr(frame: pl.DataFrame, column: str) -> pl.Expr:
+    dtype = frame.schema.get(column)
+    if dtype is None or dtype == pl.Null:
+        return pl.lit(None, dtype=pl.Int64).alias(column)
+    if not dtype.is_integer():
+        raise ConfigurationError(
+            f"{column} must contain integer UTC epoch microseconds"
+        )
+    return pl.col(column).cast(pl.Int64)
+
+
 def _merge_hindcast_frames(
     cohort: list[GroupModelInputs], selected: list[str], name: str, keys: list[str]
 ) -> pl.DataFrame:
@@ -451,6 +462,24 @@ def _merge_hindcast_frames(
         if not isinstance(frame, pl.DataFrame):
             raise ConfigurationError(f"missing hindcast frame: {name}")
         frames.append(frame.filter(pl.col("station_id").is_in(selected)))
+    availability_columns = sorted(
+        {
+            c
+            for frame in frames
+            for c in frame.columns
+            if c.startswith("available_at_us:")
+        }
+    )
+    if availability_columns:
+        frames = [
+            frame.with_columns(
+                _availability_expr(frame, c) for c in availability_columns
+            ).select(
+                *[c for c in frame.columns if c not in availability_columns],
+                *availability_columns,
+            )
+            for frame in frames
+        ]
     merged = pl.concat(frames, how="vertical_relaxed").unique()
     if merged.is_empty():
         return merged
@@ -1490,8 +1519,8 @@ class ForecastInterfaceAdapter:
             self._model, FIBatchHindcastModel
         ):
             raise ConfigurationError("wrapped model does not support FI batch hindcast")
-        if not 1 <= len(inputs) <= 7:
-            raise ValueError("hindcast batch requires 1..7 issues")
+        if not inputs:
+            raise ValueError("hindcast batch requires at least one issue")
         inputs = tuple(
             replace(item, issue_time=ensure_utc(item.issue_time)) for item in inputs
         )
@@ -1923,6 +1952,7 @@ class ForecastInterfaceAdapter:
             ),
             name=name,
             unit=variable.unit,
+            availability_column=f"available_at_us:{name}",
         )
 
     def _input_series_from_frame(
@@ -1931,12 +1961,18 @@ class ForecastInterfaceAdapter:
         frame: pl.DataFrame,
         name: str,
         unit: Unit,
+        availability_column: str | None = None,
     ) -> InputSeries:
         if "timestamp" not in frame.columns:
             raise ConfigurationError(
                 f"missing timestamp column for ForecastInterface input {name!r}"
             )
-        data = frame.select("timestamp", name).rename({"timestamp": "datetime"})
+        columns: list[str | pl.Expr] = ["timestamp", name]
+        if availability_column is not None:
+            columns.append(
+                _availability_expr(frame, availability_column).alias("available_at_us")
+            )
+        data = frame.select(columns).rename({"timestamp": "datetime"})
         return InputSeries(unit=unit, data=data.sort("datetime"))
 
     def _frame_with_column(
