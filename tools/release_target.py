@@ -23,6 +23,10 @@ from release_identity import (  # noqa: E402
     require_full_sha,
 )
 
+# TEMPORARY (rapid-development phase): allow PRs to leave RELEASE_TARGET unchanged.
+# Exit: delete this constant and the dev branch in check_pr; see
+# docs/plans/2026-11-24-temporary-release-target-freeze.md.
+DEV_PHASE_ALLOW_UNCHANGED_TARGET = True
 BOOTSTRAP_BASE_SHA = "259f16e1f32dec0379f4ce9d2175657f944a2dab"
 BOOTSTRAP_TARGET = Version(0, 1, 1068)
 TOOL_REQUIREMENT = "bump-my-version==1.6.0"
@@ -216,6 +220,38 @@ def prose_diff(root: Path, before: str, after: str) -> bool:
     return True
 
 
+def check_dev_phase_target(
+    root: Path, base_sha: str, head_sha: str, merge_sha: str, head: Version
+) -> None:
+    """Dev rule: untouched (H == A, M == B) or exactly base+1 (H == B+1, M == H)."""
+    ancestors = git(
+        ["merge-base", "--all", base_sha, head_sha], cwd=root, harden=True
+    ).split()
+    if len(ancestors) != 1:
+        raise ReleaseIdentityError("PR needs exactly one merge-base with tested base")
+    ancestor = release_target_blob(ancestors[0], cwd=root)
+    if ancestor is None:
+        raise ReleaseIdentityError("release target missing at merge-base")
+    try:
+        origin = parse_release_target(ancestor)
+    except ReleaseIdentityError as exc:
+        raise ReleaseIdentityError("release target invalid at merge-base") from exc
+    base = read_release_target(base_sha, cwd=root)
+    merged = read_release_target(merge_sha, cwd=root)
+    if head == origin and merged == base:
+        return
+    if head == next_target(root, base_sha) and merged == head:
+        return
+    if head == base and head != origin:
+        raise ReleaseIdentityError(
+            "release target already advanced on base: drop the bump commit"
+        )
+    raise ReleaseIdentityError(
+        "release target must stay unchanged from the merge-base "
+        "or advance the tested base by one patch"
+    )
+
+
 def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
     for sha in (base_sha, head_sha, merge_sha):
         require_full_sha(sha)
@@ -231,6 +267,12 @@ def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
             "event merge must have exactly base/head parents in order"
         )
     head = read_release_target(head_sha, cwd=root)
+    if (
+        DEV_PHASE_ALLOW_UNCHANGED_TARGET
+        and release_target_blob(base_sha, cwd=root) is not None
+    ):
+        check_dev_phase_target(root, base_sha, head_sha, merge_sha, head)
+        return
     ancestors = git(
         ["merge-base", "--all", base_sha, head_sha], cwd=root, harden=True
     ).split()

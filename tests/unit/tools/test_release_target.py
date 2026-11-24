@@ -17,6 +17,12 @@ target = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(target)
 
 
+@pytest.fixture(autouse=True)
+def strict_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Existing cases pin the strict rule; TestDevPhase opts into dev mode.
+    monkeypatch.setattr(target, "DEV_PHASE_ALLOW_UNCHANGED_TARGET", False)
+
+
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
@@ -608,3 +614,231 @@ class TestDocsOnlyPr:
         git(tmp_path, "merge", "--no-ff", "prose", "-m", "merge")
         with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+
+def scenario(
+    root: Path, a: str, b: str, h: str, *, path: str = "src.py"
+) -> tuple[str, str, str]:
+    """Target A at the merge-base, B on main, H on a PR that also edits `path`."""
+    repository(root, f"{a}\n".encode())
+    git(root, "checkout", "-b", "pr")
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text("code\n")
+    (root / "RELEASE_TARGET").write_bytes(f"{h}\n".encode())
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "pr")
+    head = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "main")
+    (root / "other").write_text("concurrent\n")
+    (root / "RELEASE_TARGET").write_bytes(f"{b}\n".encode())
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "base advance")
+    base = git(root, "rev-parse", "HEAD")
+    git(root, "merge", "--no-ff", "pr", "-m", "tested merge")
+    return base, head, git(root, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def dev_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(target, "DEV_PHASE_ALLOW_UNCHANGED_TARGET", True)
+
+
+@pytest.mark.usefixtures("dev_mode")
+class TestDevPhase:
+    @pytest.mark.parametrize(
+        ("a", "b", "h"),
+        [
+            ("1.2.3", "1.2.3", "1.2.3"),  # unchanged
+            ("1.2.3", "1.2.3", "1.2.4"),  # base+1
+            ("1.2.3", "1.2.4", "1.2.3"),  # stale branch after a bump
+        ],
+    )
+    def test_passing_rows(self, tmp_path: Path, a: str, b: str, h: str) -> None:
+        target.check_pr(tmp_path, *scenario(tmp_path, a, b, h))
+
+    @pytest.mark.parametrize(
+        ("a", "b", "h", "message"),
+        [
+            ("1.2.3", "1.2.4", "1.2.4", "drop the bump"),  # two PRs both bumped
+            ("1.2.3", "1.2.3", "1.2.5", "release target"),  # base+2
+            ("1.2.3", "1.2.3", "1.2.2", "release target"),  # decrease
+            ("1.2.3", "1.2.3", "1.3.4", "release target"),  # minor change
+            ("1.2.3", "1.2.3", "2.2.4", "release target"),  # major change
+        ],
+    )
+    def test_failing_rows(
+        self, tmp_path: Path, a: str, b: str, h: str, message: str
+    ) -> None:
+        pair = scenario(tmp_path, a, b, h)
+        with pytest.raises(target.ReleaseIdentityError, match=message):
+            target.check_pr(tmp_path, *pair)
+
+    def test_malformed_head_refuses(self, tmp_path: Path) -> None:
+        base, _, _ = scenario(tmp_path, "1.2.3", "1.2.3", "1.2.3")
+        git(tmp_path, "checkout", "pr")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4")
+        git(tmp_path, "commit", "-am", "malformed")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        git(tmp_path, "reset", "--hard", base)
+        git(tmp_path, "merge", "--no-ff", "pr", "-m", "merge")
+        with pytest.raises(target.ReleaseIdentityError, match="canonical"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("merged", ["1.2.3", "1.2.5"])
+    def test_merge_target_matching_neither_refuses(
+        self, tmp_path: Path, merged: str
+    ) -> None:
+        base, head, _ = scenario(tmp_path, "1.2.3", "1.2.3", "1.2.4")
+        (tmp_path / "RELEASE_TARGET").write_bytes(f"{merged}\n".encode())
+        git(tmp_path, "commit", "-am", "alter merge", "--amend")
+        with pytest.raises(target.ReleaseIdentityError, match="release target"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_stale_branch_merge_target_must_equal_base(self, tmp_path: Path) -> None:
+        base, head, _ = scenario(tmp_path, "1.2.3", "1.2.4", "1.2.3")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        git(tmp_path, "commit", "-am", "revert target", "--amend")
+        with pytest.raises(target.ReleaseIdentityError, match="release target"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_multiple_merge_bases_refuse(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        for name in ("x", "y"):
+            git(tmp_path, "checkout", "-b", name, "main")
+            (tmp_path / name).write_text(name)
+            git(tmp_path, "add", name)
+            git(tmp_path, "commit", "-m", name)
+        git(tmp_path, "checkout", "-b", "x2", "x")
+        git(tmp_path, "merge", "--no-ff", "y", "-m", "x2")
+        git(tmp_path, "checkout", "-b", "y2", "y")
+        git(tmp_path, "merge", "--no-ff", "x", "-m", "y2")
+        base = git(tmp_path, "rev-parse", "x2")
+        head = git(tmp_path, "rev-parse", "y2")
+        git(tmp_path, "checkout", "x2")
+        git(tmp_path, "merge", "--no-ff", "y2", "-m", "tested merge")
+        with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_no_merge_base_refuses(self, tmp_path: Path) -> None:
+        base = repository(tmp_path)
+        git(tmp_path, "checkout", "--orphan", "orphan")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "orphan")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-f", "main")
+        git(
+            tmp_path,
+            "merge",
+            "--no-ff",
+            "--allow-unrelated-histories",
+            "orphan",
+            "-m",
+            "tested merge",
+        )
+        with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("raw", [None, b"garbage"])
+    def test_missing_or_invalid_merge_base_target_refuses(
+        self, tmp_path: Path, raw: bytes | None
+    ) -> None:
+        repository(tmp_path)
+        if raw is None:
+            git(tmp_path, "rm", "RELEASE_TARGET")
+        else:
+            (tmp_path / "RELEASE_TARGET").write_bytes(raw)
+        git(tmp_path, "commit", "-am", "bad ancestor target")
+        git(tmp_path, "checkout", "-b", "pr")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "pr")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "base")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "pr", "-m", "tested merge")
+        with pytest.raises(target.ReleaseIdentityError, match="merge-base"):
+            target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize(
+        ("raw", "ok"), [(b"0.1.1068\n", True), (b"0.1.1069\n", False)]
+    )
+    def test_bootstrap_base_keeps_existing_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: bytes, ok: bool
+    ) -> None:
+        repository(tmp_path)
+        git(tmp_path, "rm", "RELEASE_TARGET")
+        git(tmp_path, "commit", "-m", "historical base")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        monkeypatch.setattr(target, "BOOTSTRAP_BASE_SHA", base)
+        git(tmp_path, "checkout", "-b", "pr")
+        (tmp_path / "RELEASE_TARGET").write_bytes(raw)
+        (tmp_path / "src.py").write_text("code\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "pr")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        git(tmp_path, "merge", "--no-ff", "pr", "-m", "tested merge")
+        merge = git(tmp_path, "rev-parse", "HEAD")
+        if ok:
+            target.check_pr(tmp_path, base, head, merge)
+        else:
+            with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+                target.check_pr(tmp_path, base, head, merge)
+
+    def test_workflow_edit_without_bump_passes(self, tmp_path: Path) -> None:
+        pair = scenario(
+            tmp_path, "1.2.3", "1.2.3", "1.2.3", path=".github/workflows/ci.yml"
+        )
+        target.check_pr(tmp_path, *pair)
+
+    def test_strict_mode_still_requires_bump(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pair = scenario(tmp_path, "1.2.3", "1.2.3", "1.2.3")
+        monkeypatch.setattr(target, "DEV_PHASE_ALLOW_UNCHANGED_TARGET", False)
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, *pair)
+
+    def test_strict_mode_ignores_missing_merge_base_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Strict mode keeps today's arithmetic: no new fail-closed merge-base check.
+        repository(tmp_path)
+        git(tmp_path, "rm", "RELEASE_TARGET")
+        git(tmp_path, "commit", "-m", "no target")
+        git(tmp_path, "checkout", "-b", "pr")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "pr")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.3\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "base")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "merge", "--no-ff", "pr", "-m", "tested merge", "-X", "theirs")
+        monkeypatch.setattr(target, "DEV_PHASE_ALLOW_UNCHANGED_TARGET", False)
+        target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    @pytest.mark.parametrize("raw", [b"1.2.5\n", b"1.3.4\n"])
+    def test_bad_arithmetic_still_refuses(self, tmp_path: Path, raw: bytes) -> None:
+        pair = merged_pr(tmp_path, raw)
+        with pytest.raises(target.ReleaseIdentityError, match="release target"):
+            target.check_pr(tmp_path, *pair)
+
+    def test_second_same_target_pr_passes_advanced_base(self, tmp_path: Path) -> None:
+        repository(tmp_path, b"1.2.4\n")
+        base = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-b", "second")
+        (tmp_path / "other").write_text("second PR\n")
+        git(tmp_path, "add", "other")
+        git(tmp_path, "commit", "-m", "same target")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        git(tmp_path, "merge", "--no-ff", "second", "-m", "second merge")
+        target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
