@@ -92,7 +92,7 @@ log = structlog.get_logger(__name__)
 
 T = TypeVar("T")
 
-SUPPORTED_FI_VERSION: str = "0.1.20"
+SUPPORTED_FI_VERSION: str = "0.2.10"
 # STATION artifacts are store-bound; FI key is fixed (1.10 gauge-code is GROUP-scoped).
 _STATION_SCOPE_KEY: str = "station"
 

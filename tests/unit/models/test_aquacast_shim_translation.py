@@ -437,6 +437,140 @@ def _shim_with_fake_inner(**fake_kwargs: Any) -> AquacastShim:
     return shim
 
 
+class TestTimeGridPreservation:
+    def test_declared_anchor_survives_unit_translation(self) -> None:
+        requirement = _native_requirement()
+        anchor = fi.TimeAnchor(origin=timedelta(hours=18), label=fi.PeriodLabel.START)
+        requirement = requirement.model_copy(
+            update={
+                "dynamic": {
+                    step: spec.model_copy(update={"anchor": anchor})
+                    for step, spec in requirement.dynamic.items()
+                }
+            }
+        )
+        translated = _shim_with_fake_inner(
+            input_requirement=requirement
+        ).input_requirement
+        assert translated.dynamic[_DAILY].anchor == anchor
+        assert translated.targets["discharge"].unit is fi.Unit.M3_PER_S
+
+    @pytest.mark.parametrize("method", ["train", "retrain", "predict", "hindcast"])
+    def test_delivered_grid_survives_conversion_and_member_filtering(
+        self, method: str
+    ) -> None:
+        grid = fi.TimeGrid(
+            step=_DAILY, origin=timedelta(hours=18), label=fi.PeriodLabel.START
+        )
+        frame = pl.DataFrame(
+            {"datetime": [_ISSUE + timedelta(hours=18)], "discharge": [10.0]}
+        )
+        station = fi.StationInputs(
+            static={"area": 864.0},
+            dynamic={
+                _DAILY: fi.SpatialInputs(
+                    data={
+                        fi.SpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputs(
+                            past_known={
+                                "aquacast": {
+                                    "discharge": fi.InputSeries(
+                                        unit=fi.Unit.M3_PER_S, data=frame
+                                    )
+                                }
+                            }
+                        )
+                    }
+                )
+            },
+        )
+        stations = {"healthy": station}
+        if method in {"predict", "hindcast"}:
+            stations["bad"] = station.model_copy(update={"static": {"area": 0.0}})
+        inputs = fi.ModelInputs(stations=stations, grid=grid)
+        native = _discharge_success({"healthy": 1.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        rng = Random(0)
+        if method == "train":
+            shim.train(inputs, config={}, rng=rng)
+        elif method == "retrain":
+            shim.retrain(object(), inputs, config={}, rng=rng)
+        elif method == "predict":
+            shim.predict(object(), inputs=inputs, issue_datetime=_ISSUE, rng=rng)
+        else:
+            shim.hindcast(object(), inputs=inputs, issue_datetimes=[_ISSUE], rng=rng)
+        calls = getattr(shim._inner, f"{method}_calls")  # noqa: SLF001 -- fake boundary
+        delivered = calls[0]["inputs"]
+        assert delivered.grid == grid
+        assert set(delivered.stations) == {"healthy"}
+        series = (
+            delivered.stations["healthy"]
+            .dynamic[_DAILY]
+            .data[fi.SpatialRepresentation.BASIN_AVERAGE]
+            .past_known["aquacast"]["discharge"]
+        )
+        assert series.unit is fi.Unit.MM_PER_DAY
+        assert series.data["discharge"].to_list() == pytest.approx([1.0])
+        assert series.data["datetime"].to_list() == frame["datetime"].to_list()
+
+
+class TestAvailabilityPreservation:
+    @pytest.mark.parametrize("method", ["train", "retrain", "predict", "hindcast"])
+    def test_availability_is_not_scaled_or_renamed_with_discharge(
+        self, method: str
+    ) -> None:
+        availability = pl.Series(
+            "available_at_us", [1735689600000000, None], dtype=pl.Int64
+        )
+        frame = pl.DataFrame(
+            {
+                "datetime": [_ISSUE - _DAILY, _ISSUE],
+                "value": [10.0, 20.0],
+                "available_at_us": availability,
+            }
+        )
+        station = fi.StationInputs(
+            static={"area": 864.0},
+            dynamic={
+                _DAILY: fi.SpatialInputs(
+                    data={
+                        fi.SpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputs(
+                            past_known={
+                                "aquacast": {
+                                    "discharge": fi.InputSeries(
+                                        unit=fi.Unit.M3_PER_S, data=frame
+                                    )
+                                }
+                            }
+                        )
+                    }
+                )
+            },
+        )
+        inputs = fi.ModelInputs(stations={"healthy": station})
+        native = _discharge_success({"healthy": 1.0})
+        shim = _shim_with_fake_inner(predict_result=native, hindcast_result=native)
+        rng = Random(0)
+        if method == "train":
+            shim.train(inputs, config={}, rng=rng)
+        elif method == "retrain":
+            shim.retrain(object(), inputs, config={}, rng=rng)
+        elif method == "predict":
+            shim.predict(object(), inputs=inputs, issue_datetime=_ISSUE, rng=rng)
+        else:
+            shim.hindcast(object(), inputs=inputs, issue_datetimes=[_ISSUE], rng=rng)
+        calls = getattr(shim._inner, f"{method}_calls")  # noqa: SLF001 -- fake boundary
+        series = (
+            calls[0]["inputs"]
+            .stations["healthy"]
+            .dynamic[_DAILY]
+            .data[fi.SpatialRepresentation.BASIN_AVERAGE]
+            .past_known["aquacast"]["discharge"]
+        )
+        assert series.data.columns == ["datetime", "discharge", "available_at_us"]
+        assert series.data["discharge"].to_list() == pytest.approx([1.0, 2.0])
+        assert series.data["available_at_us"].equals(availability)
+
+
 class TestFISurfaceDelegation:
     """Plan 181 T1 — a `predict` call must REACH the inner model, and the other four
     FI methods must proxy through too. Asserted on delegation (a fake that RECORDS
