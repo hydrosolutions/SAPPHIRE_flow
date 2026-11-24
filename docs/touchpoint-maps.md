@@ -2483,6 +2483,12 @@ future-row shadowing, stale diagnostics and no selection promotion.
 
 ### Owner-assumed-zero reference changes
 
+Canonical provenance serialization must preserve historical bytes and fingerprints.
+`canonical_content` rejects dataclasses by default; measurement/curve snapshots and
+rating derivation explicitly encode declared dataclass fields without deep copying
+immutable values. Preserve their distinct QC exclusions, nonfinite-source encoding,
+all evidence checks and the frozen rating-derivation/historical reference fixtures.
+
 Route changes through `types/rating_reference.py`, the strict reference parser,
 `RatingReferenceStore`, reference-only owner writer, provisional converter/store,
 metadata and migration 0073 together. Preserve legacy verified bytes and no-default
