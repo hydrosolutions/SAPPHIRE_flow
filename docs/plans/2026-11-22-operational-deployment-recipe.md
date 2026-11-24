@@ -838,6 +838,29 @@ B1/B2 and parent execution gates remain DRAFT. No source access, agency data,
 provider/model calls, cloud resources, administrator command or migration was
 introduced by this slice. Full implementation and evidence remain private.
 
+B0c qualifies local declaration-to-window planning. Supplied identity and member
+readbacks must match before resolving selected model declarations; excluded members
+remain in the ledger. The planner reuses the FI adapter, model classification and
+existing bounds/superset helpers. Standard gated daily discharge groups retain
+their target-specific lookback; provisional groups retain the maximum window and
+the whole-window rating limit. Issue, validation and weather-cycle clocks remain
+separate, and full feature/aggregation/horizon declarations are retained privately.
+
+One independent patch review found two gaps, now covered by regressions: ordinary
+models require an explicit legacy-superset route, and projected declarations reject
+fractional steps and mutable containers. Missing, unknown or per-track ordinary
+routes hold. Declared-grid models also hold: their current operational path omits
+incompatible stored discharge, so the legacy inventory mapping must not be reused.
+Ordinary rating-bound routes remain unqualified.
+
+All **148 focused unit checks**, including 40 planner cases, pass; lint, formatting
+and strict changed-module types pass. These tests use synthetic declarations and
+supplied readbacks. They do not qualify installed entry-point/constructor safety,
+actual runtime readback, eligibility, weather selection or database inventory.
+No source access, artifact execution or new runtime/cloud resources occurred.
+The prior runtime evidence is preserved; B0 integration, active-transaction
+cancellation and final helper regressions remain due before B1 admission.
+
 ```json
 {"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
 ```
