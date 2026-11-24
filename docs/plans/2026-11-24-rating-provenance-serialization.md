@@ -97,3 +97,8 @@ accepted values through explicit opt-in, and spelling out both QC exclusion sets
 and nonfinite replacement. The orchestrator marks this bounded plan READY.
 Full review reports and operational evidence remain private. This file records implementation history;
 administrators need no configuration or migration steps for this optimization.
+
+P0 committed 15 deterministic pre-change byte/fingerprint fixtures before source
+edits. P1 preserves all of them; 228 focused rating/reference/capture tests pass.
+One independent patch review found no blockers. Performance qualification and
+full CI remain P2 gates; this record does not claim deployment readiness.

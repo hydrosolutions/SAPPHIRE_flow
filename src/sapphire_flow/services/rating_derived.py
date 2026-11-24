@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict
+from dataclasses import fields
 from typing import TYPE_CHECKING, cast
 
 from sapphire_flow.services.rating_conversion import (
@@ -151,7 +151,9 @@ def derive_rating_sample(
         rating_curve_id=curve.id,
         file_id=file_id,
     )
-    source = asdict(observation)
+    source = {
+        field.name: getattr(observation, field.name) for field in fields(observation)
+    }
     if observation.value is not None and not math.isfinite(observation.value):
         literal = (
             "NaN"
@@ -172,17 +174,16 @@ def derive_rating_sample(
             "file_sha256": file_sha256,
             "delivered_on": delivered_on,
             "selection": "newest_delivery_then_latest_eligible_start",
-            "feed": feed.content
-            if isinstance(feed, NativeCaptureFeed)
-            else asdict(feed),
-            "reference": asdict(reference),
+            "feed": feed.content if isinstance(feed, NativeCaptureFeed) else feed,
+            "reference": reference,
             "discharge": value,
             "rejection": rejection,
             "warnings": warnings,
             "endpoints": endpoints,
             "level_unit": "m",
             "discharge_unit": "m3/s",
-        }
+        },
+        dataclass_values=True,
     )
     return RatingDerivedDischarge(
         tenant_id=feed.tenant_id,

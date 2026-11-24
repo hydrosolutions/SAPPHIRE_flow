@@ -1,5 +1,6 @@
-from dataclasses import asdict, replace
-from datetime import timedelta
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
@@ -18,6 +19,64 @@ from sapphire_flow.types.rating_reference import (
     measurement_snapshot,
 )
 from tests.unit.services.test_provisional_discharge import NOW, inputs
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SnapshotValue:
+    value: object
+    kind: str = field(default="synthetic", init=False)
+
+
+class TestCanonicalDataclasses:
+    def test_default_encoder_still_refuses_dataclasses(self) -> None:
+        with pytest.raises(TypeError, match="unsupported snapshot value"):
+            canonical_content(SnapshotValue(value="example"))
+
+    def test_opt_in_preserves_declared_fields_and_scalar_encoding(self) -> None:
+        value = SnapshotValue(
+            value={
+                "id": UUID(int=1),
+                "time": datetime(2025, 1, 1, 6, tzinfo=timezone(timedelta(hours=6))),
+                "nested": (SnapshotValue(value=QcStatus.QC_PASSED), "café"),
+            }
+        )
+        expected = (
+            '{"kind":"synthetic","value":{'
+            '"id":"00000000-0000-0000-0000-000000000001",'
+            '"nested":[{"kind":"synthetic","value":"qc_passed"},"caf\\u00e9"],'
+            '"time":"2025-01-01T00:00:00+00:00"}}'
+        )
+        assert canonical_content(value, dataclass_values=True) == expected
+
+    @pytest.mark.parametrize("value", [SnapshotValue, SnapshotValue(value=object())])
+    def test_opt_in_still_refuses_unsupported_values(self, value: object) -> None:
+        with pytest.raises(TypeError, match="unsupported snapshot value"):
+            canonical_content(value, dataclass_values=True)
+
+    def test_opt_in_still_refuses_naive_time(self) -> None:
+        with pytest.raises(ValueError, match="timezone aware"):
+            canonical_content(
+                SnapshotValue(value=datetime(2025, 1, 1)), dataclass_values=True
+            )
+
+    def test_snapshots_preserve_inputs_and_exclude_measurement_qc(self) -> None:
+        import json
+
+        obs, curve, _, _ = inputs()
+        points = [
+            {"water_level": 2.0, "discharge": 20.0},
+            {"water_level": 1.0, "discharge": 10.0},
+        ]
+        curve = replace(curve, points=points)
+        original_points = [dict(point) for point in points]
+        snapshot = curve_snapshot(curve)
+        measurement = measurement_snapshot(obs)
+        assert points == original_points
+        points[0]["discharge"] = 99.0
+        obs.qc_flags.clear()
+        assert json.loads(snapshot.content)["points"] == list(reversed(original_points))
+        assert measurement_snapshot(obs) == measurement
+        assert not any(key.startswith("qc_") for key in json.loads(measurement.content))
 
 
 def assumed_reference(

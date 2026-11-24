@@ -304,8 +304,12 @@ def golden_derivation(case: GoldenCase) -> RatingDerivedDischarge:
         station_id=StationId(UUID(int=2)),
         created_at=NOW,
         points=[
-            {**point, "metadata": {"label": "synthetic café 雪", "checked": True}}
-            for point in curve.points
+            {
+                "water_level": level,
+                "discharge": discharge,
+                "metadata": {"label": "synthetic café 雪", "checked": True},
+            }
+            for level, discharge in ((1.0, 10.0), (2.0, 20.0))
         ],
         interpolation=InterpolationMethod.LOG_LINEAR
         if case is GoldenCase.INVALID_INTERPOLATION
