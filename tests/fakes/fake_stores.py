@@ -155,6 +155,10 @@ from sapphire_flow.types.tenant import (  # noqa: TC001
     DEFAULT_TENANT_ID,
     Tenant,
 )
+from sapphire_flow.types.threshold_import import (
+    ThresholdImportStatus,
+    classify_threshold_import,
+)
 from sapphire_flow.types.weather import (  # noqa: TC001
     GriddedForecast,
     WeatherForecastRecord,
@@ -2126,6 +2130,16 @@ class FakeStationStore:
 
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]:
         return [t for t in self._thresholds if t.station_id == station_id]
+
+    def import_thresholds(
+        self, thresholds: list[StationThreshold]
+    ) -> ThresholdImportStatus:
+        existing = self.fetch_thresholds(thresholds[0].station_id) if thresholds else []
+        status = classify_threshold_import(thresholds, existing)
+        if status is ThresholdImportStatus.PREVIEW:
+            self.store_thresholds(thresholds)
+            return ThresholdImportStatus.IMPORTED
+        return status
 
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None:
         for t in thresholds:

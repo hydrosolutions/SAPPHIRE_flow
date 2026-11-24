@@ -33,6 +33,10 @@ from sapphire_flow.types.station import (
     StationConfig,
     StationWeatherSource,
 )
+from sapphire_flow.types.threshold_import import (
+    ThresholdImportStatus,
+    classify_threshold_import,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -212,6 +216,31 @@ class PgStationStore:
             threshold = _row_to_threshold(row)
             grouped[threshold.station_id].append(threshold)
         return {station_id: tuple(values) for station_id, values in grouped.items()}
+
+    def import_thresholds(
+        self, thresholds: list[StationThreshold]
+    ) -> ThresholdImportStatus:
+        if (
+            not self._conn.in_transaction()
+            or self._conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT"
+        ):
+            raise ConfigurationError("threshold import requires a real transaction")
+        self._conn.execute(sa.text("SET LOCAL lock_timeout = '5s'"))
+        # Serialize with legacy upserts too; only held for the small import transaction.
+        self._conn.execute(
+            sa.text("LOCK TABLE station_thresholds IN SHARE ROW EXCLUSIVE MODE")
+        )
+        if not thresholds:
+            return ThresholdImportStatus.MISSING
+        existing = self.fetch_thresholds(thresholds[0].station_id)
+        status = classify_threshold_import(thresholds, existing)
+        if status is not ThresholdImportStatus.PREVIEW:
+            return status
+        keys = {(t.parameter, t.danger_level) for t in existing}
+        self.store_thresholds(
+            [t for t in thresholds if (t.parameter, t.danger_level) not in keys]
+        )
+        return ThresholdImportStatus.IMPORTED
 
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None:
         for t in thresholds:

@@ -139,6 +139,7 @@ if TYPE_CHECKING:
         ObservationSummaryRow,
     )
     from sapphire_flow.types.tenant import Tenant
+    from sapphire_flow.types.threshold_import import ThresholdImportStatus
     from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
     from sapphire_flow.types.write_principal import WritePrincipal
@@ -884,6 +885,11 @@ class StationStore(Protocol):
         raise NotImplementedError
 
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]:
+        raise NotImplementedError
+
+    def import_thresholds(
+        self, thresholds: list[StationThreshold]
+    ) -> ThresholdImportStatus:
         raise NotImplementedError
 
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None:

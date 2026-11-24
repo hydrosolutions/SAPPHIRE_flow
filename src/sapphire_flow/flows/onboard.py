@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import structlog
 from prefect import flow, runtime, task
@@ -161,8 +161,6 @@ def onboard_stations_flow(
         # eligible stations are held out of promotion whether or not the fetch
         # produces rows.
         if reanalysis_adapter_factory is None:
-            from typing import cast
-
             from sapphire_flow.flows.ingest_weather_history import (
                 _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
                 build_production_reanalysis_adapter,
@@ -201,8 +199,6 @@ def onboard_stations_flow(
     # mode is a deployment decision made in exactly one place —
     # DeploymentConfig.reanalysis_source (Plan 115b4 §5D default "hybrid").
     if forcing_source is None and forcing_store is not None:
-        from typing import cast
-
         from sapphire_flow.adapters.hybrid_reanalysis_factories import (
             select_reanalysis_source,
         )
@@ -280,6 +276,23 @@ def onboard_stations_flow(
         end_date=end_date,
     )
 
+    threshold_importer = None
+    if _conn is not None and principal is not None and principal.tenant_id is not None:
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.config.paths import resolve_artifact_dir
+        from sapphire_flow.services.bafu_threshold_import import (
+            make_onboarding_threshold_importer,
+        )
+
+        threshold_importer = make_onboarding_threshold_importer(
+            engine=_conn.engine,
+            config=cast("DeploymentConfig", deployment_config),
+            tenant_id=principal.tenant_id,
+            report_dir=resolve_artifact_dir() / "threshold-imports",
+            clock=cast("Callable[[], UtcDatetime]", clock),
+            operator=operator,
+        )
+
     result = onboard_from_camelsch(
         data_dir=Path(data_dir),
         basin_store=basin_store,
@@ -314,6 +327,7 @@ def onboard_stations_flow(
         principal=principal,
         audit_log_store=audit_log_store,  # type: ignore[arg-type]
         audited_writer=audited_writer,  # type: ignore[arg-type]
+        threshold_importer=threshold_importer,
     )
 
     log.info(

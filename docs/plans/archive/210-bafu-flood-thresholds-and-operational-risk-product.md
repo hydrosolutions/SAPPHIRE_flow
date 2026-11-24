@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-08-28
 plan: 210
 title: BAFU flood thresholds — parse what we already archive, and the operational risk product the Flow Map needs
@@ -8,6 +8,8 @@ depends_on: [111, 204]
 blocks: []
 source: Cross-repo seam review 2026-08-28 (Plan 204 § Seam review) + owner correction the same day that the threshold values are already on the mac mini
 ---
+
+> Superseded on 2026-11-24 by [BAFU threshold import](../2026-11-24-bafu-threshold-import.md) and issue #630. Historical source evidence and owner decisions are retained below; this is not an implementation plan. Per-time probabilities replace the old single summary-risk proposal.
 
 # Plan 210 — the thresholds are already in the archive; nothing parses them
 

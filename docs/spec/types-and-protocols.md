@@ -7201,3 +7201,13 @@ non-integer metadata is rejected. Future-known variables do not inherit this
 metadata. No observation/import timestamp is substituted for unknown availability.
 Overlapping batch rows must agree on availability as well as physical values;
 conflicting evidence is rejected rather than guessed.
+
+### Authority threshold import extension (#630)
+
+`StationStore.import_thresholds(thresholds: list[StationThreshold]) ->
+ThresholdImportStatus` provides conflict-preserving import for one station and
+parameter. Status is imported, unchanged, conflict or missing; preview uses the
+shared classifier without writes. PostgreSQL callers supply a real transaction.
+The existing overwrite method remains available to its existing callers, but is
+not used to overwrite a conflicting import. Successful operator/onboarding import
+records `AuditEventType.THRESHOLDS_IMPORTED` with source digest and retrieval time.
