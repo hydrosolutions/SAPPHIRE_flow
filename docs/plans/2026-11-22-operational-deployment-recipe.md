@@ -787,7 +787,32 @@ qualification stops before source execution; limits are not automatically raised
 
 The orchestrator admits **B0 local implementation only**. B1/B2, C3b2c and
 N1b–d/N2 execution remain DRAFT. Full review and concrete runtime details stay
-private; no implementation or live-read result is claimed.
+private; no live-read result is claimed.
+
+The native synthetic feasibility case now passes after the serialization
+optimization in PR #640: 99,999 observations across three station-years and full
+provenance closure, within the unchanged limits. That test used the delivered
+candidate plus two reviewed source files; it does not qualify an unchanged release
+or a live source host. Temporary cloud and runtime cleanup were independently
+verified complete.
+
+B0a fixes the private packet and nested report format before database wiring.
+It retains explicit clocks, ordered configuration chains and the complete cohort,
+including excluded members; changed identities cannot pass through equal counts.
+The report contains the original 35-table ledger, named reader coverage and packet
+ordinals, with unknown counts distinct from zero. Checked metadata remains
+count-only, and output overflow omits coverage explicitly. Synthetic golden reports
+are format examples, not execution receipts.
+
+Boundary tests cover parsing, identity comparison and secret-safe serialization.
+All 69 tests, lint and strict types pass. One independent patch review found three
+boundary issues; immutable-container checks, exact nested types and bounded
+integers address them, with regression tests. Full reports remain private.
+They do not qualify actual readback, requirement selection, database permissions,
+dependency-log capture, process cancellation or resource enforcement. The remaining
+B0 runner checks and the existing helper regressions must pass after final wrapper
+changes before B1 can be admitted. Administrators have no new command or migration
+step in this preparation slice.
 
 ```json
 {"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
