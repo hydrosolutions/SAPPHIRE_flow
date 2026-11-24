@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar, cast
 
 import polars as pl
@@ -44,15 +45,25 @@ from forecast_interface import (
     VariableMetadata,
     VariableOutput,
     VariableStatus,
+    artifact_training_grid,
 )
 from forecast_interface import (
     EnsembleMode as FIEnsembleMode,
+)
+from forecast_interface import (
+    PeriodLabel as FIPeriodLabel,
 )
 from forecast_interface import (
     RetrainableModel as FIRetrainableModel,
 )
 from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
+)
+from forecast_interface import (
+    TimeGrid as FITimeGrid,
+)
+from forecast_interface import (
+    Unknown as FIUnknown,
 )
 
 from sapphire_flow.exceptions import (
@@ -76,11 +87,12 @@ from sapphire_flow.types.group_input import (
     GroupMemberInputReason,
 )
 from sapphire_flow.types.model import GroupModelInputs, ModelDataRequirements
+from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
 
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable, Iterator, Mapping
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     from sapphire_flow.types.forcing_track import FeatureFetchHorizons
     from sapphire_flow.types.ids import StationId
@@ -97,7 +109,7 @@ log = structlog.get_logger(__name__)
 
 T = TypeVar("T")
 
-SUPPORTED_FI_VERSION: str = "0.1.20"
+SUPPORTED_FI_VERSION: str = "0.2.10"
 # STATION artifacts are store-bound; FI key is fixed (1.10 gauge-code is GROUP-scoped).
 _STATION_SCOPE_KEY: str = "station"
 
@@ -891,7 +903,58 @@ class ForecastInterfaceAdapter:
             declared_lookbacks=frozenset(declared_lookback.items()),
             declared_horizon_semantics=declared_horizon_semantics,
             declared_min_future_steps=declared_min_future_steps,
+            time_grid=self._project_time_grid(
+                req, next(iter(future_forced_time_steps))
+            ),
         )
+
+    @staticmethod
+    def _project_time_grid(
+        req: InputRequirement, step: timedelta
+    ) -> ModelTimeGrid | None:
+        anchor = req.dynamic[step].anchor
+        if anchor.origin is FIUnknown.UNKNOWN and anchor.label is FIPeriodLabel.UNKNOWN:
+            return None
+        if (
+            not isinstance(anchor.origin, timedelta)
+            or anchor.label is FIPeriodLabel.UNKNOWN
+        ):
+            raise UnsupportedModelRequirementError(
+                "model time grid requires both a known origin and period label"
+            )
+        return ModelTimeGrid(
+            grid=TimeGrid(step=step, phase=anchor.origin),
+            label=PeriodLabel(anchor.label.value),
+        )
+
+    def _input_grid(
+        self, delivered: ModelTimeGrid | None, time_step: timedelta
+    ) -> FITimeGrid | FIUnknown:
+        declared = self.data_requirements.time_grid
+        if delivered != declared:
+            raise ConfigurationError(
+                "delivered time grid differs from model declaration"
+            )
+        if delivered is None:
+            return FIUnknown.UNKNOWN
+        if delivered.grid.step != time_step:
+            raise ConfigurationError("delivered time grid differs from input time step")
+        return FITimeGrid(
+            step=delivered.grid.step,
+            origin=delivered.grid.phase,
+            label=FIPeriodLabel(delivered.label.value),
+        )
+
+    def _validate_artifact_grid(self, artifact: ModelArtifact) -> None:
+        declared = self.data_requirements.time_grid
+        if declared is None:
+            return
+        expected = self._input_grid(declared, declared.grid.step)
+        actual = artifact_training_grid(artifact).grid
+        if actual != expected:
+            raise ConfigurationError(
+                "artifact training grid is unknown or differs from model declaration"
+            )
 
     def _declared_fi_units(self) -> dict[str, Unit]:
         units: dict[str, Unit] = {}
@@ -1158,7 +1221,9 @@ class ForecastInterfaceAdapter:
         return self._model.serialize_artifact(artifact)
 
     def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
-        return self._model.deserialize_artifact(raw)
+        artifact = self._model.deserialize_artifact(raw)
+        self._validate_artifact_grid(artifact)
+        return artifact
 
     def train(
         self,
@@ -1209,6 +1274,7 @@ class ForecastInterfaceAdapter:
                 "RetrainableModel; SAP3 refuses rather than falling back to "
                 "train (Plan 399 D2)"
             )
+        self._validate_artifact_grid(base_artifact)
         model_inputs = self._model_inputs_from_data(data)
         return self._model.retrain(base_artifact, model_inputs, config=params, rng=rng)
 
@@ -1250,6 +1316,8 @@ class ForecastInterfaceAdapter:
         # than the real cause. The guard must be the FIRST thing every
         # delivery entry point does.
         self._assert_single_deliverable_dynamic_branch()
+        self._validate_artifact_grid(artifact)
+        self._input_grid(inputs.time_grid, inputs.time_step)
 
         over_tolerance = self._variables_over_nan_tolerance(
             past_targets=inputs.data.past_targets,
@@ -1325,6 +1393,8 @@ class ForecastInterfaceAdapter:
 
         # BEFORE the per-station NaN gate — see predict() above.
         self._assert_single_deliverable_dynamic_branch()
+        self._validate_artifact_grid(artifact)
+        self._input_grid(inputs.time_grid, inputs.time_step)
 
         station_codes_by_id = {
             station_id: self._station_code(station_id)
@@ -1429,8 +1499,10 @@ class ForecastInterfaceAdapter:
         if issues != tuple(sorted(set(issues))):
             raise ValueError("hindcast issues must be unique and increasing")
         self._assert_single_deliverable_dynamic_branch()
+        self._validate_artifact_grid(artifact)
         first = inputs[0]
         for item in inputs:
+            self._input_grid(item.time_grid, item.time_step)
             if (item.group_id, item.time_step, item.forecast_horizon_steps) != (
                 first.group_id,
                 first.time_step,
@@ -1622,7 +1694,10 @@ class ForecastInterfaceAdapter:
             time_step=data.time_step,
             forcing_route=data.forcing_route,
         )
-        return ModelInputs(stations={_STATION_SCOPE_KEY: station_inputs})
+        return ModelInputs(
+            stations={_STATION_SCOPE_KEY: station_inputs},
+            grid=self._input_grid(data.time_grid, data.time_step),
+        )
 
     def _model_inputs_from_station_training_data(
         self,
@@ -1635,7 +1710,10 @@ class ForecastInterfaceAdapter:
             static=data.static,
             time_step=data.time_step,
         )
-        return ModelInputs(stations={_STATION_SCOPE_KEY: station_inputs})
+        return ModelInputs(
+            stations={_STATION_SCOPE_KEY: station_inputs},
+            grid=self._input_grid(data.time_grid, data.time_step),
+        )
 
     def _model_inputs_from_group_data(
         self,
@@ -1645,6 +1723,7 @@ class ForecastInterfaceAdapter:
     ) -> ModelInputs:
         selected_station_ids = data.station_ids if station_ids is None else station_ids
         return ModelInputs(
+            grid=self._input_grid(data.time_grid, data.time_step),
             stations={
                 self._station_code(station_id): self._station_inputs_from_station_data(
                     data=data.for_station(station_id),
@@ -1654,7 +1733,7 @@ class ForecastInterfaceAdapter:
                     else ForcingRoute.LEGACY_SUPERSET,
                 )
                 for station_id in selected_station_ids
-            }
+            },
         )
 
     def _station_inputs_from_station_data(

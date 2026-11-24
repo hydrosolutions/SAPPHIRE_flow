@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -26,8 +26,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.rating_curve import RatingCurve
 
 
-def canonical_content(value: object) -> str:
-    def encode(item: object) -> str:
+def canonical_content(value: object, *, dataclass_values: bool = False) -> str:
+    def encode(item: object) -> str | dict[str, Any]:
         if isinstance(item, datetime):
             if item.utcoffset() is None:
                 raise ValueError("snapshot timestamps must be timezone aware")
@@ -36,6 +36,8 @@ def canonical_content(value: object) -> str:
             return str(item)
         if isinstance(item, Enum):
             return item.value
+        if dataclass_values and is_dataclass(item) and not isinstance(item, type):
+            return {field.name: getattr(item, field.name) for field in fields(item)}
         raise TypeError("unsupported snapshot value")
 
     return json.dumps(
@@ -248,7 +250,9 @@ class AssumedCurveSnapshot:
 
 
 def measurement_snapshot(observation: Observation) -> MeasurementSnapshot:
-    data = asdict(observation)
+    data = {
+        field.name: getattr(observation, field.name) for field in fields(observation)
+    }
     for key in (
         "qc_status",
         "qc_flags",
@@ -258,15 +262,19 @@ def measurement_snapshot(observation: Observation) -> MeasurementSnapshot:
         "qc_context_requirement",
     ):
         del data[key]
-    return MeasurementSnapshot(content=canonical_content(data))
+    return MeasurementSnapshot(content=canonical_content(data, dataclass_values=True))
 
 
 def curve_snapshot(curve: RatingCurve) -> CurveSnapshot:
-    data = asdict(curve)
+    data = {field.name: getattr(curve, field.name) for field in fields(curve)}
     data["points"] = sorted(
-        data["points"], key=lambda p: (float(p["water_level"]), canonical_content(p))
+        data["points"],
+        key=lambda p: (
+            float(p["water_level"]),
+            canonical_content(p, dataclass_values=True),
+        ),
     )
-    return CurveSnapshot(content=canonical_content(data))
+    return CurveSnapshot(content=canonical_content(data, dataclass_values=True))
 
 
 def _check_evidence(

@@ -108,7 +108,14 @@ constraint-dependencies = ["certifi>=2026.10.19", "pillow>=13.0.0", "filelock>=4
 # Torch/torchvision are separate owner-authorized CVE-2026-24747 security pins.
 # Remove them only after upstream requirements permit a verified fixed pair.
 # See docs/deployment/dependency-maintenance-2026-11.md.
-override-dependencies = ["rich>=14,<15", "torch==2.10.0", "torchvision==0.25.0"]
+# The fixed Aquacast revision still names FI 0.1.20 in its package metadata.
+# Qualify both packages against the same explicit shared-contract revision.
+override-dependencies = [
+    "rich>=14,<15",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "forecastinterface @ git+https://github.com/hydrosolutions/ForecastInterface@c1faa2e70b3832502efc5c22c99274635c027bb4",
+]
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
@@ -122,9 +129,9 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", tag = "v0.1.20" }
+forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", rev = "c1faa2e70b3832502efc5c22c99274635c027bb4" }
 recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
-aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "cea602191534c37615c069c1c5416e2c99149668" }
+aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "fc772226703940f26d29d8e62a5c39175851b2f8" }
 
 [tool.ruff]
 target-version = "py311"

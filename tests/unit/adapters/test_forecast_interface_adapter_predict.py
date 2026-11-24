@@ -621,6 +621,48 @@ class FakeFIBatchModel(FakeFIForecastModel):
 
 
 class TestBatchHindcast:
+    def test_rejects_incompatible_grid_on_later_issue(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(model)
+        first = _group_model_inputs()
+        second = replace(
+            first,
+            issue_time=ensure_utc(_ISSUE + _STEP),
+            time_grid=ModelTimeGrid(
+                grid=TimeGrid(step=_STEP, phase=timedelta(0)),
+                label=PeriodLabel.START,
+            ),
+        )
+        with pytest.raises(ConfigurationError, match="delivered time grid differs"):
+            adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert model.calls == []
+
+    def test_rejects_unknown_artifact_grid_before_batch_inference(self) -> None:
+        from dataclasses import replace
+
+        from forecast_interface import TimeAnchor
+
+        model = FakeFIBatchModel()
+        model.input_requirement.dynamic[_STEP] = model.input_requirement.dynamic[
+            _STEP
+        ].model_copy(
+            update={
+                "anchor": TimeAnchor(
+                    origin=timedelta(0), label=fi_boundary.FIPeriodLabel.START
+                )
+            }
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(model)
+        first = _group_model_inputs()
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP))
+        with pytest.raises(ConfigurationError, match="artifact training grid"):
+            adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert model.calls == []
+
     @pytest.mark.parametrize("representation", ["quantiles", "members"])
     @pytest.mark.parametrize("naive_utc", [False, True])
     def test_preserves_each_issue_and_valid_time(

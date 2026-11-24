@@ -33,6 +33,15 @@ they declare it. Nonzero deployment origins are rejected until the coordinated
 model/input/output cutover. Existing observed skill phases are separate legacy
 diagnostics, not values to round into the declared-grid type.
 
+`ModelTimeGrid` adds a known START/END label to the physical `TimeGrid`. The FI
+adapter projects fully declared model anchors into requirements and carries an
+explicit delivered grid on model input objects. A known model declaration must
+match the delivered grid and the artifact's public FI training-grid declaration;
+missing or mismatched declarations refuse before prediction. FI validates actual
+timestamps against that grid. Legacy models with no anchor declaration retain
+their legacy path. These boundary checks do not enable nonzero operational
+assembly or change stored forecast/API semantics; those remain activation gates.
+
 ### Python rules
 
 - Annotate function parameters and returns; use built-in generics and `|` unions.

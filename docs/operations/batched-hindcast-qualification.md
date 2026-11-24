@@ -1,5 +1,10 @@
 # Batched hindcast qualification — 2026-11-24
 
+This benchmark predates the merge of ForecastInterface 0.2.10 and the newer
+Aquacast pin. It does not qualify that newer dependency combination; repeat the
+bounded real-model check before replacement runs. Batched inference enforces the
+same artifact and per-issue input time-grid checks as single-date inference.
+
 The local dev-machine check used Aquacast 0.1.378, ForecastInterface 0.1.20,
 PyTorch CPU with one thread, and the inactive fine-tuned CMAL-small artifact
 `9f084ff1-8294-46ec-ab50-6dc7c8cfde02` (SHA256

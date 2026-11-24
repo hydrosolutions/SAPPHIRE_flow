@@ -229,6 +229,12 @@ once, retain inner total failures, and add explicit no-data `FAILURE` entries wi
 variable requiring conversion. Training/retraining remain strict and never silently
 train on a reduced station set. Other configuration/programming errors propagate.
 
+FI time-grid declarations survive shim conversion: preserve each requirement's
+anchor and the delivered ModelInputs grid, including when invalid-area members
+are removed. Unit conversion must not change period starts or lose their meaning.
+Test train/retrain/predict/hindcast at the shim boundary. This preservation does
+not establish operational assembly, artifact compatibility or live cutover.
+
 The supported locked daily CMAL path has one served cadence/horizon/offset per
 target, including relaxed horizons and batch hindcasts. Failed inbound members use
 that target's unambiguous returned metadata, canonical units, and no sibling flags
@@ -2476,6 +2482,12 @@ protected exact hydration; preserve existing latest-reader semantics and test
 future-row shadowing, stale diagnostics and no selection promotion.
 
 ### Owner-assumed-zero reference changes
+
+Canonical provenance serialization must preserve historical bytes and fingerprints.
+`canonical_content` rejects dataclasses by default; measurement/curve snapshots and
+rating derivation explicitly encode declared dataclass fields without deep copying
+immutable values. Preserve their distinct QC exclusions, nonfinite-source encoding,
+all evidence checks and the frozen rating-derivation/historical reference fixtures.
 
 Route changes through `types/rating_reference.py`, the strict reference parser,
 `RatingReferenceStore`, reference-only owner writer, provisional converter/store,

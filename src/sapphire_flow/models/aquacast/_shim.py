@@ -279,6 +279,7 @@ def _canonical_requirement(req: InputRequirement) -> InputRequirement:
         },
         dynamic={
             time_step: SpatialInputSpec(
+                anchor=spatial_spec.anchor,
                 data={
                     rep: DynamicInputSpec(
                         past_known=_translate_declared_group(
@@ -289,7 +290,7 @@ def _canonical_requirement(req: InputRequirement) -> InputRequirement:
                         ),
                     )
                     for rep, spec in spatial_spec.data.items()
-                }
+                },
             )
             for time_step, spatial_spec in req.dynamic.items()
         },
@@ -366,7 +367,9 @@ def _series_inbound(
     time_step: timedelta,
 ) -> tuple[str, InputSeries]:
     aquacast_name = CANONICAL_TO_AQUACAST_NAME.get(name, name)
-    value_columns = [c for c in series.data.columns if c != "datetime"]
+    value_columns = [
+        c for c in series.data.columns if c not in {"datetime", "available_at_us"}
+    ]
     unit, data = _aquacast_value_and_unit(
         name,
         series.unit,
@@ -432,10 +435,11 @@ def _to_aquacast_station_inputs(
 
 def _to_aquacast_inputs(inputs: ModelInputs) -> ModelInputs:
     return ModelInputs(
+        grid=inputs.grid,
         stations={
             station_key: _to_aquacast_station_inputs(station_key, station)
             for station_key, station in inputs.stations.items()
-        }
+        },
     )
 
 
@@ -457,7 +461,9 @@ def _inference_inputs(
                 model_name=model_name,
                 reason="invalid_catchment_area",
             )
-    return (ModelInputs(stations=stations) if stations else None), failures
+    return (
+        ModelInputs(stations=stations, grid=inputs.grid) if stations else None
+    ), failures
 
 
 # ---------------------------------------------------------------------------------

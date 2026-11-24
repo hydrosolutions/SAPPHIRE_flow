@@ -205,6 +205,7 @@ def test_trajectory_representation_wins_when_multiple_are_present() -> None:
 
 
 def test_valid_time_count_mismatch_raises_model_output_error() -> None:
+    valid_output = _output(horizon=3, deterministic=_deterministic_data())
     deterministic = fi_boundary.DeterministicData(
         data=_output_frame(
             {
@@ -218,9 +219,12 @@ def test_valid_time_count_mismatch_raises_model_output_error() -> None:
             }
         )
     )
+    # FI rejects duplicate spacing at construction. Simulate a model returning
+    # a subsequently modified output to exercise SAP's independent count guard.
+    malformed_output = valid_output.model_copy(update={"deterministic": deterministic})
 
     with pytest.raises(
         ModelOutputError,
         match="2 unique valid_time values; expected forecast_horizon=3",
     ):
-        _convert(_output(horizon=3, deterministic=deterministic))
+        _convert(malformed_output)

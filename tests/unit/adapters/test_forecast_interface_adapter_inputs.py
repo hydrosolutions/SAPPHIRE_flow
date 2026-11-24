@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import forecast_interface as fi
 import polars as pl
 import pytest
 
@@ -21,6 +23,7 @@ from sapphire_flow.types.model import (
     StationModelInputs,
     StationTrainingData,
 )
+from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
 
 _STEP = timedelta(hours=1)
 _ALT_STEP = timedelta(hours=6)
@@ -655,3 +658,209 @@ def test_adapter_retrain_refuses_a_wrapped_model_that_cannot_retrain() -> None:
             {},  # type: ignore[arg-type]
             random.Random(0),
         )
+
+
+class GridRecordingModel(PredictingRecordingFIForecastModel):
+    def __init__(self, grid: fi.GridDeclaration) -> None:
+        requirement = _requirement(timedelta(days=1))
+        requirement.dynamic[timedelta(days=1)] = requirement.dynamic[
+            timedelta(days=1)
+        ].model_copy(
+            update={
+                "anchor": fi.TimeAnchor(
+                    origin=timedelta(hours=18), label=fi.PeriodLabel.START
+                )
+            }
+        )
+        super().__init__(requirement, fi.ArtifactScope.STATION)
+        self.loaded_artifact = GridArtifact(grid)
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return self.loaded_artifact
+
+    def predict(
+        self,
+        artifact: object,
+        *,
+        inputs: fi.ModelInputs,
+        issue_datetime: object,
+        rng: random.Random,
+    ) -> fi.ModelResult:
+        raise AssertionError("incompatible input must not reach prediction")
+
+    def retrain(
+        self,
+        base_artifact: object,
+        inputs: fi.ModelInputs,
+        *,
+        config: object,
+        rng: random.Random,
+    ) -> object:
+        raise AssertionError("incompatible artifact must not reach retraining")
+
+
+class GridArtifact:
+    def __init__(self, grid: fi.GridDeclaration) -> None:
+        self.training_grid = fi.TrainingGridDeclaration(grid=grid)
+
+
+_DECLARED_GRID = ModelTimeGrid(
+    grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18)),
+    label=PeriodLabel.START,
+)
+_FI_GRID = fi.TimeGrid(timedelta(days=1), timedelta(hours=18), fi.PeriodLabel.START)
+
+
+def _declared_grid_inputs() -> StationModelInputs:
+    source = _station_input_data(static=_static_frame())
+
+    def daily(frame: pl.DataFrame) -> pl.DataFrame:
+        epoch = datetime(2025, 1, 1, tzinfo=UTC)
+        timestamps = [
+            epoch + timedelta(hours=18, days=(stamp - epoch).total_seconds() / 3600)
+            for stamp in frame["timestamp"].to_list()
+        ]
+        return frame.with_columns(pl.Series("timestamp", timestamps))
+
+    return StationModelInputs(
+        station_id=_SID_A,
+        data=StationInputData(
+            past_targets=daily(source.past_targets),
+            past_dynamic=daily(source.past_dynamic),
+            future_dynamic=daily(source.future_dynamic),
+            static=source.static,
+        ),
+        issue_time=ensure_utc(datetime(2025, 1, 5, tzinfo=UTC)),
+        forecast_horizon_steps=3,
+        time_step=timedelta(days=1),
+        time_grid=_DECLARED_GRID,
+    )
+
+
+class TestDeclaredTimeGrid:
+    @pytest.mark.parametrize(
+        "anchor",
+        [
+            fi.TimeAnchor(origin=timedelta(hours=18)),
+            fi.TimeAnchor(label=fi.PeriodLabel.START),
+        ],
+    )
+    def test_partial_anchor_is_not_treated_as_legacy(
+        self, anchor: fi.TimeAnchor
+    ) -> None:
+        model = GridRecordingModel(_FI_GRID)
+        step = timedelta(days=1)
+        model.input_requirement.dynamic[step] = model.input_requirement.dynamic[
+            step
+        ].model_copy(update={"anchor": anchor})
+        with pytest.raises(UnsupportedModelRequirementError, match="both a known"):
+            fi_boundary.ForecastInterfaceAdapter(model)
+
+    def test_projects_anchor_and_delivers_grid_without_relabelling(self) -> None:
+        adapter = fi_boundary.ForecastInterfaceAdapter(GridRecordingModel(_FI_GRID))
+        inputs = _declared_grid_inputs()
+        delivered = adapter.evidence_inputs(inputs)
+        assert adapter.data_requirements.time_grid == _DECLARED_GRID
+        assert delivered.grid == _FI_GRID
+        series = (
+            delivered.stations["station"]
+            .dynamic[timedelta(days=1)]
+            .data[fi.SpatialRepresentation.POINT]
+            .past_known["obs"]["discharge"]
+        )
+        assert series.data["datetime"].to_list() == sorted(
+            inputs.data.past_targets["timestamp"].to_list()
+        )
+
+    @pytest.mark.parametrize(
+        "grid",
+        [
+            None,
+            ModelTimeGrid(
+                grid=TimeGrid(step=timedelta(days=1), phase=timedelta(0)),
+                label=PeriodLabel.START,
+            ),
+            replace(_DECLARED_GRID, label=PeriodLabel.END),
+        ],
+    )
+    def test_refuses_missing_or_mismatched_delivered_grid(
+        self, grid: ModelTimeGrid | None
+    ) -> None:
+        adapter = fi_boundary.ForecastInterfaceAdapter(GridRecordingModel(_FI_GRID))
+        with pytest.raises(ConfigurationError, match="delivered time grid differs"):
+            adapter.evidence_inputs(replace(_declared_grid_inputs(), time_grid=grid))
+
+    def test_refuses_off_grid_series_even_with_matching_declaration(self) -> None:
+        adapter = fi_boundary.ForecastInterfaceAdapter(GridRecordingModel(_FI_GRID))
+        inputs = _declared_grid_inputs()
+        shifted = inputs.data.past_targets.with_columns(
+            pl.col("timestamp") + timedelta(minutes=15)
+        )
+        with pytest.raises(ValueError, match="grid"):
+            adapter.evidence_inputs(
+                replace(inputs, data=replace(inputs.data, past_targets=shifted))
+            )
+
+    def test_accepts_matching_artifact_grid(self) -> None:
+        model = GridRecordingModel(_FI_GRID)
+        adapter = fi_boundary.ForecastInterfaceAdapter(model)
+        assert adapter.deserialize_artifact(b"checkpoint") is model.loaded_artifact
+
+    @pytest.mark.parametrize(
+        "grid",
+        [
+            fi.Unknown.UNKNOWN,
+            fi.TimeGrid(timedelta(days=1), timedelta(0), fi.PeriodLabel.START),
+            fi.TimeGrid(timedelta(days=1), timedelta(hours=18), fi.PeriodLabel.END),
+        ],
+    )
+    def test_refuses_unknown_or_mismatched_artifact_at_load_and_predict(
+        self, grid: fi.GridDeclaration
+    ) -> None:
+        model = GridRecordingModel(grid)
+        adapter = fi_boundary.ForecastInterfaceAdapter(model)
+        with pytest.raises(ConfigurationError, match="artifact training grid"):
+            adapter.deserialize_artifact(b"checkpoint")
+        with pytest.raises(ConfigurationError, match="artifact training grid"):
+            adapter.predict(
+                model.loaded_artifact, _declared_grid_inputs(), random.Random(0)
+            )
+        inputs = _declared_grid_inputs()
+        training = StationTrainingData(
+            past_targets=inputs.data.past_targets,
+            past_dynamic=inputs.data.past_dynamic,
+            future_dynamic=inputs.data.future_dynamic,
+            static=inputs.data.static,
+            time_step=inputs.time_step,
+            val_start=None,
+            time_grid=inputs.time_grid,
+        )
+        with pytest.raises(ConfigurationError, match="artifact training grid"):
+            adapter.retrain(model.loaded_artifact, training, {}, random.Random(0))
+
+    def test_group_delivery_preserves_grid(self) -> None:
+        model = GridRecordingModel(_FI_GRID)
+        model.artifact_scope = fi.ArtifactScope.GROUP
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=lambda station_id: str(station_id)
+        )
+        inputs = _declared_grid_inputs()
+
+        def stack(frame: pl.DataFrame) -> pl.DataFrame:
+            return frame.with_columns(pl.lit(str(_SID_A)).alias("station_id"))
+
+        group = GroupModelInputs(
+            group_id=_GROUP_ID,
+            station_ids=(_SID_A,),
+            past_targets=stack(inputs.data.past_targets),
+            past_dynamic=stack(inputs.data.past_dynamic),
+            future_dynamic=stack(inputs.data.future_dynamic),
+            static=stack(inputs.data.static)
+            if inputs.data.static is not None
+            else None,
+            issue_time=inputs.issue_time,
+            forecast_horizon_steps=inputs.forecast_horizon_steps,
+            time_step=inputs.time_step,
+            time_grid=inputs.time_grid,
+        )
+        assert adapter.evidence_inputs(group).grid == _FI_GRID
