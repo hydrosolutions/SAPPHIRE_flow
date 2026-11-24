@@ -621,6 +621,52 @@ class FakeFIBatchModel(FakeFIForecastModel):
 
 
 class TestBatchHindcast:
+    def test_accepts_more_than_seven_issues_with_absent_and_null_metadata(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        inputs = tuple(
+            replace(
+                first,
+                issue_time=ensure_utc(_ISSUE + i * _STEP),
+                past_targets=(
+                    first.past_targets.with_columns(
+                        pl.lit(None).alias("available_at_us:discharge")
+                    )
+                    if i % 2
+                    else first.past_targets
+                ),
+            )
+            for i in range(10)
+        )
+        result = adapter.hindcast_batch(b"artifact", inputs, random.Random(0))
+        assert len(model.calls) == 1
+        assert len(result) == 10
+        assert all(set(stations) == {_SID_A, _SID_B} for stations in result.values())
+
+    def test_conflicting_availability_is_not_silently_reconciled(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(
+            first,
+            issue_time=ensure_utc(_ISSUE + _STEP),
+            past_targets=first.past_targets.with_columns(
+                pl.col("timestamp").dt.epoch("us").alias("available_at_us:discharge")
+            ),
+        )
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert result == {first.issue_time: {}, second.issue_time: {}}
+        assert model.calls == []
+
     def test_rejects_incompatible_grid_on_later_issue(self) -> None:
         from dataclasses import replace
 

@@ -359,7 +359,7 @@ def test_station_model_inputs_convert_with_fixed_key_without_resolver() -> None:
     dynamic = station.dynamic[_STEP].data[fi_boundary.FISpatialRepresentation.POINT]
     discharge = dynamic.past_known["obs"]["discharge"]
     assert discharge.unit == fi_boundary.Unit.M3_PER_S
-    assert discharge.data.columns == ["datetime", "discharge"]
+    assert discharge.data.columns == ["datetime", "discharge", "available_at_us"]
     assert isinstance(discharge.data.schema["datetime"], pl.Datetime)
     assert "issue_datetime" not in discharge.data.columns
     assert discharge.data["datetime"].n_unique() == discharge.data.height
@@ -864,3 +864,86 @@ class TestDeclaredTimeGrid:
             time_grid=inputs.time_grid,
         )
         assert adapter.evidence_inputs(group).grid == _FI_GRID
+
+
+class TestInputAvailability:
+    @pytest.mark.parametrize("mode", ["absent", "null", "known"])
+    @pytest.mark.parametrize("group", [False, True])
+    def test_past_availability_is_variable_specific_and_sorted(
+        self, mode: str, group: bool
+    ) -> None:
+        adapter = _adapter()
+        inputs = _group_model_inputs() if group else _station_model_inputs()
+        frame = inputs.past_targets if group else inputs.data.past_targets
+        if mode != "absent":
+            expression = (
+                pl.col("timestamp").dt.epoch("us") + 123456
+                if mode == "known"
+                else pl.lit(None)
+            )
+            frame = frame.with_columns(expression.alias("available_at_us:discharge"))
+        inputs = (
+            replace(inputs, past_targets=frame)
+            if group
+            else replace(inputs, data=replace(inputs.data, past_targets=frame))
+        )
+        delivered = adapter.evidence_inputs(inputs)
+        for station in delivered.stations.values():
+            dynamic = station.dynamic[_STEP].data[
+                fi_boundary.FISpatialRepresentation.POINT
+            ]
+            discharge = dynamic.past_known["obs"]["discharge"].data
+            assert discharge.schema["available_at_us"] == pl.Int64
+            if mode == "known":
+                assert (
+                    discharge["available_at_us"].to_list()
+                    == (discharge["datetime"].dt.epoch("us") + 123456).to_list()
+                )
+            else:
+                assert discharge["available_at_us"].null_count() == discharge.height
+            assert (
+                dynamic.past_known["obs"]["air_temperature"]
+                .data["available_at_us"]
+                .null_count()
+                == 3
+            )
+            assert (
+                "available_at_us"
+                not in dynamic.future_known["nwp"][
+                    "precipitation_forecast"
+                ].data.columns
+            )
+
+    def test_rejects_noninteger_availability(self) -> None:
+        inputs = _station_model_inputs()
+        data = replace(
+            inputs.data,
+            past_targets=inputs.data.past_targets.with_columns(
+                pl.lit(1.5).alias("available_at_us:discharge")
+            ),
+        )
+        with pytest.raises(ConfigurationError, match="integer UTC epoch microseconds"):
+            _adapter().evidence_inputs(replace(inputs, data=data))
+
+
+def test_training_preserves_known_and_unknown_availability() -> None:
+    model = RecordingFIForecastModel(
+        _requirement(), artifact_scope=fi_boundary.FIArtifactScope.STATION
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(model)
+    data = _station_training_data(static=_static_frame())
+    data = replace(
+        data,
+        past_targets=data.past_targets.with_columns(
+            pl.Series("available_at_us:discharge", [100, None, 200], dtype=pl.Int64)
+        ),
+    )
+    adapter.train(data, {}, random.Random(0))
+    assert model.train_inputs is not None
+    station = next(iter(model.train_inputs.stations.values()))
+    series = (
+        station.dynamic[_STEP]
+        .data[fi_boundary.FISpatialRepresentation.POINT]
+        .past_known["obs"]["discharge"]
+    )
+    assert series.data["available_at_us"].to_list() == [None, 200, 100]

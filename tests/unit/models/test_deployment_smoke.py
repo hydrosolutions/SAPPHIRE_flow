@@ -99,6 +99,41 @@ def _predict(inputs: fi.ModelInputs) -> fi.ModelResult:
 
 
 class TestDeploymentSmokeModel:
+    @pytest.mark.parametrize("availability", [None, 1735776000000000])
+    def test_reserved_availability_does_not_change_control_values(
+        self, availability: int | None
+    ) -> None:
+        inputs = _inputs()
+        branch = (
+            inputs.stations["demo-001"]
+            .dynamic[_STEP]
+            .data[fi.FISpatialRepresentation.POINT]
+        )
+        series = branch.past_known["obs"]["discharge"]
+        series.data = series.data.with_columns(
+            pl.lit(availability, dtype=pl.Int64).alias("available_at_us")
+        )
+        result = _predict(inputs)
+        assert isinstance(result, fi.ModelSuccess)
+        output = result.output.variables["demo-001"]["discharge"]
+        assert output.trajectories is not None
+        assert output.trajectories.data["1"].to_list() == pytest.approx(
+            [10.1, 10.2, 10.4]
+        )
+
+    def test_unexpected_value_column_remains_rejected(self) -> None:
+        inputs = _inputs()
+        branch = (
+            inputs.stations["demo-001"]
+            .dynamic[_STEP]
+            .data[fi.FISpatialRepresentation.POINT]
+        )
+        series = branch.past_known["obs"]["discharge"]
+        series.data = series.data.with_columns(pl.lit(1.0).alias("unexpected"))
+        result = _predict(inputs)
+        assert isinstance(result, fi.ModelFailure)
+        assert "one control value" in result.message
+
     def test_packaged_artifact_round_trip_and_fi_contract(self) -> None:
         model = _model()
         assert isinstance(model, fi.ForecastModel)

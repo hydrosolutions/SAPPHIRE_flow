@@ -84,6 +84,7 @@ def assert_inputs(
                 {
                     "datetime": [issued_at + (step - 3) * STEP for step in range(3)],
                     "discharge": values,
+                    "available_at_us": pl.Series([None] * 3, dtype=pl.Int64),
                 }
             )
             expected_future = pl.DataFrame(
