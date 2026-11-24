@@ -464,6 +464,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     DELIVERY_IMPORTED = "delivery_imported"     # additive (Plan 510 T2)
     OBSERVATIONS_LOADED = "observations_loaded" # additive (Plan 540 M3a)
     RATING_CURVE_STORED = "rating_curve_stored" # additive (Plan 540 M3c)
+    THRESHOLDS_IMPORTED = "thresholds_imported"  # authoritative threshold import (#630)
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"  # cache tenant rejection
     FINE_TUNING_STARTED = "fine_tuning_started"  # resolved fit request and source evidence
     FINE_TUNING_RECEIPT = "fine_tuning_receipt"  # inactive candidate / evaluation evidence
