@@ -831,7 +831,8 @@ pinned candidate and private helpers on local Linux emulation; this is not nativ
 source-host timing or an unchanged-release inventory qualification.
 
 Resource probes run before connecting, and termination probes wait after closing
-their transaction. Cancellation during an active transaction remains unqualified.
+their transaction. That slice did not qualify cancellation during an active
+transaction; B0d below covers this gap.
 Actual runtime identity readback, model requirements, complete bounded inventory
 queries and final helper regressions also remain outstanding. B0 is incomplete;
 B1/B2 and parent execution gates remain DRAFT. No source access, agency data,
@@ -858,8 +859,32 @@ and strict changed-module types pass. These tests use synthetic declarations and
 supplied readbacks. They do not qualify installed entry-point/constructor safety,
 actual runtime readback, eligibility, weather selection or database inventory.
 No source access, artifact execution or new runtime/cloud resources occurred.
-The prior runtime evidence is preserved; B0 integration, active-transaction
-cancellation and final helper regressions remain due before B1 admission.
+The prior runtime evidence is preserved. B0d below covers active-transaction
+cancellation; B0 integration and final helper regressions remain due before B1
+admission.
+
+B0d qualifies cancellation with an active worker-role read-only transaction.
+All **174 focused unit checks and three synthetic runtime cases pass**, with lint,
+formatting and strict types clean. TERM cancels an open transaction and an observed
+database lock wait, with explicit rollback and connection-close evidence. A child
+that ignores TERM is killed after the unchanged grace period; its backend disappears
+and locks are released, without claiming a client-side rollback report.
+
+One independent patch review found that a late signal could be confused with a SQL
+timeout. First-signal timing now excludes that case, with boundary regressions;
+missing or late evidence refuses qualification. Dependency imports also follow
+output redirection. Existing snapshot, supervisor and Docker safeguards are reused
+unchanged. The lab completed in 180 seconds on local Linux emulation. Independent
+readback confirms zero owned containers/networks and preservation of baseline
+resources.
+
+This result uses the previously admitted cached runtime and private test helpers.
+It does not qualify the newer planner's installed runtime, source-host timing or a
+complete inventory run. Actual identity/constructor readback, bounded inventory
+integration and final helper regressions remain outstanding. B0 remains incomplete;
+B1/B2 and parent execution gates remain DRAFT. No live database, agency data,
+provider/model calls or cloud resources were used. No administrator command,
+migration or deployment change is introduced; full evidence remains private.
 
 ```json
 {"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
