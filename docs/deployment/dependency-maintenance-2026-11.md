@@ -117,3 +117,7 @@ is now an ordinary regression test rather than an expected failure. The actual
 a daily START grid at 18:00 UTC; its discharge tolerance is 365 missing days,
 while each of its four weather channels permits zero missing days. These are
 construction/contract checks, not proof of operational forecasts or model skill.
+
+FI 0.2.10 rejects duplicate output timestamps during construction. The adapter's
+independent valid-time count regression therefore injects a malformed copy after
+construction, retaining coverage of SAP's defensive check without relaxing FI.
