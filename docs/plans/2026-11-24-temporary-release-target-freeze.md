@@ -3,7 +3,7 @@ status: DRAFT
 ---
 # Temporary: stop requiring a release-target bump in every PR
 
-**Status:** DRAFT rev 3, 2026-11-24 (rounds 1 and 2: Claude and Codex both NEEDS CHANGES, folded; round 3 pending). No plan ID yet (owner grants IDs). HIGH RISK under
+**Status:** DRAFT rev 4, 2026-11-24 (rounds 1-2 both NEEDS CHANGES, folded; round 3: Codex READY, Claude 3 blockers, folded). No plan ID yet (owner grants IDs). HIGH RISK under
 `AGENTS.md` (release identity and CI). Needs owner approval and independent Claude and
 Codex reviews before it is marked READY. Nothing here is implemented.
 
@@ -55,8 +55,14 @@ merged by git (both sides edit the same line); treat as unreachable.
 
 Today multiple or zero merge-bases only disable the docs exemption, and a bump with a missing
 merge-base target still passes by arithmetic (release_target.py:239-252). The new rule makes
-both hard failures. `next_target` (:89-96) tolerates a missing base target only at
-`BOOTSTRAP_BASE_SHA`; keep that exception, otherwise a missing A is fatal. Tests for each.
+both hard failures. Bootstrap: when the tested base is `BOOTSTRAP_BASE_SHA` (no target file at B), the dev rule does
+not apply and the existing path runs unchanged (`next_target`, release_target.py:89-96: the PR
+must set `BOOTSTRAP_TARGET`). The dev rule applies only when B has a valid target. Otherwise a
+missing or invalid A is fatal. Add a bootstrap test through `check_pr` (existing bootstrap tests
+at :98-123 call `next_target` only).
+Mode: the fail-closed rows (zero or multiple merge-bases, missing A) and the untouched rule exist
+only in dev mode. With the constant `False`, behavior is exactly today's (no new fail-closed
+checks). Exit removes them with the dev branch.
 The docs-only exemption is unchanged (strict mode); in dev mode it is subsumed by rules 1 and 2.
 
 Accepted risk, stated: in dev mode nothing requires a code-changing PR to carry any bump.
@@ -75,8 +81,9 @@ Rollout: merge this change first, then tell authors of open bumped PRs to drop t
 
 ### Scope (change 1)
 - `tools/release_target.py`: rule above; constant `DEV_PHASE_ALLOW_UNCHANGED_TARGET = True`.
-  `False` restores the current exact-once arithmetic, mandatory `--base-sha` and exact event
-  parents unchanged (change 1 does not touch the parent check).
+  `False` restores today's behavior in full, including today's merge-base handling (no new
+  fail-closed checks), mandatory `--base-sha` and exact event parents (change 1 does not touch
+  the parent check).
 - `tests/unit/tools/test_release_target.py`: parametrize the existing cases on the constant, so
   the strict run keeps today's assertions unchanged; add dev-mode expectations where they
   differ. Of the eight `exactly once` cases (135, 432, 457, 487, 496, 547, 561, 609), six pass in
@@ -87,12 +94,13 @@ Rollout: merge this change first, then tell authors of open bumped PRs to drop t
   dev mode: :595 and the RELEASE_TARGET parametrization of :510. `test_reversed_parents_refuse`
   (:77) is unchanged.
 - `tests/unit/tooling/test_workflow_policy_coherence.py:42-60`: pins `cicd.md:545-546` and the
-  "head and merge targets must agree and equal base patch+1" sentence; update both with the
+  "head and merge targets must agree and equal base patch+1" sentence (cicd.md:564); update both with the
   paragraph. Also check `test_release_identity_workflow_policy.py:68-72` (greps
   release_target.py text for any new constant).
 - `docs/standards/cicd.md`: paragraph :545-548; pin-update text :15-19 (a pin PR now needs only
-  the `WORKFLOW_SHA256` edit); :563 and :581; owner checklist from :584 (the "prevent same-target
-  parallel landings" rule is now the norm; add the pre-release target check).
+  the `WORKFLOW_SHA256` edit); :563 and :581; owner checklist from :584 (replace the sentence at :586-587 (owner must prevent parallel PRs landing with the same
+  unchanged target) with: in dev mode same-target landings are allowed; the owner instead checks
+  before each release that the target is above the release state, and lands a bump PR if not).
 - `docs/plans/521-pr-release-target.md`: one-line pointer.
 - No `.github/workflows/ci.yml` change, so `WORKFLOW_SHA256` does not move.
 - Out of scope: `WORKFLOW_SHA256` automation, publication, branch protection, merge queue,
@@ -102,7 +110,10 @@ Rollout: merge this change first, then tell authors of open bumped PRs to drop t
 - Every truth-table row, including both fail-closed merge-base rows and the bootstrap exception.
 - Unchanged workflow-code PR (`ci.yml` edit, target untouched) passes.
 - Constant `False` (monkeypatch) restores every existing assertion.
-- Same-target / different-source negative cases for the downstream readers (below).
+- Same-target / different-source negative cases, one per reader, in `test_staging_release.py`,
+  `test_qualify_image_exporter.py`, `test_deployment_smoke.py` and `test_deployment_rehearsal.py`
+  (reuse an existing source-mismatch test if one already covers it; no reader code changes).
+- Bootstrap PR through `check_pr` (see above).
 - Existing release-identity and staging tests still pass; full suite before merge.
 
 ## Change 2 (SEPARATE PR, owner decides, higher risk): stale-base race
