@@ -125,6 +125,13 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: Observation QC threshold configuration
 
+- `services/qc.py::_apply_spike` requires a strict local extremum before either
+  magnitude threshold. Monotonic/tied readings are judged without a spike flag;
+  duplicate-time, missing or cross-segment neighbour context cannot establish a
+  temporal spike. Relative mode with a zero previous value remains unevaluable.
+  Historical false flags need selective audited repair, not a blanket QC reset.
+  See `docs/plans/2026-11-24-spike-qc-correction.md` before scheduling model reruns.
+
 - Generic private-deployment entry: `docs/deployment-quickstart.md` and
   `docs/deployment/profiles.md`. `tools/deployment_profile.py` consumes the shared
   typed evaluation and adds bounded render-only Compose evidence. There is no
