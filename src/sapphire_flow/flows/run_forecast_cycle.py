@@ -3593,6 +3593,7 @@ def run_forecast_cycle_flow(
                     id_gen=id_gen,
                     fetch_candidate=selected_fetch_candidate,
                     eligible_group_pairs=selected_group_weather_pairs,
+                    minimum_horizon=config.operational_weather.negotiated_horizon_minimum,
                 )
                 prepared_weather = negotiated.prepared
                 weather_refresh = OperationalWeatherRefresh(

@@ -257,3 +257,15 @@ against real station statics, deploy the isolated new-model worker without chang
 the legacy worker image/routing, prepare real V2 weather, run a manual forecast,
 publish under the owner's approved scope and verify reviewer API/dashboard results.
 No activation, station promotion, or live forecast success is claimed here.
+
+
+Daily CMAL source-cycle policy (owner confirmed 24 November): apply
+`config/overlays/nepal-cmal-daily.toml` only to the isolated CMAL job and worker.
+Its 12-hour UTC candidate cadence admits **00z and 12z only**, including fallback;
+06z and 18z are reserved for later use. This cycle policy is independent of the
+model's START18UTC aggregation boundary. `minimum_negotiated_horizon_days = 11`
+refuses short candidates and walks back within the existing age bound. Use the
+longest common complete prefix from an accepted cycle, up to the model's 15 days;
+never silently reduce below 11 or synthesize missing periods. Existing jobs keep
+their defaults. Verify the merged registered-job and actual-worker config both
+contain these settings before activation; changing this file does not deploy it.

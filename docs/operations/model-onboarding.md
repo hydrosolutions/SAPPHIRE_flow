@@ -437,3 +437,15 @@ publish forecasts. Legacy skill, hindcast and event-review paths refuse/exclude
 these period-qualified forecasts until observation support is qualified. Mixed
 known/unknown period ensembles cannot be combined. Daily evaluation stays off
 for this isolated job. Revisit temporal aggregation before sub-daily deployment.
+
+
+Daily CMAL source-cycle policy (owner confirmed 24 November): apply
+`config/overlays/nepal-cmal-daily.toml` only to the isolated CMAL job and worker.
+Its 12-hour UTC candidate cadence admits **00z and 12z only**, including fallback;
+06z and 18z are reserved for later use. This cycle policy is independent of the
+model's START18UTC aggregation boundary. `minimum_negotiated_horizon_days = 11`
+refuses short candidates and walks back within the existing age bound. Use the
+longest common complete prefix from an accepted cycle, up to the model's 15 days;
+never silently reduce below 11 or synthesize missing periods. Existing jobs keep
+their defaults. Verify the merged registered-job and actual-worker config both
+contain these settings before activation; changing this file does not deploy it.
