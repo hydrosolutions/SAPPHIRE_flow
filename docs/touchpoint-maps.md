@@ -2860,8 +2860,12 @@ classified as outside training. Event-review already permits null training bound
 The selected-weather route admits `solar_net_radiation` and
 `thermal_net_radiation` only with qualified normalized source intervals.
 `types/recap_intervals.py` owns duration/conversion semantics; construction roots
-must propagate `RecapGatewayConfig.interval_qualification`. Requested station
-channel unions flow through preparation, refresh, adapter batching and both
+must propagate `RecapGatewayConfig.interval_qualification`. Daily support,
+sample validation and daily reduction share its
+`qualified_ifs_horizon_hours`: 00z/12z through 360h, conservatively 06z/18z through
+72h. A terminal temperature state cannot create another accumulation interval
+or complete a partial day. Actual source coverage remains a separate gate.
+Requested station channel unions flow through preparation, refresh, adapter batching and both
 fingerprint variants. Daily consumers use `period_weather_value`; never select
 all non-precipitation features as temperature. Future weighting applies only to
 complete qualified Recap support. Preserve old fingerprints/codec bytes, source

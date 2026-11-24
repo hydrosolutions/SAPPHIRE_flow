@@ -15,6 +15,7 @@ from sapphire_flow.types.recap_intervals import (
     RADIATION_CONTRACT_REVISION,
     GatewayIntervalContract,
     GatewayIntervalQualification,
+    qualified_ifs_horizon_hours,
     qualified_interval_duration,
     radiation_mean_flux,
 )
@@ -96,14 +97,56 @@ class TestRadiationMeanFlux:
                 qualification=QUALIFIED,
             )
 
-    @pytest.mark.parametrize("lead", [-3, 1, 145, 147, 360])
+    @pytest.mark.parametrize("hour", [0, 12])
+    @pytest.mark.parametrize("lead", [-3, 1, 145, 147, 357, 360])
     def test_invalid_ifs_start_does_not_borrow_neighbor_duration(
-        self, lead: int
+        self, hour: int, lead: int
     ) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=hour))
         with pytest.raises(ValueError, match="qualified source schedule"):
             qualified_interval_duration(
-                ensure_utc(ISSUE + timedelta(hours=lead)), ISSUE, "ifs"
+                ensure_utc(run + timedelta(hours=lead)), run, "ifs"
             )
+
+    @pytest.mark.parametrize(
+        ("lead", "hours"), [(69, 3), (72, 3), (141, 3), (144, 6), (258, 6), (354, 6)]
+    )
+    def test_noon_cycle_signed_flux_uses_the_long_schedule(
+        self, lead: int, hours: int
+    ) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=12))
+        assert (
+            radiation_mean_flux(
+                -100.0 * hours * 3600,
+                start=ensure_utc(run + timedelta(hours=lead)),
+                source_run=run,
+                source="ifs",
+                qualification=QUALIFIED,
+            )
+            == -100.0
+        )
+
+    @pytest.mark.parametrize("hour", [6, 18])
+    def test_short_cycles_keep_their_qualified_limit(self, hour: int) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=hour))
+        assert qualified_interval_duration(
+            ensure_utc(run + timedelta(hours=69)), run, "ifs"
+        ) == timedelta(hours=3)
+        with pytest.raises(ValueError, match="qualified source schedule"):
+            qualified_interval_duration(
+                ensure_utc(run + timedelta(hours=72)), run, "ifs"
+            )
+
+    def test_noon_cycle_refuses_off_hour_interval(self) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=12))
+        with pytest.raises(ValueError, match="off the source grid"):
+            qualified_interval_duration(
+                ensure_utc(run + timedelta(hours=72, minutes=1)), run, "ifs"
+            )
+
+    def test_horizon_refuses_non_cycle_source_run(self) -> None:
+        with pytest.raises(ValueError, match="six-hour UTC source cycle"):
+            qualified_ifs_horizon_hours(ensure_utc(ISSUE + timedelta(hours=1)))
 
     def test_era5_original_day_required(self) -> None:
         with pytest.raises(ValueError, match="source UTC day"):
@@ -113,16 +156,20 @@ class TestRadiationMeanFlux:
 
 
 class TestRadiationDailyReduction:
-    def test_mixed_intervals_conserve_energy_and_missing_remains_missing(self) -> None:
-        start = ensure_utc(ISSUE + timedelta(hours=138))
-        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    @pytest.mark.parametrize("hour", [0, 12])
+    def test_mixed_intervals_conserve_energy_and_missing_remains_missing(
+        self, hour: int
+    ) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=hour))
+        start = ensure_utc(run + timedelta(hours=138))
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=start.hour))
         samples = tuple(
             OperationalWeatherSample(
                 parameter="thermal_net_radiation",
                 source=OperationalWeatherSource.IFS,
-                source_run=ISSUE,
-                valid_time=ensure_utc(ISSUE + timedelta(hours=lead)),
-                interval_end=ensure_utc(ISSUE + timedelta(hours=lead + step)),
+                source_run=run,
+                valid_time=ensure_utc(run + timedelta(hours=lead)),
+                interval_end=ensure_utc(run + timedelta(hours=lead + step)),
                 value=value,
                 product=WeatherProductIdentity.CONTROL,
                 contract_revision=RADIATION_CONTRACT_REVISION,

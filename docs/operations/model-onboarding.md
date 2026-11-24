@@ -213,6 +213,18 @@ ERA5 energy is divided by 3600; IFS energy by the qualified 3h/6h duration.
 Daily radiation conserves energy through duration weighting; signed thermal
 flux is valid. Missing support remains missing and is never gap-filled.
 
+The qualified IFS schedule admits **00z and 12z** through end lead 360 hours:
+three-hour intervals before lead 144, then six-hour intervals, with the final
+START-labelled interval at lead 354. This follows the
+[ECMWF control forecast schedule](https://www.ecmwf.int/en/forecasts/datasets/open-data).
+The shared horizon also bounds temperature snapshots, precipitation and complete
+daily support. The existing conservative 72-hour admission remains for 06z/18z;
+those cycles need separate qualification before expansion. This is a maximum
+admissible schedule, not a claim that the Gateway supplies the entire tail.
+Check actual coverage even when requesting `horizon_days=15`: a source tail of
+eleven days may yield fewer complete days on a shifted model grid. Do not lower
+the scoped operational minimum or pad missing periods without an owner decision.
+
 Add these exact names to the scoped Nepal NWP capabilities only after qualifying
 ingestion. Keep global capabilities unchanged. The selected UTC-daily control
 route negotiates a common complete prefix for FI group models whose future

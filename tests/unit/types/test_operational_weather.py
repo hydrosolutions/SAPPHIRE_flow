@@ -13,6 +13,7 @@ from sapphire_flow.types.operational_weather import (
     OperationalWeatherWindow,
     WeatherProductIdentity,
     daily_weather_value,
+    qualified_ifs_daily_support,
 )
 from sapphire_flow.types.time_grid import TimeGrid
 
@@ -109,14 +110,18 @@ class TestDailyWeatherValue:
         )
         assert daily_weather_value(start, samples, "temperature", grid=grid) == 7.8
 
-    def test_terminal_temperature_point_does_not_extend_source_horizon(self) -> None:
-        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=6))
+    @pytest.mark.parametrize("hour", [0, 12])
+    def test_terminal_temperature_point_does_not_extend_source_horizon(
+        self, hour: int
+    ) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=hour))
+        grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=(6 + hour) % 24))
         samples = tuple(
             OperationalWeatherSample(
                 parameter="temperature",
                 source=OperationalWeatherSource.IFS,
-                valid_time=ensure_utc(ISSUE + timedelta(hours=lead)),
-                source_run=ISSUE,
+                valid_time=ensure_utc(run + timedelta(hours=lead)),
+                source_run=run,
                 value=10.0,
                 product=WeatherProductIdentity.CONTROL,
             )
@@ -124,7 +129,7 @@ class TestDailyWeatherValue:
         )
         assert (
             daily_weather_value(
-                ensure_utc(ISSUE + timedelta(hours=342)),
+                ensure_utc(run + timedelta(hours=342)),
                 samples,
                 "temperature",
                 grid=grid,
@@ -172,14 +177,21 @@ class TestOperationalWeatherSample:
         sample = ifs_day(6).samples[0]
         assert sample.interval_end == ISSUE + timedelta(hours=150)
 
-    def test_final_long_cycle_interval_closes_at_360_hours(self) -> None:
-        sample = ifs_day(14).samples[3]
-        assert sample.interval_end == ISSUE + timedelta(hours=360)
+    @pytest.mark.parametrize("hour", [0, 12])
+    def test_final_long_cycle_interval_closes_at_360_hours(self, hour: int) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=hour))
+        sample = replace(
+            ifs_day(14).samples[3],
+            source_run=run,
+            valid_time=ensure_utc(run + timedelta(hours=354)),
+            interval_end=ensure_utc(run + timedelta(hours=360)),
+        )
+        assert sample.interval_end == run + timedelta(hours=360)
         with pytest.raises(ValueError, match="qualified IFS horizon"):
             replace(
                 sample,
-                valid_time=ensure_utc(ISSUE + timedelta(hours=360)),
-                interval_end=ensure_utc(ISSUE + timedelta(hours=366)),
+                valid_time=ensure_utc(run + timedelta(hours=360)),
+                interval_end=ensure_utc(run + timedelta(hours=366)),
             )
 
     def test_rejects_double_shifted_or_wrong_interval(self) -> None:
@@ -198,7 +210,7 @@ class TestOperationalWeatherSample:
         with pytest.raises(ValueError, match="product conflicts"):
             replace(ifs_day().samples[0], product=WeatherProductIdentity.REANALYSIS)
 
-    @pytest.mark.parametrize("hour", [6, 12, 18])
+    @pytest.mark.parametrize("hour", [6, 18])
     def test_short_cycles_end_at_72_hours(self, hour: int) -> None:
         run = ensure_utc(ISSUE + timedelta(hours=hour))
         sample = replace(
@@ -219,6 +231,23 @@ class TestOperationalWeatherSample:
         sample = ifs_day().samples[-1]
         with pytest.raises(ValueError, match="snapshot"):
             replace(sample, interval_end=ensure_utc(ISSUE + timedelta(days=1)))
+
+
+class TestQualifiedIfsDailySupport:
+    def test_noon_cycle_has_complete_late_daily_support(self) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=12))
+        assert qualified_ifs_daily_support(
+            run, ensure_utc(run + timedelta(hours=324))
+        ) == tuple(
+            ensure_utc(run + timedelta(hours=lead)) for lead in (324, 330, 336, 342)
+        )
+
+    def test_noon_cycle_does_not_extend_a_partial_terminal_day(self) -> None:
+        run = ensure_utc(ISSUE + timedelta(hours=12))
+        assert (
+            qualified_ifs_daily_support(run, ensure_utc(run + timedelta(hours=348)))
+            == ()
+        )
 
 
 class TestOperationalWeatherDay:
