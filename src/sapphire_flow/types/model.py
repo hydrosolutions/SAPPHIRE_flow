@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+    from sapphire_flow.types.time_grid import ModelTimeGrid
 
 ModelParams = dict[str, Any]
 ModelArtifact = Any
@@ -79,6 +80,7 @@ class StationModelInputs:
     # default and every incumbent construction site keeps it.
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
     source_evidence: StationSourceEvidence | None = None
+    time_grid: ModelTimeGrid | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -89,6 +91,7 @@ class StationTrainingData:
     static: pl.DataFrame | None  # single-row: [attr1, attr2, ...]
     time_step: timedelta
     val_start: UtcDatetime | None
+    time_grid: ModelTimeGrid | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -104,6 +107,7 @@ class GroupModelInputs:
     time_step: timedelta
     source_evidence: tuple[tuple[StationId, StationSourceEvidence], ...] = ()
     forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
+    time_grid: ModelTimeGrid | None = None
 
     def for_station(self, station_id: StationId) -> StationInputData:
         if station_id not in self.station_ids:
@@ -137,6 +141,7 @@ class GroupTrainingData:
     static: pl.DataFrame | None  # [station_id, attr1, attr2, ...] — N rows
     time_step: timedelta
     val_start: UtcDatetime | None
+    time_grid: ModelTimeGrid | None = None
 
     def for_station(self, station_id: StationId) -> StationTrainingData:
         """Extract single-station slices from stacked DataFrames."""
@@ -160,6 +165,7 @@ class GroupTrainingData:
             static=static_filtered,
             time_step=self.time_step,
             val_start=self.val_start,
+            time_grid=self.time_grid,
         )
 
 
@@ -321,8 +327,13 @@ class ModelDataRequirements:
     # None preserves legacy native declarations; empty explicitly needs no
     # target history. Output target names alone do not imply input history.
     required_past_targets: frozenset[str] | None = None
+    time_grid: ModelTimeGrid | None = None
 
     def __post_init__(self) -> None:
+        if self.time_grid is not None and self.supported_time_steps != frozenset(
+            {self.time_grid.grid.step}
+        ):
+            raise ValueError("declared time grid must match the supported time step")
         if self.lookback_steps < 1:
             raise ValueError(f"lookback_steps must be ≥ 1, got {self.lookback_steps}")
         if self.forecast_horizon_steps < 1:

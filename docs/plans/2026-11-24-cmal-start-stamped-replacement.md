@@ -1,6 +1,6 @@
 # Nepal start-stamped CMAL replacement
 
-status: DRAFT
+status: READY
 
 ## Reviewed first slice
 
@@ -60,8 +60,8 @@ its latest visible tag 0.1.390 does not. Merged FI 0.2.10 at
 TimeGrid, PeriodLabel and output temporal metadata. Pin exact tested revisions.
 Use FI's native declaration, never Aquacast's private delivery-contract keyword.
 
-Base main is b9734fc6 (release target 0.1.1184), including the quantile-skill and
-observation spike-QC fixes. This integration's release target is 0.1.1185.
+Base main is c6bf8480 (release target 0.1.1185), including the merged dependency
+integration, quantile-skill and observation spike-QC fixes.
 M2a selected-weather preparation
 is merged. Model/observation/FI/output consumers remain on the old contract:
 the shim rebuilds ModelInputs without grid metadata, the FI adapter does not
@@ -138,9 +138,8 @@ training, hindcast or skill work complete.
   Combining outputs requires identical period definitions; never silently merge
   known START with unknown or a different grid. No historical score rewrite.
 
-The dependency/metadata slice received independent patch approval with 297 passing
-model/adapter tests. The operational design above remains DRAFT until its bounded
-review is complete. No host modification has been made by this branch.
+The dependency/metadata slice received independent patch approval and merged as
+PR #634 after all required CI checks passed. No host modification was made.
 
 The revised independent review resolved model-grid, observation exclusion,
 dependency-version and persisted-period concerns. Its remaining isolation
@@ -148,8 +147,17 @@ findings are addressed by the explicit immutable legacy-image and routing checks
 above; missing availability is not repaired by claiming compatibility on the new
 runtime. Its scope concern narrows integrity work to existing header protection
 and grants, without changing value hashing or adding a new evidence mechanism.
-The review report remains local. Operational implementation remains DRAFT while
-the first dependency slice completes its repository-wide regression gate.
+The review report remains local. The orchestrator sets the operational plan READY
+after that independent review and the above resolutions, with PR #634's full CI
+passing. Readiness authorizes implementation, not release or activation. The
+legacy-image isolation proof remains a mandatory deployment gate.
+
+The next boundary slice adds typed model/input grid declarations and validates
+artifact grids at load, predict and warm-start retrain. Its independent patch
+review requested the retrain check; that finding is resolved with regression
+coverage. Fully unknown legacy anchors remain unchanged. Operational producers,
+new model registration and output-period storage/API are still outstanding, so
+this slice alone cannot activate the replacement model.
 
 1. Upgrade Aquacast and FI together, regenerate the lock using uv, preserve the
    optional-extra boundary and frozen deployment dependencies. Inspect upstream
