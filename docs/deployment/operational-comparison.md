@@ -229,6 +229,16 @@ has not checked. Keep raw records, supporting evidence and selected model inputs
 separate. Counts that omit unchecked dependencies are lower bounds, not a complete
 transfer budget; a successful local rehearsal does not clear those omissions.
 
+For several models, require a target-read disposition for every station/model pair:
+read, deliberately omitted, excluded, or still pending. An omitted member stays
+visible and must not appear as a successful empty query. Coverage of only the
+queried members is a partial result, not weather availability or forecast readiness.
+Deployment support must apply row and encoded-data limits to the union of all
+selected observation windows before loading them, counting overlaps once. A scope
+that exceeds these limits must stop rather than being split into individually
+passing pieces. The qualified root reader requires fresh inventory accounting;
+combining it with prior metadata reads needs the remaining integration checks.
+
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
 record by that order. Preserve the required selection semantics and qualify subsequent
