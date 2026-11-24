@@ -30,6 +30,10 @@ def compute_bma_weights(
             s
             for s in scores
             if s.metric.lower() == metric.lower()
+            and s.computation_version >= 3
+            and math.isfinite(s.score)
+            and s.score >= 0
+            and metric.lower() == "crps"
             and s.freshness == SkillFreshness.CURRENT
             and (lead_time_hours is None or s.lead_time_hours == lead_time_hours)
         ]

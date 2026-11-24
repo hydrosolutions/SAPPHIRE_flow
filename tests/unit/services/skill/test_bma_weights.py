@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -37,7 +38,7 @@ def _make_score(
         model_artifact_id=None,
         skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
         forcing_type=ForcingType.NWP_ARCHIVE,
-        computation_version=1,
+        computation_version=3,
         computed_at=computed_at,
         lead_time_hours=lead_time_hours,
         season=None,
@@ -135,3 +136,26 @@ class TestComputeBmaWeights:
         weights = compute_bma_weights(_STATION_ID, "discharge", scores, metric="crps")
         assert set(weights) == {_MODEL_A, _MODEL_B}
         assert sum(weights.values()) == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("score", [float("nan"), float("inf"), -1.0])
+    def test_undefined_or_invalid_scores_do_not_get_weights(self, score: float) -> None:
+        assert (
+            compute_bma_weights(
+                _STATION_ID, "discharge", {_MODEL_A: [_make_score(_MODEL_A, score)]}
+            )
+            == {}
+        )
+
+    def test_pre_correction_crps_does_not_get_reused(self) -> None:
+        old = replace(_make_score(_MODEL_A, 0.1), computation_version=2)
+        assert compute_bma_weights(_STATION_ID, "discharge", {_MODEL_A: [old]}) == {}
+
+    def test_quantile_score_cannot_be_used_as_crps(self) -> None:
+        metric = "quantile_score_trapz_p05_p95"
+        score = _make_score(_MODEL_A, 1, metric=metric)
+        assert (
+            compute_bma_weights(
+                _STATION_ID, "discharge", {_MODEL_A: [score]}, metric=metric
+            )
+            == {}
+        )

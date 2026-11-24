@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 import traceback
 from contextlib import nullcontext
@@ -881,24 +882,35 @@ def evaluate_skill_gate(
     skill_store: SkillStore,
     config: DeploymentConfig,
 ) -> SkillGateResult:
-    """Promote/reject an artifact from its stored skill scores.
-
-    Review fixer round (major): migrations 0051/0052 and
-    `_COMPUTATION_VERSION = 2` deliberately let a stale (pre-Plan-228,
-    quantity-mismatched) score row and its corrected recompute coexist —
-    ``mark_stale`` flips ``freshness`` without deleting the old row, and a
-    version bump gives the recompute a natural key the stale row doesn't
-    occupy. ``fetch_skill_scores`` returns EVERY version, so without this
-    filter a re-evaluation could let a stale v1 value decide the worst
-    score and wrongly reject (or promote) an artifact whose CURRENT scores
-    say otherwise. Only ``freshness == CURRENT`` rows at the highest
-    ``computation_version`` present among them control the gate.
-    """
+    """Gate only corrected scores; an unrecomputed stratum fails closed."""
     scores = skill_store.fetch_skill_scores(model_id, model_artifact_id)
     current_scores = [s for s in scores if s.freshness == SkillFreshness.CURRENT]
+    versions: dict[tuple[object, ...], int] = {}
+    for score in current_scores:
+        scope = (
+            score.station_id,
+            score.parameter,
+            score.skill_source,
+            score.forcing_type,
+            score.lead_time_hours,
+            score.season,
+            score.flow_regime,
+            score.time_step_seconds,
+            score.phase_offset_seconds,
+        )
+        versions[scope] = max(versions.get(scope, 0), score.computation_version)
+    incomplete_recompute = any(version < 3 for version in versions.values())
     max_version = max((s.computation_version for s in current_scores), default=None)
-    gate_scores = [s for s in current_scores if s.computation_version == max_version]
-    valid_scores = [s for s in gate_scores if s.sample_size >= config.min_skill_samples]
+    gate_scores = [
+        s
+        for s in current_scores
+        if s.computation_version == max_version and s.computation_version >= 3
+    ]
+    valid_scores = [
+        s
+        for s in gate_scores
+        if s.sample_size >= config.min_skill_samples and math.isfinite(s.score)
+    ]
 
     metric_worst: dict[str, float] = {}
     for score in valid_scores:
@@ -920,7 +932,9 @@ def evaluate_skill_gate(
         for name, cfg in config.skill_gate_thresholds.items()
     )
 
-    failing: set[str] = set()
+    failing: set[str] = (
+        set(config.skill_gate_thresholds) if incomplete_recompute else set()
+    )
     for metric_name, gate_cfg in config.skill_gate_thresholds.items():
         worst = metric_worst.get(metric_name)
         if worst is None:
