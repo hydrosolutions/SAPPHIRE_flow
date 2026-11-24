@@ -82,6 +82,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
 )
 from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
+from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
 from sapphire_flow.types.group_input import (
     GroupMemberInputIssue,
     GroupMemberInputReason,
@@ -239,10 +240,29 @@ def _ensemble_from_variable_output(
     parameter: str,
     issue_datetime: datetime,
     var_output: VariableOutput,
+    time_grid: ModelTimeGrid | None = None,
 ) -> ForecastEnsemble:
     issued_at = ensure_utc(issue_datetime)
     units = fi_unit_to_canonical(var_output.metadata.unit)
     time_step = var_output.metadata.timedelta
+    period = None
+    if time_grid is not None:
+        metadata = var_output.metadata
+        if (
+            metadata.timedelta != time_grid.grid.step
+            or metadata.origin != time_grid.grid.phase
+            or metadata.label.value != time_grid.label.value
+            or metadata.offset != 1
+            or metadata.aggregation is FIUnknown.UNKNOWN
+        ):
+            raise ModelOutputError(
+                "output period metadata differs from declared model grid"
+            )
+        period = ForecastPeriodDefinition(
+            grid=time_grid.grid,
+            label=time_grid.label,
+            aggregation=fi_aggregation_to_canonical(metadata.aggregation),
+        )
 
     # Trajectories/MEMBERS is richest and the only combinable representation (FI 1.14).
     if var_output.trajectories is not None:
@@ -260,6 +280,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -282,6 +303,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -304,6 +326,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -533,6 +556,7 @@ def _ensembles_from_station_variables(
     station_key: str,
     station_vars: dict[str, VariableOutput],
     issue_datetime: datetime,
+    time_grid: ModelTimeGrid | None = None,
 ) -> dict[str, ForecastEnsemble]:
     ensembles: dict[str, ForecastEnsemble] = {}
     for parameter, var_output in station_vars.items():
@@ -548,6 +572,7 @@ def _ensembles_from_station_variables(
             parameter=parameter,
             issue_datetime=issue_datetime,
             var_output=var_output,
+            time_grid=time_grid,
         )
     return ensembles
 
@@ -1371,11 +1396,14 @@ class ForecastInterfaceAdapter:
         )
         output = _output_from_result(result)
         station_key, station_vars = _station_variables_for_single_station(output)
+        if inputs.time_grid is not None and output.issue_datetime != inputs.issue_time:
+            raise ModelOutputError("period output issue differs from requested issue")
         ensembles = _ensembles_from_station_variables(
             station_id=inputs.station_id,
             station_key=station_key,
             station_vars=station_vars,
             issue_datetime=output.issue_datetime,
+            time_grid=inputs.time_grid,
         )
         if not ensembles:
             raise ModelOutputError("model produced no usable output")
@@ -1454,6 +1482,8 @@ class ForecastInterfaceAdapter:
         )
         output = _output_from_result(result)
         missing = set(station_ids_by_code) - set(output.variables)
+        if inputs.time_grid is not None and output.issue_datetime != inputs.issue_time:
+            raise ModelOutputError("period output issue differs from requested issue")
         if missing:
             raise ModelOutputError(
                 f"ForecastInterface model omitted requested stations: {sorted(missing)}"
@@ -1476,6 +1506,7 @@ class ForecastInterfaceAdapter:
                 station_key=station_key,
                 station_vars=station_vars,
                 issue_datetime=output.issue_datetime,
+                time_grid=inputs.time_grid,
             )
             if not ensembles:
                 log.warning(

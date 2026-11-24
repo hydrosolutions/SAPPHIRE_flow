@@ -43,6 +43,7 @@ from sapphire_flow.services.network_overview import (
     forecast_freshness,
 )
 from sapphire_flow.store.daily_forecast_store import PgDailyForecastStore
+from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.store.forecast_publication_store import PgForecastPublicationStore
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.observation_store import PgObservationStore
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
     )
 
 _HEADER_NAMES = (
+    "period_definition",
     "id",
     "station_id",
     "model_id",
@@ -713,6 +715,11 @@ class NetworkOverviewReader:
             else OverviewSeries(availability=OverviewAvailability.INVALID_SERIES)
         )
         return OverviewForecastResponse(
+            period_definition=ForecastPeriodPayload.model_validate(
+                record.ensemble.period_definition.content
+            )
+            if record.ensemble.period_definition is not None
+            else None,
             model_id=record.model_id,
             parameter=record.ensemble.parameter,
             data_use=record.data_use,

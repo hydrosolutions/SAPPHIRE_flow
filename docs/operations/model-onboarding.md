@@ -413,3 +413,27 @@ coverage flags retain the missing inputs. Mixed or unknown/known group grids,
 END-labelled inputs and unscoped selections refuse. This input integration alone
 does not activate the replacement: output-period persistence/API qualification,
 artifact registration and isolated worker deployment remain required.
+
+
+### 23 November static-encoder CMAL output contract
+
+The separately registered `cmal_nepal_static_encoder_20261123` uses the owner's
+23 November checkpoint with Aquacast 0.1.396 and ForecastInterface 0.2.10. Its
+vendored inference config changes only CPU device, batch size (256), and loader
+workers (0); scientific training provenance remains explicitly unknown.
+
+New declared-grid forecasts retain `period_definition` (step/origin in seconds,
+START/END label, aggregation) in storage and the detail, listing and network
+overview API. For this CMAL it is daily, origin 64800, START, mean discharge in
+m³/s. The real issue time stays unchanged: a 00:00 UTC issue begins with the
+previous day's 18:00 UTC period (signed start lead −6 hours). FI offset is 1,
+measured from the last history sample, not from the issue time. Overview support
+uses physical period bounds and retains original labels. Legacy forecasts have
+null period metadata; no historical row is relabelled.
+
+The new model requires an isolated worker and explicit model selection as in the
+replacement plan. Registration in the package does not activate the artifact or
+publish forecasts. Legacy skill, hindcast and event-review paths refuse/exclude
+these period-qualified forecasts until observation support is qualified. Mixed
+known/unknown period ensembles cannot be combined. Daily evaluation stays off
+for this isolated job. Revisit temporal aggregation before sub-daily deployment.

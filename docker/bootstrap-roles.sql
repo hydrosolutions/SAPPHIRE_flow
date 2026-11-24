@@ -581,7 +581,7 @@ GRANT SELECT (
         "version", "warm_up_source", "warm_up_state_age_hours",
         "observation_staleness_hours", "created_at", "updated_at", "parameter",
         "units", "qc_status", "qc_flags", "input_quality", "input_quality_flags",
-        "rating_curve_id", "weather_evidence_version"
+        "rating_curve_id", "weather_evidence_version", "period_definition"
 ) ON public.forecasts TO sapphire_api, sapphire_worker;
 GRANT SELECT (
     "data_use", "id", "attempt_id", "station_id", "model_id", "model_artifact_id",
