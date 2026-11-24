@@ -215,8 +215,8 @@ class NetworkOverviewReader:
         )
         admitted_keys = set(headers) | set(daily_refs)
         missing = self._missing_outputs(assignments, purposes, admitted_keys)
-        projected_counts = Counter(key[0] for key in admitted_keys)
-        projected_counts.update(key[0] for key in missing)
+        projected_counts = Counter((key[0], key[3]) for key in admitted_keys)
+        projected_counts.update((key[0], key[3]) for key in missing)
         if any(count > 4 for count in projected_counts.values()):
             raise ValueError("overview output admission exceeded")
         records = self._records(headers)
@@ -265,7 +265,11 @@ class NetworkOverviewReader:
                     else "standard",
                 )
             )
-        if any(len(items) > 4 for items in output.values()):
+        if any(
+            count > 4
+            for items in output.values()
+            for count in Counter(item.data_use for item in items).values()
+        ):
             raise ValueError("overview output admission exceeded")
         observations = PgObservationStore(self.conn).fetch_overview_observations(
             ids,
@@ -569,11 +573,14 @@ class NetworkOverviewReader:
                 forecasts.c.version.desc(),
                 forecasts.c.id.desc(),
             )
-            .limit(801)
+            .limit(200 * 4 * len(purposes) + 1)
         )
         rows = self.conn.execute(query).mappings().all()
-        if len(rows) > 800 or any(
-            count > 4 for count in Counter(row["station_id"] for row in rows).values()
+        if len(rows) > 200 * 4 * len(purposes) or any(
+            count > 4
+            for count in Counter(
+                (row["station_id"], row["data_use"]) for row in rows
+            ).values()
         ):
             raise ValueError("overview output admission exceeded")
         return {

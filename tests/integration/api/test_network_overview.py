@@ -24,6 +24,7 @@ from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
+from tests.integration.store.test_forecast_store import _seed_artifact, _seed_model
 from tests.integration.store.test_native_rating_forecasts import native_pair
 from tests.integration.store.test_rejected_forecast_store import savepoint_factory
 
@@ -136,6 +137,101 @@ def overview_case(
             app.dependency_overrides.update(previous)
             app.state.access_token_pepper = previous_pepper
             transaction.rollback()
+
+
+class TestCombinedPurposeAdmission:
+    @pytest.mark.parametrize("model_count", [3, 4])
+    @pytest.mark.parametrize(
+        "purposes",
+        [
+            ("standard",),
+            ("provisional_rating",),
+            ("standard", "provisional_rating"),
+            ("provisional_rating", "standard"),
+        ],
+    )
+    def test_assignments_with_absences_fit_each_purpose(
+        self, overview_case: tuple, model_count: int, purposes: tuple[str, ...]
+    ) -> None:
+        conn, client, native, _, network, _ = overview_case
+        conn.execute(sa.text("RESET ROLE"))
+        for index in range(model_count - 1):
+            model_id = _seed_model(conn, f"overview-extra-{index}")
+            conn.execute(
+                sa.insert(model_assignments).values(
+                    station_id=native.station_id,
+                    model_id=model_id,
+                    time_step=timedelta(days=1),
+                    status="active",
+                )
+            )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        response = client.get(
+            f"/api/v1/networks/{network}/overview",
+            params=[("data_use", purpose) for purpose in purposes],
+        )
+        assert response.status_code == 200, response.text
+        entries = response.json()["items"][0]["forecasts"]
+        assert len(entries) == model_count * len(purposes)
+        for purpose in purposes:
+            selected = [entry for entry in entries if entry["data_use"] == purpose]
+            assert len(selected) == model_count
+            assert (
+                sum(entry["availability"] == "no_forecast" for entry in selected)
+                == model_count - 1
+            )
+
+    def test_combined_request_still_refuses_five_outputs_in_one_purpose(
+        self, overview_case: tuple
+    ) -> None:
+        from sapphire_flow.types.ids import ForecastId
+
+        conn, client, native, ordinary, network, _ = overview_case
+        conn.execute(sa.text("RESET ROLE"))
+        for index in range(2):
+            model_id = _seed_model(conn, f"overview-extra-{index}")
+            conn.execute(
+                sa.insert(model_assignments).values(
+                    station_id=native.station_id,
+                    model_id=model_id,
+                    time_step=timedelta(days=1),
+                    status="active",
+                )
+            )
+            if index == 0:
+                artifact_id = _seed_artifact(conn, native.station_id, model_id)
+                for parameter, units in (("discharge", "m³/s"), ("water_level", "m")):
+                    record = replace(
+                        ordinary,
+                        id=ForecastId(uuid4()),
+                        model_id=model_id,
+                        model_artifact_id=artifact_id,
+                        ensemble=replace(
+                            ordinary.ensemble,
+                            model_id=model_id,
+                            parameter=parameter,
+                            units=units,
+                        ),
+                    )
+                    PgForecastStore(
+                        conn,
+                        data_use=record.data_use,
+                        transaction_factory=savepoint_factory(conn),
+                    ).store_forecast(record)
+        extra = replace(
+            ordinary,
+            id=ForecastId(uuid4()),
+            ensemble=replace(ordinary.ensemble, parameter="water_level", units="m"),
+        )
+        PgForecastStore(
+            conn, data_use=extra.data_use, transaction_factory=savepoint_factory(conn)
+        ).store_forecast(extra)
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        response = client.get(
+            f"/api/v1/networks/{network}/overview",
+            params=[("data_use", "standard"), ("data_use", "provisional_rating")],
+        )
+        assert response.status_code == 503
 
 
 class TestOverviewMetadata:

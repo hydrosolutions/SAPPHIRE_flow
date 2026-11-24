@@ -2752,6 +2752,11 @@ see `plans/2026-11-14-nepal-weather-gap-filling.md` and the config reference.
 
 ### Network overview read projection
 
+Admission counts forecast and absence entries per (station, purpose): four per
+purpose, up to eight for combined requests. Keep projected/final/header counts
+and the purpose-scaled header sentinel aligned. Assignment limits stay four per
+station; the 250000-value cap stays shared across purposes.
+
 Route/schema: `api/routes/api_network_overview.py`, `api/network_overview_schemas.py`;
 scoped assembly: `api/network_overview.py`; semantic conditional headers:
 `api/network_overview_cache.py`, route-only `api/cors.py`. Pure series/freshness:

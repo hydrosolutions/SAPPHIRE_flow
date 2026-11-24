@@ -136,13 +136,19 @@ consumer origins. It adds no origins or credentials. Gzip is negotiated only for
 this route; actual Content-Encoding/Content-Length receipts are distinct from
 offline gzip estimates. Existing no-store/CORS behavior is unchanged.
 
-Initial admission caps:200 authorized stations, four output entries per station,
+Admission caps:200 authorized stations, four output entries per station and
+requested purpose (including absence entries), at most eight when both purposes
+are requested,
 512 native valid times/output and250,000 selected value rows overall. These caps
 intersect; their Cartesian maximum is not promised. Daily evidence is bounded to
 16groups×7days,224 selected latest/authoritative attempts,8MiB frozen payload and
 25,000 members/references before materialization. Retry history is not loaded.
 A capacity/evidence failure returns503, never an empty success. The20 data-query
 budget excludes authentication bookkeeping and timeout-setting statements.
+
+The value-row cap remains shared across purposes, so large combined requests can
+still return503. Combined responses can double compact serialization and ETag
+work; the following older single-purpose measurements do not qualify that shape.
 
 Local PostGIS 16 measurements (11 November; Apple M2 Max, 64 GiB RAM,
 Python 3.12.10; four outputs/station,44 native times,
