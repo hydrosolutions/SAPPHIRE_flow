@@ -755,6 +755,8 @@ def _usable(
     record: OperationalForecast | PersistedRejectedForecast,
     settings: EvaluationReadSettings,
 ) -> bool:
+    if ensemble.period_definition is not None:
+        return False
     if any(
         f.status not in (QcStatus.QC_PASSED, QcStatus.QC_SUSPECT, QcStatus.QC_FAILED)
         for f in record.qc_flags

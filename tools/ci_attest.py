@@ -119,7 +119,7 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
 
 # Reviewed workflow bytes bind names to actual commands, action pins and inputs.
 # Update only with the workflow and the producer inventory drift tests.
-WORKFLOW_SHA256 = "9d91db71565a438e8a5bf005dace62ac88f1d4c1ef36c1c393ada2f68f815ba6"
+WORKFLOW_SHA256 = "4896755831a507d4e3ae8bd276113278df1df963dc65360f98069ceb4dd67c3f"
 
 
 def require_workflow(root: Path) -> None:

@@ -1231,7 +1231,7 @@ class TestFutureForcingFetched:
 
 
 class TestGroupHindcastUsesGroupModelInputs:
-    @pytest.mark.parametrize("batch_size", [1, 2, 7])
+    @pytest.mark.parametrize("batch_size", [1, 2, 7, 366, 1827])
     def test_predict_batch_receives_group_model_inputs(self, batch_size: int) -> None:
         from sapphire_flow.types.model import GroupModelInputs
         from tests.fakes.fake_models import FakeGroupForecastModel
@@ -2090,3 +2090,17 @@ class TestHindcastRepresentation:
         assert stored[0].ensemble.values.equals(
             model.ensemble(station.id, _PERIOD_START).values
         )
+
+
+@pytest.mark.parametrize("size", [0, -1, True, 1.5, "7"])
+def test_hindcast_batch_size_rejects_nonpositive_or_noninteger(size: object) -> None:
+    from sapphire_flow.services.hindcast import resolve_hindcast_issue_batch_size
+
+    with pytest.raises(ValueError, match="positive integer"):
+        resolve_hindcast_issue_batch_size(object(), size)  # type: ignore[arg-type]
+
+
+def test_unsupported_model_keeps_single_issue_for_multiyear_request() -> None:
+    from sapphire_flow.services.hindcast import resolve_hindcast_issue_batch_size
+
+    assert resolve_hindcast_issue_batch_size(object(), 1827) == 1

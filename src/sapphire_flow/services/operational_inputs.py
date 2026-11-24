@@ -42,10 +42,12 @@ from sapphire_flow.types.model import (
     StationInputData,
     StationModelInputs,
 )
+from sapphire_flow.types.operational_weather_v2 import FutureWeatherUseV2, WeatherUseV2
 from sapphire_flow.types.recap_intervals import (
     RADIATION_PARAMETERS,
     qualified_interval_duration,
 )
+from sapphire_flow.types.time_grid import PeriodLabel
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -1208,7 +1210,9 @@ def assemble_station_operational_inputs(
             raise ConfigurationError(
                 "selected weather does not belong to this assignment"
             )
-        if isinstance(selected_weather.use.future, FutureWeatherUse):
+        if isinstance(
+            selected_weather.use.future, (FutureWeatherUse, FutureWeatherUseV2)
+        ):
             cycle_time = selected_weather.use.future.receipt.cycle_time
         elif rating_inputs is not None:
             raise ConfigurationError(
@@ -1240,6 +1244,29 @@ def assemble_station_operational_inputs(
         if requirements_override is not None
         else model.data_requirements
     )
+    declared_grid = reqs.time_grid
+    if declared_grid is not None:
+        if (
+            declared_grid != model.data_requirements.time_grid
+            or declared_grid.label is not PeriodLabel.START
+            or declared_grid.grid.step != time_step
+            or time_step != timedelta(days=1)
+            or selected_weather is None
+            or not isinstance(selected_weather.use, WeatherUseV2)
+            or selected_weather.use.grid != declared_grid.grid
+            or rating_inputs is not None
+            or reqs.required_past_targets != frozenset({"discharge"})
+            or reqs.target_parameters != frozenset({"discharge"})
+            or getattr(model, "artifact_scope", None) is not ArtifactScope.GROUP
+        ):
+            raise ConfigurationError(
+                "declared-grid inputs require matching selected daily START "
+                "group weather"
+            )
+    elif selected_weather is not None and isinstance(
+        selected_weather.use, WeatherUseV2
+    ):
+        raise ConfigurationError("period weather requires an explicit model time grid")
     # Plan 228 D4: past_targets bounds are ALIGNED to UTC-calendar bucket
     # boundaries and EXTENDED so `reqs.lookback_steps` buckets are all
     # complete — a non-midnight `issue_time` (a 06/12/18Z cycle) otherwise
@@ -1251,7 +1278,8 @@ def assemble_station_operational_inputs(
     # legitimate — it is the defect, not an exemption: a model declaring a
     # daily step was handed whatever cadence the reanalysis happened to have.
     normalize_standard_discharge = (
-        rating_inputs is None
+        declared_grid is None
+        and rating_inputs is None
         and getattr(model, "artifact_scope", None) is ArtifactScope.GROUP
         and requirements_override is None
         and time_step == timedelta(days=1)
@@ -1261,7 +1289,7 @@ def assemble_station_operational_inputs(
     )
     target_lookback_steps = (
         dict(reqs.declared_lookbacks).get("discharge", reqs.lookback_steps)
-        if normalize_standard_discharge
+        if normalize_standard_discharge or declared_grid is not None
         else reqs.lookback_steps
     )
     past_targets_start, past_targets_end = aligned_lookback_bounds(
@@ -1270,11 +1298,20 @@ def assemble_station_operational_inputs(
     past_dynamic_start, _ = aligned_lookback_bounds(
         issue_time, reqs.lookback_steps, time_step
     )
+    if declared_grid is not None:
+        past_targets_start, past_targets_end = declared_grid.grid.lookback_bounds(
+            issue_time, target_lookback_steps
+        )
+        past_dynamic_start, _ = declared_grid.grid.lookback_bounds(
+            issue_time, reqs.lookback_steps
+        )
 
     # --- past_targets ---
     target_parameters = list(reqs.target_parameters)
     all_observations: list[Observation] = []
-    for parameter in target_parameters:
+    # No compatible period/availability declaration exists for the stored daily
+    # discharge yet. Keep it missing rather than relabelling DHM reporting days.
+    for parameter in target_parameters if declared_grid is None else ():
         obs = obs_store.fetch_observations(
             station_id=station_id,
             parameter=parameter,
@@ -1293,6 +1330,19 @@ def assemble_station_operational_inputs(
     past_targets = resample_to_time_step(
         past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
+    if declared_grid is not None:
+        past_targets = pl.DataFrame(
+            {
+                "timestamp": pl.datetime_range(
+                    past_targets_start,
+                    past_targets_end,
+                    interval=time_step,
+                    closed="left",
+                    eager=True,
+                    time_unit="us",
+                ),
+            }
+        ).with_columns(pl.lit(float("nan")).alias("discharge"))
     rating_lineage = None
     latest_rating_timestamp = None
     if rating_inputs is not None:
@@ -1450,7 +1500,7 @@ def assemble_station_operational_inputs(
     # `[past_targets_end, issue_time)` separately, UNRESAMPLED, for
     # freshness only — it is never mixed into `past_targets`.
     freshness_observations: list[Observation] = list(all_observations)
-    if past_targets_end < issue_time:
+    if declared_grid is None and past_targets_end < issue_time:
         for parameter in target_parameters:
             freshness_observations.extend(
                 obs_store.fetch_observations(
@@ -1491,7 +1541,9 @@ def assemble_station_operational_inputs(
         per_target_counts = {
             p: (
                 int(past_targets[p].is_finite().sum())
-                if normalize_discharge or normalize_standard_discharge
+                if normalize_discharge
+                or normalize_standard_discharge
+                or declared_grid is not None
                 else past_targets[p].drop_nulls().len()
             )
             if p in past_targets.columns
@@ -1608,17 +1660,18 @@ def assemble_station_operational_inputs(
     # `build_future_dynamic_frame` for the full rationale (Plan 151 T6
     # extraction; behaviour unchanged, now shared with the per-track
     # assembler).
-    future_dynamic = build_future_dynamic_frame(
-        nwp_records,
-        time_step=time_step,
-        issue_time=issue_time,
-        forecast_horizon_steps=forecast_horizon_steps,
-        future_dynamic_features=reqs.future_dynamic_features,
-        ensemble_mode=reqs.ensemble_mode,
-        weather_policy=weather_policy,
-    )
     if selected_weather is not None:
         future_dynamic = selected_weather.future_dynamic
+    else:
+        future_dynamic = build_future_dynamic_frame(
+            nwp_records,
+            time_step=time_step,
+            issue_time=issue_time,
+            forecast_horizon_steps=forecast_horizon_steps,
+            future_dynamic_features=reqs.future_dynamic_features,
+            ensemble_mode=reqs.ensemble_mode,
+            weather_policy=weather_policy,
+        )
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:
         log.warning(
@@ -1702,6 +1755,7 @@ def assemble_station_operational_inputs(
     warm_up_source = warm_up.warm_up_source
 
     inputs = StationModelInputs(
+        time_grid=declared_grid,
         station_id=station_id,
         data=StationInputData(
             past_targets=past_targets,
@@ -1738,7 +1792,7 @@ def assemble_station_operational_inputs(
         observation_qc_coverage=observation_qc_coverage,
         input_lineage=rating_lineage,
         normalized_discharge_steps=target_lookback_steps
-        if normalize_standard_discharge
+        if normalize_standard_discharge or declared_grid is not None
         else None,
         nwp_age_hours=nwp_age_hours,
     )

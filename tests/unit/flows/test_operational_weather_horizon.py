@@ -27,6 +27,8 @@ from sapphire_flow.types.forcing_track import (
     ResolvedTrackRequest,
 )
 from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.operational_weather_v2 import FutureWeatherRequestV2
+from sapphire_flow.types.time_grid import TimeGrid
 from sapphire_flow.types.weather import BasinAverageForecast
 from tests.fakes.operational_weather import ISSUE
 from tests.unit.services.test_recap_daily_weather import qualified_rows
@@ -166,6 +168,8 @@ def negotiate_case(
     *,
     days: int = 11,
     floor: int = 1,
+    operational_floor: int = 1,
+    cadence: float = 24,
     exact: bool = False,
     station_scope: bool = False,
     partial_group: bool = False,
@@ -174,9 +178,11 @@ def negotiate_case(
     failure: Exception | None = None,
     eligible_group_pairs: frozenset[tuple[StationId, ModelId]] | None = None,
     extra_model_stations: frozenset[StationId] | None = None,
+    grid: TimeGrid | None = None,
 ) -> tuple[NegotiatedWeather, list[UtcDatetime]]:
     from typing import cast
 
+    from forecast_interface import PeriodLabel, TimeAnchor
     from forecast_interface.input.variable import HorizonSemantics
 
     from sapphire_flow.adapters import forecast_interface as fi
@@ -215,6 +221,9 @@ def negotiate_case(
         },
         dynamic={
             step: fi.SpatialInputSpec(
+                anchor=TimeAnchor()
+                if grid is None
+                else TimeAnchor(origin=grid.phase, label=PeriodLabel.START),
                 data={
                     fi.FISpatialRepresentation.BASIN_AVERAGE: fi.DynamicInputSpec(
                         future_known={
@@ -236,7 +245,7 @@ def negotiate_case(
                             }
                         }
                     )
-                }
+                },
             )
         },
     )
@@ -313,11 +322,37 @@ def negotiate_case(
         )
         for item in track.assignments
     }
+    if grid is not None:
+        assignments = {
+            pair: replace(
+                value,
+                future=FutureWeatherRequestV2(
+                    station_id=pair[0],
+                    source="ifs_ecmwf",
+                    binding_fingerprint="b" * 64,
+                    issue_time=ISSUE,
+                    grid=grid,
+                    eligibility_cutoff=ISSUE,
+                    first_period_start=grid.floor(ISSUE),
+                    requirements=tuple(
+                        replace(
+                            req,
+                            valid_times=tuple(
+                                grid.floor(ISSUE) + step * i for i in range(15)
+                            ),
+                        )
+                        for req in value.future.requirements
+                    ),
+                ),
+            )
+            for pair, value in assignments.items()
+        }
     prepared = PreparedWeatherRefresh(
         specs=(),
         assignments=assignments,
         resolver=FrozenWeatherResolver(bindings=()),
         projections=track.assignments[:1] if partial_group else track.assignments,
+        grid=grid,
     )
     bindings = {
         sid: replace(make_binding(), station_id=sid, nwp_source="ifs_ecmwf")
@@ -344,7 +379,8 @@ def negotiate_case(
                     "value": row.value,
                 }
                 for row in qualified_rows(cycle)
-                if row.valid_time < ISSUE + step * days
+                if row.valid_time
+                < (ISSUE if grid is None else grid.floor(ISSUE)) + step * days
             ]
         )
         return RawFetchOutcome(
@@ -365,14 +401,15 @@ def negotiate_case(
         forecast_bindings=bindings,
         adapter=cast("CandidateAwareForecastSource", Source()),
         policy=ForcingResolutionPolicy(
-            cycle_cadence_hours=24, max_cycle_age_hours=24, max_retries=0
+            cycle_cadence_hours=cadence, max_cycle_age_hours=24, max_retries=0
         ),
         issue_time=ISSUE,
-        earliest_cycle=ISSUE,
+        earliest_cycle=ISSUE if grid is None else ISSUE - step,
         clock=lambda: ISSUE,
         id_gen=uuid4,
         fetch_candidate=fetch,
         eligible_group_pairs=eligible_group_pairs,
+        minimum_horizon=FutureSteps(value=operational_floor),
     )
     assert result.prepared.resolver == prepared.resolver
     assert tuple(item.key for item in result.prepared.projections) == tuple(
@@ -487,3 +524,100 @@ def test_overlapping_models_require_their_own_eligible_members(
     assert result.failure is None
     assert calls == ([] if include_missing_pair else [ISSUE])
     assert bool(result.candidates) is not include_missing_pair
+
+
+@pytest.mark.parametrize("days", [3, 11])
+def test_declared_grid_negotiates_complete_periods_from_older_cycle(days: int) -> None:
+    grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    result, calls = negotiate_case(days=days, grid=grid)
+    assert result.failure is None
+    assert calls == [ISSUE, ISSUE - timedelta(days=1)]
+    for value in result.prepared.assignments.values():
+        assert isinstance(value.future, FutureWeatherRequestV2)
+        assert value.future.issue_time == ISSUE
+        assert value.future.eligibility_cutoff == ISSUE
+        assert value.future.first_period_start == grid.floor(ISSUE)
+        assert all(len(req.valid_times) == days for req in value.future.requirements)
+    for item in result.prepared.projections:
+        assert {h.value for h in item.assignment_horizons.values()} == {days}
+
+
+def test_period_prefix_counts_reporting_days_not_utc_dates() -> None:
+    from sapphire_flow.types.operational_weather import FutureWeatherRequirement
+
+    grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    track = request()
+    start = grid.floor(ISSUE)
+    context = FutureWeatherRequestV2(
+        station_id=track.assignments[0].assignment[0],
+        binding_fingerprint="b" * 64,
+        source="ifs_ecmwf",
+        grid=grid,
+        issue_time=ISSUE,
+        eligibility_cutoff=ISSUE,
+        first_period_start=start,
+        requirements=(
+            FutureWeatherRequirement(
+                parameter="precipitation",
+                member_ids=(0,),
+                valid_times=tuple(start + timedelta(days=i) for i in range(15)),
+            ),
+        ),
+    )
+    rows = {
+        item.assignment[0]: [
+            replace(row, station_id=item.assignment[0])
+            for row in qualified_rows(ISSUE - timedelta(days=1))
+            if start <= row.valid_time < start + timedelta(days=3)
+        ]
+        for item in track.assignments
+    }
+    assert common_prefix(rows, track=track, issue_time=ISSUE, context=context) == 3
+
+
+@pytest.mark.parametrize("days", [7, 10, 11, 15])
+def test_daily_cmal_requires_eleven_days_on_long_cycles(days: int) -> None:
+    from sapphire_flow.flows.operational_weather_horizon import UnavailableCandidate
+
+    grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    result, calls = negotiate_case(
+        days=days, operational_floor=11, cadence=12, grid=grid
+    )
+    assert result.failure is None
+    assert calls
+    assert all(cycle.hour in (0, 12) for cycle in calls)
+    handoff = next(iter(result.candidates.values()))
+    assert isinstance(handoff, UnavailableCandidate) is (days < 11)
+    if days >= 11:
+        # The older fixture cycle ends before the fifteenth reporting day closes.
+        assert {
+            len(value.future.requirements[0].valid_times)
+            for value in result.prepared.assignments.values()
+        } == {min(days, 14)}
+
+
+@pytest.mark.parametrize("hour", [6, 18])
+def test_twelve_hour_policy_skips_short_cycles_even_when_latest(hour: int) -> None:
+    from sapphire_flow.types.datetime import ensure_utc
+
+    now = ensure_utc(ISSUE + timedelta(hours=hour))
+    calls: list[UtcDatetime] = []
+
+    def fetch(cycle: UtcDatetime) -> RawFetchOutcome:
+        calls.append(cycle)
+        return RawFetchOutcome(status=RawFetchStatus.FETCHED, cycle=cycle, stations={})
+
+    result = resolve_candidate(
+        request(),
+        fetch_candidate=fetch,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=lambda c, n: NwpCycleSource.PRIMARY,
+        nominal_now=now,
+        issue_time=now,
+        cycle_cadence_hours=12,
+        max_cycle_age_hours=24,
+        clock=lambda: now,
+        id_gen=uuid4,
+    )
+    assert result is None
+    assert [cycle.hour for cycle in calls] == ([0, 12, 0] if hour == 6 else [12, 0, 12])

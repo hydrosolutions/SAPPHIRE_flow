@@ -13,6 +13,7 @@ from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected, visible_columns
 from sapphire_flow.api.weather_evidence import read_weather_summary
+from sapphire_flow.store.forecast_period_codec import parse_forecast_period
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ForecastDataUse
@@ -245,8 +246,10 @@ def _response_summary(
         data_use=purpose,
         store=PgForecastStore(conn, data_use=purpose),
     )
+    period = parse_forecast_period(forecast.get("period_definition"))
     return {
         **rating,
+        "period_definition": period.content if period is not None else None,
         "weather_use": weather.model_dump(mode="json") if weather is not None else None,
         "input_quality": forecast.get("input_quality"),
         "input_quality_flags": forecast.get("input_quality_flags"),

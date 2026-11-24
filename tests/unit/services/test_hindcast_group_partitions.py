@@ -403,10 +403,16 @@ class TestPublicGroupPartitions:
             assert past.unit is fi.Unit.DEG_C
             assert future.unit is fi.Unit.MM
             assert_frame_equal(
-                target.data, expected_series(case, member, "discharge", range(-3, 0))
+                target.data,
+                expected_series(case, member, "discharge", range(-3, 0)).with_columns(
+                    pl.lit(None, dtype=pl.Int64).alias("available_at_us")
+                ),
             )
             assert_frame_equal(
-                past.data, expected_series(case, member, "temperature", range(-3, 0))
+                past.data,
+                expected_series(case, member, "temperature", range(-3, 0)).with_columns(
+                    pl.lit(None, dtype=pl.Int64).alias("available_at_us")
+                ),
             )
             assert_frame_equal(
                 future.data,

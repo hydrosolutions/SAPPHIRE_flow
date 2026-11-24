@@ -92,8 +92,8 @@ DEFAULT_HINDCAST_ISSUE_BATCH_SIZE = 7
 def resolve_hindcast_issue_batch_size(
     model: object, requested: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE
 ) -> int:
-    if isinstance(requested, bool) or not 1 <= requested <= 7:
-        raise ValueError("issue_batch_size must be within 1..7")
+    if type(requested) is not int or requested < 1:
+        raise ValueError("issue_batch_size must be a positive integer")
     if isinstance(model, BatchGroupHindcastModel) and model.supports_batch_hindcast:
         return requested
     return 1
@@ -490,6 +490,10 @@ def run_station_hindcast(
     forecast_horizon_steps: int | None = None,
     lookback_steps: int = 720,
 ) -> list[HindcastStepResult]:
+    if model.data_requirements.time_grid is not None:
+        raise ConfigurationError(
+            "declared-grid hindcasts require period-aware observation qualification"
+        )
     station_config = station_store.fetch_station(station_id)
     if station_config is None:
         raise ValueError(f"Station {station_id} not found")
@@ -681,6 +685,10 @@ def run_group_hindcast(
     lookback_steps: int = 720,
     issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
 ) -> dict[StationId, list[HindcastStepResult]]:
+    if model.data_requirements.time_grid is not None:
+        raise ConfigurationError(
+            "declared-grid hindcasts require period-aware observation qualification"
+        )
     size = resolve_hindcast_issue_batch_size(model, issue_batch_size)
     station_configs = {
         sid: station_store.fetch_station(sid) for sid in group.station_ids

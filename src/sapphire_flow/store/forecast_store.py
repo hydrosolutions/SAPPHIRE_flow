@@ -38,6 +38,7 @@ from sapphire_flow.services.forecast_retry import (
 )
 from sapphire_flow.store._forecast_decode import flag_objects
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
+from sapphire_flow.store.forecast_period_codec import parse_forecast_period
 from sapphire_flow.store.forecast_read import forecast_columns, protect_lineage_errors
 from sapphire_flow.store.forecast_values_integrity import forecast_values_integrity
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
@@ -984,6 +985,11 @@ def _forecast_row(forecast: OperationalForecast) -> dict[str, object]:
         model_artifact_id=forecast.model_artifact_id,
         issued_at=forecast.issued_at,
         time_step_seconds=int(forecast.ensemble.time_step.total_seconds()),
+        **(
+            {"period_definition": forecast.ensemble.period_definition.content}
+            if forecast.ensemble.period_definition is not None
+            else {}
+        ),
         nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
         nwp_cycle_source=forecast.nwp_cycle_source.value,
         representation=forecast.representation.value,
@@ -1175,6 +1181,7 @@ def _rows_to_domain(
             units=units,
             time_step=time_step,
             values=df,
+            period_definition=parse_forecast_period(header.get("period_definition")),
         )
         if is_members
         else ForecastEnsemble.from_quantiles(
@@ -1185,6 +1192,7 @@ def _rows_to_domain(
             units=units,
             time_step=time_step,
             values=df,
+            period_definition=parse_forecast_period(header.get("period_definition")),
         )
     )
 
@@ -1243,6 +1251,7 @@ def _rows_to_domain(
 
 def forecast_summary_from_row(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
     return ForecastSummaryRow(
+        period_definition=parse_forecast_period(row.get("period_definition")),
         id=ForecastId(row["id"]),
         data_use=ForecastDataUse(row["data_use"]),
         station_id=StationId(row["station_id"]),

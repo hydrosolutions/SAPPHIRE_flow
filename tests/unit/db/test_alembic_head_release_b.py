@@ -108,7 +108,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Declared-grid weather evidence chains 0086 onto 0085 (time MVP M2a3).
 # Station gauge type and sensor elevation chain 0087 onto 0086 (Plan 540 M2).
 # Migration 0090 adds audited operator retries with forward-only evidence.
-_RELEASE_B_HEAD = "0090"
+# Migration 0091 adds immutable declared forecast periods.
+_RELEASE_B_HEAD = "0091"
 
 
 def _down_revisions() -> dict[str, str | None]:

@@ -346,6 +346,8 @@ def capture_station_evidence(
             "forecast_qc_baselines": baselines,
             "water_level_datum_masl": water_level_datum_masl,
         }
+        if inputs.time_grid is not None:
+            payload["time_grid"] = inputs.time_grid
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,
@@ -445,6 +447,8 @@ def capture_group_evidence(
         has_all_sources = {
             station_id for station_id, _ in inputs.source_evidence
         } == set(inputs.station_ids)
+        if inputs.time_grid is not None:
+            payload["time_grid"] = inputs.time_grid
         return _evidence(
             payload,
             artifact_bytes=artifact_bytes,

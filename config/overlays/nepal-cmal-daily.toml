@@ -1,0 +1,8 @@
+# Apply only to the isolated 23 November static-encoder CMAL job/worker.
+# Cadence is floored from UTC epoch: candidates are 00z and 12z only.
+# 06z/18z remain available to other jobs and future sub-daily deployments.
+[adapters.recap_gateway]
+cycle_cadence_hours = 12.0
+
+[operational_weather]
+minimum_negotiated_horizon_days = 11

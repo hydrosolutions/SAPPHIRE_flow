@@ -621,6 +621,52 @@ class FakeFIBatchModel(FakeFIForecastModel):
 
 
 class TestBatchHindcast:
+    def test_accepts_more_than_seven_issues_with_absent_and_null_metadata(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        inputs = tuple(
+            replace(
+                first,
+                issue_time=ensure_utc(_ISSUE + i * _STEP),
+                past_targets=(
+                    first.past_targets.with_columns(
+                        pl.lit(None).alias("available_at_us:discharge")
+                    )
+                    if i % 2
+                    else first.past_targets
+                ),
+            )
+            for i in range(10)
+        )
+        result = adapter.hindcast_batch(b"artifact", inputs, random.Random(0))
+        assert len(model.calls) == 1
+        assert len(result) == 10
+        assert all(set(stations) == {_SID_A, _SID_B} for stations in result.values())
+
+    def test_conflicting_availability_is_not_silently_reconciled(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(
+            first,
+            issue_time=ensure_utc(_ISSUE + _STEP),
+            past_targets=first.past_targets.with_columns(
+                pl.col("timestamp").dt.epoch("us").alias("available_at_us:discharge")
+            ),
+        )
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert result == {first.issue_time: {}, second.issue_time: {}}
+        assert model.calls == []
+
     def test_rejects_incompatible_grid_on_later_issue(self) -> None:
         from dataclasses import replace
 
@@ -794,3 +840,88 @@ class TestBatchHindcast:
             adapter.hindcast_batch(
                 b"artifact", (_group_model_inputs(),), random.Random(0)
             )
+
+
+class TestDeclaredOutputPeriods:
+    @pytest.mark.parametrize(
+        "mismatch", [None, "origin", "label", "offset", "aggregation", "values"]
+    )
+    def test_output_must_match_declared_grid(self, mismatch: str | None) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        import forecast_interface as fi
+
+        from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
+
+        grid = ModelTimeGrid(
+            grid=TimeGrid(step=_STEP, phase=timedelta(0)), label=PeriodLabel.START
+        )
+        metadata = _metadata().model_copy(
+            update={
+                "origin": timedelta(0),
+                "label": fi.PeriodLabel.START,
+                "aggregation": fi.AggregationMethod.MEAN,
+                "offset": 1,
+            }
+        )
+        changes = {
+            "origin": timedelta(minutes=30),
+            "label": fi.PeriodLabel.END,
+            "offset": 0,
+            "aggregation": fi.Unknown.UNKNOWN,
+        }
+        if mismatch in changes:
+            metadata = metadata.model_copy(update={mismatch: changes[mismatch]})
+        frame = _output_frame([10.0, 11.0, 12.0]).with_columns(
+            (pl.col("datetime") - _STEP).alias("datetime")
+        )
+        if mismatch == "values":
+            frame = frame.with_columns(
+                (pl.col("datetime") + timedelta(minutes=15)).alias("datetime")
+            )
+        variable = fi_boundary.VariableOutput.model_construct(
+            metadata=metadata,
+            deterministic=fi_boundary.DeterministicData(data=frame),
+            status=fi_boundary.VariableStatus.SUCCESS,
+            flags=frozenset(),
+        )
+        adapter, model = _adapter(
+            fi_boundary.ModelSuccess.model_construct(
+                output=fi_boundary.ModelOutput.model_construct(
+                    model_name="fake",
+                    issue_datetime=_ISSUE,
+                    variables={"station": {"discharge": variable}},
+                )
+            )
+        )
+        model.input_requirement.dynamic[_STEP] = model.input_requirement.dynamic[
+            _STEP
+        ].model_copy(
+            update={
+                "anchor": fi.TimeAnchor(origin=timedelta(0), label=fi.PeriodLabel.START)
+            }
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(model)
+        artifact = SimpleNamespace(
+            training_grid=fi.TrainingGridDeclaration(
+                grid=fi.TimeGrid(
+                    step=_STEP, origin=timedelta(0), label=fi.PeriodLabel.START
+                )
+            )
+        )
+        inputs = replace(_station_model_inputs(), time_grid=grid)
+        if mismatch is not None:
+            with pytest.raises(ModelOutputError, match="period|declared"):
+                adapter.predict(artifact, inputs, random.Random(0))
+        else:
+            ensembles, _ = adapter.predict(artifact, inputs, random.Random(0))
+            ensemble = ensembles["discharge"]
+            assert ensemble.issued_at == _ISSUE
+            assert ensemble.period_definition is not None
+            assert ensemble.period_definition.content == {
+                "step_seconds": 3600,
+                "origin_seconds": 0,
+                "label": "start",
+                "aggregation": "mean",
+            }

@@ -3514,6 +3514,7 @@ def run_forecast_cycle_flow(
                 WeatherLegOutcome,
                 WeatherLegState,
             )
+            from sapphire_flow.types.operational_weather_v2 import FutureWeatherUseV2
 
             try:
                 if gateway_polygon_store is None:
@@ -3592,6 +3593,7 @@ def run_forecast_cycle_flow(
                     id_gen=id_gen,
                     fetch_candidate=selected_fetch_candidate,
                     eligible_group_pairs=selected_group_weather_pairs,
+                    minimum_horizon=config.operational_weather.negotiated_horizon_minimum,
                 )
                 prepared_weather = negotiated.prepared
                 weather_refresh = OperationalWeatherRefresh(
@@ -3601,6 +3603,10 @@ def run_forecast_cycle_flow(
                     ),
                     principal=cast("WritePrincipal", operational_weather_principal),
                     issue_time=resolved_cycle_time,
+                    grid=prepared_weather.grid,
+                    eligibility_cutoff=resolved_cycle_time
+                    if prepared_weather.grid is not None
+                    else None,
                     clock=clock,
                     id_gen=id_gen,
                     max_past_bytes=config.operational_weather.max_cache_bytes,
@@ -3708,7 +3714,9 @@ def run_forecast_cycle_flow(
                 used_cycles = [
                     inputs.use.future.receipt.cycle_time
                     for inputs in selected_weather_inputs.values()
-                    if isinstance(inputs.use.future, FutureWeatherUse)
+                    if isinstance(
+                        inputs.use.future, (FutureWeatherUse, FutureWeatherUseV2)
+                    )
                 ]
                 selected_nwp_outcome = _NwpFetchOutcome(
                     cycle_time=min(used_cycles) if used_cycles else resolved_cycle_time,

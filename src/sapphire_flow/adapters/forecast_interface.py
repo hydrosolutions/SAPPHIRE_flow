@@ -82,6 +82,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
 )
 from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
+from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
 from sapphire_flow.types.group_input import (
     GroupMemberInputIssue,
     GroupMemberInputReason,
@@ -239,10 +240,29 @@ def _ensemble_from_variable_output(
     parameter: str,
     issue_datetime: datetime,
     var_output: VariableOutput,
+    time_grid: ModelTimeGrid | None = None,
 ) -> ForecastEnsemble:
     issued_at = ensure_utc(issue_datetime)
     units = fi_unit_to_canonical(var_output.metadata.unit)
     time_step = var_output.metadata.timedelta
+    period = None
+    if time_grid is not None:
+        metadata = var_output.metadata
+        if (
+            metadata.timedelta != time_grid.grid.step
+            or metadata.origin != time_grid.grid.phase
+            or metadata.label.value != time_grid.label.value
+            or metadata.offset != 1
+            or metadata.aggregation is FIUnknown.UNKNOWN
+        ):
+            raise ModelOutputError(
+                "output period metadata differs from declared model grid"
+            )
+        period = ForecastPeriodDefinition(
+            grid=time_grid.grid,
+            label=time_grid.label,
+            aggregation=fi_aggregation_to_canonical(metadata.aggregation),
+        )
 
     # Trajectories/MEMBERS is richest and the only combinable representation (FI 1.14).
     if var_output.trajectories is not None:
@@ -260,6 +280,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -282,6 +303,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -304,6 +326,7 @@ def _ensemble_from_variable_output(
                 time_step=time_step,
                 values=values,
                 model_id=None,
+                period_definition=period,
             )
         except ValueError as exc:
             raise ModelOutputError(
@@ -442,6 +465,17 @@ def _station_variables_for_single_station(
     )
 
 
+def _availability_expr(frame: pl.DataFrame, column: str) -> pl.Expr:
+    dtype = frame.schema.get(column)
+    if dtype is None or dtype == pl.Null:
+        return pl.lit(None, dtype=pl.Int64).alias(column)
+    if not dtype.is_integer():
+        raise ConfigurationError(
+            f"{column} must contain integer UTC epoch microseconds"
+        )
+    return pl.col(column).cast(pl.Int64)
+
+
 def _merge_hindcast_frames(
     cohort: list[GroupModelInputs], selected: list[str], name: str, keys: list[str]
 ) -> pl.DataFrame:
@@ -451,6 +485,24 @@ def _merge_hindcast_frames(
         if not isinstance(frame, pl.DataFrame):
             raise ConfigurationError(f"missing hindcast frame: {name}")
         frames.append(frame.filter(pl.col("station_id").is_in(selected)))
+    availability_columns = sorted(
+        {
+            c
+            for frame in frames
+            for c in frame.columns
+            if c.startswith("available_at_us:")
+        }
+    )
+    if availability_columns:
+        frames = [
+            frame.with_columns(
+                _availability_expr(frame, c) for c in availability_columns
+            ).select(
+                *[c for c in frame.columns if c not in availability_columns],
+                *availability_columns,
+            )
+            for frame in frames
+        ]
     merged = pl.concat(frames, how="vertical_relaxed").unique()
     if merged.is_empty():
         return merged
@@ -504,6 +556,7 @@ def _ensembles_from_station_variables(
     station_key: str,
     station_vars: dict[str, VariableOutput],
     issue_datetime: datetime,
+    time_grid: ModelTimeGrid | None = None,
 ) -> dict[str, ForecastEnsemble]:
     ensembles: dict[str, ForecastEnsemble] = {}
     for parameter, var_output in station_vars.items():
@@ -519,6 +572,7 @@ def _ensembles_from_station_variables(
             parameter=parameter,
             issue_datetime=issue_datetime,
             var_output=var_output,
+            time_grid=time_grid,
         )
     return ensembles
 
@@ -1342,11 +1396,14 @@ class ForecastInterfaceAdapter:
         )
         output = _output_from_result(result)
         station_key, station_vars = _station_variables_for_single_station(output)
+        if inputs.time_grid is not None and output.issue_datetime != inputs.issue_time:
+            raise ModelOutputError("period output issue differs from requested issue")
         ensembles = _ensembles_from_station_variables(
             station_id=inputs.station_id,
             station_key=station_key,
             station_vars=station_vars,
             issue_datetime=output.issue_datetime,
+            time_grid=inputs.time_grid,
         )
         if not ensembles:
             raise ModelOutputError("model produced no usable output")
@@ -1425,6 +1482,8 @@ class ForecastInterfaceAdapter:
         )
         output = _output_from_result(result)
         missing = set(station_ids_by_code) - set(output.variables)
+        if inputs.time_grid is not None and output.issue_datetime != inputs.issue_time:
+            raise ModelOutputError("period output issue differs from requested issue")
         if missing:
             raise ModelOutputError(
                 f"ForecastInterface model omitted requested stations: {sorted(missing)}"
@@ -1447,6 +1506,7 @@ class ForecastInterfaceAdapter:
                 station_key=station_key,
                 station_vars=station_vars,
                 issue_datetime=output.issue_datetime,
+                time_grid=inputs.time_grid,
             )
             if not ensembles:
                 log.warning(
@@ -1490,8 +1550,8 @@ class ForecastInterfaceAdapter:
             self._model, FIBatchHindcastModel
         ):
             raise ConfigurationError("wrapped model does not support FI batch hindcast")
-        if not 1 <= len(inputs) <= 7:
-            raise ValueError("hindcast batch requires 1..7 issues")
+        if not inputs:
+            raise ValueError("hindcast batch requires at least one issue")
         inputs = tuple(
             replace(item, issue_time=ensure_utc(item.issue_time)) for item in inputs
         )
@@ -1923,6 +1983,7 @@ class ForecastInterfaceAdapter:
             ),
             name=name,
             unit=variable.unit,
+            availability_column=f"available_at_us:{name}",
         )
 
     def _input_series_from_frame(
@@ -1931,12 +1992,18 @@ class ForecastInterfaceAdapter:
         frame: pl.DataFrame,
         name: str,
         unit: Unit,
+        availability_column: str | None = None,
     ) -> InputSeries:
         if "timestamp" not in frame.columns:
             raise ConfigurationError(
                 f"missing timestamp column for ForecastInterface input {name!r}"
             )
-        data = frame.select("timestamp", name).rename({"timestamp": "datetime"})
+        columns: list[str | pl.Expr] = ["timestamp", name]
+        if availability_column is not None:
+            columns.append(
+                _availability_expr(frame, availability_column).alias("available_at_us")
+            )
+        data = frame.select(columns).rename({"timestamp": "datetime"})
         return InputSeries(unit=unit, data=data.sort("datetime"))
 
     def _frame_with_column(

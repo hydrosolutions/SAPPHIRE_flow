@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         StationTrainingData,
     )
     from sapphire_flow.types.station import StationGroup
+    from sapphire_flow.types.time_grid import TimeGrid
 
 log = structlog.get_logger()
 
@@ -188,7 +189,11 @@ def validate_time_step_cadence(
 
 
 def expected_past_buckets(
-    anchor: UtcDatetime, time_step: timedelta, lookback: int
+    anchor: UtcDatetime,
+    time_step: timedelta,
+    lookback: int,
+    *,
+    grid: TimeGrid | None = None,
 ) -> list[UtcDatetime]:
     """The `lookback` complete buckets BEFORE `anchor`.
 
@@ -196,7 +201,9 @@ def expected_past_buckets(
     PROGRESS — demanding it refuses perfectly good data. Matches the existing
     complete-lookback bounds, which cover ``[T0 - lookback*S, T0)``.
     """
-    base = floor_to_time_step(anchor, time_step)
+    if grid is not None and grid.step != time_step:
+        raise ConfigurationError("past bucket grid differs from declared time step")
+    base = floor_to_time_step(anchor, time_step) if grid is None else grid.floor(anchor)
     return [ensure_utc(base - k * time_step) for k in range(lookback, 0, -1)]
 
 

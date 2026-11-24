@@ -181,6 +181,15 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**Declared operational grids:** model-scoped preparation creates V2 weather
+requests and grid-bound fingerprints; horizon negotiation and refresh revalidate
+complete physical periods before accepting a candidate handoff. Station/group
+assembly preserves the grid, excludes incompatible stored discharge and emits the
+declared missing-Q calendar. Keep `test_radiation_weather_prepare.py`,
+`test_operational_weather_horizon.py`, `test_operational_period_inputs.py` and
+`test_weather_period_pipeline.py` together with the legacy selected-weather cycle
+tests. Output-period storage and live model activation are separate gates.
+
 **CMAL static-encoder registration:** `cmal_nepal_static_encoder` binds the exact
 supplied YAML through `AquacastShim`; it does not change FI translation or the
 live `cmal_small` model. Keep the config digest, wheel packaging, entry point,
@@ -2920,10 +2929,10 @@ hard failures. Future weather must never be padded by this target alignment.
 
 ### Multi-issue group hindcasts
 
-`services/hindcast.py` buffers up to seven prepared issues for models implementing
+`services/hindcast.py` buffers a configurable number of prepared issues (default seven) for models implementing
 `BatchGroupHindcastModel` and advertising inner capability. Unsupported models and
 an explicit size of one retain per-issue prediction. Station-scoped hindcasts are
-unchanged. `flows/run_hindcast.py` exposes `issue_batch_size` (1..7); fine-tuning
+unchanged. `flows/run_hindcast.py` exposes `issue_batch_size` (any positive integer); fine-tuning
 receipts record the effective size alongside each hindcast run ID.
 
 `adapters/forecast_interface.py` applies the NaN gate per station/issue, partitions
@@ -2939,3 +2948,24 @@ seed are repeatable, but quantiles need not be identical across sizes. Preserve
 batch size and run identities when comparing scientific results. Full-period
 input prefetch remains; only the additional prepared-issue buffer is bounded.
 See `docs/operations/batched-hindcast-qualification.md` for qualification limits.
+
+
+Availability metadata is per variable (`available_at_us:<parameter>`) through
+past-known FI projection, including training and group hindcasts. Unknown becomes
+nullable Int64 null; do not substitute `Observation.created_at`, forecast issue,
+or measurement time. Keep future-known series separate. Test absent/all-null and
+known metadata, sorted/null-preserving conversion, mixed batch schemas, and
+conflicting overlaps in the FI adapter tests. Larger batch requests (including
+years of daily issues) retain the existing context and uniqueness guards.
+
+### Declared forecast output periods
+
+`types/forecast_period.py` and the boundary codec define immutable period metadata.
+The FI adapter validates the declaration and output labels; forecast storage,
+summary/detail and network overview preserve it. Migration 0091 adds nullable
+JSONB, read grants and immutable-header protection. Null remains legacy/unknown.
+Check the ensemble/adapter tests, forecast-store PostgreSQL round-trip and
+network-overview physical-support tests when changing this boundary. Legacy
+hindcast, skill and event review must not silently score these periods; ensemble
+combination requires identical definitions. Input evidence includes the delivered
+grid only for declared-grid inputs, preserving legacy snapshot bytes.

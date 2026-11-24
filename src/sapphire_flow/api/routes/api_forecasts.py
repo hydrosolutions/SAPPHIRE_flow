@@ -33,6 +33,7 @@ from sapphire_flow.api.schemas import (
     QcFlagResponse,
 )
 from sapphire_flow.api.security import Principal, require_principal
+from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
 
@@ -62,6 +63,11 @@ def _to_ensemble_response(e: ForecastEnsemble) -> EnsembleResponse:
                 series[str(q)] = q_df["value"].to_list()
 
     return EnsembleResponse(
+        period_definition=ForecastPeriodPayload.model_validate(
+            e.period_definition.content
+        )
+        if e.period_definition is not None
+        else None,
         representation=e.representation.value,
         parameter=e.parameter,
         units=e.units,
@@ -88,6 +94,9 @@ def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
 
 def _forecast_detail_fields(f: OperationalForecast) -> dict[str, Any]:
     return dict(
+        period_definition=f.ensemble.period_definition.content
+        if f.ensemble.period_definition is not None
+        else None,
         id=str(f.id),
         station_id=str(f.station_id),
         model_id=str(f.model_id),

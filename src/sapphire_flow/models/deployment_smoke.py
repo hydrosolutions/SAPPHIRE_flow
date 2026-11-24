@@ -234,7 +234,7 @@ def _series_values(
     frame = series.data
     if series.unit is not expected_unit:
         raise ValueError("smoke input units do not match the declaration")
-    if set(frame.columns) != {"datetime", parameter}:
+    if set(frame.columns) - {"available_at_us"} != {"datetime", parameter}:
         raise ValueError("smoke input must contain datetime and one control value")
     dtype = frame.schema["datetime"]
     if not isinstance(dtype, pl.Datetime) or dtype.time_zone != "UTC":

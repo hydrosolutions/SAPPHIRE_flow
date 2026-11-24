@@ -124,6 +124,7 @@ def capture_snapshot(args: argparse.Namespace) -> None:
                         forecasts.c.source_model_ids,
                         forecasts.c.issued_at,
                         forecasts.c.time_step_seconds,
+                        forecasts.c.period_definition,
                         forecasts.c.nwp_cycle_reference_time,
                         forecasts.c.nwp_cycle_source,
                         forecasts.c.representation,

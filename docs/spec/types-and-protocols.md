@@ -7188,7 +7188,16 @@ capability: `supports_batch_hindcast` reflects the wrapped model, and
 `hindcast_batch(artifact, inputs: tuple[GroupModelInputs, ...], rng)` returns a
 mapping from original issue time to the existing station prediction mapping.
 The FI adapter uses upstream `BatchHindcastModel.hindcast`; this adds no upstream
-contract. Inputs contain 1..7 unique increasing issues, one group/cadence/horizon,
+contract. Inputs contain any nonempty sequence of unique increasing issues, one group/cadence/horizon,
 and the existing legacy hindcast forcing route. Eligibility is per station/issue.
 Missing station/issue results are failures, never zero or empty success. The shared
 runner records original artifact/run/issue identities on every stored forecast.
+
+
+Past-known FI input availability uses per-variable SAP3 columns
+`available_at_us:<parameter>`, projected as FI `available_at_us` (nullable Int64,
+UTC epoch microseconds). Missing or all-null columns become explicit nulls;
+non-integer metadata is rejected. Future-known variables do not inherit this
+metadata. No observation/import timestamp is substituted for unknown availability.
+Overlapping batch rows must agree on availability as well as physical values;
+conflicting evidence is rejected rather than guessed.
