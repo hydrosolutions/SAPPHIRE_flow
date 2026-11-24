@@ -1,0 +1,275 @@
+name: nepal_aligned_cmal_static_encoder
+output_dir: experiments/nepal/aligned/runs/cmal/static_encoder
+seed: 42
+resolutions:
+- daily
+supervised:
+- daily
+window:
+  lookback_days: 365
+  forecast_days: 15
+  issue_hours:
+  - 0
+  sub_daily_step_hours: 1
+daily:
+  targets:
+  - discharge
+  is_target_in_past: true
+  past_dynamic:
+  - discharge
+  future_dynamic:
+  - precipitation
+  - mean_temperature
+  - thermal_net_radiation
+  - solar_net_radiation
+static_features:
+- area
+- slope
+- stream_gradient
+- lake_fraction
+- air_temperature
+- precip_annual
+- pet_annual
+- aet_annual
+- aridity_index
+- climate_moisture_index
+- snow_cover
+- snow_cover_max
+- glacier_fraction
+- cropland_fraction
+- pasture_fraction
+- clay_fraction
+- silt_fraction
+- sand_fraction
+- soil_organic_carbon
+- soil_water_content
+- karst_fraction
+- irrigated_fraction
+- p_mean
+- frac_snow
+- high_prec_freq
+- high_prec_dur
+- low_prec_freq
+- low_prec_dur
+- glc_pc_s01
+- glc_pc_s02
+- glc_pc_s03
+- glc_pc_s04
+- glc_pc_s05
+- glc_pc_s06
+- glc_pc_s07
+- glc_pc_s08
+- glc_pc_s09
+- glc_pc_s10
+- glc_pc_s11
+- glc_pc_s12
+- glc_pc_s13
+- glc_pc_s14
+- glc_pc_s15
+- glc_pc_s16
+- glc_pc_s17
+- glc_pc_s18
+- glc_pc_s19
+- glc_pc_s20
+- glc_pc_s21
+- glc_pc_s22
+- forest_fraction
+- permafrost_fraction
+- pnv_pc_s01
+- pnv_pc_s02
+- pnv_pc_s03
+- pnv_pc_s04
+- pnv_pc_s05
+- pnv_pc_s06
+- pnv_pc_s07
+- pnv_pc_s08
+- pnv_pc_s09
+- pnv_pc_s10
+- pnv_pc_s11
+- pnv_pc_s12
+- pnv_pc_s13
+- pnv_pc_s14
+- pnv_pc_s15
+- wet_pc_s01
+- wet_pc_s02
+- wet_pc_s03
+- wet_pc_s04
+- wet_pc_s05
+- wet_pc_s06
+- wet_pc_s07
+- wet_pc_s08
+- wet_pc_s09
+- wet_pc_sg1
+- wet_pc_sg2
+data:
+  data_root: ../workspace/data
+  basins_files:
+    train: configs/basins/nepal_finetune/nepal.txt
+  regions:
+  - nepal
+  region_configs:
+    nepal: configs/regions/nepal.yaml
+  splits:
+    train:
+    - '1980-01-01'
+    - '2012-12-31'
+  batch_size: 256
+  num_workers: 0
+  stride: 1
+  validator_daily:
+    validation_mode: drop_input_nan_target_forecast
+  quality_control:
+    splits: []
+  augmentations:
+  - feature: discharge
+    p_channel: 0.4
+    p_random: 0.25
+    element_probability: 0.1
+  use_staged_daily: true
+  loading:
+    mode: memory
+  training_supervision_file: configs/nepal_finetune/nepal_policy.parquet
+  training_samples_per_epoch: 262144
+model:
+  type: composed
+  hidden_size: 512
+  dropout_token: 0.0
+  dropout_backbone: 0.4
+  tokenizer:
+    type: factored
+    static:
+      network: mlp
+      hidden_dims:
+      - 100
+      - 64
+      - 16
+      activation:
+      - tanh
+      - tanh
+      - linear
+      dropout: 0.3
+    dynamic:
+      network: identity
+  backbone:
+    type: lstm
+    num_layers: 1
+    dropout: 0.4
+  head:
+    type: cmal
+    num_components: 3
+  time_convention:
+    daily: start
+training:
+  max_epochs: 20
+  precision: bf16-mixed
+  optimizer:
+    optimizer:
+      type: adamw
+      lr: 5.0e-05
+      weight_decay: 1.0e-06
+  loss:
+    function: cmal_nll
+    weights:
+      daily: 1.0
+    lambda_mse: 0.0
+  checkpoint:
+    load: last
+    save_last: true
+  early_stopping:
+    enabled: false
+  progress_bar: false
+  verbose_validation_every_n: 1
+  augmentations:
+    target_noise:
+      enabled: false
+      sigma: 0.01
+      sigma_abs: 0.001
+inference:
+  strategy:
+    kind: point
+  n_aleatoric: 200
+  quantile_levels:
+  - 0.05
+  - 0.1
+  - 0.25
+  - 0.5
+  - 0.75
+  - 0.9
+  - 0.95
+  stride: 1
+evaluation:
+  forecast_type: probabilistic
+  metrics:
+  - nse
+  - kge
+  - persistence_index
+  - coverage_50
+  - coverage_80
+  - coverage_90
+finetuning:
+  strategy: static_encoder
+  lr: 5.0e-05
+  normalization: pretrained
+device: cpu
+training_temporal_contract: '{"completeness":{"aggregation":"all unique native intervals
+  with finite values","daily_qc":{"min_value":null,"outlier_action":"clip","plausible_cap":null,"spike_baseline_max":1.0,"spike_ratio":null,"splits":[],"suspicious_threshold":null,"z_max":3.0},"daily_validator":{"allow_input_nans":false,"min_valid_ratio":1.0,"missing_threshold":0.0,"skip_target_validation":false,"validation_mode":"drop_input_nan_target_forecast"},"hourly_qc":{"after_aggregation":null,"max_value":null,"min_value":null},"hourly_validator":{"allow_input_nans":false,"min_valid_ratio":1.0,"missing_threshold":0.0,"skip_target_validation":false,"validation_mode":"drop_target_forecast_nan"}},"model_time_convention":{"daily":"start"},"native_hourly_step_minutes":60,"regions":{"nepal":{"blocks":{"daily":{"discharge":{"conversion":"identity","product":"dhm","source_column":"streamflow","source_grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"source_unit":"mm/day","temporal":{"aggregation":"mean","allocation":"exact","area_provenance":null,"availability_lag_minutes":null,"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"grid_support":"verified","historical_closure_assumed":true,"physical_support_offset_minutes":15,"preprocessing":"Original
+  area-normalized mean discharge rates and reporting dates retained. Physical DHM
+  midnight is 18:15 UTC; the model uses the approved 18:00 UTC forcing grid, 15 minutes
+  earlier.","source_aggregation":"mean","support":"assumed","unit":"mm/day"}},"mean_temperature":{"conversion":"identity","product":"era5-land-reporting-v2","source_column":"edh_temperature_degC","source_grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"source_unit":"degC","temporal":{"aggregation":"mean","allocation":"exact","area_provenance":null,"availability_lag_minutes":null,"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"grid_support":"verified","historical_closure_assumed":false,"physical_support_offset_minutes":0,"preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"point","support":"assumed","unit":"degC"}},"precipitation":{"conversion":"identity","product":"era5-land-reporting-v2","source_column":"edh_precipitation_mm","source_grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"source_unit":"mm/day","temporal":{"aggregation":"sum","allocation":"exact","area_provenance":null,"availability_lag_minutes":null,"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"grid_support":"verified","historical_closure_assumed":false,"physical_support_offset_minutes":0,"preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"mm/day"}},"solar_net_radiation":{"conversion":"identity","product":"era5-land-reporting-v2","source_column":"edh_ssr_wm2","source_grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"source_unit":"W/m^2","temporal":{"aggregation":"mean","allocation":"exact","area_provenance":null,"availability_lag_minutes":null,"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"grid_support":"verified","historical_closure_assumed":false,"physical_support_offset_minutes":0,"preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"W/m^2"}},"thermal_net_radiation":{"conversion":"identity","product":"era5-land-reporting-v2","source_column":"edh_str_wm2","source_grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"source_unit":"W/m^2","temporal":{"aggregation":"mean","allocation":"exact","area_provenance":null,"availability_lag_minutes":null,"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"clock":"UTC+06:00","gauge_zones":[],"label":"start","offsets":[],"phase_minutes":0,"step_minutes":1440,"zone":null},"grid_support":"verified","historical_closure_assumed":false,"physical_support_offset_minutes":0,"preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"W/m^2"}}}},"gauges":["nepal_225","nepal_280","nepal_350","nepal_404.7","nepal_439.7","nepal_440","nepal_445","nepal_447","nepal_450","nepal_550.05","nepal_602","nepal_602.5","nepal_604.5","nepal_610","nepal_620","nepal_647","nepal_650","nepal_652","nepal_670","nepal_684","nepal_695"],"reporting_clock":"local","source_notes":{"blocks":{"daily":{"defaults":{"evidence":"DHM
+  NPT calendar date (scripts/processing/build_nepal_hive.py). User-approved UTC+06:00
+  rounded forcing boundary. Exact UTC+05:45 midnight is 18:15 UTC on the preceding
+  day; forcing starts at 18:00 UTC.","grid":{"label":"start","phase_minutes":0,"step_minutes":1440}},"time_zone":"UTC+06:00","variables":{"edh_precipitation_mm":{"aggregation":"sum","grid_support":"verified","preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"mm/day"},"edh_ssr_wm2":{"aggregation":"mean","grid_support":"verified","preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"W/m^2"},"edh_str_wm2":{"aggregation":"mean","grid_support":"verified","preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"sum","support":"verified","unit":"W/m^2"},"edh_swe_mm":{"aggregation":"mean","grid_support":"verified","preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"point","support":"assumed","unit":"mm"},"edh_temperature_degC":{"aggregation":"mean","grid_support":"verified","preprocessing":"Daily
+  sum or duration-weighted mean of complete UTC START hourly support. Temperature
+  and SWE samples estimate hourly means.","source_aggregation":"point","support":"assumed","unit":"degC"},"streamflow":{"aggregation":"mean","grid_support":"verified","historical_closure_assumed":true,"physical_support_offset_minutes":15,"preprocessing":"Original
+  area-normalized mean discharge rates and reporting dates retained. Physical DHM
+  midnight is 18:15 UTC; the model uses the approved 18:00 UTC forcing grid, 15 minutes
+  earlier.","source_aggregation":"mean","support":"assumed","unit":"mm/day"}}}},"era5_land":{"clock":"UTC+00:00","daily_flux_bins":"physical
+  UTC day: valid_time minus 1h grouped by UTC date; precipitation sum, radiation mean;
+  24 finite hours required","daily_temperature_bins":"native UTC valid_time date;
+  mean of 24 finite hourly values","hourly_labels":"native valid_time, unchanged;
+  precipitation/radiation represent preceding interval ending at label; temperature
+  instantaneous","invalid_negative_increments":"missing independently per feature
+  below -1e-7 m precipitation or -36 J/m2 solar; smaller packing noise clipped to
+  zero; raw source cache unchanged","mapped_variables":["sd","str"],"source":"https://data.earthdatahub.destine.eu/era5/era5-land-v0.zarr","swe_state":{"clock":"UTC+00:00","daily":"mean
+  of 24 finite samples grouped by native UTC date, no flux-label shift","glaciers":"values
+  >=10000 mm retained and flagged; constant 10m source-cell overlap fractions recorded
+  in raw-cache and conversion diagnostics","hourly_labels":"native valid_time unchanged;
+  instantaneous state; no deaccumulation","negative_values":"below -1e-6 mm missing;
+  smaller negatives clipped to zero","past_only":true,"raw_variable":"sd","source":"https://data.earthdatahub.destine.eu/era5/era5-land-v0.zarr","source_unit":"m
+  water equivalent","unit":"mm"}},"historical_daily_issue":"Archived discharge is
+  assumed available at physical DHM closure (18:15 UTC). A training sample for the
+  18:00 UTC model day uses its first complete reporting history at 18:15 UTC.","hourly_discharge_history":{"evidence":"docs/audits/dataset_time_checks.json
+  compares gauge nepal_670 with the NPT hourly source.","historical_rounding_minutes":-15,"native_clock":"UTC+05:45","note":"Recover
+  native interval support and unrounded timestamps before reaggregation.","stored_clock":"UTC+00:00","support":"unknown"},"staged_daily_root":"data/staging/era5land-reporting-v2"},"staged_daily":{"nepal_225":{"daily_sha256":"5797709eb1ebe90e394ae02e4434905e517e9c5f68ec6b5e4ebca9965378f6f2","input_sha256":"e9b46ec914e66282666e68f8a11ca340434948edd2b1e59b61a15f4a00ba78b5"},"nepal_280":{"daily_sha256":"1aa6a1ec8d1fb4c90f982419754bd2550d046d7534edcee009ebe60573755299","input_sha256":"6041f08d9e878e084e42481e1609aace2a4fca20538f04f3109b1ccd1de328e7"},"nepal_350":{"daily_sha256":"e8146427b98c199daa7d949d71c3bf9705edaa22e3c2d40da5d0a73bbc1da82a","input_sha256":"1df128ede8a4ce96e238fe7fedbf62f7558106031d46c16f6fdc1f9a204bb8ad"},"nepal_404.7":{"daily_sha256":"4f169ebca918765f11a1d3678dd5992210de91abfc5c4924e3f8136c487df3b6","input_sha256":"8af0f615454a8efd669fd8b047f4dd34c8c5cadf9e6791517a09042fb005ad8a"},"nepal_439.7":{"daily_sha256":"d92a47e60e3bc437eb7b2f670caaff212916d67ff59214499a9204b1160454bd","input_sha256":"6832a3a592e1a112b21e5f20446ae2e9924d2a7f5767ddcf4786e1de54221206"},"nepal_440":{"daily_sha256":"04a9530afac550563895a03d810a232891ff225c64e306b1960ee183ebe16481","input_sha256":"51da6fb3a561b76c1ee000a587c3a2f15c081092ea4b47103823496e7f1195a9"},"nepal_445":{"daily_sha256":"d34ca50735ebc664b7fbf6904afa9ab519d2565d42506cb5f8a30455808b8255","input_sha256":"a58331f46e5e37d51f2aab1858d671c003074b502e5f3aebb11b676a37bb91d7"},"nepal_447":{"daily_sha256":"fca9f4d0de16131767dec4cdac1bc7d4ad6f78853ca78d869f1327979330df3c","input_sha256":"d843feb82334094b69c444c22e8e7ec2e15934501a2643ac3e1b9f3861dce353"},"nepal_450":{"daily_sha256":"6776b2705b2518b25062429f6feaf741ed15c8ba957eef35e1ca4a62c6bfeb6c","input_sha256":"6c8dfc541629bf2112d4ece156bf49e999d91980f9cd5ba0a77a27e30d2e69fd"},"nepal_550.05":{"daily_sha256":"873c90d4c2c85f9fbaf30831a501a6cfb92a5be9b490e3202a50488f81fb362d","input_sha256":"c90032517f5c06dda516255e3e00d7f14b979e2923fdb0b66548a7a2874d35bd"},"nepal_602":{"daily_sha256":"c3c4c0b0d1ba371a2068fe13e337e63edd76e3123b61b2064bda4fe528040343","input_sha256":"17b1d3c1a5e9764300d42db5898590257cacea2faf92454c9ec69e9e1201a6bd"},"nepal_602.5":{"daily_sha256":"b076b3a586de410ea786ba22d92c20ecb631ccdb8d8c1f0bd5cd9b70c0c71bee","input_sha256":"a6dd24bd8def3920140e4b92675a4230aac556c18bb3ce17f8c49250190a3e52"},"nepal_604.5":{"daily_sha256":"a0485083bb5c380beb3dc09b65f79b34071088b4fda07fd0f710da1131c7e820","input_sha256":"c168428d286f139b3b444eb95cf1da11ba18bd4e73abc56428d185ad3a4d1866"},"nepal_610":{"daily_sha256":"68ac94b70e3f35597fa27910b18c76ed9c3f14cd72a43d66df38d055349e36f5","input_sha256":"5632f52cb5ab3626f78ad1e9c5984eb8fc52c2050f984d2e09f9acddad9b8fff"},"nepal_620":{"daily_sha256":"d791d8e9fe6e67bad1e640b3d4642cf36fab1732cb38f87688534e6529dbbab9","input_sha256":"85d736dd9ec125c7df0a1f9a9d6f8222e61da1cfaf808407e5c7eb30f72f3317"},"nepal_647":{"daily_sha256":"d65e556fb0ecf952c3ff48ba6fa5a5d09fbf4e261eafead87e28384d7f5d90aa","input_sha256":"6b5b4ff5db633a0080f4e0b320c76069d5375b24e7bc5cf7c7bf6383b4574a9d"},"nepal_650":{"daily_sha256":"b6c556479e90f2fce040f48ca534a8be278a6fd233060347b60db90f126aacbd","input_sha256":"51b70837c6179f564edad2dd349859d0d43dfa71bee35be7bb1aed5911e3681a"},"nepal_652":{"daily_sha256":"a17410421f22b7733bc11502592d065bcb52f224da8bca7af5565067c42c2a3a","input_sha256":"acc4b75008a2f8747a77529493613416ebdcfdbac7ad2cb37a80eb93910f08f4"},"nepal_670":{"daily_sha256":"8aa48abb3e5554c581ee34fcd2f3b0f372e62e2f9bbe6e17e6fa13bf63e0fe93","input_sha256":"30c67ac952db0c1adf209c5bba28f4740096cf66151cb53079755b235d4f7194"},"nepal_684":{"daily_sha256":"138b924086a027d8c18f67701ef7425b0f7c08d71fe0e32352b46b5901824617","input_sha256":"136472ec168290b0e090410ff81040674921c1f82d776ae35b304cce4a657cb8"},"nepal_695":{"daily_sha256":"c4a458397637ab475b523a633623bcd12c9fcaf2161149f870ece20686bfca2a","input_sha256":"29bf04450718296d349857a7511b512ec09e1d989466f5e2ebecdadb3504b4ef"}}}},"steps":{"daily":1440},"version":1}'
+donor_temporal_contract: unknown

@@ -162,6 +162,7 @@ def _catalog_statement(
             stations.c.tenant_id == query.tenant_id,
             f.parameter == "discharge",
             f.data_use == "standard",
+            f.period_definition.is_(None),
         )
     )
     if series:
