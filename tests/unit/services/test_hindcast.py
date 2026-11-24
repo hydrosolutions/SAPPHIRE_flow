@@ -1231,7 +1231,8 @@ class TestFutureForcingFetched:
 
 
 class TestGroupHindcastUsesGroupModelInputs:
-    def test_predict_batch_receives_group_model_inputs(self) -> None:
+    @pytest.mark.parametrize("batch_size", [1, 2, 7])
+    def test_predict_batch_receives_group_model_inputs(self, batch_size: int) -> None:
         from sapphire_flow.types.model import GroupModelInputs
         from tests.fakes.fake_models import FakeGroupForecastModel
 
@@ -1288,6 +1289,18 @@ class TestGroupHindcastUsesGroupModelInputs:
             def __init__(self) -> None:
                 super().__init__()
                 self.last_inputs: GroupModelInputs | None = None
+                self.batch_sizes: list[int] = []
+
+            @property
+            def supports_batch_hindcast(self) -> bool:
+                return True
+
+            def hindcast_batch(self, artifact, inputs, rng):
+                self.batch_sizes.append(len(inputs))
+                return {
+                    item.issue_time: self.predict_batch(artifact, item, rng)
+                    for item in inputs
+                }
 
             def predict_batch(self, artifact, inputs, rng):  # type: ignore[override]
                 self.last_inputs = inputs
@@ -1295,7 +1308,7 @@ class TestGroupHindcastUsesGroupModelInputs:
 
         recording = RecordingGroupModel()
 
-        run_group_hindcast(
+        results = run_group_hindcast(
             model=recording,
             artifact=b"artifact",
             group=group,
@@ -1313,10 +1326,33 @@ class TestGroupHindcastUsesGroupModelInputs:
             rng=rng,
             hindcast_run_id=run_id,
             forecast_horizon_steps=5,
+            issue_batch_size=batch_size,
         )
 
         assert recording.last_inputs is not None
         assert isinstance(recording.last_inputs, GroupModelInputs)
+
+        assert recording.batch_sizes == (
+            [] if batch_size == 1 else [2, 2, 1] if batch_size == 2 else [5]
+        )
+        assert all(
+            len(steps) == 5 and all(step.success for step in steps)
+            for steps in results.values()
+        )
+        stored = hindcast_store.fetch_hindcasts(
+            station_id=sid_a,
+            model_id=model_id,
+            start=_PERIOD_START,
+            end=_PERIOD_END,
+            hindcast_run_id=run_id,
+        )
+        assert {item.hindcast_step for item in stored} == {
+            ensure_utc(_PERIOD_START + i * _STEP) for i in range(5)
+        }
+        assert all(
+            item.model_artifact_id == artifact_id and item.hindcast_run_id == run_id
+            for item in stored
+        )
 
 
 class TestSnowReachesPastDynamicViaHybridSource:

@@ -544,3 +544,211 @@ def test_group_predict_batch_empty_output_raises_model_output_error() -> None:
 
     with pytest.raises(ModelOutputError, match="empty variables"):
         adapter.predict_batch(object(), _group_model_inputs(), random.Random(123))
+
+
+class FakeFIBatchModel(FakeFIForecastModel):
+    def __init__(self, representation: str = "quantiles") -> None:
+        super().__init__(_failure_result(), fi_boundary.FIArtifactScope.GROUP)
+        self.representation = representation
+        self.calls: list[tuple[str, ...]] = []
+        self.omit_issue: datetime | None = None
+        self.extra_issue = False
+        self.naive_utc = False
+
+    def hindcast(
+        self,
+        artifact: object,
+        *,
+        inputs: fi_boundary.ModelInputs,
+        issue_datetimes: list[datetime],
+        rng: random.Random,
+    ) -> fi_boundary.ModelResult:
+        self.calls.append(tuple(inputs.stations))
+        issues = [issue for issue in issue_datetimes if issue != self.omit_issue]
+        if self.extra_issue:
+            issues.append(issue_datetimes[-1] + 10 * _STEP)
+        dates = [
+            (issue, issue + lead * _STEP) for issue in issues for lead in (1, 2, 3)
+        ]
+        base = {
+            "issue_datetime": [x[0] for x in dates],
+            "datetime": [x[1] for x in dates],
+        }
+        if self.representation == "quantiles":
+            levels = [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]
+            frame = pl.DataFrame(
+                {**base, **{str(q): [10.0 + q] * len(dates) for q in levels}}
+            )
+            variable = fi_boundary.VariableOutput(
+                metadata=_metadata(),
+                status=fi_boundary.VariableStatus.SUCCESS,
+                quantiles=fi_boundary.QuantileData(quantile_levels=levels, data=frame),
+            )
+        else:
+            frame = pl.DataFrame(
+                {**base, **{str(i): [float(i)] * len(dates) for i in range(1, 9)}}
+            )
+            variable = fi_boundary.VariableOutput(
+                metadata=_metadata(),
+                status=fi_boundary.VariableStatus.SUCCESS,
+                trajectories=fi_boundary.TrajectoryData(num_samples=8, data=frame),
+            )
+        if self.naive_utc:
+            container = (
+                variable.quantiles
+                if variable.quantiles is not None
+                else variable.trajectories
+            )
+            assert container is not None
+            container.data = container.data.with_columns(
+                pl.col("issue_datetime").dt.replace_time_zone(None)
+            )
+        return _success_result(
+            {code: {"discharge": variable} for code in inputs.stations}
+        )
+
+    def predict(
+        self,
+        artifact: object,
+        *,
+        inputs: fi_boundary.ModelInputs,
+        issue_datetime: datetime,
+        rng: random.Random,
+    ) -> fi_boundary.ModelResult:
+        return self.hindcast(
+            artifact, inputs=inputs, issue_datetimes=[issue_datetime], rng=rng
+        )
+
+
+class TestBatchHindcast:
+    @pytest.mark.parametrize("representation", ["quantiles", "members"])
+    @pytest.mark.parametrize("naive_utc", [False, True])
+    def test_preserves_each_issue_and_valid_time(
+        self, representation: str, naive_utc: bool
+    ) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel(representation)
+        model.naive_utc = naive_utc
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP))
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert len(model.calls) == 1
+        for issue in (first.issue_time, second.issue_time):
+            ensemble = result[issue][_SID_A][0]["discharge"]
+            assert ensemble.issued_at == issue
+            assert ensemble.values["valid_time"].min() == issue + _STEP
+            assert ensemble.values["valid_time"].max() == issue + 3 * _STEP
+
+    def test_station_failing_one_issue_still_served_on_other_issue(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        bad = first.past_targets.with_columns(
+            pl.when(pl.col("station_id") == str(_SID_A))
+            .then(None)
+            .otherwise(pl.col("discharge"))
+            .alias("discharge")
+        )
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP), past_targets=bad)
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert set(result[first.issue_time]) == {_SID_A, _SID_B}
+        assert set(result[second.issue_time]) == {_SID_B}
+
+    def test_missing_issue_is_empty_not_relabelled(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP))
+        model.omit_issue = second.issue_time
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert result[first.issue_time]
+        assert result[second.issue_time] == {}
+
+    def test_extra_issue_rejected(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        model.extra_issue = True
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP))
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert result == {first.issue_time: {}, second.issue_time: {}}
+
+    def test_conflicting_overlap_rejected(self) -> None:
+        from dataclasses import replace
+
+        model = FakeFIBatchModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        second = replace(
+            first,
+            issue_time=ensure_utc(_ISSUE + _STEP),
+            past_targets=first.past_targets.with_columns(pl.col("discharge") + 1),
+        )
+        result = adapter.hindcast_batch(b"artifact", (first, second), random.Random(0))
+        assert result == {first.issue_time: {}, second.issue_time: {}}
+        assert model.calls == []
+
+    def test_bad_cohort_does_not_discard_successful_cohort(self) -> None:
+        from dataclasses import replace
+
+        class BadCohortModel(FakeFIBatchModel):
+            def hindcast(
+                self,
+                artifact: object,
+                *,
+                inputs: fi_boundary.ModelInputs,
+                issue_datetimes: list[datetime],
+                rng: random.Random,
+            ) -> fi_boundary.ModelResult:
+                self.extra_issue = "gauge-a" in inputs.stations
+                return super().hindcast(
+                    artifact, inputs=inputs, issue_datetimes=issue_datetimes, rng=rng
+                )
+
+        model = BadCohortModel()
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=_CODES.__getitem__
+        )
+        first = _group_model_inputs()
+        bad = first.past_targets.with_columns(
+            pl.when(pl.col("station_id") == str(_SID_A))
+            .then(None)
+            .otherwise(pl.col("discharge"))
+            .alias("discharge")
+        )
+        second = replace(first, issue_time=ensure_utc(_ISSUE + _STEP), past_targets=bad)
+        third = replace(first, issue_time=ensure_utc(_ISSUE + 2 * _STEP))
+        result = adapter.hindcast_batch(
+            b"artifact", (first, second, third), random.Random(0)
+        )
+        assert result[first.issue_time] == {}
+        assert result[third.issue_time] == {}
+        assert set(result[second.issue_time]) == {_SID_B}
+
+    def test_unsupported_inner_does_not_advertise_batching(self) -> None:
+        adapter, _ = _adapter(
+            _failure_result(), artifact_scope=fi_boundary.FIArtifactScope.GROUP
+        )
+        assert adapter.supports_batch_hindcast is False
+        with pytest.raises(ConfigurationError, match="does not support"):
+            adapter.hindcast_batch(
+                b"artifact", (_group_model_inputs(),), random.Random(0)
+            )

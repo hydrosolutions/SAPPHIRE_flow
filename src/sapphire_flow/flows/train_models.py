@@ -920,12 +920,16 @@ def train_models_flow(
             from sapphire_flow.config.paths import resolve_artifact_dir
             from sapphire_flow.flows.fine_tuning_evaluation import evaluate_candidate
             from sapphire_flow.services.fine_tuning_evidence import canonical_json
+            from sapphire_flow.services.hindcast import (
+                resolve_hindcast_issue_batch_size,
+            )
             from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 
             now = cast("Callable[[], UtcDatetime]", clock)
             candidate_run_id, donor_run_id = uuid4(), uuid4()
             attempt = {
                 "state": "running",
+                "issue_batch_size": resolve_hindcast_issue_batch_size(model),
                 "candidate_run_id": str(candidate_run_id),
                 "donor_run_id": str(donor_run_id),
             }
