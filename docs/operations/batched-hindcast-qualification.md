@@ -78,3 +78,6 @@ No production deployment or replacement hindcast run is part of this change.
 The deterministic deployment smoke model accepts FI reserved availability metadata
 without treating it as a control value. Its exact timestamp, units, finite-value
 and expected-forecast checks remain unchanged; unexpected value columns still fail.
+
+Database-backed hindcast isolation tests assert explicit null availability alongside
+the exact trusted discharge values; provisional observations remain excluded.
