@@ -413,3 +413,50 @@ coverage flags retain the missing inputs. Mixed or unknown/known group grids,
 END-labelled inputs and unscoped selections refuse. This input integration alone
 does not activate the replacement: output-period persistence/API qualification,
 artifact registration and isolated worker deployment remain required.
+
+
+### 23 November static-encoder CMAL output contract
+
+The separately registered `cmal_nepal_static_encoder_20261123` uses the owner's
+23 November checkpoint with Aquacast 0.1.396 and ForecastInterface 0.2.10. Its
+vendored inference config changes only CPU device, batch size (256), and loader
+workers (0); scientific training provenance remains explicitly unknown.
+
+New declared-grid forecasts retain `period_definition` (step/origin in seconds,
+START/END label, aggregation) in storage and the detail, listing and network
+overview API. For this CMAL it is daily, origin 64800, START, mean discharge in
+m³/s. The real issue time stays unchanged: a 00:00 UTC issue begins with the
+previous day's 18:00 UTC period (signed start lead −6 hours). FI offset is 1,
+measured from the last history sample, not from the issue time. Overview support
+uses physical period bounds and retains original labels. Legacy forecasts have
+null period metadata; no historical row is relabelled.
+
+The new model requires an isolated worker and explicit model selection as in the
+replacement plan. Registration in the package does not activate the artifact or
+publish forecasts. Legacy skill, hindcast and event-review paths refuse/exclude
+these period-qualified forecasts until observation support is qualified. Mixed
+known/unknown period ensembles cannot be combined. Daily evaluation stays off
+for this isolated job. Revisit temporal aggregation before sub-daily deployment.
+
+
+Daily CMAL source-cycle policy (owner confirmed 24 November): apply
+`config/overlays/nepal-cmal-daily.toml` only to the isolated CMAL job and worker.
+Its 12-hour UTC candidate cadence admits **00z and 12z only**, including fallback;
+06z and 18z are reserved for later use. This cycle policy is independent of the
+model's START18UTC aggregation boundary. `minimum_negotiated_horizon_days = 11`
+refuses short candidates and walks back within the existing age bound. Use the
+longest common complete prefix from an accepted cycle, up to the model's 15 days;
+never silently reduce below 11 or synthesize missing periods. Existing jobs keep
+their defaults. Verify the merged registered-job and actual-worker config both
+contain these settings before activation; changing this file does not deploy it.
+
+
+Compatibility: API map contract 3.2 adds optional `period_definition`. Stored
+legacy periods stay SQL NULL and the API omits the new field for those rows,
+preserving existing response bytes. The default negotiated minimum is omitted
+from serialized configuration to preserve existing execution/snapshot fingerprints;
+non-default minima (including CMAL's 11) remain part of execution identity.
+Legacy inserts omit the new nullable column as well.
+Role bootstrapping grants period-column reads only when revision 0091's column
+exists, so historical schema upgrade/downgrade checks remain supported. Diagnostic
+forecast snapshots include the safe period metadata without exposing lineage.

@@ -6,6 +6,9 @@ from typing import Annotated, Generic, Literal, TypeVar
 from pydantic import BaseModel, Field, field_validator
 
 from sapphire_flow.api.weather_evidence import WeatherUseResponse  # noqa: TC001
+from sapphire_flow.store.forecast_period_codec import (
+    ForecastPeriodPayload,  # noqa: TC001
+)
 
 # NOT moved under TYPE_CHECKING (would trip ruff TC001): these are `Literal`
 # type aliases, not classes — pydantic resolves them at class-body evaluation
@@ -195,6 +198,9 @@ class LatestObservationsResponse(PaginatedResponse[LatestStationObservationRespo
 
 
 class _ForecastSummaryFields(BaseModel):
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     id: str
     station_id: str
     model_id: str
@@ -258,6 +264,9 @@ class ForecastSummary(_ForecastSummaryFields):
 
 
 class EnsembleResponse(BaseModel):
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     representation: str
     parameter: str
     units: str = Field(description="Unit for every series value, e.g. discharge m³/s.")

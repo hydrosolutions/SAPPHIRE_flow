@@ -16,6 +16,7 @@ from sapphire_flow.types.network_overview import (
     OverviewSeries,
     QuartileMethod,
 )
+from sapphire_flow.types.time_grid import PeriodLabel
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -80,6 +81,12 @@ def compact_forecast_series(
     invalid = OverviewSeries(availability=OverviewAvailability.INVALID_SERIES)
     if ensemble.time_step <= timedelta(0):
         return invalid
+    label_offset = (
+        ensemble.time_step
+        if ensemble.period_definition is not None
+        and ensemble.period_definition.label is PeriodLabel.END
+        else timedelta(0)
+    )
     key = (
         "quantile"
         if ensemble.representation is EnsembleRepresentation.QUANTILES
@@ -97,7 +104,7 @@ def compact_forecast_series(
                 timestamp, keyed, ensemble.representation, ensemble.parameter
             )
             for timestamp, keyed in sorted(grouped.items())
-            if timestamp + ensemble.time_step > as_of
+            if timestamp + ensemble.time_step - label_offset > as_of
         )
     except (TypeError, ValueError, OverflowError):
         return invalid
@@ -112,7 +119,12 @@ def compact_forecast_series(
             return invalid
         if points[index].valid_time > previous_end:
             anchors.update((index - 1, index))
-            gaps.append(OverviewGap(start=previous_end, end=points[index].valid_time))
+            gaps.append(
+                OverviewGap(
+                    start=ensure_utc(previous_end - label_offset),
+                    end=ensure_utc(points[index].valid_time - label_offset),
+                )
+            )
     available = len(anchors) <= point_budget
     if available:
         if len(points) <= point_budget:
@@ -143,8 +155,10 @@ def compact_forecast_series(
         ),
         points=tuple(points[i] for i in sorted(anchors)) if available else (),
         peak=peak,
-        support_start=points[0].valid_time,
-        support_end=ensure_utc(points[-1].valid_time + ensemble.time_step),
+        support_start=ensure_utc(points[0].valid_time - label_offset),
+        support_end=ensure_utc(
+            points[-1].valid_time + ensemble.time_step - label_offset
+        ),
         gaps=tuple(gaps),
         original_point_count=len(points),
         quartile_method=(

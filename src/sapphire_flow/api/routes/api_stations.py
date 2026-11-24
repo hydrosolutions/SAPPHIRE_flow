@@ -135,6 +135,9 @@ def _to_observation_response(o: Any) -> ObservationResponse:
 
 def _forecast_summary_fields(row: Any) -> dict[str, Any]:
     return dict(
+        period_definition=row.period_definition.content
+        if row.period_definition is not None
+        else None,
         id=str(row.id),
         station_id=str(row.station_id),
         model_id=str(row.model_id),

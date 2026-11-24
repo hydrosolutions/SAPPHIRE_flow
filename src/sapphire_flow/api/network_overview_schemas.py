@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from sapphire_flow.api.schemas import ThresholdResponse
+from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.types.enums import ForecastDataUse, QcStatus
 from sapphire_flow.types.network_overview import (
     ObservationAvailability,
@@ -75,6 +76,9 @@ class ForecastGapResponse(OverviewSchema):
 
 
 class OverviewForecastResponse(OverviewSchema):
+    period_definition: ForecastPeriodPayload | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     model_id: str
     parameter: str | None
     data_use: ForecastDataUse

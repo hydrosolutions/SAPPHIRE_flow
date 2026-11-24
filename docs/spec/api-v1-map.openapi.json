@@ -1184,6 +1184,16 @@
             "title": "Parameter",
             "type": "string"
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "representation": {
             "title": "Representation",
             "type": "string"
@@ -2230,6 +2240,16 @@
             "title": "Parameter",
             "type": "string"
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "preservation_at_publish": {
             "anyOf": [
               {
@@ -2461,6 +2481,46 @@
           "stations"
         ],
         "title": "ForecastLabSnapshot",
+        "type": "object"
+      },
+      "ForecastPeriodPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "aggregation": {
+            "enum": [
+              "sum",
+              "mean",
+              "max"
+            ],
+            "title": "Aggregation",
+            "type": "string"
+          },
+          "label": {
+            "enum": [
+              "start",
+              "end"
+            ],
+            "title": "Label",
+            "type": "string"
+          },
+          "origin_seconds": {
+            "minimum": 0.0,
+            "title": "Origin Seconds",
+            "type": "integer"
+          },
+          "step_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step_seconds",
+          "origin_seconds",
+          "label",
+          "aggregation"
+        ],
+        "title": "ForecastPeriodPayload",
         "type": "object"
       },
       "ForecastPointResponse": {
@@ -2775,6 +2835,16 @@
           "parameter": {
             "title": "Parameter",
             "type": "string"
+          },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preservation_at_publish": {
             "anyOf": [
@@ -4354,6 +4424,16 @@
               }
             ]
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "provisional": {
             "enum": [
               "provisional",
@@ -5103,6 +5183,16 @@
             "title": "Parameter",
             "type": "string"
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "preservation_at_publish": {
             "title": "Preservation At Publish",
             "type": "null"
@@ -5351,6 +5441,16 @@
           "parameter": {
             "title": "Parameter",
             "type": "string"
+          },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preservation_at_publish": {
             "title": "Preservation At Publish",
@@ -8461,7 +8561,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.1"
+    "version": "3.2"
   },
   "openapi": "3.1.0",
   "paths": {

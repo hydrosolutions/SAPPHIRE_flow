@@ -675,6 +675,8 @@ def compute_skill_for_station(
         )
         return [], []
 
+    if any(hc.ensemble.period_definition is not None for hc in hindcasts):
+        raise ValueError("declared-period skill requires matching observation periods")
     mismatched = [hc for hc in hindcasts if hc.ensemble.parameter != parameter]
     if mismatched:
         raise ValueError(
