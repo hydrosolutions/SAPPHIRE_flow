@@ -1,11 +1,14 @@
 ---
-status: DRAFT
+status: READY
 ---
 # Temporary: stop requiring a release-target bump in every PR
 
-**Status:** DRAFT rev 4, 2026-11-24 (rounds 1-2 both NEEDS CHANGES, folded; round 3: Codex READY, Claude 3 blockers, folded). No plan ID yet (owner grants IDs). HIGH RISK under
-`AGENTS.md` (release identity and CI). Needs owner approval and independent Claude and
-Codex reviews before it is marked READY. Nothing here is implemented.
+**Status:** READY rev 4, 2026-11-24 (rounds 1-2 both NEEDS CHANGES, folded; round 3: Codex READY, Claude 3 blockers, folded). No plan ID yet (owner grants IDs). HIGH RISK under
+`AGENTS.md` (release identity and CI). Round 4 (delta): Claude and Codex both READY, 2026-11-24.
+Owner approved implementing change 1 only; change 2 is not approved. Merge needs the owner.
+Implementation notes from review: also name the cicd.md :584-586 "update target" sentence in
+the checklist edit; use `tests/unit/tools/test_deployment_smoke.py`; `merge-base --all` is on
+release_target.py:235.
 
 ## Problem
 Plan 521 requires every non-docs PR to advance `RELEASE_TARGET` by exactly one patch from
