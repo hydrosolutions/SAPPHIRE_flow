@@ -814,6 +814,30 @@ B0 runner checks and the existing helper regressions must pass after final wrapp
 changes before B1 can be admitted. Administrators have no new command or migration
 step in this preparation slice.
 
+B0b qualifies the private transaction and process safeguards: **108 focused tests
+and 17 synthetic runtime cases pass**, with lint and strict types clean. An actual
+worker-role, read-only repeatable-read transaction retains its snapshot across a
+concurrent synthetic update. Fixed-query checks reject writes, locks and unapproved
+functions; role/schema mismatches, revoked access and a SQL lock timeout refuse
+cleanly. Closed reports suppress dependency text and refuse excessive output.
+
+The child memory/CPU limits, 55-second deadline and TERM-to-KILL escalation were
+exercised. The parent survived, child groups and probe database connections were
+gone, and independent Docker readback confirmed owned-resource removal and
+preservation of baseline resources. One independent patch review found an outer
+Docker budget gap; per-request deadline checks and sparse inventory reads fix it,
+with fake-clock regressions. The bounded lab completed in 185 seconds using the
+pinned candidate and private helpers on local Linux emulation; this is not native
+source-host timing or an unchanged-release inventory qualification.
+
+Resource probes run before connecting, and termination probes wait after closing
+their transaction. Cancellation during an active transaction remains unqualified.
+Actual runtime identity readback, model requirements, complete bounded inventory
+queries and final helper regressions also remain outstanding. B0 is incomplete;
+B1/B2 and parent execution gates remain DRAFT. No source access, agency data,
+provider/model calls, cloud resources, administrator command or migration was
+introduced by this slice. Full implementation and evidence remain private.
+
 ```json
 {"phases":[{"id":"B0","status":"READY","depends_on":["C3b2a","independent_plan_review"]},{"id":"B1","status":"DRAFT","depends_on":["B0","independent_patch_review","execution_packet_admission"]},{"id":"B2","status":"DRAFT","depends_on":["B1"]}],"parent_execution":"DRAFT"}
 ```
