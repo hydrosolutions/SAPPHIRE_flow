@@ -14,8 +14,10 @@ an editable checkout or dependency resolution during watchdog ticks.
 ## CI action-pin updates
 
 A reviewed action-pin change in `.github/workflows/ci.yml` must also refresh
-`WORKFLOW_SHA256` in `tools/ci_attest.py` and advance `RELEASE_TARGET` by one
-patch from the tested base. Dependabot does not update these repository-specific
+`WORKFLOW_SHA256` in `tools/ci_attest.py`. While the temporary development-phase
+release-target rule is on (see "Release identity tags and receipts"), the pin PR needs
+no `RELEASE_TARGET` bump; with the rule off it must also advance `RELEASE_TARGET` by
+one patch from the tested base. Dependabot does not update these repository-specific
 metadata fields. Run the workflow-inventory and release-target tests before
 pushing the correction; do not disable either check.
 
@@ -542,8 +544,13 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 
 ### Release identity tags and receipts
 
-Each non-docs-only PR advances the sole `RELEASE_TARGET` patch once from its tested
-base, including tooling PRs. This target is release intent, not package identity. Package versions
+TEMPORARY development-phase rule (`DEV_PHASE_ALLOW_UNCHANGED_TARGET` in
+`tools/release_target.py`, plan `docs/plans/2026-11-24-temporary-release-target-freeze.md`):
+a PR may leave `RELEASE_TARGET` unchanged, or advance the sole `RELEASE_TARGET` patch
+exactly once from its tested base. The owner reverts this rule when the rapid-development
+phase ends; the strict rule is then back in force: each non-docs-only PR advances the
+target patch once from its tested base, including tooling PRs.
+This target is release intent, not package identity. Package versions
 remain dynamic and come from Git release identity at build time. The old automatic
 `tag-main.yml` publisher remains retired.
 
@@ -560,8 +567,14 @@ are no-ops; divergent targets refuse. Initial bootstrap is limited to the exact 
 base/seed in Plan521. Recheck those facts before bootstrap publication/rebase.
 
 The PR lint check uses existing full-history checkout and requires HEAD=`github.sha`
-with exactly event base/head parents, then compares regular Git target blobs. Normally,
-head and merge targets must agree and equal base patch+1 with unchanged major/minor.
+with exactly event base/head parents, then compares regular Git target blobs. Under the
+development-phase rule, with A the target at the unique merge-base, B at the tested base,
+H at the PR head and M at the tested merge, a PR passes when H equals A and M equals B
+(untouched), or H equals B+1 and M equals H (one patch over the tested base); major/minor
+never change. A second PR that still carries a bump after another bump landed (H equals B,
+not A) fails: drop its bump commit. A zero or multiple merge-base, or a missing or invalid
+target at the merge-base, fails. The bootstrap base keeps the strict path. With the rule
+off, head and merge targets must agree and equal base patch+1 with unchanged major/minor.
 
 The only exemption is strictly docs-only changes. Allowed paths are root `README.md`
 and `AGENTS.md`, plus direct (not nested) `.md`, `.rst`, or `.txt` prose files in
@@ -577,13 +590,17 @@ Both the unique merge-base→PR-head diff and tested-base→tested-merge diff mu
 this allowlist; `RELEASE_TARGET` must be unchanged in each diff. Thus a stale docs branch
 may retain its old head target while the tested merge preserves the newer base target;
 it cannot modify or revert that target. Ambiguous merge bases are not exempt. A docs
-PR that changes the target instead follows normal bump arithmetic. All commit identity,
+PR that changes the target instead follows normal bump arithmetic (in development-phase
+mode the docs exemption is subsumed by the rule above). All commit identity,
 checkout and ordered-parent checks still run. No workflow, job, required check name or
 other validation is skipped for docs-only PRs.
 
 Before merging, the owner must verify current remote base/head and matching successful
-CI. If the base moved, update target and rerun CI against the new pair. This required
-owner checklist is not a claim of enabled GitHub strict protection. The owner must
+CI. If the base moved, rerun CI against the new pair (and, with the rule off, update the
+target). This required owner checklist is not a claim of enabled GitHub strict
+protection. In development-phase mode same-target landings are allowed; the owner
+instead checks before each release that the target is above the release state, and lands
+a bump PR if not. With the rule off, the owner must
 prevent parallel PRs from landing with the same unchanged target through stale-green
 checks. Minor/major changes require an explicit checker policy change and owner review,
 not merely a different bump command. The checker itself needs owner review; it is not

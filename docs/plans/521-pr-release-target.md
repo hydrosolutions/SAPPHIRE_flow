@@ -7,6 +7,9 @@ plan: 521
 Root authorized this bounded implementation after three independent successor planning
 reviews. The owner selected a release target per PR; package identity remains SCM-derived.
 
+> Temporarily relaxed by `docs/plans/2026-11-24-temporary-release-target-freeze.md`
+> (development phase: a PR may leave the target unchanged).
+
 ## Contract
 - `RELEASE_TARGET` alone holds canonical ASCII `X.Y.Z` and one LF. Each PR advances
   the tested base patch by one, without changing major/minor. Additional commits do

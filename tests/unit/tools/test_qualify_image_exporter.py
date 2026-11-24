@@ -675,6 +675,23 @@ class TestPublicSource:
         env["GITHUB_WORKFLOW_SHA"] = "c" * 40
         with pytest.raises(helper.BootstrapError, match="noncanonical"):
             helper.require_source(tmp_path, env)
+        # Same target version, different tagged source: only the peeled tag differs.
+        env["GITHUB_WORKFLOW_SHA"] = source
+        monkeypatch.setattr(
+            helper.release,
+            "fetch_remote_state",
+            lambda: (
+                source,
+                "b" * 40,
+                [
+                    SimpleNamespace(
+                        name="v1.2.3", metadata=object(), peeled_oid="d" * 40
+                    )
+                ],
+            ),
+        )
+        with pytest.raises(helper.BootstrapError, match="release tag mismatch"):
+            helper.require_source(tmp_path, env)
 
     def test_smoke_is_not_a_release_binding_mode(self) -> None:
         with pytest.raises(ValueError, match="not a valid DeliveryMode"):
