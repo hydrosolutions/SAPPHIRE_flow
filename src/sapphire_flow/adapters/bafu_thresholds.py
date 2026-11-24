@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.observation_units import (
+    DischargeSourceUnit,
+    SourceDischargeValue,
+    normalize_discharge,
+)
+
 if TYPE_CHECKING:
     import httpx
 
@@ -82,15 +88,23 @@ def parse_threshold_page(
             raise ValueError("ambiguous BAFU danger-level sections")
         text = " ".join(page.tokens[sections[0] + 1 :])
         pattern = (
-            rf"Abfluss m³/s 5 > ({_NUMBER}) 4 ({_NUMBER}) - ({_NUMBER}) "
+            rf"Abfluss (?P<unit>m³/s|l/s) 5 > ({_NUMBER}) 4 ({_NUMBER}) - ({_NUMBER}) "
             rf"3 ({_NUMBER}) - ({_NUMBER}) 2 ({_NUMBER}) - ({_NUMBER}) "
             rf"1 < ({_NUMBER}) Die 5 Gefahrenstufen"
         )
         match = re.match(pattern, text)
         if match is None:
             raise ValueError("unsupported or malformed BAFU discharge danger bands")
+        unit = (
+            DischargeSourceUnit.LITRES_PER_SECOND
+            if match.group("unit") == "l/s"
+            else DischargeSourceUnit.CUBIC_METRES_PER_SECOND
+        )
         top, four, four_end, three, three_end, two, two_end, low = (
-            float(value.replace(",", ".")) for value in match.groups()
+            normalize_discharge(
+                SourceDischargeValue.from_literal(value.replace(",", ".")), unit
+            ).value
+            for value in match.groups()[1:]
         )
         if (four_end, three_end, two_end, low) != (top, four, three, two):
             raise ValueError("BAFU danger bands are not contiguous")

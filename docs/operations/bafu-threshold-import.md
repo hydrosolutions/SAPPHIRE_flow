@@ -20,7 +20,9 @@ values remain unavailable. A nonzero exit reports errors or conflicts; successfu
 stations in the same batch remain committed.
 
 The source is the German official station page, with explicit discharge units
-and level labels. Numeric levels 2–5 map to the configured Swiss names Moderate,
+and level labels. Pages labelled l/s use the existing discharge-unit normalizer
+to convert values to canonical m³/s; the original page remains in the evidence.
+Water-level thresholds are not converted into discharge. Numeric levels 2–5 map to the configured Swiss names Moderate,
 Considerable, High, Very High. There is no level-1 boundary. The old 40-station
 colour-derived JSON is historical evidence and is not imported by this command.
 Station-detail API threshold rows use `source=authority`.

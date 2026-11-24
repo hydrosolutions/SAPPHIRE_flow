@@ -20,6 +20,12 @@ class TestParseThresholdPage:
         assert result.bounds == (170, 280, 350, 440)
         assert result.retrieved_at == NOW
 
+    def test_litres_are_normalized_to_cubic_metres(self) -> None:
+        html = HTML.replace("Abfluss m³/s", "Abfluss l/s")
+        result = parse_threshold_page(html, station_code="2150", retrieved_at=NOW)
+        assert result.bounds == (0.17, 0.28, 0.35, 0.44)
+        assert result.html == html
+
     @pytest.mark.parametrize(
         ("old", "new", "error"),
         [
