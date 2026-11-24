@@ -91,3 +91,34 @@ class TestOperationalWeatherConfig:
     def test_rejects_invalid_boundaries(self, settings: dict[str, object]) -> None:
         with pytest.raises(ValidationError, match="Input|input|minimum"):
             OperationalWeatherConfig.model_validate(settings)
+
+
+@pytest.mark.parametrize("value", [0, 16, True, 11.5])
+def test_negotiated_horizon_minimum_is_bounded_integer(value: object) -> None:
+    with pytest.raises(ValidationError):
+        OperationalWeatherConfig.model_validate(
+            {"minimum_negotiated_horizon_days": value}
+        )
+
+
+def test_cmal_overlay_selects_long_cycles_and_eleven_day_minimum() -> None:
+    import tomllib
+    from pathlib import Path
+
+    raw = tomllib.loads(Path("config/overlays/nepal-cmal-daily.toml").read_text())
+    assert raw["adapters"]["recap_gateway"]["cycle_cadence_hours"] == 12
+    assert (
+        OperationalWeatherConfig.model_validate(
+            raw["operational_weather"]
+        ).minimum_negotiated_horizon_days
+        == 11
+    )
+    assert OperationalWeatherConfig().minimum_negotiated_horizon_days == 1
+
+
+def test_negotiation_receives_typed_configured_minimum() -> None:
+    from sapphire_flow.types.forcing_track import FutureSteps
+
+    assert OperationalWeatherConfig(
+        minimum_negotiated_horizon_days=11
+    ).negotiated_horizon_minimum == FutureSteps(value=11)

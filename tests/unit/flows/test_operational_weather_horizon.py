@@ -168,6 +168,8 @@ def negotiate_case(
     *,
     days: int = 11,
     floor: int = 1,
+    operational_floor: int = 1,
+    cadence: float = 24,
     exact: bool = False,
     station_scope: bool = False,
     partial_group: bool = False,
@@ -399,7 +401,7 @@ def negotiate_case(
         forecast_bindings=bindings,
         adapter=cast("CandidateAwareForecastSource", Source()),
         policy=ForcingResolutionPolicy(
-            cycle_cadence_hours=24, max_cycle_age_hours=24, max_retries=0
+            cycle_cadence_hours=cadence, max_cycle_age_hours=24, max_retries=0
         ),
         issue_time=ISSUE,
         earliest_cycle=ISSUE if grid is None else ISSUE - step,
@@ -407,6 +409,7 @@ def negotiate_case(
         id_gen=uuid4,
         fetch_candidate=fetch,
         eligible_group_pairs=eligible_group_pairs,
+        minimum_horizon=FutureSteps(value=operational_floor),
     )
     assert result.prepared.resolver == prepared.resolver
     assert tuple(item.key for item in result.prepared.projections) == tuple(
@@ -570,3 +573,51 @@ def test_period_prefix_counts_reporting_days_not_utc_dates() -> None:
         for item in track.assignments
     }
     assert common_prefix(rows, track=track, issue_time=ISSUE, context=context) == 3
+
+
+@pytest.mark.parametrize("days", [7, 10, 11, 15])
+def test_daily_cmal_requires_eleven_days_on_long_cycles(days: int) -> None:
+    from sapphire_flow.flows.operational_weather_horizon import UnavailableCandidate
+
+    grid = TimeGrid(step=timedelta(days=1), phase=timedelta(hours=18))
+    result, calls = negotiate_case(
+        days=days, operational_floor=11, cadence=12, grid=grid
+    )
+    assert result.failure is None
+    assert calls
+    assert all(cycle.hour in (0, 12) for cycle in calls)
+    handoff = next(iter(result.candidates.values()))
+    assert isinstance(handoff, UnavailableCandidate) is (days < 11)
+    if days >= 11:
+        # The older fixture cycle ends before the fifteenth reporting day closes.
+        assert {
+            len(value.future.requirements[0].valid_times)
+            for value in result.prepared.assignments.values()
+        } == {min(days, 14)}
+
+
+@pytest.mark.parametrize("hour", [6, 18])
+def test_twelve_hour_policy_skips_short_cycles_even_when_latest(hour: int) -> None:
+    from sapphire_flow.types.datetime import ensure_utc
+
+    now = ensure_utc(ISSUE + timedelta(hours=hour))
+    calls: list[UtcDatetime] = []
+
+    def fetch(cycle: UtcDatetime) -> RawFetchOutcome:
+        calls.append(cycle)
+        return RawFetchOutcome(status=RawFetchStatus.FETCHED, cycle=cycle, stations={})
+
+    result = resolve_candidate(
+        request(),
+        fetch_candidate=fetch,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=lambda c, n: NwpCycleSource.PRIMARY,
+        nominal_now=now,
+        issue_time=now,
+        cycle_cadence_hours=12,
+        max_cycle_age_hours=24,
+        clock=lambda: now,
+        id_gen=uuid4,
+    )
+    assert result is None
+    assert [cycle.hour for cycle in calls] == ([0, 12, 0] if hour == 6 else [12, 0, 12])
