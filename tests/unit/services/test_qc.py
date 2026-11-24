@@ -420,6 +420,67 @@ class TestConfiguredRuleVersions:
 
 
 class TestSpike:
+    @pytest.mark.parametrize("thresholds", [{"max_delta": 1.0}, {"tolerance": 0.1}])
+    @pytest.mark.parametrize(
+        "values",
+        [
+            (10.0, 40.0, 100.0),
+            (100.0, 40.0, 10.0),
+            (7.763, 23.558, 26.289),
+            (10.0, 10.0, 100.0),
+            (100.0, 10.0, 10.0),
+            (10.0, 10.0, 10.0),
+        ],
+    )
+    def test_monotonic_and_tied_readings_are_judged_without_spike(
+        self, thresholds: dict[str, float], values: tuple[float, float, float]
+    ) -> None:
+        obs = [_make_obs(v, i) for i, v in enumerate(values)]
+        result = Stage1QualityChecker().check_with_coverage(
+            obs,
+            _rule_set(_rule("spike", thresholds)),
+            [],
+            [],
+            station_networks={_STATION: "bafu"},
+        )
+        assert result.flags[obs[1].id] == []
+        assert obs[1].id in result.judged
+
+    @pytest.mark.parametrize("thresholds", [{"max_delta": 1.0}, {"tolerance": 0.1}])
+    @pytest.mark.parametrize("values", [(10.0, 100.0, 20.0), (100.0, 10.0, 90.0)])
+    def test_real_extrema_still_flagged(
+        self, thresholds: dict[str, float], values: tuple[float, float, float]
+    ) -> None:
+        obs = [_make_obs(v, i) for i, v in enumerate(values)]
+        result = _check(
+            Stage1QualityChecker(), obs, _rule_set(_rule("spike", thresholds)), [], []
+        )
+        assert [f.rule_id for f in result[obs[1].id]] == ["spike"]
+
+    @pytest.mark.parametrize(
+        "context", ["zero_reference", "missing_value", "duplicate_time", "segment"]
+    )
+    def test_ambiguous_relative_context_stays_unchecked(self, context: str) -> None:
+        obs = [_make_obs(10.0, 0), _make_obs(40.0, 1), _make_obs(100.0, 2)]
+        if context == "zero_reference":
+            obs[0] = replace(obs[0], value=0.0)
+        elif context == "missing_value":
+            obs[0] = replace(obs[0], value=None, qc_status=QcStatus.MISSING)
+        elif context == "duplicate_time":
+            obs[0] = replace(obs[0], timestamp=obs[1].timestamp)
+            obs.append(_make_obs(110.0, 3))
+        else:
+            obs[0] = replace(obs[0], qc_context_segment=1)
+        result = Stage1QualityChecker().check_with_coverage(
+            obs,
+            _rule_set(_rule("spike", {"tolerance": 0.1})),
+            [],
+            [],
+            station_networks={_STATION: "bafu"},
+        )
+        assert result.flags[obs[1].id] == []
+        assert obs[1].id not in result.judged
+
     def test_absolute_max_delta_detects_spike(self) -> None:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(12.1, 1), _make_obs(10.2, 2)]

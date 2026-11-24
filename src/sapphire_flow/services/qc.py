@@ -320,6 +320,12 @@ def _apply_spike(
         return Judgement.NOT_EVALUABLE, None
     if obs.value is None or prev.value is None or nxt.value is None:
         return Judgement.NOT_EVALUABLE, None
+    if not prev.timestamp < obs.timestamp < nxt.timestamp:
+        return Judgement.NOT_EVALUABLE, None
+    if "max_delta" not in thresholds and prev.value == 0.0:
+        return Judgement.NOT_EVALUABLE, None
+    if min(prev.value, nxt.value) <= obs.value <= max(prev.value, nxt.value):
+        return Judgement.JUDGED, None
     if "max_delta" in thresholds:
         max_delta = thresholds["max_delta"]
         if (
@@ -338,8 +344,6 @@ def _apply_spike(
         return Judgement.JUDGED, None
     tolerance = thresholds["tolerance"]
     ref = abs(prev.value)
-    if ref == 0.0:
-        return Judgement.NOT_EVALUABLE, None
     if (
         abs(obs.value - prev.value) > tolerance * ref
         and abs(obs.value - nxt.value) > tolerance * ref
