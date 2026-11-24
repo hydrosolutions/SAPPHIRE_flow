@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -1463,11 +1464,91 @@ class TestQuantilesRepresentation:
         )
 
         assert len(scores) > 0
-        assert len(diagrams) > 0
+        assert diagrams == []
 
         metrics = {s.metric for s in scores}
-        assert "crps" in metrics
+        assert "quantile_score_trapz_p05_p95" in metrics
+        assert "crps" not in metrics
+        assert "ensemble_range" not in metrics
+        by_name = {s.metric: s.score for s in scores}
+        assert by_name["sharpness_p10_p90"] == pytest.approx(8)
+        assert by_name["sharpness_p25_p75"] == pytest.approx(5)
+        assert by_name["mae"] == pytest.approx(5)
         assert "nse" in metrics
+
+    @pytest.mark.parametrize("kind", ["grid", "representation", "crossed"])
+    def test_invalid_cohort_fails_without_partial_scores(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        kind: str,
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        step = _utc(2025, 1, 1)
+        first = _make_hindcast_quantiles(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=step,
+            n_steps=1,
+            value=100,
+        )
+        if kind == "representation":
+            second = _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step,
+                n_steps=1,
+            )
+        else:
+            values = first.ensemble.values
+            if kind == "grid":
+                values = values.with_columns(
+                    pl.when(pl.col("quantile") == 0.5)
+                    .then(0.55)
+                    .otherwise(pl.col("quantile"))
+                    .alias("quantile")
+                )
+            else:
+                values = values.with_columns(
+                    pl.when(pl.col("quantile") == 0.5)
+                    .then(1000)
+                    .otherwise(pl.col("value"))
+                    .alias("value")
+                )
+            second = replace(first, ensemble=replace(first.ensemble, values=values))
+        obs = _make_observation(
+            station_id=station_id,
+            timestamp=ensure_utc(step + timedelta(hours=1)),
+            value=100,
+        )
+        error = ValueError if kind == "crossed" else ConfigurationError
+        message = (
+            "must not cross"
+            if kind == "crossed"
+            else "one representation and quantile grid"
+        )
+        with pytest.raises(error, match=message):
+            compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=[first, second],
+                observations=[obs],
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=[],
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,
+                uuid_factory=uuid_factory,
+                parameter="discharge",
+            )
 
 
 class TestCombinedModelPath:

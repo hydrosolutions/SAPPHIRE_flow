@@ -65,7 +65,7 @@ def _make_skill_score(
     metric: str,
     score: float,
     sample_size: int = 200,
-    computation_version: int = 1,
+    computation_version: int = 3,
     freshness: SkillFreshness = SkillFreshness.CURRENT,
 ) -> object:
     from sapphire_flow.types.skill import SkillScore
@@ -596,14 +596,14 @@ class TestEvaluateSkillGate:
         assert not result.passed
         assert "nse" in result.failing_metrics
 
-    def test_stale_v1_score_never_overrides_current_v2(self) -> None:
+    def test_stale_v1_score_never_overrides_current_v3(self) -> None:
         """Review fixer round (major): migrations 0051/0052 and
         ``_COMPUTATION_VERSION = 2`` deliberately let a stale v1 score and
         its corrected v2 recompute coexist in the store — ``mark_stale``
         never deletes the old row. A v1 score corrupted by the pre-Plan-228
         instantaneous-observation join FAILS the gate (nse=0.1 < 0.5); the
         corrected v2 recompute for the SAME stratum PASSES it (nse=0.8).
-        Only the current v2 score may decide the gate.
+        Only the current v3 score may decide the gate.
         """
         from sapphire_flow.types.model_onboarding import SkillGateMetric
 
@@ -618,15 +618,15 @@ class TestEvaluateSkillGate:
             computation_version=1,
             freshness=SkillFreshness.STALE,
         )
-        current_v2 = _make_skill_score(
+        current_v3 = _make_skill_score(
             model_id=model_id,
             artifact_id=artifact_id,
             metric="nse",
             score=0.8,
-            computation_version=2,
+            computation_version=3,
             freshness=SkillFreshness.CURRENT,
         )
-        skill_store._scores.extend([stale_v1, current_v2])  # type: ignore[attr-defined]
+        skill_store._scores.extend([stale_v1, current_v3])  # type: ignore[attr-defined]
 
         config = make_deployment_config(
             skill_gate_thresholds={
@@ -643,7 +643,7 @@ class TestEvaluateSkillGate:
         )
 
         assert result.passed, (
-            f"expected the current v2 score (0.8) to control the gate, got "
+            f"expected the current v3 score (0.8) to control the gate, got "
             f"failing_metrics={result.failing_metrics!r}, "
             f"metric_scores={result.metric_scores!r} — the stale v1 score "
             "(0.1) was allowed to decide it"
@@ -651,11 +651,7 @@ class TestEvaluateSkillGate:
         assert result.failing_metrics == frozenset()
         assert dict(result.metric_scores)["nse"] == 0.8
 
-    def test_current_v1_score_still_used_when_no_v2_exists(self) -> None:
-        """Guards the filter above from over-restricting: when only v1
-        scores exist (no recompute has happened yet for this stratum), a
-        CURRENT v1 score must still control the gate rather than being
-        excluded outright."""
+    def test_legacy_score_fails_until_recomputed(self) -> None:
         from sapphire_flow.types.model_onboarding import SkillGateMetric
 
         skill_store = FakeSkillStore()
@@ -685,8 +681,40 @@ class TestEvaluateSkillGate:
             config=config,
         )
 
-        assert result.passed
-        assert dict(result.metric_scores)["nse"] == 0.8
+        assert not result.passed
+        assert "nse" in result.failing_metrics
+
+    def test_partial_station_recompute_cannot_pass_gate(self) -> None:
+        from sapphire_flow.types.model_onboarding import SkillGateMetric
+
+        store = FakeSkillStore()
+        mid, aid = ModelId("partial"), ArtifactId(uuid4())
+        store.store_skill_scores(
+            [
+                _make_skill_score(
+                    model_id=mid,
+                    artifact_id=aid,
+                    metric="crps",
+                    score=0.1,
+                    computation_version=2,
+                ),
+                _make_skill_score(
+                    model_id=mid,
+                    artifact_id=aid,
+                    metric="crps",
+                    score=0.1,
+                    computation_version=3,
+                ),
+            ]
+        )
+        config = make_deployment_config(
+            skill_gate_thresholds={
+                "crps": SkillGateMetric(threshold=1, higher_is_better=False)
+            },
+            min_skill_samples=100,
+        )
+        result = evaluate_skill_gate(mid, aid, store, config)
+        assert "crps" in result.failing_metrics
 
 
 class TestCreateAssignment:

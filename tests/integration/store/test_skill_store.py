@@ -1812,3 +1812,69 @@ class TestBaselineVersionFirstPrecedence:
         assert len(nse_results) == 1
         assert nse_results[0].score == 0.9
         assert nse_results[0].generation_id == gen_v2
+
+
+class TestQuantileCorrectionGeneration:
+    def test_new_generation_removes_old_crps_and_rank_histogram(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        old, new = uuid.uuid4(), uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="crps",
+                    generation_id=old,
+                )
+            ]
+        )
+        store.store_skill_diagrams(
+            [
+                _make_diagram(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    diagram_type="rank_histogram",
+                    generation_id=old,
+                )
+            ]
+        )
+        for generation, version, diagrams in [(old, 2, 1), (new, 3, 0)]:
+            if version == 3:
+                store.store_skill_scores(
+                    [
+                        _make_score(
+                            sid,
+                            mid,
+                            aid,
+                            computation_version=3,
+                            metric="quantile_score_trapz_p05_p95",
+                            generation_id=new,
+                        )
+                    ]
+                )
+            store.publish_generation(
+                generation_id=generation,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                parameter="discharge",
+                skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+                forcing_type=None,
+                computation_version=version,
+                published_at=_T3,
+                score_count=1,
+                diagram_count=diagrams,
+            )
+        assert {s.metric for s in store.fetch_latest_scores(sid, mid)} == {
+            "quantile_score_trapz_p05_p95"
+        }
+        assert store.fetch_latest_diagrams(sid, mid) == []

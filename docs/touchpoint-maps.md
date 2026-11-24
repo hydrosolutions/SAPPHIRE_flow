@@ -1345,6 +1345,11 @@ Use this map when a task touches the **offline model lifecycle** — training-da
 - `register_models` / `build_registry_entry` → `register_model` (model-class catalog row, distinct from artifacts)
 - hindcast services (`run_station_hindcast` / `run_group_hindcast`) and their local typed GROUP partition-preserving stack (no legacy flatten/re-split shim)
 - skill service: `compute_skill_for_station` (strata by lead-time / season / flow-regime; `SkillScore` + `SkillDiagram`), combined/BMA skill in `combined_skill`
+- Quantile scoring uses `services/skill/quantiles.py` and computation version 3;
+  quantile knots are not ensemble members. Removed metrics must be superseded
+  through complete skill generations. BMA and onboarding gates exclude legacy
+  scores until recomputation. See `docs/operations/quantile-skill-recomputation.md`
+  for metric meaning, comparison limits and the production rescore sequence.
 - skill gate: `evaluate_skill_gate` / `_evaluate_skill_gate_task` — an **automated threshold** compare against `config.skill_gate_thresholds` (no human step); onboarding-only
 
 **Downstream consumers to inspect when behavior changes:**

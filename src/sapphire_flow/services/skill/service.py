@@ -31,6 +31,7 @@ from sapphire_flow.services.skill.metrics import (
     compute_peak_timing_error,
     compute_sharpness,
 )
+from sapphire_flow.services.skill.quantiles import QUANTILE_SCORE, QuantileSample
 from sapphire_flow.services.training_data import (
     aggregation_method_for,
     resample_to_time_step,
@@ -59,18 +60,23 @@ log = structlog.get_logger(__name__)
 # here gives every post-Plan-228 recompute a natural key the old (stale) rows
 # never occupy, so the insert succeeds AND `fetch_latest_scores`'s
 # `max(computation_version)` picks the new rows up automatically.
-_COMPUTATION_VERSION = 2
+_COMPUTATION_VERSION = 3
 _DEFAULT_DECISION_PROBABILITY = 0.5
 
 
-def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> np.ndarray:
+ForecastSample = np.ndarray | QuantileSample
+
+
+def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> ForecastSample:
     df = hindcast.ensemble.values
     if hindcast.ensemble.representation == EnsembleRepresentation.MEMBERS:
         filtered = df.filter(df["valid_time"] == valid_time)
         return filtered["value"].to_numpy()
-    # QUANTILES: use quantile values as pseudo-members
-    filtered = df.filter(df["valid_time"] == valid_time)
-    return filtered["value"].to_numpy()
+    filtered = df.filter(df["valid_time"] == valid_time).sort("quantile")
+    return QuantileSample(
+        probabilities=tuple(filtered["quantile"].to_list()),
+        values=tuple(filtered["value"].to_list()),
+    )
 
 
 def _valid_time_phase_us(hc: HindcastForecast, time_step: timedelta) -> int | None:
@@ -333,14 +339,15 @@ def _build_strata(
     obs_lookup: dict[object, float],
     seasons: list[SeasonDefinition],
     flow_regime_config: FlowRegimeConfig | None,
-) -> dict[StratumKey, tuple[list[np.ndarray], list[float]]]:
+) -> dict[StratumKey, tuple[list[ForecastSample], list[float]]]:
     # Returns: stratum_key -> (list of ensemble_1d arrays, list of observed values)
     # Stratum key: (lead_time_hours, season_name | None, flow_regime | None)
     # None season = "all seasons" aggregate; None flow_regime = "all regimes" aggregate
 
     # raw_pairs[lead_time_hours] = list of (ensemble_1d, obs_value, hindcast_step)
-    raw_pairs: dict[int, list[tuple[np.ndarray, float, object]]] = defaultdict(list)
+    raw_pairs: dict[int, list[tuple[ForecastSample, float, object]]] = defaultdict(list)
 
+    grids: set[tuple[float, ...] | None] = set()
     for hc in hindcasts:
         df = hc.ensemble.values
         valid_times = df["valid_time"].unique().sort()
@@ -349,13 +356,21 @@ def _build_strata(
                 continue
             obs_val = obs_lookup[vt]
             members = _ensemble_matrix(hc, vt)
-            if len(members) == 0:
-                continue
+            if isinstance(members, QuantileSample):
+                grids.add(members.probabilities)
+            else:
+                if len(members) == 0:
+                    continue
+                grids.add(None)
+            if len(grids) > 1:
+                raise ConfigurationError(
+                    "skill computation requires one representation and quantile grid"
+                )
             dt_diff = (vt - hc.hindcast_step).total_seconds()
             lead_hours = int(round(dt_diff / 3600))
             raw_pairs[lead_hours].append((members, obs_val, hc.hindcast_step))
 
-    strata: dict[StratumKey, tuple[list[np.ndarray], list[float]]] = defaultdict(
+    strata: dict[StratumKey, tuple[list[ForecastSample], list[float]]] = defaultdict(
         lambda: ([], [])
     )
 
@@ -398,7 +413,7 @@ def _compute_scores(
     lead_hours: int,
     season: str | None,
     regime: FlowRegime | None,
-    ensemble_list: list[np.ndarray],
+    ensemble_list: list[ForecastSample],
     obs_list: list[float],
     thresholds: list[StationThreshold],
     skill_source: SkillSource,
@@ -449,14 +464,40 @@ def _compute_scores(
             )
         )
 
-    # Per-timestep CRPS → average
-    crps_values = [
-        compute_crps(m, o) for m, o in zip(ensemble_list, obs_list, strict=True)
-    ]
-    _add("crps", float(np.mean(crps_values)))
+    quantile_samples = [m for m in ensemble_list if isinstance(m, QuantileSample)]
+    member_samples = [m for m in ensemble_list if isinstance(m, np.ndarray)]
+    if quantile_samples:
+        _add(
+            QUANTILE_SCORE,
+            float(
+                np.mean(
+                    [
+                        m.score(o)
+                        for m, o in zip(quantile_samples, obs_list, strict=True)
+                    ]
+                )
+            ),
+        )
+    else:
+        _add(
+            "crps",
+            float(
+                np.mean(
+                    [
+                        compute_crps(m, o)
+                        for m, o in zip(member_samples, obs_list, strict=True)
+                    ]
+                )
+            ),
+        )
 
     # Deterministic metrics using ensemble median
-    medians = np.array([float(np.median(m)) for m in ensemble_list])
+    medians = np.array(
+        [
+            m.at(0.5) if isinstance(m, QuantileSample) else float(np.median(m))
+            for m in ensemble_list
+        ]
+    )
     _add("nse", compute_nse(medians, obs_arr))
     _add("kge", compute_kge(medians, obs_arr))
     _add("pbias", compute_pbias(medians, obs_arr))
@@ -464,12 +505,22 @@ def _compute_scores(
 
     # Sharpness (requires 2D array — pad/align members by stacking)
     if sample_size > 0:
-        min_n = min(len(m) for m in ensemble_list)
-        ens_2d = np.stack([m[:min_n] for m in ensemble_list])  # (n_times, n_members)
-        sharp_p10_p90, sharp_p25_p75, ens_range = compute_sharpness(ens_2d)
-        _add("sharpness_p10_p90", sharp_p10_p90)
-        _add("sharpness_p25_p75", sharp_p25_p75)
-        _add("ensemble_range", ens_range)
+        if quantile_samples:
+            _add(
+                "sharpness_p10_p90",
+                float(np.mean([m.at(0.9) - m.at(0.1) for m in quantile_samples])),
+            )
+            _add(
+                "sharpness_p25_p75",
+                float(np.mean([m.at(0.75) - m.at(0.25) for m in quantile_samples])),
+            )
+        else:
+            min_n = min(len(m) for m in member_samples)
+            ens_2d = np.stack([m[:min_n] for m in member_samples])
+            sharp_p10_p90, sharp_p25_p75, ens_range = compute_sharpness(ens_2d)
+            _add("sharpness_p10_p90", sharp_p10_p90)
+            _add("sharpness_p25_p75", sharp_p25_p75)
+            _add("ensemble_range", ens_range)
 
         # Peak timing error
         peak_threshold = float(np.percentile(obs_arr, 90))
@@ -477,9 +528,12 @@ def _compute_scores(
         if pta is not None:
             _add("peak_timing_error", pta)
 
+        # Finite quantiles do not identify tail exceedance probabilities.
+        if quantile_samples:
+            return scores
         # Threshold-dependent metrics
         for thr in thresholds:
-            ens_2d_full = np.stack([m for m in ensemble_list])
+            ens_2d_full = np.stack(member_samples)
             bss = compute_bss(ens_2d_full, obs_arr, thr.value)
             _add(f"bss_danger_{thr.danger_level}", bss)
             pod, far, csi = compute_contingency(
@@ -500,7 +554,7 @@ def _compute_diagrams(
     lead_hours: int,
     season: str | None,
     regime: FlowRegime | None,
-    ensemble_list: list[np.ndarray],
+    ensemble_list: list[ForecastSample],
     obs_list: list[float],
     thresholds: list[StationThreshold],
     skill_source: SkillSource,
@@ -515,14 +569,15 @@ def _compute_diagrams(
 ) -> list[SkillDiagram]:
     from sapphire_flow.types.skill import SkillDiagram
 
-    if len(ensemble_list) == 0:
+    if not ensemble_list or isinstance(ensemble_list[0], QuantileSample):
         return []
+    member_samples = cast("list[np.ndarray]", ensemble_list)
 
     obs_arr = np.array(obs_list, dtype=float)
     now = clock()
 
-    min_n = min(len(m) for m in ensemble_list)
-    ens_2d = np.stack([m[:min_n] for m in ensemble_list])
+    min_n = min(len(m) for m in member_samples)
+    ens_2d = np.stack([m[:min_n] for m in member_samples])
 
     diagrams: list[SkillDiagram] = []
 
