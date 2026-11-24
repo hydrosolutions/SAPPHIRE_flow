@@ -548,3 +548,71 @@ class TestOperationalWeatherRole:
         assert store.fetch_forecast_binding(station.id) == bindings[0]
         assert store.fetch_reanalysis_bindings(station.id) == [bindings[1]]
         assert store.fetch_operational_binding(station.id) == bindings[2]
+
+
+class TestImportThresholds:
+    def test_conflict_does_not_fill_partial_set(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.threshold_import import ThresholdImportStatus
+
+        store = PgStationStore(db_connection)
+        station = make_station_config(station_id=StationId(uuid.uuid4()), code="2150")
+        store.store_station(station)
+        thresholds = [
+            StationThreshold(
+                station_id=station.id,
+                danger_level=level,
+                parameter="discharge",
+                value=value,
+                source=ThresholdSource.AUTHORITY,
+                created_at=ensure_utc(_NOW),
+                updated_at=ensure_utc(_NOW),
+            )
+            for level, value in [
+                ("Moderate", 170.0),
+                ("Considerable", 280.0),
+                ("High", 350.0),
+                ("Very High", 440.0),
+            ]
+        ]
+        old = replace(thresholds[0], value=171.0)
+        store.store_thresholds([old])
+        assert store.import_thresholds(thresholds) is ThresholdImportStatus.CONFLICT
+        assert store.fetch_thresholds(station.id) == [old]
+
+    def test_import_idempotence_and_rollback(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.threshold_import import ThresholdImportStatus
+
+        store = PgStationStore(db_connection)
+        station = make_station_config(station_id=StationId(uuid.uuid4()), code="2150")
+        store.store_station(station)
+        values = [
+            StationThreshold(
+                station_id=station.id,
+                danger_level=level,
+                parameter="discharge",
+                value=value,
+                source=ThresholdSource.AUTHORITY,
+                created_at=ensure_utc(_NOW),
+                updated_at=ensure_utc(_NOW),
+            )
+            for level, value in [
+                ("Moderate", 170.0),
+                ("Considerable", 280.0),
+                ("High", 350.0),
+                ("Very High", 440.0),
+            ]
+        ]
+        transaction = db_connection.begin_nested()
+        assert store.import_thresholds(values) is ThresholdImportStatus.IMPORTED
+        assert store.import_thresholds(values) is ThresholdImportStatus.UNCHANGED
+        assert len(store.fetch_thresholds(station.id)) == 4
+        transaction.rollback()
+        assert store.fetch_thresholds(station.id) == []

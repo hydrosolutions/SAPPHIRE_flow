@@ -143,7 +143,7 @@ def _make_hindcast_fn():  # type: ignore[no-untyped-def]
     return _run_hindcast
 
 
-def _make_skill_fn():  # type: ignore[no-untyped-def]
+def _make_skill_fn(station_store: StationStore | None = None):  # type: ignore[no-untyped-def]
     """Build the skill computation callback for onboard_model()."""
     from uuid import UUID, uuid4
 
@@ -191,7 +191,11 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
             return
 
         # Fetch thresholds and flow regime
-        thresholds = []  # no thresholds in v0 onboarding
+        thresholds = (
+            station_store.fetch_thresholds(station_id)
+            if station_store is not None
+            else []
+        )
         flow_regime = flow_regime_store.fetch_latest(
             station_id=station_id,
             parameter="discharge",
@@ -372,6 +376,7 @@ def _run_onboarding(
     principal: WritePrincipal | None = None,
     audit_log_store: AuditLogStore | None = None,
     audited_writer: AuditedWriter | None = None,
+    threshold_importer: Callable[[StationConfig], None] | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -534,6 +539,10 @@ def _run_onboarding(
             msg = f"Failed to store station {station.code}: {exc}"
             log.error("station_store_error", code=station.code, error=str(exc))
             errors.append(msg)
+
+    if threshold_importer is not None:
+        for resolved_station in station_by_id.values():
+            threshold_importer(resolved_station)
 
     # Resolved StationId set for downstream steps
     resolved_station_ids = set(station_map.values())
@@ -1164,7 +1173,7 @@ def _run_onboarding(
                     assignment_priority=priority,
                     skip_smoke_test=True,
                     run_hindcast_fn=_make_hindcast_fn(),
-                    compute_skill_fn=_make_skill_fn(),
+                    compute_skill_fn=_make_skill_fn(station_store),
                     parameter_store=parameter_store,
                     lineage_writer=lineage_writer,
                     principal=principal,
@@ -1298,6 +1307,7 @@ def onboard_from_camelsch(
     principal: WritePrincipal | None = None,
     audit_log_store: AuditLogStore | None = None,
     audited_writer: AuditedWriter | None = None,
+    threshold_importer: Callable[[StationConfig], None] | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -1408,6 +1418,7 @@ def onboard_from_camelsch(
         principal=principal,
         audit_log_store=audit_log_store,
         audited_writer=audited_writer,
+        threshold_importer=threshold_importer,
     )
 
     # Plan 147 Slice E (MAJOR 4): STATION_ONBOARDED is now emitted PER STATION,

@@ -464,6 +464,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     DELIVERY_IMPORTED = "delivery_imported"     # additive (Plan 510 T2)
     OBSERVATIONS_LOADED = "observations_loaded" # additive (Plan 540 M3a)
     RATING_CURVE_STORED = "rating_curve_stored" # additive (Plan 540 M3c)
+    THRESHOLDS_IMPORTED = "thresholds_imported"  # authoritative threshold import (#630)
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"  # cache tenant rejection
     FINE_TUNING_STARTED = "fine_tuning_started"  # resolved fit request and source evidence
     FINE_TUNING_RECEIPT = "fine_tuning_receipt"  # inactive candidate / evaluation evidence
@@ -7201,3 +7202,13 @@ non-integer metadata is rejected. Future-known variables do not inherit this
 metadata. No observation/import timestamp is substituted for unknown availability.
 Overlapping batch rows must agree on availability as well as physical values;
 conflicting evidence is rejected rather than guessed.
+
+### Authority threshold import extension (#630)
+
+`StationStore.import_thresholds(thresholds: list[StationThreshold]) ->
+ThresholdImportStatus` provides conflict-preserving import for one station and
+parameter. Status is imported, unchanged, conflict or missing; preview uses the
+shared classifier without writes. PostgreSQL callers supply a real transaction.
+The existing overwrite method remains available to its existing callers, but is
+not used to overwrite a conflicting import. Successful operator/onboarding import
+records `AuditEventType.THRESHOLDS_IMPORTED` with source digest and retrieval time.

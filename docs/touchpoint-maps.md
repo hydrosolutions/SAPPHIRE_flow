@@ -2969,3 +2969,17 @@ network-overview physical-support tests when changing this boundary. Legacy
 hindcast, skill and event review must not silently score these periods; ensemble
 combination requires identical definitions. Input evidence includes the delivered
 grid only for declared-grid inputs, preserving legacy snapshot bytes.
+
+## Authority threshold import (#630)
+
+`adapters/bafu_thresholds.py` parses labelled station pages; the historical
+colour-derived reference is not an authority import. The operator CLI and BAFU
+onboarding composition share `services/bafu_threshold_import.py`; generic
+`services/threshold_import.py` checks station/tenant identity and existing values.
+`PgStationStore.import_thresholds` requires a real transaction and serializes with
+legacy writes using a table lock held only during the small write transaction.
+Source retrieval occurs before that lock. Apply preserves conflicts and writes
+all missing compatible bounds with an audit entry, or none. Canonical station
+API reads and compute-skills already consume these rows. Never infer permissions
+to enable alerts or promote models from a successful import. See the
+[operator procedure](operations/bafu-threshold-import.md).
