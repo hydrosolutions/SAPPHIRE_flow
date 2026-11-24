@@ -159,6 +159,15 @@ coverage. Fully unknown legacy anchors remain unchanged. Operational producers,
 new model registration and output-period storage/API are still outstanding, so
 this slice alone cannot activate the replacement model.
 
+The next input slice carries the declaration through period-aware weather
+preparation, bounded horizon negotiation, proof-checked candidate handoff and
+station/group assembly. Grid-specific binding fingerprints match the existing V2
+adapter/cache contracts. The independent Claude patch review identified excluded
+discharge leaking into freshness diagnostics; the fix excludes that fetch too,
+with a current-window DHM regression. V1 retained-cache shortcuts remain disabled
+for V2 and are documented separately from current period-aware gap filling.
+Output-period storage/API, new model registration and deployment remain pending.
+
 1. Upgrade Aquacast and FI together, regenerate the lock using uv, preserve the
    optional-extra boundary and frozen deployment dependencies. Inspect upstream
    protocol, requirements, result and model/input docs. Adapt only actual API

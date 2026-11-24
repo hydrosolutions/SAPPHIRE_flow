@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast_evidence import StationSourceEvidence
     from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather_gap import WeatherGapFill
 from sapphire_flow.types.enums import (
     InputQualityCategory,
@@ -217,6 +218,7 @@ def assess_past_forcing_gaps(
     anchor: UtcDatetime,
     time_step: timedelta,
     recent_steps: int,
+    grid: TimeGrid | None = None,
 ) -> InputQualityFlag | None:
     """Label gaps in one past-forcing series. NEVER refuses.
 
@@ -237,7 +239,7 @@ def assess_past_forcing_gaps(
     if not missing:
         return None
 
-    base = floor_to_time_step(anchor, time_step)
+    base = floor_to_time_step(anchor, time_step) if grid is None else grid.floor(anchor)
     # The recent window is the `recent_steps` complete buckets before `base`:
     # base - 1*step ... base - recent_steps*step. `base` itself is the bucket
     # in progress and is never in the expected past set (T0).
@@ -277,6 +279,7 @@ def past_forcing_flags(
     recent_steps: int,
     declared_lookbacks: Mapping[str, int] | None = None,
     filled: Sequence[WeatherGapFill | WeatherGapFillV2] = (),
+    grid: TimeGrid | None = None,
 ) -> list[InputQualityFlag]:
     """One flag per declared past-forcing series that has gaps (Plan 239 T1b).
 
@@ -307,10 +310,11 @@ def past_forcing_flags(
             continue
         if window not in expected_by_window:
             expected_by_window[window] = expected_past_buckets(
-                anchor, time_step, window
+                anchor, time_step, window, grid=grid
             )
         expected = expected_by_window[window]
         flag = assess_past_forcing_gaps(
+            grid=grid,
             series=series,
             expected=expected,
             missing=[

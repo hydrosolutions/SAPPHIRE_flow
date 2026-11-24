@@ -393,3 +393,23 @@ existing CMAL-small provisional deployment. Check persisted forecasts and API
 listing/detail, model/artifact identity, finite ordered quantiles, actual horizon,
 missing-input flags and recurrence before declaring it operational. A completed
 Prefect run alone does not establish that this model produced forecasts.
+
+The replacement start-stamped model uses an explicitly selected group job and its
+declared daily grid. Weather preparation, complete-period horizon negotiation,
+cache identity and station/group assembly carry that grid together. Past weather
+ends at the grid boundary at or before the actual issue; future weather starts
+there. The issue and weather-cycle eligibility cutoff are unchanged. A cycle
+without the full first period must fall back to an eligible complete cycle or
+refuse; it cannot fabricate the pre-issue part of that period. The existing
+UTC-midnight path remains unchanged for models without a declared grid.
+The older UTC-day retained-cache shortcut is disabled on this V2 path. Period-aware
+current-snapshot gap filling and receipt-proved donor selection still follow the
+configured gap policy; a failed refresh does not reuse a V1 retained snapshot.
+
+The declared-grid standard path supplies missing discharge on the model's own
+calendar. Stored DHM daily values with a different physical boundary are excluded,
+not relabelled, and no observation availability timestamp is invented. Observation
+coverage flags retain the missing inputs. Mixed or unknown/known group grids,
+END-labelled inputs and unscoped selections refuse. This input integration alone
+does not activate the replacement: output-period persistence/API qualification,
+artifact registration and isolated worker deployment remain required.

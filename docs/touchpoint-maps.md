@@ -181,6 +181,15 @@ fake transports, including encoded key echoes and locally invalid HRU names.
 
 ### Touchpoint map: ForecastInterface / model execution
 
+**Declared operational grids:** model-scoped preparation creates V2 weather
+requests and grid-bound fingerprints; horizon negotiation and refresh revalidate
+complete physical periods before accepting a candidate handoff. Station/group
+assembly preserves the grid, excludes incompatible stored discharge and emits the
+declared missing-Q calendar. Keep `test_radiation_weather_prepare.py`,
+`test_operational_weather_horizon.py`, `test_operational_period_inputs.py` and
+`test_weather_period_pipeline.py` together with the legacy selected-weather cycle
+tests. Output-period storage and live model activation are separate gates.
+
 **CMAL static-encoder registration:** `cmal_nepal_static_encoder` binds the exact
 supplied YAML through `AquacastShim`; it does not change FI translation or the
 live `cmal_small` model. Keep the config digest, wheel packaging, entry point,

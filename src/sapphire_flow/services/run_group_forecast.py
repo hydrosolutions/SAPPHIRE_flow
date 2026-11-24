@@ -195,6 +195,10 @@ def _assert_consistent_station_inputs(
         assert station_input.time_step == first.time_step, (
             "Inconsistent time_step for group operational inputs"
         )
+        if station_input.time_grid != first.time_grid:
+            raise ConfigurationError(
+                "Inconsistent time grid for group operational inputs"
+            )
 
 
 def _missing_static(static: pl.DataFrame | None, names: list[str]) -> bool:
@@ -287,6 +291,9 @@ def _conform_past_frames(
                                 reference.issue_time,
                                 reference.time_step,
                                 lookback_steps,
+                                grid=None
+                                if reference.time_grid is None
+                                else reference.time_grid.grid,
                             )
                         ),
                         dtype=timestamp_dtype,
@@ -648,6 +655,7 @@ def assemble_group_operational_inputs_outcome(
         issue_time=first.issue_time,
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
+        time_grid=first.time_grid,
         forcing_route=first.forcing_route,
         source_evidence=tuple(
             (inp.station_id, inp.source_evidence)
@@ -720,7 +728,10 @@ def _provisional_discharge_flags(
         return []
     lookback_steps = metadata.normalized_discharge_steps or lookback_steps
     expected = expected_past_buckets(
-        group_inputs.issue_time, group_inputs.time_step, lookback_steps
+        group_inputs.issue_time,
+        group_inputs.time_step,
+        lookback_steps,
+        grid=None if group_inputs.time_grid is None else group_inputs.time_grid.grid,
     )
     supplied = dict(frame.select("timestamp", "discharge").iter_rows())
     missing_cells = {
@@ -895,6 +906,7 @@ def _build_station_result(
             else group_inputs.for_station(station_id).past_dynamic
         ),
         features=data_requirements.past_dynamic_features,
+        grid=None if group_inputs.time_grid is None else group_inputs.time_grid.grid,
         anchor=group_inputs.issue_time,
         time_step=group_inputs.time_step,
         lookback_steps=data_requirements.lookback_steps,
