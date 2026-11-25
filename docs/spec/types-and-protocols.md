@@ -596,6 +596,7 @@ class GeoCoord:
 class ParameterDefinition:
     name: str                              # canonical name (TEXT PK)
     display_name: str
+    display_name_short: str | None = None  # Optional trimmed label, 1–32 characters
     unit: str
     parameter_domain: ParameterDomain
     aggregation_method: AggregationMethod
@@ -1592,6 +1593,7 @@ class User:
     id: UserId
     username: str                        # email address
     display_name: str
+    display_name_short: str | None = None  # Optional trimmed label, 1–32 characters
     role: UserRole
     is_active: bool
     created_at: UtcDatetime
@@ -2051,6 +2053,7 @@ Used by `ModelStore` for CRUD operations.
 class ModelRecord:
     id: ModelId                       # TEXT PK — entry point name
     display_name: str
+    display_name_short: str | None = None  # Optional trimmed label, 1–32 characters
     artifact_scope: ArtifactScope     # STATION or GROUP
     description: str
     created_at: UtcDatetime
@@ -2069,6 +2072,7 @@ Superset of `ModelRecord`.
 class ModelRegistryEntry:
     id: ModelId                       # TEXT PK — entry point name
     display_name: str
+    display_name_short: str | None = None  # Optional trimmed label, 1–32 characters
     description: str
     artifact_scope: ArtifactScope     # STATION or GROUP — determines training and artifact granularity
     data_requirements: ModelDataRequirements
@@ -3983,8 +3987,10 @@ service.
 ```python
 class ModelStore(Protocol):
     def register_model(self, record: ModelRecord) -> None: ...
-        # Upsert keyed on record.id.
+        # Insert keyed on record.id; an existing registration is unchanged.
     def fetch_model(self, model_id: ModelId) -> ModelRecord | None: ...
+    def fetch_models_by_ids(self, model_ids: Collection[ModelId]) -> list[ModelRecord]: ...
+        # One bounded lookup; duplicates ignored, empty input makes no query.
     def fetch_all_models(self) -> list[ModelRecord]: ...
 ```
 

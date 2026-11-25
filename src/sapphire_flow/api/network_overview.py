@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Literal
 import sqlalchemy as sa
 from fastapi import HTTPException
 
+from sapphire_flow.api.model_display_names import (
+    load_model_display_names,
+    model_display_fields,
+)
 from sapphire_flow.api.network_overview_schemas import (
     DisclosedWaterLevelDatumResponse,
     ForecastGapResponse,
@@ -46,6 +50,7 @@ from sapphire_flow.store.daily_forecast_store import PgDailyForecastStore
 from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.store.forecast_publication_store import PgForecastPublicationStore
 from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.store.model_store import PgModelStore
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.daily_forecast import ScheduledDailyForecast
@@ -285,6 +290,19 @@ class NetworkOverviewReader:
         # Recheck selected identity/currentness after all reads. Publication selection
         # is protected by the same request's share lock until serialization completes.
         self._revalidate(headers)
+        labels = load_model_display_names(
+            PgModelStore(self.conn),
+            (ModelId(item.model_id) for entries in output.values() for item in entries),
+        )
+        output = {
+            sid: [
+                item.model_copy(
+                    update=model_display_fields(ModelId(item.model_id), labels)
+                )
+                for item in entries
+            ]
+            for sid, entries in output.items()
+        }
         items = tuple(
             OverviewStationResponse(
                 station_id=str(row["id"]),

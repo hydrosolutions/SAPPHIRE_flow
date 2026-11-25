@@ -132,6 +132,10 @@ specific metric names. They cannot become automatic promotion criteria through
 this patch. A proposed extra gate filter was unnecessary and was removed.
 
 CI follow-up: advance the existing single-head, downgrade-retention and Nepal
-qualification fixture pins to reviewed migration 0092. Persistence expectations
+qualification fixture pins to reviewed migration 0093. Persistence expectations
 include the additional Brier row (14 scores); retain replay, publication failure
 and protected-observation isolation checks unchanged.
+
+Merge reconciliation: preserve main’s model-label migration 0092 and chain the
+threshold-context migration as 0093. Retain both API schema additions and both
+touchpoint entries; verify the combined contract and migration chain.

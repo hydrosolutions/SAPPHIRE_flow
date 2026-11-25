@@ -269,6 +269,7 @@ def _register_or_verify_model(
     record = ModelRecord(
         id=entry.id,
         display_name=entry.display_name,
+        display_name_short=entry.display_name_short,
         artifact_scope=entry.artifact_scope,
         description=entry.description,
         created_at=now,

@@ -12,6 +12,10 @@ from sapphire_flow.api.forecast_read import (
     require_standard_detail,
     require_standard_store,
 )
+from sapphire_flow.api.model_display_names import (
+    load_model_display_names,
+    model_display_fields,
+)
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.provisional_forecasts import (
     ProvisionalForecastReader,
@@ -38,9 +42,13 @@ from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.protocols.stores import ForecastStore
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import OperationalForecast
+    from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.model import ModelRecord
 
 router = APIRouter(prefix="/api/v1", tags=["api-forecasts"])
 
@@ -92,7 +100,9 @@ def _to_qc_flag_response(flag: Any) -> QcFlagResponse:
     )
 
 
-def _forecast_detail_fields(f: OperationalForecast) -> dict[str, Any]:
+def _forecast_detail_fields(
+    f: OperationalForecast, models: Mapping[ModelId, ModelRecord] | None = None
+) -> dict[str, Any]:
     return dict(
         period_definition=f.ensemble.period_definition.content
         if f.ensemble.period_definition is not None
@@ -100,6 +110,7 @@ def _forecast_detail_fields(f: OperationalForecast) -> dict[str, Any]:
         id=str(f.id),
         station_id=str(f.station_id),
         model_id=str(f.model_id),
+        **model_display_fields(f.model_id, models),
         model_tier=model_tier_for_model_id(f.model_id).value,
         issued_at=f.issued_at,
         parameter=f.ensemble.parameter,
@@ -134,13 +145,17 @@ def _forecast_detail_fields(f: OperationalForecast) -> dict[str, Any]:
     )
 
 
-def to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
+def to_forecast_detail(
+    f: OperationalForecast, models: Mapping[ModelId, ModelRecord] | None = None
+) -> ForecastDetail:
     require_standard_detail(f)
-    return ForecastDetail(**_forecast_detail_fields(f))
+    return ForecastDetail(**_forecast_detail_fields(f, models))
 
 
 def _detail_with_weather(
-    forecast: OperationalForecast, store: ForecastStore
+    forecast: OperationalForecast,
+    store: ForecastStore,
+    models: Mapping[ModelId, ModelRecord] | None = None,
 ) -> ForecastDetail:
     from sapphire_flow.api.weather_evidence import read_weather_summary
 
@@ -153,7 +168,9 @@ def _detail_with_weather(
         data_use=forecast.data_use,
         store=store,
     )
-    return to_forecast_detail(forecast).model_copy(update={"weather_use": summary})
+    return to_forecast_detail(forecast, models).model_copy(
+        update={"weather_use": summary}
+    )
 
 
 @router.get(
@@ -184,7 +201,12 @@ def get_forecast(
             store=provisional.store,
         )
         response = ProvisionalForecastDetail(
-            **_forecast_detail_fields(forecast),
+            **_forecast_detail_fields(
+                forecast,
+                load_model_display_names(
+                    stores.get("model_store"), [forecast.model_id]
+                ),
+            ),
             **metadata,
             weather_use=weather,
         )
@@ -201,10 +223,18 @@ def get_forecast(
     if forecast is None or not principal.station_in_scope(forecast.station_id):
         raise HTTPException(status_code=404, detail="Forecast not found")
     if not gate.active_tenant_ids:
-        return _detail_with_weather(forecast, forecast_store)
+        return _detail_with_weather(
+            forecast,
+            forecast_store,
+            load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+        )
     tenant_id = station_tenant_id(stores, forecast.station_id)
     if not gate.active(tenant_id):
-        return _detail_with_weather(forecast, forecast_store)
+        return _detail_with_weather(
+            forecast,
+            forecast_store,
+            load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+        )
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
     metadata, decisions = publication_metadata(pub, forecast, tenant_id)
@@ -221,4 +251,8 @@ def get_forecast(
             withdrawn_at=last.created_at,
         )
         return JSONResponse(status_code=410, content=tombstone.model_dump(mode="json"))
-    return _detail_with_weather(forecast, forecast_store).model_copy(update=metadata)
+    return _detail_with_weather(
+        forecast,
+        forecast_store,
+        load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+    ).model_copy(update=metadata)

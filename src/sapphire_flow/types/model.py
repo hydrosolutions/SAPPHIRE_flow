@@ -279,6 +279,19 @@ class ModelRecord:
     artifact_scope: ArtifactScope
     description: str
     created_at: UtcDatetime
+    display_name_short: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_model_display_name_short(self.display_name_short)
+
+
+def validate_model_display_name_short(value: object) -> None:
+    if value is not None and (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 32
+        or value != value.strip()
+    ):
+        raise ValueError("display_name_short must be trimmed and 1–32 characters")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -401,6 +414,10 @@ class ModelRegistryEntry:
     artifact_scope: ArtifactScope
     data_requirements: ModelDataRequirements
     registered_at: UtcDatetime
+    display_name_short: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_model_display_name_short(self.display_name_short)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

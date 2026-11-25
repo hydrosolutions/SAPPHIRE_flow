@@ -179,3 +179,25 @@ as a one-second guarantee or all sizes as under1MiB. No timeout, cap or index wa
 expanded to hide the shortfall. These results require owner disposition; no live
 acceptance or operational adoption is implied. Header quality/lineage payloads are
 also capped at8MiB per selected purpose before Python materialization.
+
+## Model display labels
+
+Forecast listings, details (including review/publication responses), and network
+overview entries expose `model_display_name` and `model_display_name_short` alongside
+the unchanged `model_id`. This applies to both standard and provisional-rating
+forecasts, including overview entries with no forecast available.
+
+Use `model_display_name_short ?? model_display_name ?? model_id` for compact
+buttons, and the full name for tooltips. Full names come from the model registry;
+a missing or blank name falls back to the model ID. A missing short label is
+explicit JSON `null`. Labels are presentation text, not unique identifiers:
+continue using `model_id` for selection, keys and API requests.
+
+Example for the November 23 static-encoder model:
+
+```json
+{"model_id":"cmal_nepal_static_encoder_20261123","model_display_name":"Cmal Nepal Static Encoder 20261123","model_display_name_short":"CMAL SE"}
+```
+
+Map contract 3.4 adds these fields. Existing forecast values, identity, visibility
+and publication rules are unchanged. Overview ETags include both labels.

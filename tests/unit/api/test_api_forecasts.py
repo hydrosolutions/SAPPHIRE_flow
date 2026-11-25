@@ -78,6 +78,8 @@ class TestGetForecast:
         assert body["id"] == str(fc.id)
         assert body["station_id"] == str(station.id)
         assert body["model_id"] == str(fc.model_id)
+        assert body["model_display_name"] == str(fc.model_id)
+        assert body["model_display_name_short"] is None
         assert body["model_tier"] == "skill"
         assert body["representation"] == fc.representation.value
         assert body["status"] == fc.status.value
@@ -505,7 +507,52 @@ class TestForecastReadAuthorizationOrder:
             tenant_id=None,
             station_ids=frozenset(),
         )
+        from tests.unit.api.test_model_display_names import CountingModelStore
+
+        labels = CountingModelStore()
+        fake_stores["model_store"] = labels
         absent = client.get(f"/api/v1/forecasts/{uuid4()}")
         foreign = client.get(f"/api/v1/forecasts/{fc.id}")
         assert foreign.status_code == absent.status_code == 404
         assert foreign.json() == absent.json()
+        assert labels.calls == []
+
+
+@pytest.mark.parametrize("short_name", [None, "CMAL SE"])
+def test_registered_labels_in_detail_and_listing(
+    client: TestClient, fake_stores: dict[str, Any], short_name: str | None
+) -> None:
+    from sapphire_flow.types.enums import ArtifactScope
+    from sapphire_flow.types.model import ModelRecord
+    from tests.unit.api.test_model_display_names import CountingModelStore
+
+    labels = CountingModelStore()
+    fake_stores["model_store"] = labels
+    station = make_station_config(rng=random.Random(1))
+    fake_stores["station_store"].store_station(station)
+    forecast = _make_operational_forecast(station_id=station.id)
+    fake_stores["forecast_store"].store_forecast(forecast)
+    fake_stores["model_store"].register_model(
+        ModelRecord(
+            id=forecast.model_id,
+            display_name="CMAL Static Encoder November 2026",
+            display_name_short=short_name,
+            artifact_scope=ArtifactScope.GROUP,
+            description="",
+            created_at=_EPOCH,
+        )
+    )
+    detail = client.get(f"/api/v1/forecasts/{forecast.id}")
+    listing = client.get(
+        f"/api/v1/stations/{station.id}/forecasts",
+        params={
+            "start": "2024-12-31T00:00:00Z",
+            "end": "2025-01-02T00:00:00Z",
+        },
+    )
+    assert detail.status_code == listing.status_code == 200
+    assert labels.calls == [frozenset({forecast.model_id})] * 2
+    for item in [detail.json(), listing.json()["items"][0]]:
+        assert item["model_id"] == str(forecast.model_id)
+        assert item["model_display_name"] == "CMAL Static Encoder November 2026"
+        assert item["model_display_name_short"] == short_name

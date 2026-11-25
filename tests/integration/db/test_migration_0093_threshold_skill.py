@@ -16,9 +16,9 @@ def test_nullable_threshold_context_upgrade_and_preservation(
         url = pg.get_connection_url().replace("+psycopg2", "+psycopg")
         monkeypatch.setenv("DATABASE_URL", url)
         config = Config("alembic.ini")
-        command.upgrade(config, "0092")
-        command.downgrade(config, "0091")
-        command.upgrade(config, "0092")
+        command.upgrade(config, "0093")
+        command.downgrade(config, "0092")
+        command.upgrade(config, "0093")
         engine = sa.create_engine(url)
         try:
             with engine.begin() as conn:
@@ -36,6 +36,6 @@ VALUES (gen_random_uuid(), :sid, :mid, 'discharge', 'hindcast_reanalysis',
             with pytest.raises(
                 sa.exc.DBAPIError, match="cannot remove stored threshold skill context"
             ):
-                command.downgrade(config, "0091")
+                command.downgrade(config, "0092")
         finally:
             engine.dispose()

@@ -89,7 +89,7 @@ one danger level are refused before writes. BMA cross-validation omits threshold
 metrics/diagrams rather than averaging incompatible fold statistics; its other
 scores and single-pass pooled scores remain supported.
 
-Migration 0092 adds nullable context columns. Old results remain readable with null
+Migration 0093 adds nullable context columns. Old results remain readable with null
 context; no metadata is invented. Rollback software can still write null, but a
 schema downgrade refuses once context-bearing results exist. Existing insert-only
 worker grants and generation publication remain unchanged. Context-only changes

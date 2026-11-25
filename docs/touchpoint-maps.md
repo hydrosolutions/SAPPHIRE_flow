@@ -3010,11 +3010,21 @@ and publication regressions before merge.
 samples; `metrics.py` and `diagrams.py` expose probability-input cores while
 retaining member wrappers. `service.py` version 4 emits threshold scores/diagrams
 with `types/threshold_skill.py` context and includes it in generation fingerprints.
-Migration 0092 and the boundary codec/store preserve it; skill_read and api_review
+Migration 0093 and the boundary codec/store preserve it; skill_read and api_review
 expose it on existing scoped reads. BMA CV omits context-bearing fold results;
 the existing gate allowlist excludes threshold-specific metric names. No alert change.
 
 Run skill unit tests, model-onboarding gates, API review/contract tests, skill-store
-roundtrips, migration 0092 and ordinary/provisional skill isolation regressions.
+roundtrips, migration 0093 and ordinary/provisional skill isolation regressions.
 Threshold metadata must not be added inside diagram.data: its NaN codec has an
 exact schema. Context belongs in its separate column.
+
+### Model display metadata (2026-11-25)
+
+Label changes touch `types/model.py`, model discovery/registration/import,
+`models` metadata + migrations, ModelStore and its fake, API display-name batching,
+forecast summary/detail/publication routes, and network overview schemas. Preserve
+stable IDs, scope checks, publication gates and ETag body hashing. Regenerate the
+map OpenAPI contract when response fields change. Verify nullable legacy labels,
+FI wrapping, existing-row migration, bounded lookup and standard/provisional API
+responses. See [label contract](spec/network-overview.md#model-display-labels).
