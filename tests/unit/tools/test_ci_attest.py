@@ -38,7 +38,7 @@ def full_jobs() -> list[dict]:
 
 class TestMandatoryPredicates:
     def test_complete_same_attempt_qualifies(self, full_jobs: list[dict]) -> None:
-        assert len(attest.qualified_jobs(full_jobs, run_id=1, attempt=2)) == 12
+        assert len(attest.qualified_jobs(full_jobs, run_id=1, attempt=2)) == 13
 
     @pytest.mark.parametrize(
         "conclusion", ["skipped", "neutral", "failure", "cancelled", "timed_out"]
@@ -67,7 +67,7 @@ class TestMandatoryPredicates:
         with pytest.raises(attest.AttestationError, match="unknown_job_attempt"):
             attest.qualified_jobs(full_jobs, run_id=1, attempt=2)
 
-    @pytest.mark.parametrize("index", range(12))
+    @pytest.mark.parametrize("index", range(13))
     def test_every_mandatory_leg_is_required(
         self, full_jobs: list[dict], index: int
     ) -> None:
@@ -252,7 +252,7 @@ class TestProducerExecution:
         assert document["checkout"] == attest.commit_facts(
             root, environment["GITHUB_SHA"], 10
         )
-        assert len(document["mandatory_jobs"]) == 12
+        assert len(document["mandatory_jobs"]) == 13
         assert outputs.read_text() == "qualified=true\n"
         assert "GH_TOKEN" not in os.environ
         assert calls == [

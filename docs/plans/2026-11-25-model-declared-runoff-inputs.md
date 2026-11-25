@@ -154,3 +154,9 @@ semantics in operations/security docs. Existing v1 golden tests pass unchanged.
 The current-version reader is not an as-of reconstruction of superseded sources.
 This implementation does not enable historical declared-grid runs. Full CI remains
 an owner-merge gate; local focused tests do not replace it.
+
+CI follow-up: retain the existing qualification oracle against schema 0095.
+Rating-store and worker round trips now distinguish pre-storage derived content
+from database-assigned recording time, assert unchanged source evidence, and
+check that reconciliation retries preserve the stored timestamp. Refreshed onto
+main `44564ed5`, retaining release target 0.1.1198 under the development-phase rule.

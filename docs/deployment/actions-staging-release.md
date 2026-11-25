@@ -97,7 +97,7 @@ All source validation and SSH admission checks remain mandatory.
 | Four unit shards, real Aquacast discovery, native libraries | Same commands |
 | Unit coverage combine/report | Same aggregate and shard evidence |
 | Wheel-only/private-package installation guard | Same commands |
-| Heavy/rest integration and partition assertion | Same commands and aggregate |
+| Heavy/mid/rest integration and partition assertion | Same commands and aggregate |
 | Default image build/import/resources/scripts/entrypoint/isolation | Sole release-builder adapter |
 | Aquacast/Torch actual-image proof | Same produced Aquacast ID |
 | Trivy vuln+secret/SARIF and explicit Syft SBOM for both images | Independent retained component outcomes |

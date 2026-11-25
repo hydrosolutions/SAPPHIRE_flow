@@ -278,7 +278,7 @@ echo "::notice title=unit shard ${shard}::wall-clock $((SECONDS - started))s"
     uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client
     uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client
     ;;
-  integration-heavy|integration-rest)
+  integration-heavy|integration-mid|integration-rest)
     shard="${1#integration-}"
     ensure_system
     ensure_env default

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 
 import pytest
 
+from tools import integration_shards
+
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
     "private_verification", ROOT / "tools/private_verification.py"
@@ -287,6 +289,10 @@ class TestRetainedWorkflow:
                 "shard"
             ]
         }
+        aggregate = next(g for g in verifier.GATES if g.name == "integration")
+        assert aggregate.needs == tuple(
+            "integration-" + shard_id for shard_id in integration_shards.SHARD_IDS
+        )
         assert {name for gates in verifier.CI_JOB_GATES.values() for name in gates} == {
             gate.name for gate in verifier.GATES
         }
@@ -487,7 +493,16 @@ def cli_fixture(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
 
 class TestCLI:
     @pytest.mark.parametrize(
-        "failure", ["none", "lint", "unit-rest", "build-image-and-scan"]
+        "failure",
+        [
+            "none",
+            "lint",
+            "unit-rest",
+            "integration-heavy",
+            "integration-mid",
+            "integration-rest",
+            "build-image-and-scan",
+        ],
     )
     def test_synthetic_pipeline_preserves_private_failure_evidence(
         self,
@@ -548,6 +563,8 @@ class TestCLI:
         assert str(work).encode() not in result.stdout
         if failure == "unit-rest":
             assert manifest["gates"]["unit-coverage"] == "blocked"
+        if failure.startswith("integration-"):
+            assert manifest["gates"]["integration"] == "blocked"
         assert manifest["binding"] == json.loads(env["PRIVATE_VERIFICATION_ADMISSION"])
         if failure != "none":
             assert manifest["gates"][failure] == "failed"

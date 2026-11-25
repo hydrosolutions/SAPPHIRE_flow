@@ -79,6 +79,11 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
         "Prove integration shard partition",
         "Run Swiss overview performance gate",
     ),
+    "integration (mid)": (
+        "Checkout exact source",
+        "Set SCM version override for editable root installs",
+        "Run integration tests",
+    ),
     "integration (rest)": (
         "Checkout exact source",
         "Set SCM version override for editable root installs",
@@ -119,7 +124,7 @@ MANDATORY_STEPS: dict[str, tuple[str, ...]] = {
 
 # Reviewed workflow bytes bind names to actual commands, action pins and inputs.
 # Update only with the workflow and the producer inventory drift tests.
-WORKFLOW_SHA256 = "4896755831a507d4e3ae8bd276113278df1df963dc65360f98069ceb4dd67c3f"
+WORKFLOW_SHA256 = "7c9599170d500013b6effa487c88ba624395da76bff6e7b2583230083a75ac31"
 
 
 def require_workflow(root: Path) -> None:
