@@ -17,12 +17,13 @@ import structlog
 from sapphire_flow.exceptions import ConfigurationError, SkillGenerationIncompleteError
 from sapphire_flow.services.skill.diagrams import (
     compute_rank_histogram,
-    compute_reliability_diagram,
-    compute_roc_curve,
+    compute_reliability_from_probabilities,
+    compute_roc_from_probabilities,
 )
 from sapphire_flow.services.skill.metrics import (
-    compute_bss,
-    compute_contingency,
+    compute_brier_from_probabilities,
+    compute_bss_from_probabilities,
+    compute_contingency_from_probabilities,
     compute_crps,
     compute_kge,
     compute_mae,
@@ -32,10 +33,12 @@ from sapphire_flow.services.skill.metrics import (
     compute_sharpness,
 )
 from sapphire_flow.services.skill.quantiles import QUANTILE_SCORE, QuantileSample
+from sapphire_flow.services.skill.thresholds import paired_threshold_probabilities
 from sapphire_flow.services.training_data import (
     aggregation_method_for,
     resample_to_time_step,
 )
+from sapphire_flow.store.threshold_skill_codec import encode_threshold_context
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, FlowRegime, SkillFreshness
 
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
+    from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
 log = structlog.get_logger(__name__)
 
@@ -60,7 +64,7 @@ log = structlog.get_logger(__name__)
 # here gives every post-Plan-228 recompute a natural key the old (stale) rows
 # never occupy, so the insert succeeds AND `fetch_latest_scores`'s
 # `max(computation_version)` picks the new rows up automatically.
-_COMPUTATION_VERSION = 3
+_COMPUTATION_VERSION = 4
 _DEFAULT_DECISION_PROBABILITY = 0.5
 
 
@@ -416,6 +420,7 @@ def _compute_scores(
     ensemble_list: list[ForecastSample],
     obs_list: list[float],
     thresholds: list[StationThreshold],
+    units: str,
     skill_source: SkillSource,
     forcing_type: ForcingType | None,
     flow_regime_config_id: UUID | None,
@@ -435,7 +440,9 @@ def _compute_scores(
 
     scores: list[SkillScore] = []
 
-    def _add(metric: str, value: float) -> None:
+    def _add(
+        metric: str, value: float, context: ThresholdSkillContext | None = None
+    ) -> None:
         scores.append(
             SkillScore(
                 id=uuid_factory(),
@@ -453,7 +460,8 @@ def _compute_scores(
                 flow_regime_config_id=flow_regime_config_id,
                 metric=metric,
                 score=value,
-                sample_size=sample_size,
+                sample_size=sample_size if context is None else context.scored_count,
+                threshold_context=context,
                 freshness=SkillFreshness.CURRENT,
                 eval_period_start=eval_start,
                 eval_period_end=eval_end,
@@ -528,20 +536,26 @@ def _compute_scores(
         if pta is not None:
             _add("peak_timing_error", pta)
 
-        # Finite quantiles do not identify tail exceedance probabilities.
-        if quantile_samples:
-            return scores
-        # Threshold-dependent metrics
         for thr in thresholds:
-            ens_2d_full = np.stack(member_samples)
-            bss = compute_bss(ens_2d_full, obs_arr, thr.value)
-            _add(f"bss_danger_{thr.danger_level}", bss)
-            pod, far, csi = compute_contingency(
-                ens_2d_full, obs_arr, thr.value, _DEFAULT_DECISION_PROBABILITY
+            probabilities, events, context = paired_threshold_probabilities(
+                ensemble_list, obs_list, thr, units
             )
-            _add(f"pod_danger_{thr.danger_level}", pod)
-            _add(f"far_danger_{thr.danger_level}", far)
-            _add(f"csi_danger_{thr.danger_level}", csi)
+            _add(
+                f"brier_danger_{thr.danger_level}",
+                compute_brier_from_probabilities(probabilities, events),
+                context,
+            )
+            _add(
+                f"bss_danger_{thr.danger_level}",
+                compute_bss_from_probabilities(probabilities, events),
+                context,
+            )
+            pod, far, csi = compute_contingency_from_probabilities(
+                probabilities, events, _DEFAULT_DECISION_PROBABILITY
+            )
+            _add(f"pod_danger_{thr.danger_level}", pod, context)
+            _add(f"far_danger_{thr.danger_level}", far, context)
+            _add(f"csi_danger_{thr.danger_level}", csi, context)
 
     return scores
 
@@ -557,6 +571,7 @@ def _compute_diagrams(
     ensemble_list: list[ForecastSample],
     obs_list: list[float],
     thresholds: list[StationThreshold],
+    units: str,
     skill_source: SkillSource,
     flow_regime_config_id: UUID | None,
     eval_start: UtcDatetime,
@@ -569,22 +584,20 @@ def _compute_diagrams(
 ) -> list[SkillDiagram]:
     from sapphire_flow.types.skill import SkillDiagram
 
-    if not ensemble_list or isinstance(ensemble_list[0], QuantileSample):
+    if not ensemble_list:
         return []
-    member_samples = cast("list[np.ndarray]", ensemble_list)
+    member_samples = [m for m in ensemble_list if isinstance(m, np.ndarray)]
 
     obs_arr = np.array(obs_list, dtype=float)
     now = clock()
-
-    min_n = min(len(m) for m in member_samples)
-    ens_2d = np.stack([m[:min_n] for m in member_samples])
 
     diagrams: list[SkillDiagram] = []
 
     def _add(
         diagram_type: str,
-        data: dict,
+        data: dict[str, object],
         threshold_level: str | None = None,
+        context: ThresholdSkillContext | None = None,
     ) -> None:
         diagrams.append(
             SkillDiagram(
@@ -599,6 +612,7 @@ def _compute_diagrams(
                 season=season,
                 flow_regime=regime,
                 flow_regime_config_id=flow_regime_config_id,
+                threshold_context=context,
                 diagram_type=diagram_type,  # type: ignore[arg-type]
                 threshold_level=threshold_level,
                 data=data,
@@ -611,20 +625,28 @@ def _compute_diagrams(
             )
         )
 
-    # Rank histogram (no threshold required)
-    _add("rank_histogram", compute_rank_histogram(ens_2d, obs_arr))
+    if member_samples:
+        min_n = min(len(m) for m in member_samples)
+        ens_2d = np.stack([m[:min_n] for m in member_samples])
+        _add("rank_histogram", compute_rank_histogram(ens_2d, obs_arr))
 
-    # Per-threshold diagrams
     for thr in thresholds:
+        probabilities, events, context = paired_threshold_probabilities(
+            ensemble_list, obs_list, thr, units
+        )
+        if not context.scored_count:
+            continue
         _add(
             "reliability",
-            compute_reliability_diagram(ens_2d, obs_arr, thr.value),
+            compute_reliability_from_probabilities(probabilities, events),
             threshold_level=thr.danger_level,
+            context=context,
         )
         _add(
             "roc",
-            compute_roc_curve(ens_2d, obs_arr, thr.value),
+            compute_roc_from_probabilities(probabilities, events),
             threshold_level=thr.danger_level,
+            context=context,
         )
 
     return diagrams
@@ -684,6 +706,16 @@ def compute_skill_for_station(
             f"other than '{parameter}': "
             f"{sorted({hc.ensemble.parameter for hc in mismatched})}"
         )
+
+    if any(t.station_id != station_id for t in thresholds):
+        raise ValueError("skill thresholds belong to another station")
+    thresholds = [t for t in thresholds if t.parameter == parameter]
+    if len({t.danger_level for t in thresholds}) != len(thresholds):
+        raise ValueError("ambiguous threshold sources for the same danger level")
+    units = "m3/s" if parameter == "discharge" else "m"
+    allowed_units = {"m3/s", "m³/s"} if parameter == "discharge" else {"m"}
+    if thresholds and any(hc.ensemble.units not in allowed_units for hc in hindcasts):
+        raise ValueError("threshold skill requires canonical forecast units")
 
     # Plan 228 P2/D2: the forecast is a step-mean; the observation must be
     # aggregated to the SAME step before comparison, never joined against a
@@ -756,6 +788,7 @@ def compute_skill_for_station(
                 ensemble_list=ensemble_list,
                 obs_list=obs_list,
                 thresholds=thresholds,
+                units=units,
                 skill_source=skill_source,
                 forcing_type=forcing_type,
                 flow_regime_config_id=flow_regime_config_id,
@@ -780,6 +813,7 @@ def compute_skill_for_station(
                 ensemble_list=ensemble_list,
                 obs_list=obs_list,
                 thresholds=thresholds,
+                units=units,
                 skill_source=skill_source,
                 flow_regime_config_id=flow_regime_config_id,
                 eval_start=eval_start,
@@ -845,6 +879,12 @@ def compute_generation_fingerprint(
                 s.sample_size,
             )
         )
+        + (
+            "|"
+            + json.dumps(encode_threshold_context(s.threshold_context), sort_keys=True)
+            if s.threshold_context is not None
+            else ""
+        )
         for s in scores
     )
     # `d.data` (the diagram's own JSONB diagnostic blob) IS included — the
@@ -881,6 +921,12 @@ def compute_generation_fingerprint(
                     default=str,
                 ),
             )
+        )
+        + (
+            "|"
+            + json.dumps(encode_threshold_context(d.threshold_context), sort_keys=True)
+            if d.threshold_context is not None
+            else ""
         )
         for d in diagrams
     )

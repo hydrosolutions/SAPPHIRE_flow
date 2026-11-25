@@ -3003,3 +3003,18 @@ Verify `tests/unit/services/test_threshold_probability.py`,
 `tests/unit/services/test_event_review.py`, `tests/unit/api/test_event_review.py`
 and `tests/unit/api/test_map_contract.py`; retain integration event-review scope
 and publication regressions before merge.
+
+### Threshold skill context and probability inputs
+
+`services/skill/thresholds.py` applies the shared threshold converter to paired
+samples; `metrics.py` and `diagrams.py` expose probability-input cores while
+retaining member wrappers. `service.py` version 4 emits threshold scores/diagrams
+with `types/threshold_skill.py` context and includes it in generation fingerprints.
+Migration 0092 and the boundary codec/store preserve it; skill_read and api_review
+expose it on existing scoped reads. BMA CV omits context-bearing fold results;
+the existing gate allowlist excludes threshold-specific metric names. No alert change.
+
+Run skill unit tests, model-onboarding gates, API review/contract tests, skill-store
+roundtrips, migration 0092 and ordinary/provisional skill isolation regressions.
+Threshold metadata must not be added inside diagram.data: its NaN codec has an
+exact schema. Context belongs in its separate column.

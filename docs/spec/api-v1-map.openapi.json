@@ -7305,6 +7305,16 @@
             "title": "Skill Source",
             "type": "string"
           },
+          "threshold_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThresholdContextPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "time_step_seconds": {
             "title": "Time Step Seconds",
             "type": "integer"
@@ -8364,6 +8374,133 @@
         "title": "SwissOverviewResponse",
         "type": "object"
       },
+      "ThresholdContextPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "comparison": {
+            "const": "strict_gt",
+            "title": "Comparison",
+            "type": "string"
+          },
+          "coverage": {
+            "enum": [
+              "all_paired",
+              "conditional_resolved_subset",
+              "no_resolved_probabilities"
+            ],
+            "title": "Coverage",
+            "type": "string"
+          },
+          "danger_level": {
+            "minLength": 1,
+            "title": "Danger Level",
+            "type": "string"
+          },
+          "decision_probability": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Decision Probability",
+            "type": "number"
+          },
+          "excluded_count": {
+            "minimum": 0.0,
+            "title": "Excluded Count",
+            "type": "integer"
+          },
+          "paired_count": {
+            "minimum": 0.0,
+            "title": "Paired Count",
+            "type": "integer"
+          },
+          "paired_event_count": {
+            "minimum": 0.0,
+            "title": "Paired Event Count",
+            "type": "integer"
+          },
+          "probability_methods": {
+            "items": {
+              "$ref": "#/components/schemas/ProbabilityMethod"
+            },
+            "title": "Probability Methods",
+            "type": "array"
+          },
+          "reference": {
+            "const": "same_scored_subset_event_rate",
+            "title": "Reference",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scored_count": {
+            "minimum": 0.0,
+            "title": "Scored Count",
+            "type": "integer"
+          },
+          "scored_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Event Count",
+            "type": "integer"
+          },
+          "scored_non_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Non Event Count",
+            "type": "integer"
+          },
+          "temporal_basis": {
+            "const": "legacy_step_aggregate",
+            "title": "Temporal Basis",
+            "type": "string"
+          },
+          "threshold_basis": {
+            "const": "current_snapshot_historical_effective_dates_unknown",
+            "title": "Threshold Basis",
+            "type": "string"
+          },
+          "threshold_source": {
+            "$ref": "#/components/schemas/ThresholdSource"
+          },
+          "threshold_updated_at": {
+            "format": "date-time",
+            "title": "Threshold Updated At",
+            "type": "string"
+          },
+          "threshold_value": {
+            "title": "Threshold Value",
+            "type": "number"
+          },
+          "units": {
+            "minLength": 1,
+            "title": "Units",
+            "type": "string"
+          }
+        },
+        "required": [
+          "danger_level",
+          "threshold_value",
+          "threshold_source",
+          "threshold_updated_at",
+          "units",
+          "probability_methods",
+          "paired_count",
+          "scored_count",
+          "excluded_count",
+          "paired_event_count",
+          "scored_event_count",
+          "scored_non_event_count",
+          "coverage",
+          "schema_version",
+          "decision_probability",
+          "comparison",
+          "reference",
+          "temporal_basis",
+          "threshold_basis"
+        ],
+        "title": "ThresholdContextPayload",
+        "type": "object"
+      },
       "ThresholdResponse": {
         "properties": {
           "danger_level": {
@@ -8710,7 +8847,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.3"
+    "version": "3.4"
   },
   "openapi": "3.1.0",
   "paths": {

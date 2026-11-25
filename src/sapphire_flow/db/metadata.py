@@ -2090,6 +2090,10 @@ sa.Index(
 skill_scores = sa.Table(
     "skill_scores",
     metadata,
+    sa.CheckConstraint(
+        "threshold_context IS NULL OR jsonb_typeof(threshold_context) = 'object'",
+        name="ck_skill_scores_threshold_context",
+    ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
@@ -2162,11 +2166,16 @@ skill_scores = sa.Table(
     # ledger row is the INTENDED shape of an unpublished/partial
     # generation (D3), not a data-integrity violation.
     sa.Column("generation_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("threshold_context", JSONB(none_as_null=True), nullable=True),
 )
 
 skill_diagrams = sa.Table(
     "skill_diagrams",
     metadata,
+    sa.CheckConstraint(
+        "threshold_context IS NULL OR jsonb_typeof(threshold_context) = 'object'",
+        name="ck_skill_diagrams_threshold_context",
+    ),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
@@ -2220,6 +2229,7 @@ skill_diagrams = sa.Table(
     # diagrams (D3: "supersession ... covers diagrams"). Also deliberately
     # not a foreign key, for the same write-ordering reason.
     sa.Column("generation_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("threshold_context", JSONB(none_as_null=True), nullable=True),
 )
 
 # Indexes on skill_scores

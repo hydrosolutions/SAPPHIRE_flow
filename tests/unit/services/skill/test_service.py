@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -2330,3 +2331,70 @@ class TestComputeGenerationFingerprint:
         assert compute_generation_fingerprint(
             [], [diagram_1]
         ) != compute_generation_fingerprint([], [diagram_2])
+
+
+class TestThresholdContextScoring:
+    @pytest.mark.parametrize("threshold_value,scored_count", [(105.0, 2), (1000.0, 0)])
+    def test_quantile_scores_keep_exclusions_and_diagram_context(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        threshold_value: float,
+        scored_count: int,
+    ) -> None:
+        hindcasts = []
+        observations = []
+        for i, (predicted, observed) in enumerate(
+            [(100.0, 110.0), (200.0, 110.0), (100.0, 100.0)]
+        ):
+            step = _utc(2025, 1, i + 1)
+            hindcasts.append(
+                _make_hindcast_quantiles(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=step,
+                    n_steps=1,
+                    value=predicted,
+                )
+            )
+            observations.append(
+                _make_observation(
+                    station_id=station_id,
+                    timestamp=ensure_utc(step + timedelta(hours=1)),
+                    value=observed,
+                )
+            )
+        scores, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[_make_threshold(station_id=station_id, value=threshold_value)],
+            flow_regime_config=None,
+            seasons=[],
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,
+            uuid_factory=uuid_factory,
+            parameter="discharge",
+        )
+        by_name = {s.metric: s for s in scores}
+        score = by_name["brier_danger_moderate"]
+        assert score.computation_version == 4
+        assert score.sample_size == scored_count
+        assert score.threshold_context is not None
+        assert score.threshold_context.paired_count == 3
+        assert score.threshold_context.excluded_count == 3 - scored_count
+        if scored_count:
+            assert score.score == pytest.approx(0.25)
+            assert by_name["bss_danger_moderate"].score == pytest.approx(0)
+            assert {d.diagram_type for d in diagrams} == {"reliability", "roc"}
+            assert all(d.threshold_context == score.threshold_context for d in diagrams)
+        else:
+            assert math.isnan(score.score)
+            assert diagrams == []

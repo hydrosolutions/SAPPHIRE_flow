@@ -1878,3 +1878,38 @@ class TestQuantileCorrectionGeneration:
             "quantile_score_trapz_p05_p95"
         }
         assert store.fetch_latest_diagrams(sid, mid) == []
+
+
+class TestThresholdContextRoundtrip:
+    def test_scores_and_diagrams_preserve_context(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        import numpy as np
+
+        from sapphire_flow.services.skill.thresholds import (
+            paired_threshold_probabilities,
+        )
+        from tests.unit.services.skill.test_thresholds import threshold
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        _, _, context = paired_threshold_probabilities(
+            [np.array([0.0, 10.0])], [10.0], threshold(), "m3/s"
+        )
+        store = PgSkillStore(db_connection)
+        score = replace(
+            _make_score(sid, mid, aid, computation_version=4), threshold_context=context
+        )
+        diagram = replace(
+            _make_diagram(sid, mid, aid, computation_version=4),
+            threshold_context=context,
+        )
+        store.store_skill_scores([score])
+        store.store_skill_diagrams([diagram])
+        scores = store.fetch_latest_scores(sid, mid)
+        diagrams = store.fetch_latest_diagrams(sid, mid)
+        assert scores[0].threshold_context == context
+        assert diagrams[0].threshold_context == context

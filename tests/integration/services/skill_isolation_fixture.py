@@ -2012,8 +2012,8 @@ def assert_missing_half_snapshot(
     mode: GenerationMode,
 ) -> None:
     expected = {
-        "skill_scores": 104,
-        "skill_diagrams": 24,
+        "skill_scores": 72,
+        "skill_diagrams": 8,
         "skill_generations": int(mode == "ON"),
     }
     for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
@@ -2025,7 +2025,7 @@ def assert_missing_half_snapshot(
         assert len(snapshot.rows[table.name]) == expected[table.name]
         for row in snapshot.rows[table.name].values():
             assert set(row) == catalog[table.name]
-    assert len(snapshot.scores) == 104 and len(snapshot.diagrams) == 24
+    assert len(snapshot.scores) == 72 and len(snapshot.diagrams) == 8
     generation = (
         next(iter(snapshot.rows["skill_generations"])) if mode == "ON" else None
     )
@@ -2542,10 +2542,10 @@ def assert_absent_run_snapshot(
     mode: GenerationMode,
     expected_scores: int,
 ) -> None:
-    assert expected_scores in (98, 104)
+    assert expected_scores in (106, 72)
     expected = {
         "skill_scores": expected_scores,
-        "skill_diagrams": 24,
+        "skill_diagrams": 8 if expected_scores == 72 else 24,
         "skill_generations": int(mode == "ON"),
     }
     for table in (db.skill_scores, db.skill_diagrams, db.skill_generations):
@@ -2557,7 +2557,9 @@ def assert_absent_run_snapshot(
         assert len(snapshot.rows[table.name]) == expected[table.name]
         for row in snapshot.rows[table.name].values():
             assert set(row) == catalog[table.name]
-    assert len(snapshot.scores) == expected_scores and len(snapshot.diagrams) == 24
+    assert len(snapshot.scores) == expected_scores and len(snapshot.diagrams) == (
+        8 if expected_scores == 72 else 24
+    )
     generation = (
         next(iter(snapshot.rows["skill_generations"])) if mode == "ON" else None
     )
@@ -3079,7 +3081,7 @@ def surviving_score_oracle(
                 else "prior"
             )
             if origin == "prior":
-                value = SCALAR_VALUES[strategy][regime][METRICS.index(metric)]
+                value = scalar_oracle(strategy, regime)[metric]
             expected[(season, regime, metric)] = (
                 value,
                 SURVIVING_SAMPLES[regime] * (2 if origin == "prior" else 1),
@@ -3239,7 +3241,7 @@ def surviving_half_scenario(
         record("worker_hindcast_headers", 32)
         record("worker_hindcast_members", 64)
         restored = replay_snapshot(case, strategy)
-        assert_absent_run_snapshot(case, restored, catalog, mode, 98)
+        assert_absent_run_snapshot(case, restored, catalog, mode, 106)
         assert_same_source(dataclasses.asdict(restored), dataclasses.asdict(prior))
         record("rehydration_full_identity", True)
         yield case
@@ -3251,3 +3253,44 @@ def surviving_half_scenario(
         assert conn.scalar(sa.text("SELECT session_user")) == "test"
         assert conn.scalar(sa.select(sa.func.count()).select_from(db.observations)) == 0
         record("scenario_rolled_back", True)
+
+
+# Version 4 Brier oracles use the fixture's declared probabilities, never model output.
+def brier_oracle(
+    strategy: Strategy, regime: RegimeKey, perturbation: Perturbation | None = None
+) -> str:
+    selected = (
+        indices(regime)
+        if perturbation is None
+        else perturbed_indices(regime, perturbation)
+    )
+    probabilities = PERTURBED_PROBABILITIES[perturbation or "P_FIRST"][strategy]
+    changed = perturbation_index(perturbation) if perturbation else -1
+    errors = [
+        (Fraction(probabilities[i], 100) - int(Q[i] + (6 if i == changed else 0) > 19))
+        ** 2
+        for i in selected
+    ]
+    return str(sum(errors) / len(errors))
+
+
+def scalar_oracle(strategy: Strategy, regime: RegimeKey) -> dict[str, str | None]:
+    values = dict(
+        zip(
+            METRICS[: len(SCALAR_VALUES[strategy][regime])],
+            SCALAR_VALUES[strategy][regime],
+            strict=True,
+        )
+    )
+    if strategy == "BMA":
+        return {k: v for k, v in values.items() if "_danger_" not in k}
+    return values | {"brier_danger_2": brier_oracle(strategy, regime)}
+
+
+FIRST_BUCKET_METRICS["brier_danger_2"] = "0"
+for _regime in REGIMES:
+    TRAILING_SCALARS[_regime]["brier_danger_2"] = "0"
+    for _strategy in ("SINGLE", "POOLED"):
+        SURVIVING_SCALARS[_strategy][_regime]["brier_danger_2"] = brier_oracle(
+            _strategy, _regime
+        )

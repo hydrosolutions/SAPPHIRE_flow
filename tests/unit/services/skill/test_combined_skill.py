@@ -976,7 +976,7 @@ class TestBmaCrossValidationDiagramMerge:
             for s in steps
         ]
 
-        _, diagrams = compute_bma_skill_cross_validated(
+        scores, diagrams = compute_bma_skill_cross_validated(
             station_id=station_id,
             parameter="discharge",
             hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
@@ -992,6 +992,10 @@ class TestBmaCrossValidationDiagramMerge:
         )
 
         assert len(diagrams) > 0
+        assert scores
+        assert all(s.threshold_context is None for s in scores)
+        assert all(d.threshold_context is None for d in diagrams)
+        assert not any("_danger_" in s.metric for s in scores)
         natural_keys = [
             (
                 d.model_id,

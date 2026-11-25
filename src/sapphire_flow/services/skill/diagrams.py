@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import numpy as np
 
+from sapphire_flow.services.skill.metrics import validate_probability_pairs
+
 
 def compute_reliability_diagram(
     ensemble: np.ndarray,
     observed: np.ndarray,
     threshold: float,
     n_bins: int = 10,
-) -> dict:
-    # ensemble: 2D (n_times, n_members), observed: 1D (n_times)
-    forecast_prob = np.mean(ensemble > threshold, axis=1)
-    observed_binary = (observed > threshold).astype(float)
+) -> dict[str, object]:
+    return compute_reliability_from_probabilities(
+        np.mean(ensemble > threshold, axis=1), observed > threshold, n_bins
+    )
 
+
+def compute_reliability_from_probabilities(
+    forecast_prob: np.ndarray,
+    observed_binary: np.ndarray,
+    n_bins: int = 10,
+) -> dict[str, object]:
+    validate_probability_pairs(forecast_prob, observed_binary)
+    if n_bins < 1:
+        raise ValueError("reliability diagram requires positive bin count")
     bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
@@ -23,7 +34,7 @@ def compute_reliability_diagram(
         mask = (forecast_prob >= bin_edges[i]) & (forecast_prob < bin_edges[i + 1])
         if i == n_bins - 1:
             mask = (forecast_prob >= bin_edges[i]) & (forecast_prob <= bin_edges[i + 1])
-        count = int(np.sum(mask))
+        count = int(np.count_nonzero(mask))
         sample_counts[i] = count
         if count > 0:
             observed_freq[i] = float(np.mean(observed_binary[mask]))
@@ -40,11 +51,18 @@ def compute_roc_curve(
     ensemble: np.ndarray,
     observed: np.ndarray,
     threshold: float,
-) -> dict:
-    # ensemble: 2D (n_times, n_members), observed: 1D (n_times)
-    forecast_prob = np.mean(ensemble > threshold, axis=1)
-    observed_binary = (observed > threshold).astype(bool)
+) -> dict[str, object]:
+    return compute_roc_from_probabilities(
+        np.mean(ensemble > threshold, axis=1), observed > threshold
+    )
 
+
+def compute_roc_from_probabilities(
+    forecast_prob: np.ndarray,
+    observed_binary: np.ndarray,
+) -> dict[str, object]:
+    validate_probability_pairs(forecast_prob, observed_binary)
+    observed_binary = observed_binary.astype(bool)
     prob_thresholds = np.linspace(0.0, 1.0, 101)
     hit_rates = np.zeros(len(prob_thresholds))
     false_alarm_rates = np.zeros(len(prob_thresholds))
@@ -78,14 +96,14 @@ def compute_roc_curve(
 def compute_rank_histogram(
     ensemble: np.ndarray,
     observed: np.ndarray,
-) -> dict:
+) -> dict[str, object]:
     # ensemble: 2D (n_times, n_members), observed: 1D (n_times)
     n_members = ensemble.shape[1]
     n_bins = n_members + 1
     counts = np.zeros(n_bins, dtype=int)
 
     for i in range(len(observed)):
-        rank = int(np.sum(ensemble[i] < observed[i]))
+        rank = int(np.count_nonzero(ensemble[i] < observed[i]))
         rank = min(rank, n_bins - 1)
         counts[rank] += 1
 
