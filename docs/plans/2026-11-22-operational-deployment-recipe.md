@@ -1022,7 +1022,8 @@ Actual package/source/configuration identities, rollback, process reaping and
 absence of remaining database connections were checked. These are local emulated
 results, not native source-host performance evidence.
 
-**B0 remains incomplete.** Both mixed and declared-only fixtures stop while loading
+**B0 remains incomplete.** In the original release image, both mixed and
+declared-only fixtures stop while loading
 the installed group-model constructor: PyTorch reports that `libtorch_cuda.so`
 cannot be mapped under the unchanged 2-GiB address-space ceiling. Neither fixture
 produced constructor/declaration-completion evidence, so neither qualifies as a
@@ -1039,3 +1040,41 @@ already-delivered release archive and verification metadata; no source database,
 agency inputs, provider requests, trained artifacts or live service changes were
 used. B1/B2 and reconstruction/commissioning remain DRAFT. Full diagnostics,
 failed-attempt evidence and review reports remain private.
+
+### CPU-wheel experiment and initialization identity finding
+
+A local derivative with pinned CPU Torch/torchvision wheels completed the real
+constructors and FI declarations under unchanged limits; all eight base cases
+passed. Mixed and declared-only inventory checks still refused at final identity
+comparison. A bounded diagnostic proved that only two OpenMP environment keys
+were added during the successful declaration call. Image, source, configuration
+and job identity stayed unchanged. No full inventory PASS, inference, native
+performance, maintained CPU image or CI speedup is claimed.
+
+The [constructor environment guard plan](2026-11-25-constructor-environment-guard.md)
+defines a narrow initialization checkpoint and qualification sequence. Normal
+packaging/CI work is separately owned. Test containers, networks and candidate
+images were removed; local intermediate build cache remains. B0 is incomplete;
+B1/B2 and reconstruction/commissioning remain DRAFT.
+
+### Constructor environment checkpoint qualification
+
+The [checkpoint fix](2026-11-25-constructor-environment-guard.md#implementation-and-local-qualification)
+is implemented and locally qualified. A successful first import of the admitted
+initializer may add only the two specified keys with their exact values; its
+resulting environment becomes the final comparison checkpoint. Existing values,
+earlier/later changes, dependency identity and every other runtime identity remain
+checked. No environment variables are set to make the check pass.
+
+All 166 affected tests pass (43 new plus the complete 123 current-helper cases),
+and one independent patch review found no blockers. The isolated initializer
+confirmed both values. All eight base cases matched; mixed inventory produced
+its expected scoped PASS. Declared-only retained `HOLD requirements_unknown`
+with completed real declaration and explicit omission, as required by that case.
+The actual installed code ran under the original limits and worker-role snapshot;
+cleanup was independently verified. Full evidence and reviews remain private.
+
+This qualifies the private helper against the experimental CPU-wheel derivative,
+not a maintained or current-main release image. The CI/CPU-build owner supplies
+that image for F4 requalification. Until that handoff and the separate source
+packet gates complete, B1/B2 and reconstruction/commissioning remain DRAFT.
