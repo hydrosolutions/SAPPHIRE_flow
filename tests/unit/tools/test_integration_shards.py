@@ -64,6 +64,7 @@ _SELECTED_FIXTURE = {
     (INTEGRATION_ROOT, *COMMON_SELECTED_ARGS): (*_CURATED_NODES, _REST_NODE),
     selected_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
     selected_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
+    selected_args(GROUP_BY_ID["mid"]): _GROUP_NODES["mid"],
     selected_args(GROUP_BY_ID["rest"]): (_REST_NODE,),
     (*ALL_NON_LIVE_ARGS, INTEGRATION_ROOT): (
         *_CURATED_NODES,
@@ -72,6 +73,7 @@ _SELECTED_FIXTURE = {
     ),
     all_non_live_args(GROUP_BY_ID["performance"]): _GROUP_NODES["performance"],
     all_non_live_args(GROUP_BY_ID["heavy"]): _GROUP_NODES["heavy"],
+    all_non_live_args(GROUP_BY_ID["mid"]): _GROUP_NODES["mid"],
     all_non_live_args(GROUP_BY_ID["rest"]): (_REST_NODE, _SLOW_ONLY_NODE),
 }
 
@@ -136,16 +138,32 @@ class TestIntegrationShardDefinitions:
         "path",
         [
             "tests/integration/services/test_skill_data_use_isolation.py",
-            "tests/integration/store/test_observation_unit_readers.py",
         ],
     )
-    def test_expensive_isolation_and_reader_tests_run_only_in_heavy(
-        self, path: str
-    ) -> None:
+    def test_expensive_isolation_tests_run_only_in_heavy(self, path: str) -> None:
         shards = {shard.id: shard for shard in SHARDS}
 
         assert path in shards["heavy"].paths
         assert path in shards["rest"].ignores
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/integration/store/test_observation_unit_readers.py",
+            "tests/integration/db/test_operator_role.py",
+            "tests/integration/store/test_network_overview_performance.py",
+        ],
+    )
+    def test_rebalanced_files_run_only_in_mid(self, path: str) -> None:
+        shards = {shard.id: shard for shard in SHARDS}
+
+        assert path in shards["mid"].paths
+        assert path not in shards["heavy"].paths
+        assert path in shards["rest"].ignores
+
+    def test_curated_files_are_each_claimed_by_exactly_one_group(self) -> None:
+        assert len(_CURATED_FILES) == len(set(_CURATED_FILES))
+        assert all((_REPO_ROOT / path).is_file() for path in _CURATED_FILES)
 
     @pytest.mark.parametrize(
         "path",
@@ -160,11 +178,17 @@ class TestIntegrationShardDefinitions:
         assert path in shards["heavy"].paths
         assert path in shards["rest"].ignores
 
-    def test_shard_ids_remain_heavy_and_rest(self) -> None:
-        assert SHARD_IDS == ("heavy", "rest")
-        assert tuple(group.id for group in GROUPS) == ("performance", "heavy", "rest")
+    def test_shard_ids_are_heavy_mid_and_rest(self) -> None:
+        assert SHARD_IDS == ("heavy", "mid", "rest")
+        assert tuple(group.id for group in GROUPS) == (
+            "performance",
+            "heavy",
+            "mid",
+            "rest",
+        )
         assert EXECUTION_GROUPS == {
             "heavy": ("performance", "heavy"),
+            "mid": ("mid",),
             "rest": ("rest",),
         }
 
@@ -277,7 +301,7 @@ class TestInjectedPartitionProof:
 
         assert message == (
             "integration shards partition selected nodes and all non-live files: "
-            "14 selected nodes, 15 non-live files"
+            "30 selected nodes, 31 non-live files"
         )
 
     def test_duplicate_node_inside_a_shard_fails_through_public_proof(self) -> None:
@@ -328,7 +352,7 @@ class TestInjectedPartitionProof:
                 repo_root=_REPO_ROOT,
                 collector=_fake_collector,
             )
-            for group_id in ("performance", "heavy")
+            for group_id in ("performance", "heavy", "mid")
         }
 
         report = check_partition(shard_items=listed_only, all_items=selected_nodes)
@@ -359,7 +383,7 @@ class TestInjectedPartitionProof:
         all_mark_calls = [
             args for args in seen_args if args[:2] == ALL_NON_LIVE_ARGS[:2]
         ]
-        assert len(all_mark_calls) == 4
+        assert len(all_mark_calls) == 5
 
     def test_performance_group_must_select_exactly_one_node(self) -> None:
         extra = (
@@ -412,7 +436,7 @@ class TestCuratedPathValidation:
     ) -> None:
         selected = tuple(
             node
-            for group_id in ("performance", "heavy")
+            for group_id in ("performance", "heavy", "mid")
             for node in _fake_collector(
                 selected_args(GROUP_BY_ID[group_id]), repo_root=_REPO_ROOT
             )
@@ -610,6 +634,14 @@ class TestCiWorkflowIntegrationMatrix:
         total = sum(step.get("timeout-minutes", 0) for step in steps)
         assert total == 24
         assert total <= _workflow()["jobs"][_SHARD_JOB]["timeout-minutes"]
+
+    def test_private_shard_case_label_covers_every_shard_and_derives_its_id(
+        self,
+    ) -> None:
+        script = _PRIVATE_PATH.read_text()
+        label = "|".join(f"integration-{shard}" for shard in SHARD_IDS) + ")"
+
+        assert f'\n  {label}\n    shard="${{1#integration-}}"\n' in script
 
     def test_private_performance_runs_inside_heavy_arm_before_main_with_exact_filters(
         self,

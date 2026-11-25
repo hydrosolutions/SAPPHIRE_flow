@@ -510,7 +510,7 @@ def test_aquacast_scan_cache_stays_outside_checked_source(tmp_path: Path) -> Non
     ("job", "shards"),
     [
         ("unit", ["scripts", "services", "adapters-flows", "rest"]),
-        ("integration-shard", ["heavy", "rest"]),
+        ("integration-shard", ["heavy", "mid", "rest"]),
     ],
 )
 def test_source_test_matrices_use_stable_runner_with_all_shards(

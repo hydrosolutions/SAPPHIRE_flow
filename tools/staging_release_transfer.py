@@ -67,6 +67,7 @@ GATE_NAMES = (
     "unit-coverage",
     "wheel-only-guard",
     "integration-heavy",
+    "integration-mid",
     "integration-rest",
     "integration",
     "build-image-and-scan",
