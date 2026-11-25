@@ -3,9 +3,9 @@ status: DRAFT
 ---
 # Install CPU-only torch and torchvision on Linux
 
-**Status:** DRAFT rev 2, 2026-11-25 (rev 1: Claude and Codex both NEEDS CHANGES, no blockers,
-folded). No plan ID yet (owner grants IDs). HIGH RISK under `AGENTS.md` (CI, dependencies, supply
-chain, image identity). Needs fresh independent Claude and Codex reviews; the owner merges.
+**Status:** DRAFT rev 3, 2026-11-25 (rev 1 both NEEDS CHANGES, folded; rev 2 delta: Codex
+NEEDS CHANGES on acceptance 2-3, folded). No plan ID yet (owner grants IDs). HIGH RISK under
+`AGENTS.md` (CI, dependencies, supply chain, image identity). Needs fresh independent Claude and Codex reviews; the owner merges.
 Spike: draft PR #663, branch `spike/cpu-only-torch`, commit `e7209f7e4` (do not merge; the
 implementation PR re-does or cherry-picks it).
 
@@ -95,15 +95,26 @@ Wheel-only guard (`ci.yml:701`) omits `--extra aquacast`, so it never checks tor
 ## Acceptance evidence
 1. Full suite and all CI jobs green on the final commit; `uv lock --check` clean; no `nvidia-*` or
    `cuda-*` Linux entries in `uv.lock`; `dependency-safety` verdict reported (REVIEW expected).
-2. Targeted wheel-install evidence: `uv sync --frozen --no-build --extra aquacast` (the existing
-   guard omits the extra) on x86_64 CI, and under arm64 Linux, showing torch/torchvision install
-   as wheels.
+2. Uncached wheel evidence for torch and torchvision on x86_64 and arm64 Linux. A bare
+   `--no-build` cannot pass: it also refuses the editable project and every git-source package.
+   Reuse the existing guard's exclusions (`ci.yml:701`: `--no-install-project`,
+   `--no-install-package forecastinterface`, `--no-install-package recap-dg-client`) and add
+   `--extra aquacast --no-install-package aquacast` (a git source build, accounted for as an
+   excluded exception, built by the image proof instead). On arm64 also exclude the existing
+   `exactextract` sdist exception (`ci.yml:639-641`), nothing else. Command: `uv sync --frozen
+   --no-build --no-cache -v <exclusions>`; `--no-cache` makes it uncached, and the log must show
+   the `+cpu` wheel URLs and the lock hashes for torch and torchvision. Chosen over `uv pip
+   install --only-binary` because it uses the real lock and installs what the image installs.
+   If any other package fails `--no-build`, list it as a named exclusion in the PR.
 3. One-off SBOM of the exact Aquacast candidate image (CI SBOM covers the default torch-free
-   image, `ci.yml:1292`; the Aquacast job has Trivy only). Trivy and SBOM must recognize BOTH
-   `torch` and `torchvision` `+cpu` and evaluate versions correctly; record scanner/DB versions.
-   A clean result for an already-fixed version cannot tell matching from omission, so check
-   recognition (package listed in SBOM and scanner input), not just absence of findings. Existing
-   gates and exemptions stay unchanged.
+   image, `ci.yml:1292`; the Aquacast job has Trivy only); record scanner and DB versions. Both
+   `torch` and `torchvision` `+cpu` must appear in the SBOM and scanner input. Presence proves
+   discovery only; zero findings for an already-fixed version is not evidence of matching. Also
+   show version normalization and range comparison for local versions: in a throwaway environment
+   run the same scanner on a torch below the CVE-2026-24747 fix with and without a `+cpu` suffix
+   (or another known-vulnerable local-version package) and show it reports the finding in both
+   cases, and that `2.10.0+cpu` is evaluated against the fixed range. Existing gates and
+   exemptions stay unchanged.
 4. Real inference: `import torch` plus an Aquacast predict (cmal_small) in the x86_64 image and in
    the arm64 image. This also covers triton/FlashRNN (triton now installs without CUDA torch;
    import/run on CPU UNVERIFIED until this passes). The PR is not merged before this check unless
