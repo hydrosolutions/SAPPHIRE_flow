@@ -162,3 +162,9 @@ identical. Projection runs include summary JSON validation and canonical snapsho
 hashing, without replay. The live payload is larger (10.4MB); its previously
 measured DB evidence fetch/hash cost was 0.295s. These timings are not an end-to-end
 live API claim: verify cold and repeated live reads after deployment/backfill.
+
+The first full CI run exposed one omitted schema inventory in the Nepal readiness
+isolation fixture (three cases). Extend its unchanged-table inventory to include
+`forecast_weather_summaries` and retain the exact metadata-set comparison. This
+changes no readiness verdict or scientific oracle; it proves the projection also
+stays untouched by station readiness.

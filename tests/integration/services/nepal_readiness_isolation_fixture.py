@@ -5309,9 +5309,10 @@ def run_qualification_case(
         "native_capture_sightings",
         "provisional_evaluation_grants",
         "operational_weather_cache",
+        "forecast_weather_summaries",
     ]
     names = [*unchanged_tables, "stations"]
-    assert len(names) == len(set(names)) == 73
+    assert len(names) == len(set(names)) == 74
     assert set(names) == set(db.metadata.tables)
     shared = assert_shared_requirements()
     original_assembler = nepal_onboarding.assemble_station_training_data
