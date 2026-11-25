@@ -16,10 +16,11 @@ full lock diff and registry sources; run the full CI. The first Dependabot lock 
 after this change must be checked for registry assignments, Linux markers, overrides,
 hashes and absence of CUDA packages; a PR that drops them stays unmerged.
 
-The targeted uv 0.11.7 resolution changes only Torch, torchvision,
-`nvidia-nvshmem-cu12`, Triton, and the required new `cuda-bindings` and
-`cuda-pathfinder` records. CUDA/Triton dependencies retain their platform markers.
-Python, GIS, scientific configuration, FI, Recap and Aquacast source stay fixed.
+The original November experiment's targeted resolution (superseded on Linux by the
+2026-11-25 CPU-only resolution above, which removes the CUDA packages it described)
+changed only Torch, torchvision, `nvidia-nvshmem-cu12`, Triton, and the then-required
+`cuda-bindings` and `cuda-pathfinder` records. Python, GIS, scientific configuration,
+FI, Recap and Aquacast source stayed fixed in that experiment and in the CPU-only change.
 No checkpoint change, retraining or source-side model workaround is included.
 
 The same change incorporates the pending setup-uv action 10.3.3 SHA and Caddy
