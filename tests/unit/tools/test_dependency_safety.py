@@ -292,6 +292,260 @@ class TestClassifyUvLock:
         assert classify_uv_lock_diff(old, new) == []
 
 
+def _review(findings: list[Finding], key: str) -> Finding:
+    """Exactly one finding, exactly REVIEW (never BLOCK), with this key."""
+    assert len(findings) == 1, findings
+    finding = findings[0]
+    assert finding.verdict is Verdict.REVIEW
+    assert finding.key == key
+    return finding
+
+
+class TestClassifyPackageIndexes:
+    _PYPI = (
+        '[[tool.uv.index]]\nname = "pypi"\n'
+        'url = "https://pypi.org/simple"\ndefault = true\n'
+    )
+    _CPU = (
+        '[[tool.uv.index]]\nname = "pytorch-cpu"\n'
+        'url = "https://download.pytorch.org/whl/cpu"\nexplicit = true\n'
+    )
+    _BIND = (
+        '[tool.uv.sources]\ntorch = { index = "pytorch-cpu", '
+        "marker = \"sys_platform == 'linux'\" }\n"
+    )
+
+    def test_unchanged_indexes_are_silent(self) -> None:
+        text = self._PYPI + self._CPU + self._BIND
+        assert classify_pyproject_diff(text, text) == []
+
+    def test_new_index_reviews(self) -> None:
+        finding = _review(
+            classify_pyproject_diff(self._PYPI, self._PYPI + self._CPU),
+            "pyproject.toml:uv-index",
+        )
+        assert "download.pytorch.org" in finding.message
+
+    def test_changed_index_url_reviews(self) -> None:
+        new = self._PYPI.replace("pypi.org/simple", "mirror.example/simple")
+        _review(classify_pyproject_diff(self._PYPI, new), "pyproject.toml:uv-index")
+
+    def test_removed_index_reviews(self) -> None:
+        _review(
+            classify_pyproject_diff(self._PYPI + self._CPU, self._PYPI),
+            "pyproject.toml:uv-index",
+        )
+
+    def test_dropping_explicit_reviews(self) -> None:
+        new = self._CPU.replace("explicit = true\n", "")
+        _review(classify_pyproject_diff(self._CPU, new), "pyproject.toml:uv-index")
+
+    def test_changing_default_reviews(self) -> None:
+        new = self._PYPI.replace("default = true\n", "")
+        _review(classify_pyproject_diff(self._PYPI, new), "pyproject.toml:uv-index")
+
+    def test_new_source_index_binding_reviews(self) -> None:
+        old = self._PYPI + self._CPU
+        _review(
+            classify_pyproject_diff(old, old + self._BIND),
+            "pyproject.toml:uv-source-index",
+        )
+
+    def test_dropping_source_marker_reviews(self) -> None:
+        old = self._PYPI + self._CPU + self._BIND
+        new = old.replace(", marker = \"sys_platform == 'linux'\"", "")
+        _review(classify_pyproject_diff(old, new), "pyproject.toml:uv-source-index")
+
+    def test_changing_source_marker_reviews(self) -> None:
+        old = self._PYPI + self._CPU + self._BIND
+        new = old.replace("'linux'", "'win32'")
+        _review(classify_pyproject_diff(old, new), "pyproject.toml:uv-source-index")
+
+    def test_list_valued_source_is_compared(self) -> None:
+        old = (
+            '[tool.uv.sources]\ntorch = [{ index = "a", marker = "os_name == '
+            "'posix'\" }]\n"
+        )
+        new = old.replace('"a"', '"b"')
+        _review(classify_pyproject_diff(old, new), "pyproject.toml:uv-source-index")
+
+    def test_git_only_source_change_is_silent(self) -> None:
+        old = '[tool.uv.sources]\nfoo = { git = "https://x/y.git", rev = "a" }\n'
+        assert classify_pyproject_diff(old, old.replace('"a"', '"b"')) == []
+
+    def test_malformed_pyproject_reviews(self) -> None:
+        _review(
+            classify_pyproject_diff(self._PYPI, "[tool.uv\nbroken"),
+            "pyproject.toml:unparseable",
+        )
+
+    def test_identical_malformed_pyproject_is_silent(self) -> None:
+        assert classify_pyproject_diff("[broken", "[broken") == []
+
+
+class TestClassifyLockRegistrySource:
+    _PYPI = "https://pypi.org/simple"
+    _CPU = "https://download.pytorch.org/whl/cpu"
+    _OTHER = "https://other.example/simple"
+
+    @staticmethod
+    def _lock(*pkgs: tuple[str, str, str]) -> str:
+        """(name, version, registry) entries; wheels sit on the registry's own host
+        unless the registry is PyPI (files.pythonhosted.org)."""
+        out = ""
+        for n, v, r in pkgs:
+            host = (
+                "files.pythonhosted.org"
+                if r == "https://pypi.org/simple"
+                else r.split("/")[2]
+            )
+            out += (
+                f'[[package]]\nname = "{n}"\nversion = "{v}"\n'
+                f'source = {{ registry = "{r}" }}\n'
+                f'wheels = [{{ url = "https://{host}/{n}-{v}.whl", '
+                'hash = "sha256:00" }]\n'
+            )
+        return out
+
+    def test_same_registry_version_bump_is_silent(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(("torch", "2.10.1", self._PYPI))
+        assert classify_uv_lock_diff(old, new) == []
+
+    def test_registry_change_reviews(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(("torch", "2.10.0+cpu", self._CPU))
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "torch" in finding.message
+        assert "download.pytorch.org" in finding.message
+
+    def test_new_registry_for_new_package_reviews(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        new = old + self._lock(("b", "1", self._OTHER))
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "other.example" in finding.message
+
+    def test_new_package_on_existing_registry_is_silent(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        assert (
+            classify_uv_lock_diff(old, old + self._lock(("b", "1", self._PYPI))) == []
+        )
+
+    def test_move_between_two_existing_registries_reviews(self) -> None:
+        # Global registry URL set is {PYPI, CPU} before and after.
+        old = self._lock(("a", "1", self._PYPI), ("b", "1", self._CPU))
+        new = self._lock(("a", "1", self._CPU), ("b", "1", self._PYPI))
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "['a', 'b']" in finding.message
+
+    def test_multi_registry_package_is_compared_as_a_set(self) -> None:
+        old = self._lock(("t", "1", self._PYPI), ("t", "1+cpu", self._CPU))
+        # Same two registries, listed in the other order: silent.
+        assert (
+            classify_uv_lock_diff(
+                old, self._lock(("t", "1+cpu", self._CPU), ("t", "1", self._PYPI))
+            )
+            == []
+        )
+        # Last entry must not win: the first entry moves, the last is unchanged.
+        new = self._lock(("t", "1", self._OTHER), ("t", "1+cpu", self._CPU))
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_split_with_unchanged_global_registry_set_reviews(self) -> None:
+        old = self._lock(("t", "1", self._PYPI), ("u", "1", self._CPU))
+        new = self._lock(
+            ("t", "1", self._PYPI), ("t", "1+cpu", self._CPU), ("u", "1", self._CPU)
+        )
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_contraction_with_unchanged_global_registry_set_reviews(self) -> None:
+        old = self._lock(
+            ("t", "1", self._PYPI), ("t", "1+cpu", self._CPU), ("u", "1", self._CPU)
+        )
+        new = self._lock(("t", "1", self._PYPI), ("u", "1", self._CPU))
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_third_file_host_under_same_registry_reviews(self) -> None:
+        old = self._lock(("t", "1", self._PYPI))
+        new = old.replace("files.pythonhosted.org", "evil.example")
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "evil.example" in finding.message
+
+    def test_extra_file_host_added_to_a_package_reviews(self) -> None:
+        old = self._lock(("t", "1", self._PYPI))
+        new = old.replace(
+            'hash = "sha256:00" }]',
+            'hash = "sha256:00" }, { url = "https://evil.example/t.whl", '
+            'hash = "sha256:11" }]',
+        )
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_sdist_host_change_reviews(self) -> None:
+        base = (
+            '[[package]]\nname = "t"\nversion = "1"\nsource = {{ registry = "{r}" }}\n'
+        )
+        old = (
+            base.format(r=self._PYPI)
+            + 'sdist = { url = "https://files.pythonhosted.org/t.tgz" }\n'
+        )
+        new = old.replace("files.pythonhosted.org", "evil.example")
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_source_kind_change_reviews(self) -> None:
+        # git -> url: no registry and no file host on either side, so only the
+        # source-kind set can detect it.
+        old = (
+            '[[package]]\nname = "t"\nversion = "1"\n'
+            'source = { git = "https://github.com/x/t.git?rev=a#a" }\n'
+        )
+        new = old.replace("{ git =", "{ url =")
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_registry_url_change_with_same_file_host_reviews(self) -> None:
+        old = self._lock(("t", "1", self._PYPI))
+        new = old.replace(self._PYPI, "https://pypi.org/other-simple")
+        _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+
+    def test_new_package_on_new_registry_url_with_known_host_reviews(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        new = old + self._lock(("b", "1", self._PYPI)).replace(
+            self._PYPI, "https://pypi.org/other-simple"
+        )
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "other-simple" in finding.message
+
+    def test_new_package_with_new_file_host_on_known_registry_reviews(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        new = old + self._lock(("b", "1", self._PYPI)).replace(
+            "files.pythonhosted.org", "evil.example"
+        )
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "evil.example" in finding.message
+
+    def test_git_rev_change_is_silent(self) -> None:
+        old = (
+            '[[package]]\nname = "t"\nversion = "1"\n'
+            'source = { git = "https://github.com/x/t.git?rev=a#a" }\n'
+        )
+        assert classify_uv_lock_diff(old, old.replace("#a", "#b")) == []
+
+    def test_malformed_lock_reviews(self) -> None:
+        old = self._lock(("t", "1", self._PYPI))
+        _review(classify_uv_lock_diff(old, "[[package"), "uv.lock:unparseable")
+        _review(classify_uv_lock_diff("[[package", old), "uv.lock:unparseable")
+
+    def test_identical_malformed_lock_is_silent(self) -> None:
+        assert classify_uv_lock_diff("[[package", "[[package") == []
+
+    def test_real_cpu_switch_shape_reviews_once(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(
+            ("torch", "2.10.0", self._PYPI), ("torch", "2.10.0+cpu", self._CPU)
+        )
+        finding = _review(classify_uv_lock_diff(old, new), "uv.lock:registry-source")
+        assert "download.pytorch.org" in finding.message
+
+
 class TestClassifyCiWorkflowPostgisServices:
     def test_postgis_major_confined_to_ephemeral_services_reviews_not_blocks(
         self,

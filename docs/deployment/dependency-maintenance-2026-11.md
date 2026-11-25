@@ -6,10 +6,21 @@ or a claim of upstream Aquacast support, using Aquacast revision
 requirement is overridden by exact SAP pins `torch==2.10.0` and
 `torchvision==0.25.0` to address CVE-2026-24747. The existing Rich override stays.
 
-The targeted uv 0.11.7 resolution changes only Torch, torchvision,
-`nvidia-nvshmem-cu12`, Triton, and the required new `cuda-bindings` and
-`cuda-pathfinder` records. CUDA/Triton dependencies retain their platform markers.
-Python, GIS, scientific configuration, FI, Recap and Aquacast source stay fixed.
+Since 2026-11-25 Linux resolves these two pins from the explicit `pytorch-cpu` index
+(`+cpu` wheels, no CUDA stack; macOS unchanged); see `security.md` § Supply chain.
+Manual torch bump procedure (Dependabot is not relied on for these two packages): change
+both override pins together; confirm both versions exist on the CPU index for the CI
+Python (3.12) and the image Python (3.14), x86_64 and aarch64; run `uv lock` with uv 0.11.7
+only; run `uv lock --check`; confirm no `nvidia-*` or `cuda-*` Linux entries; review the
+full lock diff and registry sources; run the full CI. The first Dependabot lock rewrite
+after this change must be checked for registry assignments, Linux markers, overrides,
+hashes and absence of CUDA packages; a PR that drops them stays unmerged.
+
+The original November experiment's targeted resolution (superseded on Linux by the
+2026-11-25 CPU-only resolution above, which removes the CUDA packages it described)
+changed only Torch, torchvision, `nvidia-nvshmem-cu12`, Triton, and the then-required
+`cuda-bindings` and `cuda-pathfinder` records. Python, GIS, scientific configuration,
+FI, Recap and Aquacast source stayed fixed in that experiment and in the CPU-only change.
 No checkpoint change, retraining or source-side model workaround is included.
 
 The same change incorporates the pending setup-uv action 10.3.3 SHA and Caddy

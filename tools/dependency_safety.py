@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -593,8 +594,74 @@ def _build_backend_inputs(data: dict[str, Any]) -> tuple[object, ...]:
     )
 
 
+def _normalized(entry: dict[Any, Any]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((str(k), str(v)) for k, v in entry.items()))
+
+
+def _uv_indexes(data: dict[str, Any]) -> frozenset[tuple[tuple[str, str], ...]]:
+    """Every key of each `[[tool.uv.index]]` entry (name, url, explicit, default...)."""
+    uv = _as_dict(_as_dict(data.get("tool")).get("uv"))
+    entries = uv.get("index")
+    if not isinstance(entries, list):
+        return frozenset()
+    found: set[tuple[tuple[str, str], ...]] = set()
+    for e in cast("list[Any]", entries):
+        if isinstance(e, dict):
+            found.add(_normalized(cast("dict[Any, Any]", e)))
+    return frozenset(found)
+
+
+def _uv_source_indexes(
+    data: dict[str, Any],
+) -> frozenset[tuple[tuple[str, str], ...]]:
+    """Each `[tool.uv.sources]` entry that names an index, with all its keys (so the
+    `marker` is part of the comparison). List-valued sources are expanded."""
+    uv = _as_dict(_as_dict(data.get("tool")).get("uv"))
+    out: set[tuple[tuple[str, str], ...]] = set()
+    for pkg, spec in _as_dict(uv.get("sources")).items():
+        items = cast("list[Any]", spec) if isinstance(spec, list) else [spec]
+        for item in items:
+            if isinstance(item, dict) and "index" in item:
+                out.add(
+                    (("package", str(pkg)), *_normalized(cast("dict[Any, Any]", item)))
+                )
+    return frozenset(out)
+
+
+def _classify_package_indexes(
+    old_data: dict[str, Any], new_data: dict[str, Any]
+) -> list[Finding]:
+    """REVIEW: a package index or a package-to-index binding was added, removed or
+    changed. A new index is a new supply-chain host (docs/standards/security.md)."""
+    findings: list[Finding] = []
+    for key, label, extract in (
+        ("pyproject.toml:uv-index", "`[[tool.uv.index]]`", _uv_indexes),
+        (
+            "pyproject.toml:uv-source-index",
+            "`[tool.uv.sources]` index",
+            _uv_source_indexes,
+        ),
+    ):
+        old, new = extract(old_data), extract(new_data)
+        if old == new:
+            continue
+        message = (
+            f"⚠️ {label} changed: added {sorted(new - old)}, removed "
+            f"{sorted(old - new)}. A new package index is a new supply-chain host; "
+            "verify the host is accepted in docs/standards/security.md § Supply "
+            "chain, that the index is `explicit`, and that the lock hash-pins it."
+        )
+        findings.append(
+            Finding(
+                verdict=Verdict.REVIEW, file="pyproject.toml", key=key, message=message
+            )
+        )
+    return findings
+
+
 def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
-    """BLOCK on any `requires-python` change; REVIEW on FI/build-backend provenance."""
+    """BLOCK on any `requires-python` change; REVIEW on FI/build-backend provenance
+    and on package index changes."""
     findings: list[Finding] = []
 
     old_rp_match = _REQUIRES_PYTHON_RE.search(old_text)
@@ -625,6 +692,20 @@ def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
     except tomllib.TOMLDecodeError:
         old_data = {}
         new_data = {}
+        if old_text != new_text:
+            findings.append(
+                Finding(
+                    verdict=Verdict.REVIEW,
+                    file="pyproject.toml",
+                    key="pyproject.toml:unparseable",
+                    message=(
+                        "⚠️ `pyproject.toml` could not be parsed as TOML on one side "
+                        "of the diff; index and build-backend checks were skipped. "
+                        "Review the file by hand."
+                    ),
+                )
+            )
+    findings.extend(_classify_package_indexes(old_data, new_data))
     old_backend = _build_backend_inputs(old_data)
     new_backend = _build_backend_inputs(new_data)
     if old_backend != new_backend:
@@ -667,10 +748,89 @@ def _lock_versions(text: str) -> dict[str, str]:
     return {str(p["name"]): str(p.get("version", "")) for p in packages if "name" in p}
 
 
+_PackageSource = tuple[frozenset[str], frozenset[str], frozenset[str]]
+
+
+def _lock_sources(text: str) -> dict[str, _PackageSource] | None:
+    """Package name -> (source kinds, registry URLs, file hosts), each a set over all
+    of the package's lock entries (one per resolution marker). File hosts come from
+    the sdist and wheel URLs. None if the lock does not parse."""
+    try:
+        data: dict[str, Any] = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+    acc: dict[str, tuple[set[str], set[str], set[str]]] = {}
+    packages = cast("list[dict[str, Any]]", data.get("package") or [])
+    for p in packages:
+        if "name" not in p:
+            continue
+        kinds, registries, hosts = acc.setdefault(str(p["name"]), (set(), set(), set()))
+        source = _as_dict(p.get("source"))
+        kinds.update(str(k) for k in source)
+        if "registry" in source:
+            registries.add(str(source["registry"]))
+        files: list[Any] = [*cast("list[Any]", p.get("wheels") or [])]
+        if p.get("sdist"):
+            files.append(p["sdist"])
+        for f in files:
+            if isinstance(f, dict) and "url" in f:
+                hosts.add(urlsplit(str(cast("dict[str, Any]", f)["url"])).netloc)
+    return {
+        k: (frozenset(a), frozenset(b), frozenset(c)) for k, (a, b, c) in acc.items()
+    }
+
+
+def _classify_lock_registry_sources(old_text: str, new_text: str) -> list[Finding]:
+    """REVIEW: a locked package changed source kind (registry/git/url/path...),
+    registry URL set or file-host set, or a new registry URL or file host appeared.
+
+    Allowed hosts, by policy (docs/standards/security.md): files.pythonhosted.org for
+    PyPI packages; download.pytorch.org and download-r2.pytorch.org only for the
+    `+cpu` torch and torchvision entries. Version bumps within the same registry and
+    hosts, and git-source rev changes, stay silent. An unparseable lock is REVIEW."""
+
+    def review(key: str, message: str) -> list[Finding]:
+        return [
+            Finding(verdict=Verdict.REVIEW, file="uv.lock", key=key, message=message)
+        ]
+
+    old, new = _lock_sources(old_text), _lock_sources(new_text)
+    if old is None or new is None:
+        if old_text == new_text:
+            return []
+        return review(
+            "uv.lock:unparseable",
+            "⚠️ `uv.lock` could not be parsed as TOML on one side of the diff; "
+            "registry-source checks were skipped. Review the lock by hand.",
+        )
+    moved = sorted(n for n in old.keys() & new.keys() if old[n] != new[n])
+
+    def union(state: dict[str, _PackageSource], i: int) -> set[str]:
+        out: set[str] = set()
+        for v in state.values():
+            out |= v[i]
+        return out
+
+    new_urls = sorted(union(new, 1) - union(old, 1))
+    new_hosts = sorted(union(new, 2) - union(old, 2))
+    if not (moved or new_urls or new_hosts):
+        return []
+    return review(
+        "uv.lock:registry-source",
+        f"⚠️ `uv.lock` package source changed. Packages whose source kind, registry "
+        f"or file hosts changed: {moved}; new registry URLs: {new_urls}; new file "
+        f"hosts: {new_hosts}. Allowed: files.pythonhosted.org for PyPI packages, "
+        "download.pytorch.org and download-r2.pytorch.org only for `+cpu` torch and "
+        "torchvision (docs/standards/security.md § Supply chain); every wheel must "
+        "be hash-pinned.",
+    )
+
+
 def classify_uv_lock_diff(old_text: str, new_text: str) -> list[Finding]:
-    """REVIEW: a MAJOR bump of a listed native/compiled-extension runtime dep."""
+    """REVIEW: a MAJOR bump of a listed native/compiled-extension runtime dep, or a
+    change of a locked package's registry source."""
     old_versions, new_versions = _lock_versions(old_text), _lock_versions(new_text)
-    findings: list[Finding] = []
+    findings: list[Finding] = _classify_lock_registry_sources(old_text, new_text)
     for name in _NATIVE_EXTENSION_PACKAGES:
         old_v, new_v = old_versions.get(name), new_versions.get(name)
         if not old_v or not new_v or old_v == new_v:
