@@ -715,7 +715,7 @@ git push / open PR
   Tier 2 unit     → pytest tests/unit/ across FOUR sharded jobs, `-n auto` in each (system deps)
   Tier 2 unit-coverage → coverage combine over the four shards → one whole-suite number
   Tier 2 wheel    → wheel-only-guard (no-build uv sync)
-  Tier 3 integration → pytest tests/integration/ across TWO parallel shard jobs; pytest is serial inside each (postgres service)
+  Tier 3 integration → pytest tests/integration/ across THREE parallel shard jobs; pytest is serial inside each (postgres service)
   Tier 4 build    → docker buildx build, trivy image, syft SBOM
   (Tier 5 e2e)    → not yet implemented
         │ all tiers green → PR is mergeable
@@ -918,7 +918,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 
 - **Every job sets `timeout-minutes`** — `lint` 20, `unit` 40 (per shard), `unit-coverage` 15, `wheel-only-guard` 15, `integration-shard` 25 (per shard), aggregate `integration` 2, `build-image-and-scan` 80, and `aquacast-release-image-proof` 35. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
 - **The `unit` job is a four-leg SHARD MATRIX** with `fail-fast: false` — see § The unit-suite shard matrix below.
-- **The `integration-shard` job is a two-leg SHARD MATRIX** (`heavy`, `rest`) with `fail-fast: false`. `heavy` first runs the selectable `performance` group in a fresh pytest process, then its sustained main group; `rest` is the complement of both curated groups. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
+- **The `integration-shard` job is a three-leg SHARD MATRIX** (`heavy`, `mid`, `rest`) with `fail-fast: false`. `heavy` first runs the selectable `performance` group in a fresh pytest process, then its sustained main group; `mid` is a curated group of mid-sized files; `rest` is the complement of all curated groups. The `integration` job is a tiny aggregate that preserves the required check context and fails unless all integration shards succeed.
 - **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
 
 <!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
@@ -961,7 +961,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 3 | `integration-shard` | `uv run python tools/integration_shards.py --check-partition` in the `heavy` matrix leg | current checkout and native pytest collection | Same command after `uv sync --frozen` | No |
 | 3 | `integration-shard` | `Run Swiss overview performance gate` — the `heavy` leg runs the selectable `performance` group alone with the standard non-live/non-slow filters and a distinct JUnit file; `timeout-minutes: 3` | native partition proof and integration setup | Run the exact production benchmark node with postgres | No (but requires postgres) |
 | 3 | `integration-shard` | `Upload failed Swiss overview performance evidence` (`uses: actions/upload-artifact`, one literal runner-temp JSON, `retention-days: 7`, `if-no-files-found: error`, `continue-on-error: true`, `timeout-minutes: 1`) | failed, non-cancelled `overview_performance` step in `heavy` | n/a — the local JSON remains at the configured output path | Yes — bounded failure diagnostic; upload failure cannot replace or hide the pytest failure |
-| 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (two parallel CI jobs, one for `heavy` and one for `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | performance gate first in `heavy`; no extra process in `rest` | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
+| 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (three parallel CI jobs, one each for `heavy`, `mid` and `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | performance gate first in `heavy`; no extra process in `mid` or `rest` | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
 | 3 | `integration-shard` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, unique `integration-junit-<shard>` names, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — bounded diagnostic artifact upload only | Yes — Actions artifact service |
 | 3 | `integration` | Aggregate verdict: fail unless `needs.integration-shard.result == 'success'` | `integration-shard` | n/a — local equivalent is both shard commands passing | Yes — preserves the existing required check context |
 | 4 | `aquacast-release-image-proof` | `Prepare hosted runner capacity` — token-present only, `timeout-minutes: 2`, after checkout identity and before buildx; requires 20 GB free and conditionally validates/removes only the two stock SDK roots | exact GitHub-hosted job context | No destructive local equivalent. Contract tests execute only a temporary-root copy with fake commands. | Yes — exclusive to the disposable `ubuntu-latest` runner; never run the production script locally |
@@ -991,8 +991,8 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 
 ### Integration shard balance
 
-`tools/integration_shards.py::NAMED_GROUPS` is the source of truth for heavy
-file membership; `rest` is its computed complement. New assignments should follow
+`tools/integration_shards.py::NAMED_GROUPS` is the source of truth for `heavy`
+and `mid` file membership; `rest` is its computed complement. New assignments should follow
 JUnit durations, not test counts. Keep every test and parameter case in the moved
 files; rebalancing changes placement, not coverage or the existing live/slow
 exclusions.
@@ -1002,6 +1002,20 @@ each leg; fixtures also create their own Testcontainers databases. The native
 partition proof and aggregate integration gate remain mandatory. Judge rebalances
 by the slower leg's duration, including duplicated fixture setup, not summed file
 durations. Do not add shared-database xdist to rebalance this suite.
+
+On 2026-11-25 a third curated leg, `mid`, was added (plan
+`docs/plans/2026-11-25-integration-shard-rebalance.md`). Basis: JUnit artifacts of
+main CI runs `45607849353`, `45613021117`, `45640371082` and `45663947921`.
+Before the change `rest` ran 20.6 min of pytest (JUnit 1209 s) against 11.9 min
+for `heavy` (709 s). `mid` holds the 16 largest former-`rest` files by mean JUnit
+time plus `test_observation_unit_readers.py` and `test_operator_role.py`, moved
+out of `heavy`. The modelled legs are about 612 s (heavy), 653 s (mid) and 652 s
+(rest) of test time; this is an estimate, not a measurement, and ignores the extra
+proof collections and per-leg fixture setup. Re-balance from fresh JUnit, never per
+PR. The partition proof still runs only in the `heavy` leg, so a stale or renamed
+curated `mid` path surfaces as a `heavy`-leg failure. The staging-release gate
+inventory (`GATE_NAMES`) and the private gate set gained `integration-mid`; the
+receiver does not check gate names.
 
 ### The unit-suite shard matrix (Plan 319)
 
@@ -2016,7 +2030,7 @@ killed before delivery supplies no report or snapshots.
 | `unit` | All four existing `tools/unit_shards.py` partitions, `-n auto`, Aquacast extra and exact shim-node pass proof; scripts-shard sequential ordering regression; sysmon configuration/core proof; coverage and JUnit. No degraded private coverage. |
 | `unit-coverage` | Require all four successful shards and nonempty files; combine with `--keep`; whole-suite report, still informational/no new threshold. |
 | `wheel-only-guard` | Separate environment; no-build/no-cache guard before the existing ForecastInterface/recap exception reinstall. No new exception. |
-| `integration-shard` | Existing heavy/rest gate names, native partition proof, unchanged live/slow exclusions and a fresh pinned PostGIS container per shard. `integration-heavy` runs the selectable performance group first in its own pytest process and JUnit, then heavy; `integration-rest` remains unchanged. |
+| `integration-shard` | Gate names `integration-heavy`, `integration-mid`, `integration-rest`, native partition proof, unchanged live/slow exclusions and a fresh pinned PostGIS container per shard. `integration-heavy` runs the selectable performance group first in its own pytest process and JUnit, then heavy; `integration-mid` and `integration-rest` run their groups only. |
 | `integration` | Explicit fail-closed dependency assertion over both integration results; a failed/missing shard blocks the aggregate. |
 | `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation; mandatory twice-clean deployment smoke with sentinel and separately retained component outcome. |
 | `aquacast-release-image-proof` | Actual Aquacast amd64 build/load and existing identity/shim/import/entrypoint/isolation proof, without missing-token degradation. Also applies the same private scan/SBOM gates to this variant. |
@@ -2190,7 +2204,7 @@ The required production benchmark node is
 The sustained stress node is
 `tests/integration/store/test_swiss_overview.py::TestSwissOverviewIsolated::test_134_station_bounded_reads`.
 Do not merge these into one pytest process. Public CI and private verification both run
-performance first inside the existing heavy leg/gate; matrix IDs, private gate names and
+performance first inside the existing heavy leg/gate; matrix IDs, private gate names (heavy, mid, rest) and
 the success-only `integration` aggregate stay unchanged.
 
 The production budget is p95 strictly below **1.25 seconds** for 134 stations × 10
