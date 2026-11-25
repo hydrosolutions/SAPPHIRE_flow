@@ -155,7 +155,24 @@ file simply lacks the section — never a path or overlay name.
 
 ## Skill (`GET /api/v1/stations/{id}/skill`)
 
-One row per `(model, artifact, skill_source, forcing_type, time_step,
+Optional `artifact_id=<UUID>` selects stored skill for that artifact, including
+inactive, rejected or failed artifacts with stored results, without activation. Response `selection` is
+`explicit_artifact`; omission preserves `latest_generation_on_forecast_artifact`.
+Reviewer/admin station scope still applies, and the artifact's model must have
+an active assignment at the station. An unknown or mismatched artifact yields
+empty rows; malformed UUIDs yield 422. Future evaluation end dates remain
+excluded. Candidate skill is deliberately visible to the station's reviewers;
+this does not publish or activate candidate forecasts. Combined null-artifact
+scores cannot match the selector.
+
+These are stored results for each row's evaluation period and sample count,
+including interim evaluations of incomplete hindcasts. They are not skill for
+a requested event period or proof that a multi-year run is complete. Version-4
+threshold rows include probability exclusions and threshold provenance;
+undefined scores are JSON null. The selector does not add a diagram endpoint.
+
+
+By default, one row per `(model, artifact, skill_source, forcing_type, time_step,
 phase_offset, lead_time, season, flow_regime, metric)` on the artifact the
 station's **forecast** currently uses (station-scoped first, else an active
 group artifact) — headline and season/flow-regime breakdowns alike.

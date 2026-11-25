@@ -1,6 +1,7 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+from itertools import batched
 from typing import TYPE_CHECKING, Literal
 
 import sqlalchemy as sa
@@ -247,19 +248,27 @@ class PgSkillStore:
         """
         if not scores:
             return 0
-        rows = [_score_to_row(s) for s in scores]
-        stmt = pg_insert(ss).values(rows).on_conflict_do_nothing().returning(ss.c.id)
-        result = self._conn.execute(stmt)
-        return len(result.fetchall())
+        inserted = 0
+        for chunk in batched(scores, 500):
+            rows = [_score_to_row(s) for s in chunk]
+            stmt = (
+                pg_insert(ss).values(rows).on_conflict_do_nothing().returning(ss.c.id)
+            )
+            inserted += len(self._conn.execute(stmt).fetchall())
+        return inserted
 
     def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> int:
         """See `store_skill_scores` — same accurate-rowcount contract."""
         if not diagrams:
             return 0
-        rows = [_diagram_to_row(d) for d in diagrams]
-        stmt = pg_insert(sd).values(rows).on_conflict_do_nothing().returning(sd.c.id)
-        result = self._conn.execute(stmt)
-        return len(result.fetchall())
+        inserted = 0
+        for chunk in batched(diagrams, 500):
+            rows = [_diagram_to_row(d) for d in chunk]
+            stmt = (
+                pg_insert(sd).values(rows).on_conflict_do_nothing().returning(sd.c.id)
+            )
+            inserted += len(self._conn.execute(stmt).fetchall())
+        return inserted
 
     def publish_generation(
         self,

@@ -3048,3 +3048,13 @@ Explicit overrides keep their existing meaning. No FI/Aquacast change is needed.
 Check `TestDeclaredHindcastLookback`, flow/batch tests and hindcast data-use
 isolation. Preserve bucket alignment and model-owned short-history validation;
 never fill a missing edge bucket with older out-of-window observations.
+
+### Candidate stored skill and bounded writes (2026-11-25)
+`GET /api/v1/stations/{id}/skill?artifact_id=...` retains station reviewer scope
+and active model-assignment restrictions while selecting an inactive artifact's
+latest stored generation. Preserve explicit response selection, model ownership,
+actual evaluation dates and nullable threshold results. Verify via
+`test_api_review_skill.py` and the generated map contract.
+`PgSkillStore` inserts scores/diagrams in 500-row statements on the caller's
+transaction, retaining conflict counts and publication only after reconciliation.
+Verify large batches, duplicate replay and rollback in `test_skill_store.py`.

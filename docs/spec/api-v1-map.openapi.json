@@ -8114,8 +8114,11 @@
             "type": "array"
           },
           "selection": {
-            "const": "latest_generation_on_forecast_artifact",
             "default": "latest_generation_on_forecast_artifact",
+            "enum": [
+              "latest_generation_on_forecast_artifact",
+              "explicit_artifact"
+            ],
             "title": "Selection",
             "type": "string"
           },
@@ -8932,7 +8935,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.5"
+    "version": "3.6"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11060,6 +11063,23 @@
                 }
               ],
               "title": "Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "artifact_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Artifact Id"
             }
           }
         ],

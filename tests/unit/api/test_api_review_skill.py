@@ -376,14 +376,18 @@ class TestStationSkill:
         )
         assert resp.json()["rows"] == []
 
+    @pytest.mark.parametrize("explicit", [False, True])
     def test_out_of_scope_station_is_404_for_reviewer(
-        self, client: TestClient, fake_stores: dict
+        self, client: TestClient, fake_stores: dict, explicit: bool
     ) -> None:
         station = make_station_config(code="SKILL-OOS")
         fake_stores["station_store"].store_station(station)
         _set_principal(AccessTokenRole.REVIEWER, frozenset({StationId(uuid4())}))
         try:
-            resp = client.get(f"/api/v1/stations/{station.id}/skill")
+            resp = client.get(
+                f"/api/v1/stations/{station.id}/skill",
+                params={"artifact_id": str(uuid4())} if explicit else {},
+            )
         finally:
             from sapphire_flow.api import app
             from sapphire_flow.api.security import require_principal
@@ -391,10 +395,14 @@ class TestStationSkill:
             app.dependency_overrides.pop(require_principal, None)
         assert resp.status_code == 404
 
-    def test_consumer_gets_403(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("explicit", [False, True])
+    def test_consumer_gets_403(self, client: TestClient, explicit: bool) -> None:
         _set_principal(AccessTokenRole.CONSUMER, frozenset())
         try:
-            resp = client.get(f"/api/v1/stations/{uuid4()}/skill")
+            resp = client.get(
+                f"/api/v1/stations/{uuid4()}/skill",
+                params={"artifact_id": str(uuid4())} if explicit else {},
+            )
         finally:
             from sapphire_flow.api import app
             from sapphire_flow.api.security import require_principal
@@ -438,3 +446,79 @@ class TestThresholdSkillReadback:
         assert row["threshold_context"]["excluded_count"] == 1
         assert row["threshold_context"]["threshold_source"] == "authority"
         assert row["threshold_context"]["coverage"] == "conditional_resolved_subset"
+
+
+class TestCandidateSkillReadback:
+    def test_explicit_inactive_artifact_preserves_default_selection(
+        self, client: TestClient, fake_stores: dict
+    ) -> None:
+        mid = ModelId("candidate_skill")
+        station, active = _seed_station_with_active_artifact(fake_stores, model_id=mid)
+        candidate, _ = fake_stores["artifact_store"].store_artifact(
+            mid, b"candidate", _T0, _T1, _TRAINED, station_id=station.id
+        )
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    score=value,
+                )
+                for aid, value in [(active, 0.4), (candidate, 0.8)]
+            ]
+        )
+        default = client.get(f"/api/v1/stations/{station.id}/skill").json()
+        explicit = client.get(
+            f"/api/v1/stations/{station.id}/skill",
+            params={"artifact_id": str(candidate)},
+        ).json()
+        assert default["selection"] == "latest_generation_on_forecast_artifact"
+        assert [r["model_artifact_id"] for r in default["rows"]] == [str(active)]
+        assert explicit["selection"] == "explicit_artifact"
+        assert [r["model_artifact_id"] for r in explicit["rows"]] == [str(candidate)]
+        assert (
+            fake_stores["artifact_store"].fetch_active_artifact_id_for_station(
+                station.id, mid
+            )
+            == active
+        )
+
+    @pytest.mark.parametrize("case", ["missing", "wrong_model", "future"])
+    def test_ineligible_candidate_returns_no_rows(
+        self, client: TestClient, fake_stores: dict, case: str
+    ) -> None:
+        mid = ModelId("candidate_filtered")
+        station, _ = _seed_station_with_active_artifact(fake_stores, model_id=mid)
+        candidate, _ = fake_stores["artifact_store"].store_artifact(
+            ModelId("other_model") if case == "wrong_model" else mid,
+            b"candidate",
+            _T0,
+            _T1,
+            _TRAINED,
+            station_id=station.id,
+        )
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=mid,
+                    model_artifact_id=candidate,
+                    eval_period_end=ensure_utc(datetime(2999, 1, 1, tzinfo=UTC))
+                    if case == "future"
+                    else _T1,
+                )
+            ]
+        )
+        response = client.get(
+            f"/api/v1/stations/{station.id}/skill",
+            params={"artifact_id": str(uuid4() if case == "missing" else candidate)},
+        )
+        assert response.status_code == 200
+        assert response.json()["rows"] == []
+
+    def test_invalid_artifact_uuid_is_rejected(self, client: TestClient) -> None:
+        response = client.get(
+            f"/api/v1/stations/{uuid4()}/skill", params={"artifact_id": "invalid"}
+        )
+        assert response.status_code == 422

@@ -1703,6 +1703,54 @@ class TestGenerationScopeIncludesArtifact:
         assert len(candidate_results) == 1
         assert candidate_results[0].score == 0.2
 
+        from datetime import timedelta
+
+        from fastapi.testclient import TestClient
+
+        from sapphire_flow.api import app
+        from sapphire_flow.api.deps import get_stores
+        from sapphire_flow.api.security import Principal, require_reviewer
+        from sapphire_flow.types.enums import AccessTokenRole, ModelAssignmentStatus
+        from sapphire_flow.types.ids import AccessTokenId
+        from sapphire_flow.types.station import ModelAssignment
+
+        stores = get_stores(db_connection, config=None)
+        stores["station_store"].store_model_assignment(
+            ModelAssignment(
+                station_id=sid,
+                model_id=mid,
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=0,
+                created_at=_T1,
+            )
+        )
+        principal = Principal(
+            token_id=AccessTokenId(uuid.uuid4()),
+            role=AccessTokenRole.REVIEWER,
+            tenant_id=None,
+            station_ids=frozenset({sid}),
+        )
+        app.dependency_overrides[get_stores] = lambda: stores
+        app.dependency_overrides[require_reviewer] = lambda: principal
+        try:
+            with TestClient(app) as client:
+                default = client.get(f"/api/v1/stations/{sid}/skill")
+                explicit = client.get(
+                    f"/api/v1/stations/{sid}/skill",
+                    params={"artifact_id": str(candidate_aid)},
+                )
+            assert default.status_code == explicit.status_code == 200
+            assert [r["generation_id"] for r in default.json()["rows"]] == [
+                str(gen_active)
+            ]
+            assert [r["generation_id"] for r in explicit.json()["rows"]] == [
+                str(gen_candidate)
+            ]
+        finally:
+            app.dependency_overrides.pop(get_stores, None)
+            app.dependency_overrides.pop(require_reviewer, None)
+
 
 class TestBaselineVersionFirstPrecedence:
     """Plan 235 fixer round (blocker, D2b#1 "version first"): a generation
@@ -1913,3 +1961,63 @@ class TestThresholdContextRoundtrip:
         diagrams = store.fetch_latest_diagrams(sid, mid)
         assert scores[0].threshold_context == context
         assert diagrams[0].threshold_context == context
+
+
+class TestBoundedSkillInserts:
+    @pytest.mark.parametrize("kind", ["scores", "diagrams"])
+    def test_large_insert_replay_and_transaction_rollback(
+        self, db_connection: sa.Connection, kind: str
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        count = 3500
+        savepoint = db_connection.begin_nested()
+        if kind == "scores":
+            items = [
+                _make_score(sid, mid, aid, lead_time_hours=i) for i in range(count)
+            ]
+            assert store.store_skill_scores(items) == count
+            assert store.store_skill_scores(items) == 0
+            table = skill_scores
+        else:
+            diagrams = [
+                _make_diagram(sid, mid, aid, lead_time_hours=i) for i in range(count)
+            ]
+            assert store.store_skill_diagrams(diagrams) == count
+            assert store.store_skill_diagrams(diagrams) == 0
+            table = skill_diagrams
+        savepoint.rollback()
+        assert (
+            db_connection.execute(
+                sa.select(sa.func.count())
+                .select_from(table)
+                .where(table.c.station_id == sid)
+            ).scalar_one()
+            == 0
+        )
+
+    def test_later_chunk_failure_rolls_back_earlier_rows(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        scores = [_make_score(sid, mid, aid, lead_time_hours=i) for i in range(501)]
+        scores[-1] = replace(scores[-1], station_id=StationId(uuid.uuid4()))
+        with (
+            pytest.raises(sa.exc.IntegrityError, match="foreign key"),
+            db_connection.begin_nested(),
+        ):
+            PgSkillStore(db_connection).store_skill_scores(scores)
+        assert (
+            db_connection.execute(
+                sa.select(sa.func.count())
+                .select_from(skill_scores)
+                .where(skill_scores.c.station_id == sid)
+            ).scalar_one()
+            == 0
+        )
