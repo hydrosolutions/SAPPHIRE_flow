@@ -2663,8 +2663,9 @@ Snapshot parsing and latest-observation defaults are unchanged.
 
 ## CI performance and hosted-runner capacity touchpoint
 
-Changes to integration selection must preserve public `heavy`/`rest` jobs, private
-`integration-heavy`/`integration-rest` gates, and exactly-once coverage. Keep the
+Changes to integration selection must preserve public `heavy`/`mid`/`rest` jobs, private
+`integration-heavy`/`integration-mid`/`integration-rest` gates (and the staging-release
+`GATE_NAMES` inventory), and exactly-once coverage. Keep the
 production node
 `tests/integration/store/test_swiss_overview_performance.py::TestSwissOverviewPerformance::test_134_station_bounded_reads`
 in the required performance-first fresh process. Keep the sustained node

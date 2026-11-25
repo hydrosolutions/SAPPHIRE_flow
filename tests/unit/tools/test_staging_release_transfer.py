@@ -237,7 +237,9 @@ class TestEnvelope:
     def test_receiver_accepts_any_passed_gate_inventory(self, tmp_path: Path) -> None:
         # CI jobs can be added, split or renamed without a receiver upgrade.
         envelope, _ = payload(tmp_path)
-        extra = replace(envelope, gates={**envelope.gates, "integration-mid": "passed"})
+        extra = replace(
+            envelope, gates={**envelope.gates, "unlisted-extra-gate": "passed"}
+        )
         renamed = replace(envelope, gates={"ci-all": "passed"})
         assert transfer.Envelope.parse(extra.encode()) == extra
         assert transfer.Envelope.parse(renamed.encode()) == renamed
@@ -248,7 +250,7 @@ class TestEnvelope:
     ) -> None:
         envelope, _ = payload(tmp_path)
         with pytest.raises(transfer.TransferError, match="release gates failed"):
-            replace(envelope, gates={**envelope.gates, "integration-mid": status})
+            replace(envelope, gates={**envelope.gates, "unlisted-extra-gate": status})
 
     @pytest.mark.parametrize(
         "gates",
@@ -1494,13 +1496,13 @@ class TestReuseCustody:
         envelope, _ = reuse_payload(tmp_path)
         changed = replace(
             envelope,
-            gates={**envelope.gates, "lint": "passed", "integration-mid": "reused"},
+            gates={**envelope.gates, "lint": "passed", "unlisted-extra-gate": "reused"},
             coverage={
                 **envelope.coverage,
                 "lint": transfer.GateCoverage(
                     origin="local", local_status="passed", ci=None
                 ),
-                "integration-mid": transfer.GateCoverage(
+                "unlisted-extra-gate": transfer.GateCoverage(
                     origin="canonical_ci",
                     local_status="not_run_here",
                     ci=envelope.binding.ci,
@@ -1515,10 +1517,10 @@ class TestReuseCustody:
         with pytest.raises(transfer.TransferError, match="invalid reused gate origin"):
             replace(
                 envelope,
-                gates={**envelope.gates, "integration-mid": "reused"},
+                gates={**envelope.gates, "unlisted-extra-gate": "reused"},
                 coverage={
                     **envelope.coverage,
-                    "integration-mid": transfer.GateCoverage(
+                    "unlisted-extra-gate": transfer.GateCoverage(
                         origin="canonical_ci", local_status="not_run_here", ci=other
                     ),
                 },
@@ -1534,10 +1536,10 @@ class TestReuseCustody:
         ):
             replace(
                 envelope,
-                gates={**envelope.gates, "integration-mid": status},
+                gates={**envelope.gates, "unlisted-extra-gate": status},
                 coverage={
                     **envelope.coverage,
-                    "integration-mid": transfer.GateCoverage(
+                    "unlisted-extra-gate": transfer.GateCoverage(
                         origin="local", local_status=status, ci=None
                     ),
                 },

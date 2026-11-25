@@ -38,12 +38,10 @@ NAMED_GROUPS: NamedGroups = (
         (
             "tests/integration/db/test_migration_0041_0044_tenant_model.py",
             "tests/integration/db/test_migration_input_quality.py",
-            "tests/integration/db/test_operator_role.py",
             "tests/integration/db/test_role_bootstrap.py",
             "tests/integration/flows/test_train_models_warm_start_pg.py",
             "tests/integration/ops/test_protected_evidence_restore.py",
             "tests/integration/services/test_skill_data_use_isolation.py",
-            "tests/integration/store/test_observation_unit_readers.py",
             # Append timing-led moves to preserve the existing heavy-file order.
             "tests/integration/store/test_daily_forecast_one_shot_runner.py",
             "tests/integration/store/test_swiss_overview.py",
@@ -51,6 +49,32 @@ NAMED_GROUPS: NamedGroups = (
             # fixed job overhead, rest ~90 s; these two (~113 s) even the legs out.
             "tests/integration/api/test_native_selected_weather.py",
             "tests/integration/db/test_bounded_qc_serialization.py",
+        ),
+    ),
+    (
+        "mid",
+        (
+            # Rebalance 2026-11-25 (CI runs 45607849353, 45613021117, 45640371082,
+            # 45663947921): third leg; the 16 largest former-rest files plus two
+            # files moved out of heavy. Rebalance by JUnit, never per PR.
+            "tests/integration/db/test_migration_forecast_publication_data_use.py",
+            "tests/integration/db/test_migration_0039_basin_static_provenance.py",
+            "tests/integration/db/test_bafu_guard_regressions.py",
+            "tests/integration/db/test_migration_0033_camels_retire.py",
+            "tests/integration/db/test_forecast_lineage_historical.py",
+            "tests/integration/db/test_forecast_lineage_roles.py",
+            "tests/integration/db/test_provisional_discharge_roles.py",
+            "tests/integration/db/test_migration_provisional_discharge.py",
+            "tests/integration/db/test_bafu_claude_followups.py",
+            "tests/integration/db/test_operator_role.py",
+            "tests/integration/store/test_daily_forecast_flow.py",
+            "tests/integration/store/test_forecast_rating_history.py",
+            "tests/integration/store/test_network_overview_performance.py",
+            "tests/integration/store/test_station_history.py",
+            "tests/integration/store/test_daily_forecast_one_shot_runtime.py",
+            "tests/integration/store/test_observation_unit_readers.py",
+            "tests/integration/api/test_network_overview.py",
+            "tests/integration/api/test_tables_protected_storage.py",
         ),
     ),
 )
@@ -108,6 +132,7 @@ SHARDS = tuple(group for group in GROUPS if group.id != "performance")
 SHARD_IDS = tuple(shard.id for shard in SHARDS)
 EXECUTION_GROUPS: dict[str, tuple[str, ...]] = {
     "heavy": ("performance", "heavy"),
+    "mid": ("mid",),
     "rest": ("rest",),
 }
 STRESS_NODE = (
