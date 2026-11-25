@@ -992,3 +992,50 @@ operational evidence. B0 remains incomplete; B1/B2 and reconstruction/commission
 remain DRAFT. No source database, agency data, provider requests or cloud resources
 were used. Public application code and administrator commands are unchanged; full
 test and review evidence remains private.
+
+### Integrated local inventory and constructor hold
+
+The private B0 runner now combines observed installed/runtime identity, bounded
+metadata and membership, once-only selected declarations, observation roots,
+rating/capture helpers and the version-2 report under the existing supervisor.
+Metadata and later reads share cumulative row/encoded-byte accounting. The query
+guard admits reviewed statement shapes and requires reused readers to stay within
+already accounted rows. It is an accidental-query guard, not a sandbox for arbitrary
+Python. No public command or application behavior changed.
+
+One independent Claude plan review and one relevant patch review completed. The
+patch findings were corrected: reconcile assignments in related groups omitted from
+the packet, verify membership before loading models, and require an exact outcome
+plus separate constructor-completion evidence for the group-model fixture. The
+synthetic job supplies its weather grid independently of model declarations and
+legacy hydrological configuration; a real source collector remains separate work.
+
+On source `29380395`, **123 focused/planner checks, 250 existing regressions and
+97 synthetic PostgreSQL cases pass**. The latter include the 43 frozen helper
+cases unchanged, 11 root cases and 43 guarded-helper variants. Five initial failures
+came from installing duplicate guards when a regression reused a connection;
+the test adapter now reuses its connection-local guard. Ruff, formatting and strict
+changed-module types pass. The verified release `0.1.1191` image also passes all
+eight supervised base cases: ordinary success, assignment/configuration drift,
+suppressed logs, memory exhaustion, log overflow, unknown SQL and native stderr.
+Actual package/source/configuration identities, rollback, process reaping and
+absence of remaining database connections were checked. These are local emulated
+results, not native source-host performance evidence.
+
+**B0 remains incomplete.** Both mixed and declared-only fixtures stop while loading
+the installed group-model constructor: PyTorch reports that `libtorch_cuda.so`
+cannot be mapped under the unchanged 2-GiB address-space ceiling. Neither fixture
+produced constructor/declaration-completion evidence, so neither qualifies as a
+successful omission-aware runtime check. This does not establish a live forecast
+failure or a measured resident-memory requirement. No static declaration was
+substituted and no resource limit was widened. Resolve the constructor/runtime
+budget mismatch, then qualify both paths before admitting B1; any runtime or
+budget change needs its own review.
+
+All test containers and networks were removed with independent readback, including
+a never-started inspection container created after an earlier Docker timeout.
+Unrelated resources were preserved. Source access was limited to copying an
+already-delivered release archive and verification metadata; no source database,
+agency inputs, provider requests, trained artifacts or live service changes were
+used. B1/B2 and reconstruction/commissioning remain DRAFT. Full diagnostics,
+failed-attempt evidence and review reports remain private.
