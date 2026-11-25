@@ -6,7 +6,7 @@ status: READY
 **Status:** READY rev 2, 2026-11-25 (rev 1 reviewed by Claude and Codex, both NEEDS CHANGES, folded
 after checking each finding against the code; rev 2 reviewed READY by both). No plan ID yet (owner grants IDs). HIGH RISK under
 `AGENTS.md`: CI gates, `ci-attest`, `WORKFLOW_SHA256`, and the staging-release gate inventory
-(an external contract). Needs fresh independent reviews of rev 2; merge needs the owner.
+(an external contract). Rev 2 reviewed READY by both; merge needs the owner.
 Independent of the CPU-torch plan for `aquacast-release-image-proof`, which is not planned here.
 
 ## Problem
