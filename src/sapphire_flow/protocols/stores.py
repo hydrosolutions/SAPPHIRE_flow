@@ -815,6 +815,9 @@ class ModelStore(Protocol):
     def fetch_all_models(self) -> list[ModelRecord]:
         raise NotImplementedError
 
+    def fetch_models_by_ids(self, model_ids: Collection[ModelId]) -> list[ModelRecord]:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class ModelStateStore(Protocol):

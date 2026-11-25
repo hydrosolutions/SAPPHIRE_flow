@@ -1770,7 +1770,7 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0091"
+        assert before[0] == "0092"
         with pytest.raises(RuntimeError, match="operator retry evidence requires"):
             _alembic("downgrade", "0066")
         assert snapshot() == before

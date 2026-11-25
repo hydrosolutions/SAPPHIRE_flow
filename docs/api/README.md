@@ -79,6 +79,12 @@ an increased `offset`. The table command displays one page.
 
 ## Get forecasts
 
+Forecast and overview responses include `model_display_name` and nullable
+`model_display_name_short`. For compact labels use the short name, then the full
+name, then `model_id`. Always use `model_id` as the stable key. See
+[model display labels](../spec/network-overview.md#model-display-labels).
+
+
 Set `STATION_ID` from the station list. Ordinary forecasts use `data_use=standard`:
 
 ```sh

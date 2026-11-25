@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,6 +17,7 @@ from sapphire_flow.api.human_auth import (
     require_human_principal,
     require_human_station_permission,
 )
+from sapphire_flow.api.model_display_names import load_model_display_names
 from sapphire_flow.api.publication_gate import (
     PublicationGate,
     get_publication_gate,
@@ -66,6 +67,12 @@ from sapphire_flow.types.forecast_publication import (
 from sapphire_flow.types.human_auth import HumanPermission, HumanPrincipal
 from sapphire_flow.types.ids import ForecastId, PublicationDecisionId, StationId
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sapphire_flow.types.ids import ModelId
+    from sapphire_flow.types.model import ModelRecord
+
 router = APIRouter(prefix="/api/v1", tags=["forecast-publication"])
 
 
@@ -97,7 +104,10 @@ def _human_forecast(
 
 
 def _review_forecast(
-    forecast: Any, stores: dict[str, Any], now: UtcDatetime
+    forecast: Any,
+    stores: dict[str, Any],
+    now: UtcDatetime,
+    models: Mapping[ModelId, ModelRecord] | None = None,
 ) -> ReviewForecast:
     if forecast.data_use is not ForecastDataUse.STANDARD:
         raise HTTPException(status_code=404, detail="Forecast not found")
@@ -114,7 +124,11 @@ def _review_forecast(
         reasons.append("withdrawn forecast cannot be republished")
     if metadata["publication_state"] == "selected":
         reasons.append("forecast is already selected")
-    detail = to_forecast_detail(forecast).model_copy(update=metadata)
+    if models is None:
+        models = load_model_display_names(
+            stores.get("model_store"), [forecast.model_id]
+        )
+    detail = to_forecast_detail(forecast, models).model_copy(update=metadata)
     return ReviewForecast(
         **detail.model_dump(),
         capture_status=assessment.capture_status,
@@ -154,8 +168,13 @@ def list_review_forecasts(
     forecasts = [forecast_store.fetch_forecast(row.id) for row in rows]
     require_standard_results(f for f in forecasts if f is not None)
     now = clock()
+    labels = load_model_display_names(
+        stores.get("model_store"), (f.model_id for f in forecasts if f is not None)
+    )
     return PaginatedResponse[ReviewForecast](
-        items=[_review_forecast(f, stores, now) for f in forecasts if f is not None],
+        items=[
+            _review_forecast(f, stores, now, labels) for f in forecasts if f is not None
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -274,7 +293,8 @@ def latest_published_forecast(
         raise HTTPException(status_code=404, detail="Forecast not found")
     require_standard_detail(forecast)
     metadata, _ = publication_metadata(pub, forecast, tenant_id)
-    return to_forecast_detail(forecast).model_copy(update=metadata)
+    labels = load_model_display_names(stores.get("model_store"), [forecast.model_id])
+    return to_forecast_detail(forecast, labels).model_copy(update=metadata)
 
 
 @router.get(
@@ -310,6 +330,9 @@ def publication_history(
         for event in events
     ]
     require_standard_results(f for f in forecasts if f is not None)
+    labels = load_model_display_names(
+        stores.get("model_store"), (f.model_id for f in forecasts if f is not None)
+    )
     items: list[PublicationHistoryItem] = []
     for event, forecast in zip(events, forecasts, strict=True):
         decision = event.decision
@@ -327,7 +350,7 @@ def publication_history(
                 event_type=event.event_type.value,
                 decision=decision_response(decision),
                 forecast=(
-                    to_forecast_detail(forecast).model_copy(update=metadata)
+                    to_forecast_detail(forecast, labels).model_copy(update=metadata)
                     if forecast is not None
                     else None
                 ),

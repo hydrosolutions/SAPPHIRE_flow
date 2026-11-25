@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -8,6 +10,9 @@ from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.enums import ArtifactScope
 from sapphire_flow.types.ids import ModelId
 from sapphire_flow.types.model import ModelRecord
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 
 class PgModelStore:
@@ -20,6 +25,7 @@ class PgModelStore:
             .values(
                 id=record.id,
                 display_name=record.display_name,
+                display_name_short=record.display_name_short,
                 artifact_scope=record.artifact_scope.value,
                 description=record.description,
                 created_at=record.created_at,
@@ -39,11 +45,26 @@ class PgModelStore:
         rows = self._conn.execute(sa.select(models)).mappings().all()
         return [_row_to_domain(row) for row in rows]
 
+    def fetch_models_by_ids(self, model_ids: Collection[ModelId]) -> list[ModelRecord]:
+        if not model_ids:
+            return []
+        rows = (
+            self._conn.execute(
+                sa.select(models)
+                .where(models.c.id.in_(set(model_ids)))
+                .order_by(models.c.id)
+            )
+            .mappings()
+            .all()
+        )
+        return [_row_to_domain(row) for row in rows]
+
 
 def _row_to_domain(row: sa.engine.row.RowMapping) -> ModelRecord:
     return ModelRecord(
         id=ModelId(row["id"]),
         display_name=row["display_name"],
+        display_name_short=row["display_name_short"],
         artifact_scope=ArtifactScope(row["artifact_scope"]),
         description=row["description"],
         created_at=utc_from_row(row["created_at"]),

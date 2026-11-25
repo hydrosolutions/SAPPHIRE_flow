@@ -356,6 +356,8 @@ class TestDiscoverModels:
             model_tier = ModelTier.SKILL
             alert_eligibility = AlertEligibility.SKILL_FORECAST
             static_naming = StaticNaming.CARAVAN
+            display_name = "CMAL Static Encoder"
+            display_name_short = "CMAL SE"
 
             def __init__(self) -> None:
                 self.artifact_scope = fi_boundary.FIArtifactScope.STATION
@@ -444,6 +446,8 @@ class TestDiscoverModels:
         # otherwise the test would not be exercising the boundary at all.
         assert isinstance(adapted, fi_boundary.ForecastInterfaceAdapter)
         assert declared_static_naming(adapted) is StaticNaming.CARAVAN
+        assert adapted.display_name == "CMAL Static Encoder"
+        assert adapted.display_name_short == "CMAL SE"
 
 
 class TestCarryModelClassification:
@@ -471,6 +475,8 @@ class TestCarryModelClassification:
     def test_valid_declaration_is_copied(self) -> None:
         class _Raw:
             static_naming = StaticNaming.CARAVAN
+            display_name = "CMAL Static Encoder"
+            display_name_short = "CMAL SE"
             alert_eligibility = AlertEligibility.SKILL_FORECAST
 
         class _Adapted:
@@ -480,6 +486,8 @@ class TestCarryModelClassification:
         carry_model_classification(_Raw(), adapted)
 
         assert declared_static_naming(adapted) is StaticNaming.CARAVAN
+        assert adapted.display_name == "CMAL Static Encoder"
+        assert adapted.display_name_short == "CMAL SE"
         assert adapted.alert_eligibility is AlertEligibility.SKILL_FORECAST  # type: ignore[attr-defined]
 
     def test_explicit_none_is_copied_and_still_raises(self) -> None:
@@ -499,3 +507,22 @@ class TestCarryModelClassification:
         assert adapted.static_naming is None  # type: ignore[attr-defined]
         with pytest.raises(ConfigurationError, match="static_naming=None"):
             declared_static_naming(adapted)
+
+
+class TestShortDisplayName:
+    @pytest.mark.parametrize("label", [None, "X", "CMAL SE", "x" * 32])
+    def test_registration_preserves_optional_label(self, label: str | None) -> None:
+        model = FakeStationForecastModel()
+        model.display_name_short = label
+        store = FakeModelStore()
+        register_models({ModelId("label_test"): model}, store, clock=_CLOCK)
+        record = store.fetch_model(ModelId("label_test"))
+        assert record is not None
+        assert record.display_name_short == label
+
+    @pytest.mark.parametrize("label", ["", " ", " CMAL", "CMAL ", "x" * 33, 42])
+    def test_rejects_invalid_declaration(self, label: object) -> None:
+        model = FakeStationForecastModel()
+        model.display_name_short = label
+        with pytest.raises(ConfigurationError, match="display_name_short"):
+            build_registry_entry(ModelId("label_test"), model, registered_at=_NOW)

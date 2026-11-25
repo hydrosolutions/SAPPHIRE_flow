@@ -472,3 +472,18 @@ Legacy inserts omit the new nullable column as well.
 Role bootstrapping grants period-column reads only when revision 0091's column
 exists, so historical schema upgrade/downgrade checks remain supported. Diagnostic
 forecast snapshots include the safe period metadata without exposing lineage.
+
+## Declare model display labels
+
+Model implementations may declare `display_name` and optional `display_name_short`
+attributes. Discovery and FI wrapping preserve these SAP3 registry metadata fields;
+they do not change the ForecastInterface contract. The short label must be trimmed,
+nonempty and at most 32 characters, or `None`. Full names retain the existing
+registration behavior (a derived name when undeclared).
+
+Registration and external import persist both names. Re-registering an existing
+model does not overwrite its metadata. Migration 0092 sets only the November 23
+CMAL model's missing short name to `CMAL SE`; other existing models retain a null
+short name. New registrations of that model declare the same label. No general
+rename endpoint is introduced. The API exposes them as `model_display_name` and
+`model_display_name_short`; frontend labels must never replace model IDs as keys.

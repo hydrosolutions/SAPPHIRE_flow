@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -13,6 +13,10 @@ from sapphire_flow.api.deps import get_connection, get_observation_clock, get_st
 from sapphire_flow.api.forecast_read import (
     require_standard_results,
     require_standard_store,
+)
+from sapphire_flow.api.model_display_names import (
+    load_model_display_names,
+    model_display_fields,
 )
 from sapphire_flow.api.model_visibility import (
     model_tier_for_model_id,
@@ -60,6 +64,11 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sapphire_flow.types.model import ModelRecord
 
 router = APIRouter(prefix="/api/v1", tags=["api-stations"])
 
@@ -133,7 +142,9 @@ def _to_observation_response(o: Any) -> ObservationResponse:
     )
 
 
-def _forecast_summary_fields(row: Any) -> dict[str, Any]:
+def _forecast_summary_fields(
+    row: Any, models: Mapping[ModelId, ModelRecord] | None = None
+) -> dict[str, Any]:
     return dict(
         period_definition=row.period_definition.content
         if row.period_definition is not None
@@ -141,6 +152,7 @@ def _forecast_summary_fields(row: Any) -> dict[str, Any]:
         id=str(row.id),
         station_id=str(row.station_id),
         model_id=str(row.model_id),
+        **model_display_fields(row.model_id, models),
         model_tier=model_tier_for_model_id(row.model_id).value,
         issued_at=row.issued_at,
         parameter=row.parameter,
@@ -164,9 +176,11 @@ def _forecast_summary_fields(row: Any) -> dict[str, Any]:
     )
 
 
-def _to_forecast_summary(row: Any) -> ForecastSummary:
+def _to_forecast_summary(
+    row: Any, models: Mapping[ModelId, ModelRecord] | None = None
+) -> ForecastSummary:
     require_standard_results((row,))
-    return ForecastSummary(**_forecast_summary_fields(row))
+    return ForecastSummary(**_forecast_summary_fields(row, models))
 
 
 def parse_api_datetime(value: str, field_name: str) -> UtcDatetime:
@@ -431,9 +445,14 @@ def list_forecasts(
             limit=limit,
             offset=offset,
         )
+        labels = load_model_display_names(
+            stores.get("model_store"), (row.model_id for row, _ in rows)
+        )
         response = PaginatedResponse[ProvisionalForecastSummary](
             items=[
-                ProvisionalForecastSummary(**_forecast_summary_fields(row), **metadata)
+                ProvisionalForecastSummary(
+                    **_forecast_summary_fields(row, labels), **metadata
+                )
                 for row, metadata in rows
             ],
             total=total,
@@ -462,10 +481,14 @@ def list_forecasts(
                 stores["forecast_store"].fetch_forecast(fid) for fid in selected_ids
             ]
             require_standard_results(f for f in forecasts if f is not None)
+            labels = load_model_display_names(
+                stores.get("model_store"),
+                (f.model_id for f in forecasts if f is not None),
+            )
             return PaginatedResponse[ForecastSummary](
                 items=[
                     ForecastSummary.model_validate(
-                        to_forecast_detail(f)
+                        to_forecast_detail(f, labels)
                         .model_copy(update=publication_metadata(pub, f, tenant_id)[0])
                         .model_dump()
                     )
@@ -490,8 +513,11 @@ def list_forecasts(
     )
 
     require_standard_results(rows)
+    labels = load_model_display_names(
+        stores.get("model_store"), (r.model_id for r in rows)
+    )
     return PaginatedResponse[ForecastSummary](
-        items=[_to_forecast_summary(r) for r in rows],
+        items=[_to_forecast_summary(r, labels) for r in rows],
         total=total,
         limit=limit,
         offset=offset,

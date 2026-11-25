@@ -3003,3 +3003,13 @@ Verify `tests/unit/services/test_threshold_probability.py`,
 `tests/unit/services/test_event_review.py`, `tests/unit/api/test_event_review.py`
 and `tests/unit/api/test_map_contract.py`; retain integration event-review scope
 and publication regressions before merge.
+
+### Model display metadata (2026-11-25)
+
+Label changes touch `types/model.py`, model discovery/registration/import,
+`models` metadata + migrations, ModelStore and its fake, API display-name batching,
+forecast summary/detail/publication routes, and network overview schemas. Preserve
+stable IDs, scope checks, publication gates and ETag body hashing. Regenerate the
+map OpenAPI contract when response fields change. Verify nullable legacy labels,
+FI wrapping, existing-row migration, bounded lookup and standard/provisional API
+responses. See [label contract](spec/network-overview.md#model-display-labels).

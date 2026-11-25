@@ -2260,6 +2260,23 @@
             ],
             "title": "Model Artifact Id"
           },
+          "model_display_name": {
+            "description": "Registered full display name; falls back to model_id.",
+            "title": "Model Display Name",
+            "type": "string"
+          },
+          "model_display_name_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional compact label; not a unique identifier.",
+            "title": "Model Display Name Short"
+          },
           "model_id": {
             "title": "Model Id",
             "type": "string"
@@ -2879,6 +2896,23 @@
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
+          },
+          "model_display_name": {
+            "description": "Registered full display name; falls back to model_id.",
+            "title": "Model Display Name",
+            "type": "string"
+          },
+          "model_display_name_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional compact label; not a unique identifier.",
+            "title": "Model Display Name Short"
           },
           "model_id": {
             "title": "Model Id",
@@ -4443,6 +4477,23 @@
             ],
             "title": "Issued At"
           },
+          "model_display_name": {
+            "description": "Registered full display name; falls back to model_id.",
+            "title": "Model Display Name",
+            "type": "string"
+          },
+          "model_display_name_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional compact label; not a unique identifier.",
+            "title": "Model Display Name Short"
+          },
           "model_id": {
             "title": "Model Id",
             "type": "string"
@@ -5213,6 +5264,23 @@
             ],
             "title": "Model Artifact Id"
           },
+          "model_display_name": {
+            "description": "Registered full display name; falls back to model_id.",
+            "title": "Model Display Name",
+            "type": "string"
+          },
+          "model_display_name_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional compact label; not a unique identifier.",
+            "title": "Model Display Name Short"
+          },
           "model_id": {
             "title": "Model Id",
             "type": "string"
@@ -5495,6 +5563,23 @@
             "format": "date-time",
             "title": "Issued At",
             "type": "string"
+          },
+          "model_display_name": {
+            "description": "Registered full display name; falls back to model_id.",
+            "title": "Model Display Name",
+            "type": "string"
+          },
+          "model_display_name_short": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional compact label; not a unique identifier.",
+            "title": "Model Display Name Short"
           },
           "model_id": {
             "title": "Model Id",
@@ -8710,7 +8795,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.3"
+    "version": "3.4"
   },
   "openapi": "3.1.0",
   "paths": {

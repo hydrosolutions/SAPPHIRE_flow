@@ -1001,6 +1001,12 @@ models = sa.Table(
     metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("display_name", sa.Text, nullable=False),
+    sa.Column("display_name_short", sa.Text),
+    sa.CheckConstraint(
+        "display_name_short IS NULL OR (length(display_name_short) BETWEEN 1 AND 32 "
+        "AND display_name_short !~ '^[[:space:]]|[[:space:]]$')",
+        name="ck_models_display_name_short",
+    ),
     sa.Column(
         "artifact_scope",
         sa.Text,

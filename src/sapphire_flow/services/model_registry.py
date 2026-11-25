@@ -12,7 +12,11 @@ from sapphire_flow.exceptions import (
 from sapphire_flow.services.caravan_statics import declared_static_naming
 from sapphire_flow.types.enums import AlertEligibility, ModelTier
 from sapphire_flow.types.ids import ALERT_ELIGIBILITIES, MODEL_TIERS
-from sapphire_flow.types.model import ModelRecord, ModelRegistryEntry
+from sapphire_flow.types.model import (
+    ModelRecord,
+    ModelRegistryEntry,
+    validate_model_display_name_short,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -143,6 +147,10 @@ def _assert_model_classification_declared(
     adapted_model.model_tier = tier  # type: ignore[attr-defined]
     adapted_model.alert_eligibility = eligibility  # type: ignore[attr-defined]
     adapted_model.static_naming = static_naming  # type: ignore[attr-defined]
+    for attribute in ("display_name", "display_name_short"):
+        declared = getattr(raw_model, attribute, _UNDECLARED)
+        if declared is not _UNDECLARED:
+            setattr(adapted_model, attribute, declared)
 
 
 _UNDECLARED: Final[object] = object()
@@ -169,7 +177,13 @@ def carry_model_classification(raw_model: object, adapted_model: object) -> None
     declaration is copied verbatim, malformed or not, so the wrap changes
     nothing a downstream validator can observe.
     """
-    for attribute in ("model_tier", "alert_eligibility", "static_naming"):
+    for attribute in (
+        "model_tier",
+        "alert_eligibility",
+        "static_naming",
+        "display_name",
+        "display_name_short",
+    ):
         declared = getattr(raw_model, attribute, _UNDECLARED)
         if declared is not _UNDECLARED:
             setattr(adapted_model, attribute, declared)
@@ -222,10 +236,16 @@ def build_registry_entry(
         str(model_id)
     )
     description: str = getattr(model, "description", "") or ""
+    short_name = getattr(model, "display_name_short", None)
+    try:
+        validate_model_display_name_short(short_name)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
     return ModelRegistryEntry(
         id=model_id,
         display_name=display_name,
+        display_name_short=short_name,
         description=description,
         artifact_scope=model.artifact_scope,
         data_requirements=model.data_requirements,
@@ -245,6 +265,7 @@ def register_models(
         record = ModelRecord(
             id=entry.id,
             display_name=entry.display_name,
+            display_name_short=entry.display_name_short,
             artifact_scope=entry.artifact_scope,
             description=entry.description,
             created_at=now,
