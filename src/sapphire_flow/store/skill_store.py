@@ -187,7 +187,7 @@ def latest_generation_predicate(
         sa.select(sa.literal(1))
         .select_from(other_baseline)
         .where(
-            _scope_match(other_baseline, data_table),
+            _scope_match(other_baseline, g_self),
             other_baseline.c.generation_id.is_(None),
             other_baseline.c.computation_version > g_self.c.computation_version,
         )

@@ -2021,3 +2021,80 @@ class TestBoundedSkillInserts:
             ).scalar_one()
             == 0
         )
+
+
+class TestBaselineGenerationScopeIsolation:
+    @pytest.mark.parametrize(
+        ("kind", "other_scope"),
+        [
+            ("scores", "station"),
+            ("scores", "artifact"),
+            ("scores", "forcing"),
+            ("diagrams", "station"),
+            ("diagrams", "artifact"),
+        ],
+    )
+    def test_unrelated_newer_baseline_does_not_hide_generation(
+        self, db_connection: sa.Connection, kind: str, other_scope: str
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        other_sid = _seed_station(db_connection) if other_scope == "station" else sid
+        other_aid = (
+            _seed_artifact(db_connection, other_sid, mid, status="training")
+            if other_scope in {"station", "artifact"}
+            else aid
+        )
+        generation = uuid.uuid4()
+        store = PgSkillStore(db_connection)
+        if kind == "scores":
+            store.store_skill_scores(
+                [
+                    _make_score(
+                        sid,
+                        mid,
+                        aid,
+                        computation_version=4,
+                        forcing_type=ForcingType.REANALYSIS,
+                        generation_id=generation,
+                    ),
+                    _make_score(
+                        other_sid,
+                        mid,
+                        other_aid,
+                        computation_version=5,
+                        forcing_type=ForcingType.NWP_ARCHIVE
+                        if other_scope == "forcing"
+                        else ForcingType.REANALYSIS,
+                    ),
+                ]
+            )
+        else:
+            store.store_skill_diagrams(
+                [
+                    _make_diagram(
+                        sid, mid, aid, computation_version=4, generation_id=generation
+                    ),
+                    _make_diagram(other_sid, mid, other_aid, computation_version=5),
+                ]
+            )
+        store.publish_generation(
+            generation_id=generation,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=4,
+            published_at=_T2,
+            score_count=1 if kind == "scores" else 0,
+            diagram_count=1 if kind == "diagrams" else 0,
+        )
+        results = (
+            store.fetch_latest_scores(sid, mid, parameter="discharge")
+            if kind == "scores"
+            else store.fetch_latest_diagrams(sid, mid, parameter="discharge")
+        )
+        assert any(row.generation_id == generation for row in results)

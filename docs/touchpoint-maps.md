@@ -3058,3 +3058,11 @@ actual evaluation dates and nullable threshold results. Verify via
 `PgSkillStore` inserts scores/diagrams in 500-row statements on the caller's
 transaction, retaining conflict counts and publication only after reconciliation.
 Verify large batches, duplicate replay and rollback in `test_skill_store.py`.
+
+### Skill baseline/generation correlation (2026-11-25)
+The nested higher-version baseline check in `latest_generation_predicate`
+correlates its scope against `g_self` (its immediate SELECT parent), not the
+outer score/diagram table. Referencing that outer table implicitly adds an
+uncorrelated self-join and lets unrelated baselines hide valid generations.
+Keep station/artifact/forcing isolation regressions for scores and diagrams,
+same-scope version precedence, and reflected-table reader coverage.
