@@ -6,8 +6,10 @@ from uuid import uuid4
 
 import pytest
 
+from sapphire_flow.api.event_review_schemas import ReviewSeriesResponse
 from sapphire_flow.services.event_review import read_review_options, read_review_series
-from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus
+from sapphire_flow.types.domain import StationThreshold
+from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus, ThresholdSource
 from sapphire_flow.types.event_review import (
     ReviewCatalogLimitError,
     ReviewKind,
@@ -251,3 +253,111 @@ class TestReadReviewOptions:
         )
         with pytest.raises(ReviewCatalogLimitError, match="source limit"):
             read_review_options(Catalog((source(),) * 101), query)
+
+
+class TestReviewThresholdProbabilities:
+    def threshold(self, query: ReviewSeriesQuery) -> StationThreshold:
+        return StationThreshold(
+            station_id=query.scope.station_id,
+            danger_level="High",
+            parameter="discharge",
+            value=3,
+            source=ThresholdSource.AUTHORITY,
+            created_at=query.start,
+            updated_at=query.start,
+        )
+
+    def test_canonical_snapshot_and_empirical_probability(self) -> None:
+        query = series_query()
+        result = read_review_series(
+            series_store(record(query)), query, (self.threshold(query),)
+        )
+        snapshot = result.thresholds[0]
+        point = result.segments[0].points[0]
+        assert snapshot.value == 3
+        assert snapshot.units == "m3/s"
+        assert point.threshold_probabilities[snapshot.key].probability == 0.4
+        assert point.reason == "qc_unchecked"
+        response = ReviewSeriesResponse.from_domain(result)
+        assert (
+            response.model_dump(mode="json")["thresholds"][0]["source"] == "authority"
+        )
+        assert "not a peak" in response.probability_definition
+
+    def test_distinct_sources_are_not_overwritten(self) -> None:
+        query = series_query()
+        threshold = self.threshold(query)
+        result = read_review_series(
+            series_store(record(query)),
+            query,
+            (
+                threshold,
+                replace(threshold, source=ThresholdSource.INFERRED, value=4),
+            ),
+        )
+        probabilities = result.segments[0].points[0].threshold_probabilities
+        assert len(probabilities) == 2
+        assert sorted(p.probability for p in probabilities.values()) == [0.2, 0.4]
+
+    @pytest.mark.parametrize(
+        "qc", [QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING]
+    )
+    def test_rejected_or_missing_values_have_no_probabilities(
+        self, qc: QcStatus
+    ) -> None:
+        query = series_query()
+        value = replace(record(query), qc_status=qc)
+        result = read_review_series(
+            series_store(value), query, (self.threshold(query),)
+        )
+        assert result.segments[0].points[0].threshold_probabilities == {}
+
+    def test_forecast_units_are_not_assumed(self) -> None:
+        query = series_query()
+        value = record(query)
+        value = replace(value, source=replace(value.source, units="l/s"))
+        result = read_review_series(
+            series_store(value), query, (self.threshold(query),)
+        )
+        probability = next(
+            iter(result.segments[0].points[0].threshold_probabilities.values())
+        )
+        assert probability.probability is None
+        assert probability.reason == "forecast_units_not_canonical_discharge"
+
+    def test_other_parameter_threshold_is_not_used(self) -> None:
+        query = series_query()
+        result = read_review_series(
+            series_store(record(query)),
+            query,
+            (replace(self.threshold(query), parameter="water_level"),),
+        )
+        assert result.thresholds == ()
+        assert result.segments[0].points[0].threshold_probabilities == {}
+
+    def test_wrong_station_threshold_rejected(self) -> None:
+        query = series_query()
+        with pytest.raises(ValueError, match="another station"):
+            read_review_series(
+                series_store(record(query)),
+                query,
+                (replace(self.threshold(query), station_id=StationId(uuid4())),),
+            )
+
+    def test_quantile_tail_serializes_bounds_not_zero(self) -> None:
+        query = series_query()
+        value = replace(
+            record(query),
+            representation=EnsembleRepresentation.QUANTILES,
+            values=((0.05, 1), (0.25, 2), (0.5, 3), (0.75, 4), (0.95, 5)),
+        )
+        result = read_review_series(
+            series_store(value), query, (replace(self.threshold(query), value=6),)
+        )
+        body = ReviewSeriesResponse.from_domain(result).model_dump(mode="json")
+        probability = next(
+            iter(body["segments"][0]["points"][0]["threshold_probabilities"].values())
+        )
+        assert probability["probability"] is None
+        assert probability["lower"] == 0
+        assert probability["upper"] == pytest.approx(0.05)

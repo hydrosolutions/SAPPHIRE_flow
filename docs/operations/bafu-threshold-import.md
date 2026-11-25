@@ -43,3 +43,28 @@ continues. Evidence is retained under the configured artifact directory's
 Other networks are unaffected. Existing onboarding skill reads canonical thresholds
 instead of an always-empty list; quantile threshold scores remain omitted until
 representation-correct probability wiring is implemented.
+
+## Review probabilities (contract 3.3; deployment pending)
+
+`GET /api/v1/stations/{id}/review-series` adds a `thresholds` snapshot and each
+available point's `threshold_probabilities`, keyed by the snapshot's `key`.
+Keys encode parameter, danger level and source, so authority/inferred thresholds
+remain separate. The snapshot records canonical m3/s values, source and update time;
+it uses current stored thresholds, not historically effective thresholds.
+
+Probabilities mean strict `P(forecast value > threshold)` at that valid time.
+Members use their empirical fraction. Quantile points use explicitly labelled
+piecewise-linear inverse-CDF interpolation, with distribution-free bounds.
+Outside resolved quantiles, the point probability is null and bounds remain:
+for example `[0, 0.05]` means **at most 5%**, not zero or exactly 5%.
+Tied quantiles use the rightmost tied probability for the interpolation assumption.
+Comparison uses stored floats without an epsilon. Duplicate/crossing quantiles
+are unavailable; unlike the legacy alert helper, duplicates are not averaged.
+
+An empty threshold snapshot means thresholds not configured. Rejected/missing
+forecast points have no probability entries; an unsupported forecast unit has an
+explicit unavailable result. Unchecked QC remains labelled at the point level.
+Temporal support is still unknown in this API: do not label these as instantaneous
+flood peaks or a probability of an event at any time during a window. The route
+keeps existing access/publication gates and 2 MiB cap; narrow large hourly requests
+if the cap is reached. These fields do not change alerts or compute skill.

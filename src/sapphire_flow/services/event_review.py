@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sapphire_flow.services.network_overview import reduce_forecast_point
+from sapphire_flow.services.threshold_probability import (
+    threshold_probability,
+    unavailable_probability,
+)
 from sapphire_flow.types.enums import EnsembleRepresentation, QcStatus
 from sapphire_flow.types.event_review import (
     MAX_REVIEW_POINTS,
@@ -23,10 +29,12 @@ from sapphire_flow.types.event_review import (
     ReviewSeriesRecord,
     ReviewSource,
     ReviewSourceMode,
+    ReviewThreshold,
 )
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import EventReviewStore
+    from sapphire_flow.types.domain import StationThreshold
     from sapphire_flow.types.event_review import ReviewOptionsQuery
 
 
@@ -116,7 +124,9 @@ def _review_point(record: ReviewSeriesRecord) -> ReviewPoint:
 
 
 def read_review_series(
-    store: EventReviewStore, query: ReviewSeriesQuery
+    store: EventReviewStore,
+    query: ReviewSeriesQuery,
+    thresholds: tuple[StationThreshold, ...] = (),
 ) -> ReviewSeries:
     if query.source_mode is not ReviewSourceMode.OPERATIONAL and (
         query.scope.policy is ReviewPolicy.PUBLISHED_ONLY
@@ -130,6 +140,25 @@ def read_review_series(
             "review_source_unsupported",
             "Temporal support is unknown; select operational or hindcast separately.",
         )
+    if any(t.station_id != query.scope.station_id for t in thresholds):
+        raise ValueError("Review thresholds belong to another station")
+    discharge = [t for t in thresholds if t.parameter == "discharge"]
+    if any(not math.isfinite(t.value) for t in discharge):
+        raise ValueError("Review thresholds must be finite")
+    threshold_snapshot = tuple(
+        ReviewThreshold(
+            key=json.dumps(
+                [t.parameter, t.danger_level, t.source.value], separators=(",", ":")
+            ),
+            danger_level=t.danger_level,
+            value=t.value,
+            source=t.source,
+            updated_at=t.updated_at,
+        )
+        for t in sorted(discharge, key=lambda t: (t.danger_level, t.source.value))
+    )
+    if len({t.key for t in threshold_snapshot}) != len(threshold_snapshot):
+        raise ValueError("Review threshold keys must be unique")
     snapshot = store.fetch_series(query)
     for source in snapshot.sources:
         if (
@@ -170,7 +199,28 @@ def read_review_series(
             or (query.source_mode.value != record.source.kind.value)
         ):
             raise ValueError("Review store returned an out-of-selection record")
-        grouped.setdefault(record.source, []).append(_review_point(record))
+        point = _review_point(record)
+        if point.state is ReviewPointState.AVAILABLE:
+            point = replace(
+                point,
+                threshold_probabilities={
+                    t.key: threshold_probability(
+                        record.representation,
+                        [
+                            (key, value)
+                            for key, value in record.values
+                            if key is not None
+                        ],
+                        t.value,
+                    )
+                    if record.source.units in {"m3/s", "m³/s"}
+                    else unavailable_probability(
+                        "forecast_units_not_canonical_discharge"
+                    )
+                    for t in threshold_snapshot
+                },
+            )
+        grouped.setdefault(record.source, []).append(point)
     segments: list[ReviewSegment] = []
     for source in snapshot.sources:
         points = tuple(
@@ -196,4 +246,5 @@ def read_review_series(
         if not has_values
         else None,
         segments=tuple(segments),
+        thresholds=threshold_snapshot,
     )

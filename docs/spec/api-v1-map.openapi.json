@@ -2090,6 +2090,66 @@
         "title": "EvaluationValue",
         "type": "object"
       },
+      "ExceedanceProbabilityResponse": {
+        "properties": {
+          "lower": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower"
+          },
+          "method": {
+            "$ref": "#/components/schemas/ProbabilityMethod"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper"
+          }
+        },
+        "required": [
+          "probability",
+          "lower",
+          "upper",
+          "method",
+          "reason"
+        ],
+        "title": "ExceedanceProbabilityResponse",
+        "type": "object"
+      },
       "ForcingType": {
         "enum": [
           "nwp_archive",
@@ -5040,6 +5100,16 @@
         "title": "PaginatedResponse[StationSummary]",
         "type": "object"
       },
+      "ProbabilityMethod": {
+        "enum": [
+          "empirical_members",
+          "piecewise_linear_quantile_cdf",
+          "quantile_bounds",
+          "unavailable"
+        ],
+        "title": "ProbabilityMethod",
+        "type": "string"
+      },
       "ProvisionalForecastDetail": {
         "properties": {
           "badge": {
@@ -6370,6 +6440,13 @@
             "description": "First storage time, not generation or publication time.",
             "title": "Stored At"
           },
+          "threshold_probabilities": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExceedanceProbabilityResponse"
+            },
+            "title": "Threshold Probabilities",
+            "type": "object"
+          },
           "valid_interval_end": {
             "title": "Valid Interval End",
             "type": "null"
@@ -6396,7 +6473,8 @@
           "p25",
           "p75",
           "quartile_method",
-          "band_reason"
+          "band_reason",
+          "threshold_probabilities"
         ],
         "title": "ReviewPointResponse",
         "type": "object"
@@ -6477,6 +6555,11 @@
             "title": "Parameter",
             "type": "string"
           },
+          "probability_definition": {
+            "default": "P(forecast value > threshold), compared as stored without tolerance. Per valid time, not a peak or window-event probability. Quantile point estimates assume a piecewise-linear inverse CDF within supplied support; bounds do not invent tail probabilities. Temporal support remains unknown. qc_unchecked applies to probabilities as well as plotted values.",
+            "title": "Probability Definition",
+            "type": "string"
+          },
           "reason": {
             "anyOf": [
               {
@@ -6521,6 +6604,18 @@
             "default": "unknown",
             "title": "Temporal Support",
             "type": "string"
+          },
+          "threshold_basis": {
+            "default": "Current stored thresholds; historical effective dates unknown. An empty thresholds list means thresholds not configured.",
+            "title": "Threshold Basis",
+            "type": "string"
+          },
+          "thresholds": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewThresholdResponse"
+            },
+            "title": "Thresholds",
+            "type": "array"
           }
         },
         "required": [
@@ -6532,7 +6627,8 @@
           "source_mode",
           "state",
           "reason",
-          "segments"
+          "segments",
+          "thresholds"
         ],
         "title": "ReviewSeriesResponse",
         "type": "object"
@@ -6737,6 +6833,51 @@
           "reasons"
         ],
         "title": "ReviewSourceResponse",
+        "type": "object"
+      },
+      "ReviewThresholdResponse": {
+        "properties": {
+          "danger_level": {
+            "title": "Danger Level",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "parameter": {
+            "const": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ThresholdSource"
+          },
+          "units": {
+            "const": "m3/s",
+            "title": "Units",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "key",
+          "danger_level",
+          "value",
+          "source",
+          "updated_at",
+          "parameter",
+          "units"
+        ],
+        "title": "ReviewThresholdResponse",
         "type": "object"
       },
       "SapphireForecastMembersSchema": {
@@ -8251,6 +8392,14 @@
         "title": "ThresholdResponse",
         "type": "object"
       },
+      "ThresholdSource": {
+        "enum": [
+          "authority",
+          "inferred"
+        ],
+        "title": "ThresholdSource",
+        "type": "string"
+      },
       "UndisclosedWaterLevelDatumResponse": {
         "additionalProperties": false,
         "properties": {
@@ -8561,7 +8710,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.2"
+    "version": "3.3"
   },
   "openapi": "3.1.0",
   "paths": {

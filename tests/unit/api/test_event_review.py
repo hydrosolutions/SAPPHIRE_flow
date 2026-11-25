@@ -262,8 +262,24 @@ class TestReviewSeries:
         monkeypatch.setattr(
             "sapphire_flow.api.routes.api_event_review.MAX_REVIEW_BYTES", byte_limit
         )
+        from sapphire_flow.types.domain import StationThreshold
+        from sapphire_flow.types.enums import ThresholdSource
+
         station = seed(fake_stores)
         value = record(series_query())
+        fake_stores["station_store"].store_thresholds(
+            [
+                StationThreshold(
+                    station_id=station.id,
+                    parameter="discharge",
+                    danger_level="High",
+                    value=3,
+                    source=ThresholdSource.AUTHORITY,
+                    created_at=value.valid_time,
+                    updated_at=value.valid_time,
+                )
+            ]
+        )
         value = replace(
             value,
             source=replace(
@@ -284,6 +300,9 @@ class TestReviewSeries:
             return
         point = body["segments"][0]["points"][0]
         assert point["median"] == 3.0
+        threshold = body["thresholds"][0]
+        assert threshold["source"] == "authority"
+        assert point["threshold_probabilities"][threshold["key"]]["probability"] == 0.4
         assert point["issued_at"] == "2019-05-30T00:00:00Z"
         assert point["valid_interval_start"] is None
         assert body["temporal_support"] == "unknown"
@@ -385,3 +404,131 @@ class TestReviewSeries:
         assert response.status_code == 503
         assert response.json()["detail"]["code"] == "review_query_timeout"
         assert "private" not in response.text
+
+
+class TestThresholdReviewBoundary:
+    @pytest.mark.parametrize("access", ["consumer", "out_of_scope", "foreign_tenant"])
+    def test_denied_request_never_fetches_thresholds(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+        monkeypatch: pytest.MonkeyPatch,
+        access: str,
+    ) -> None:
+        station = seed(
+            fake_stores,
+            AccessTokenRole.CONSUMER
+            if access == "consumer"
+            else AccessTokenRole.REVIEWER,
+        )
+        target = uuid4() if access == "out_of_scope" else station.id
+        if access == "foreign_tenant":
+            fake_stores["station_store"].store_station(
+                replace(station, tenant_id=TenantId(uuid4()))
+            )
+
+        def forbidden_read(*args: object) -> None:
+            raise AssertionError("threshold read before authorization")
+
+        monkeypatch.setattr(
+            fake_stores["station_store"], "fetch_thresholds", forbidden_read
+        )
+        response = client.get(
+            f"/api/v1/stations/{target}/review-series",
+            params=TestReviewSeries().request_params(),
+        )
+        assert response.status_code == (403 if access == "consumer" else 404)
+
+    @pytest.mark.parametrize(
+        "count,step_hours,status", [(366, 24, 200), (8784, 1, 422)]
+    )
+    def test_four_threshold_year_response_bound(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+        count: int,
+        step_hours: int,
+        status: int,
+    ) -> None:
+        from datetime import timedelta
+
+        from sapphire_flow.types.domain import StationThreshold
+        from sapphire_flow.types.enums import ThresholdSource
+        from tests.unit.services.test_event_review import record, series_query
+
+        station = seed(fake_stores)
+        value = record(series_query())
+        selected = replace(
+            value.source,
+            kind=ReviewKind.OPERATIONAL,
+            hindcast_run_id=None,
+            forcing_type=None,
+            time_step_seconds=step_hours * 3600,
+        )
+        value = replace(value, source=selected)
+        fake_stores["station_store"].store_thresholds(
+            [
+                StationThreshold(
+                    station_id=station.id,
+                    parameter="discharge",
+                    danger_level=level,
+                    value=float(i),
+                    source=ThresholdSource.AUTHORITY,
+                    created_at=value.valid_time,
+                    updated_at=value.valid_time,
+                )
+                for i, level in enumerate(
+                    ["Moderate", "Considerable", "High", "Very High"], 1
+                )
+            ]
+        )
+        catalog.series = ReviewSeriesSnapshot(
+            sources=(selected,),
+            records=tuple(
+                replace(
+                    value,
+                    forecast_id=uuid4(),
+                    valid_time=value.valid_time + timedelta(hours=i * step_hours),
+                    issued_at=value.issued_at + timedelta(hours=i * step_hours),
+                )
+                for i in range(count)
+            ),
+        )
+        params = TestReviewSeries().request_params() | {"end": "2020-06-01T00:00:00Z"}
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series", params=params
+        )
+        assert response.status_code == status
+        if status == 200:
+            assert len(response.content) < 2 * 1024 * 1024
+            assert len(response.json()["segments"][0]["points"]) == count
+        else:
+            assert response.json()["detail"]["code"] == "review_series_limit_exceeded"
+
+    def test_publication_filtered_empty_series_has_no_probabilities(
+        self,
+        client: TestClient,
+        fake_stores: dict[str, Any],
+        catalog: Catalog,
+    ) -> None:
+        station = seed(fake_stores)
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({station.tenant_id})
+        )
+        selected = replace(
+            source(),
+            kind=ReviewKind.OPERATIONAL,
+            hindcast_run_id=None,
+            forcing_type=None,
+        )
+        catalog.series = ReviewSeriesSnapshot(sources=(selected,), records=())
+        response = client.get(
+            f"/api/v1/stations/{station.id}/review-series",
+            params=TestReviewSeries().request_params(),
+        )
+        assert response.status_code == 200
+        assert catalog.series_queries[0].scope.policy is ReviewPolicy.PUBLISHED_ONLY
+        assert response.json()["state"] == "withheld"
+        assert response.json()["segments"][0]["points"] == []
