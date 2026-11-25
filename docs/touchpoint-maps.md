@@ -3039,3 +3039,12 @@ its standard-purpose filter. The backfill CLI uses tenant write-principal checks
 and preflights all explicit IDs. Test cached/fallback parity, no weather replay on
 projected reads, evidence corruption, purpose isolation, atomicity and role grants.
 Keep API/map schemas unchanged; update the projection version if reduction changes.
+
+### Hindcast history window (2026-11-25)
+
+`services/hindcast.py` resolves an omitted lookback to the model's declared
+maximum before prefetch and per-issue assembly, for station and group runs.
+Explicit overrides keep their existing meaning. No FI/Aquacast change is needed.
+Check `TestDeclaredHindcastLookback`, flow/batch tests and hindcast data-use
+isolation. Preserve bucket alignment and model-owned short-history validation;
+never fill a missing edge bucket with older out-of-window observations.

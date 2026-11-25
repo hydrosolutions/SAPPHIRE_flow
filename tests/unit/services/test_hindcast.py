@@ -23,6 +23,7 @@ from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, Station
 from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.model import (
         GroupModelInputs,
         ModelArtifact,
@@ -2104,3 +2105,176 @@ def test_unsupported_model_keeps_single_issue_for_multiyear_request() -> None:
     from sapphire_flow.services.hindcast import resolve_hindcast_issue_batch_size
 
     assert resolve_hindcast_issue_batch_size(object(), 1827) == 1
+
+
+class TestDeclaredHindcastLookback:
+    @pytest.mark.parametrize("path", ["station", "group", "batch"])
+    @pytest.mark.parametrize(
+        ("declared", "override", "missing_oldest"),
+        [
+            (1, None, False),
+            (3, None, False),
+            (730, None, False),
+            (3, 7, False),
+            (3, 2, False),
+            (3, None, True),
+        ],
+    )
+    @pytest.mark.parametrize("hour", [0, 6])
+    def test_delivers_only_requested_history(
+        self,
+        path: Literal["station", "group", "batch"],
+        declared: int,
+        override: int | None,
+        missing_oldest: bool,
+        hour: int,
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.types.model import GroupModelInputs
+        from tests.fakes.fake_models import FakeGroupForecastModel
+
+        resolved = declared if override is None else override
+        station = make_station_config()
+        sid = station.id
+        start = _utc(2022, 1, 1, hour)
+        boundary = floor_to_time_step(start, _STEP)
+        oldest = ensure_utc(boundary - resolved * _STEP)
+        obs_store = FakeObservationStore()
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+        fetch_starts: list[UtcDatetime] = []
+
+        class RecordingForcing(FakeWeatherReanalysisSource):
+            def fetch_reanalysis(
+                self,
+                station_configs: list[StationWeatherSource],
+                start: UtcDatetime,
+                end: UtcDatetime,
+                parameters: list[str],
+            ) -> list[RawHistoricalForcing]:
+                fetch_starts.append(start)
+                return super().fetch_reanalysis(station_configs, start, end, parameters)
+
+        forcing = RecordingForcing()
+        data_start = ensure_utc(oldest - 2 * _STEP)
+        _seed_forcing(forcing, sid, data_start, resolved + 10)
+        observations = make_observations(
+            n=(resolved + 5) * 24,
+            station_id=sid,
+            start=data_start,
+            interval=timedelta(hours=1),
+        )
+        obs_store.store_observations(
+            [
+                o
+                for o in observations
+                if not (missing_oldest and oldest <= o.timestamp < oldest + _STEP)
+            ]
+        )
+        seen: list[StationModelInputs | GroupModelInputs] = []
+
+        class StationModel(FakeStationForecastModel):
+            def predict(
+                self,
+                artifact: ModelArtifact,
+                inputs: StationModelInputs,
+                rng: random.Random,
+                prior_state: bytes | None = None,
+            ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+                seen.append(inputs)
+                return super().predict(artifact, inputs, rng, prior_state)
+
+        class GroupModel(FakeGroupForecastModel):
+            @property
+            def supports_batch_hindcast(self) -> bool:
+                return True
+
+            def predict_batch(
+                self,
+                artifact: ModelArtifact,
+                inputs: GroupModelInputs,
+                rng: random.Random,
+            ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
+                seen.append(inputs)
+                return super().predict_batch(artifact, inputs, rng)
+
+            def hindcast_batch(
+                self,
+                artifact: ModelArtifact,
+                inputs: tuple[GroupModelInputs, ...],
+                rng: random.Random,
+            ) -> dict[
+                UtcDatetime,
+                dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]],
+            ]:
+                return {
+                    item.issue_time: self.predict_batch(artifact, item, rng)
+                    for item in inputs
+                }
+
+        model = StationModel() if path == "station" else GroupModel()
+        model.data_requirements = replace(
+            model.data_requirements,
+            lookback_steps=declared,
+            declared_lookbacks=frozenset({("discharge", 1), ("temperature", declared)}),
+        )
+        saved = FakeHindcastStore()
+        common = dict(
+            artifact=b"artifact",
+            model_id=ModelId("history_test"),
+            artifact_id=ArtifactId(uuid4()),
+            period_start=start,
+            period_end=ensure_utc(start + 2 * _STEP),
+            time_step=_STEP,
+            forcing_source=forcing,
+            obs_store=obs_store,
+            hindcast_store=saved,
+            station_store=station_store,
+            basin_store=FakeBasinStore(),
+            clock=_fixed_clock,
+            rng=random.Random(42),
+            hindcast_run_id=uuid4(),
+            lookback_steps=override,
+        )
+        if isinstance(model, StationModel):
+            run_station_hindcast(model=model, station_id=sid, **common)
+        else:
+            group = StationGroup(
+                id=StationGroupId(uuid4()),
+                name="lookback",
+                station_ids=frozenset({sid}),
+                created_at=_fixed_clock(),
+            )
+            run_group_hindcast(
+                model=model,
+                group=group,
+                issue_batch_size=2 if path == "batch" else 1,
+                **common,
+            )
+        assert fetch_starts == [oldest]
+        assert (
+            len(
+                saved.fetch_hindcasts(
+                    station_id=sid,
+                    model_id=ModelId("history_test"),
+                    start=start,
+                    end=ensure_utc(start + 2 * _STEP),
+                )
+            )
+            == 2
+        )
+        assert len(seen) == 2
+        for item in seen:
+            data = (
+                item.for_station(sid)
+                if isinstance(item, GroupModelInputs)
+                else item.data
+            )
+            end = floor_to_time_step(item.issue_time, _STEP)
+            expected = [ensure_utc(end - i * _STEP) for i in range(resolved, 0, -1)]
+            assert data.past_dynamic["timestamp"].to_list() == expected
+            assert data.past_targets["timestamp"].to_list() == [
+                t for t in expected if not (missing_oldest and t == oldest)
+            ]

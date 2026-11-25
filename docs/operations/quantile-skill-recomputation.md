@@ -100,3 +100,19 @@ Diagram context is persisted and available to backend store readers. The existin
 stored-skill JSON route serves scalar rows only; this patch adds no new diagram
 API or chart renderer. The legacy model page loads diagram rows but does not yet
 present this context. Consumer diagram presentation remains a follow-on.
+
+## Hindcast batch input memory
+
+The 365-date candidate and donor attempts on 0.1.1194 reached the dedicated
+8 GiB cgroup limit before storing forecasts (two recorded OOM kills). The runner
+used a 720-step default while deployed CMAL-small declares 30 steps for discharge,
+precipitation and temperature. It retained overlapping per-issue frames until the
+whole batch was ready, before FI deduplication. A fully populated 172-station
+example estimates 4.71 GiB for historical target/forcing frames alone at 720 steps,
+versus 0.20 GiB at 30; these exclude prefetch, model and temporary allocations.
+
+The source fix resolves omitted station/group lookbacks from model requirements;
+explicit overrides remain supported. Missing edge history stays missing and model
+validation owns length shortfalls. This is not a streaming implementation or a
+promise that arbitrary multi-year batches fit memory. The 30-date operational
+retry is a workaround; requalify a larger batch after an approved fixed release.
