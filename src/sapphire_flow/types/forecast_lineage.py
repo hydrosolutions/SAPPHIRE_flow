@@ -22,6 +22,8 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus, SpatialRepres
 from sapphire_flow.types.rating_input_lineage import (
     RatingDaySupport,
     RatingInputLineage,
+    RatingPeriodInputLineage,
+    RatingPeriodSupport,
     RatingUnreconciledSource,
 )
 from sapphire_flow.types.rating_reference import canonical_content, content_digest
@@ -232,7 +234,7 @@ class ForecastInputLineage:
     static_attributes: tuple[ForecastStaticAttributes, ...] = ()
     provisional_discharge_fingerprints: tuple[str, ...] = ()
     contributor_forecast_ids: tuple[ForecastId, ...] = ()
-    rating_input: RatingInputLineage | None = None
+    rating_input: RatingInputLineage | RatingPeriodInputLineage | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -294,6 +296,10 @@ class ForecastInputLineage:
             asdict(self.rating_input) if self.rating_input is not None else None
         )
         if rating_content is not None and self.rating_input is not None:
+            if isinstance(self.rating_input, RatingPeriodInputLineage):
+                rating_content["period_definition"] = (
+                    self.rating_input.period_definition.content
+                )
             if self.rating_input.unreconciled_sources:
                 rating_content["unreconciled_sources"] = [
                     {
@@ -383,7 +389,9 @@ class ForecastInputLineage:
             ) from None
 
 
-def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
+def _parse_rating_input(
+    data: dict[str, object],
+) -> RatingInputLineage | RatingPeriodInputLineage:
     from datetime import datetime
 
     from sapphire_flow.types.ids import ArtifactId, ObservationId
@@ -392,8 +400,19 @@ def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
     if data["kind"] != "provisional_rating":
         raise ValueError("unknown input lineage kind")
     rating = cast("dict[str, Any]", data["rating_input"])
+    period = rating["policy"] == "declared-day-sample-first-measured-precedence-v2"
+    day_type = RatingPeriodSupport if period else RatingDaySupport
     days = tuple(
-        RatingDaySupport(
+        day_type(
+            **(
+                {
+                    "available_at": ensure_utc(
+                        datetime.fromisoformat(day["available_at"])
+                    )
+                }
+                if period
+                else {}
+            ),
             day=ensure_utc(datetime.fromisoformat(day["day"])),
             fingerprints=tuple(day["fingerprints"]),
             accepted=day["accepted"],
@@ -412,12 +431,13 @@ def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
         )
         for day in rating["days"]
     )
-    return RatingInputLineage(
+    from sapphire_flow.store.forecast_period_codec import parse_forecast_period
+
+    common: dict[str, Any] = dict(
         issue_time=ensure_utc(datetime.fromisoformat(rating["issue_time"])),
         weather_cycle_time=ensure_utc(
             datetime.fromisoformat(rating["weather_cycle_time"])
         ),
-        days=days,
         unreconciled_sources=tuple(
             RatingUnreconciledSource(
                 observation_id=ObservationId(UUID(source["observation_id"])),
@@ -435,3 +455,14 @@ def _parse_rating_input(data: dict[str, object]) -> RatingInputLineage:
         if rating["artifact_id"]
         else None,
     )
+    if period:
+        definition = parse_forecast_period(rating["period_definition"])
+        if definition is None:
+            raise ValueError("rating period definition required")
+        return RatingPeriodInputLineage(
+            **common,
+            days=cast("tuple[RatingPeriodSupport, ...]", days),
+            period_definition=definition,
+            availability_basis=rating["availability_basis"],
+        )
+    return RatingInputLineage(**common, days=cast("tuple[RatingDaySupport, ...]", days))

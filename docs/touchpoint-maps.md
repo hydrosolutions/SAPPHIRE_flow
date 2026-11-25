@@ -3058,3 +3058,17 @@ actual evaluation dates and nullable threshold results. Verify via
 `PgSkillStore` inserts scores/diagrams in 500-row statements on the caller's
 transaction, retaining conflict counts and publication only after reconciliation.
 Verify large batches, duplicate replay and rollback in `test_skill_store.py`.
+
+
+### Model-declared native runoff input days
+
+Route model FI requirements → `operational_inputs` → `rating_inputs` → group
+projection → FI `available_at_us:discharge`. `RatingPeriodInputLineage` v2 retains
+physical daily periods and conservative database availability; legacy v1 bytes
+must remain identical. Migration 0095 updates the native lineage insert guard and
+safe forecast-history projection, preserving purpose/tenant scope, immutable
+source evidence and ACLs. `recorded_at` is database-assigned, unlike validation
+`captured_at`. Existing rows get a migration-time upper bound. Ordinary daily
+means remain excluded where their support is incompatible; no automatic model
+opt-in, publication or hindcast guard removal. Check reducer/assembly/FI tests,
+v1 golden fixtures, forecast history/store/role tests and migration guards.

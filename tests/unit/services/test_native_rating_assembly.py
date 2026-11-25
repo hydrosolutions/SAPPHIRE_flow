@@ -135,6 +135,7 @@ def test_native_assembler_joins_daily_frame_and_excludes_current_day() -> None:
 
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.rating_derived import RatingDerivedDischarge
 
 
@@ -1065,3 +1066,181 @@ def test_standard_group_declared_discharge_window_and_predict_gate(
         and f"{missing} of {q_lookback} assembly slots" in flag.detail
         for flag in forecast.input_quality_flags
     )
+
+
+@pytest.mark.parametrize("availability", ["known", "unknown", "late"])
+@pytest.mark.parametrize("group_path", [False, True])
+def test_declared_day_runoff_reaches_fi_with_availability(
+    availability: str,
+    group_path: bool,
+) -> None:
+    import polars as pl
+    from forecast_interface import PeriodLabel as FIPeriodLabel
+    from forecast_interface import SpatialRepresentation as FISpatialRepresentation
+    from forecast_interface import TimeAnchor
+
+    from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+    from sapphire_flow.config.dhm import DhmBinding, DhmConfig
+    from sapphire_flow.config.provisional_rating import NativeRatingBinding
+    from sapphire_flow.services.rating_derived import derive_rating_sample
+    from sapphire_flow.services.rating_inputs import NativeRatingInputs
+    from sapphire_flow.services.run_group_forecast import (
+        assemble_group_operational_inputs_outcome,
+    )
+    from sapphire_flow.types.ids import StationGroupId
+    from sapphire_flow.types.rating_reference import curve_snapshot
+    from sapphire_flow.types.station import StationGroup
+    from tests.fakes.weather_periods import FIRST, ISSUE, SID
+    from tests.unit.services.test_native_rating_compatibility import legacy_parts
+    from tests.unit.services.test_period_weather_evidence import (
+        assemble,
+        entry_and_store,
+    )
+
+    source, curve, custody, reference = legacy_parts()
+    curve = replace(curve, station_id=SID)
+    source = replace(source, station_id=SID, timestamp=FIRST - timedelta(hours=2))
+    reference = replace(reference, station_id=SID, curve=curve_snapshot(curve))
+    custody = replace(
+        custody, station_id=SID, start=ISSUE - timedelta(days=40), end=ISSUE
+    )
+    sample = derive_rating_sample(
+        source,
+        curve,
+        file_id=uuid4(),
+        file_sha256="a" * 64,
+        delivered_on="2026-09-08",
+        feed=custody,
+        reference=reference,
+        at=ISSUE,
+    )
+    recorded_at = {
+        "known": ISSUE - timedelta(hours=1),
+        "unknown": None,
+        "late": ISSUE + timedelta(seconds=1),
+    }[availability]
+    sample = replace(sample, recorded_at=recorded_at)
+    requests: list[tuple[UtcDatetime, UtcDatetime]] = []
+
+    class Reader:
+        def read_current(
+            self,
+            binding: object,
+            dhm: object,
+            *,
+            start: UtcDatetime,
+            end: UtcDatetime,
+            at: UtcDatetime,
+        ) -> tuple[RatingDerivedDischarge, ...]:
+            requests.append((start, end))
+            return (sample,) if start <= sample.timestamp < end else ()
+
+    binding = NativeRatingBinding(
+        tenant_id=reference.tenant_id,
+        station_id=SID,
+        station_code="generic",
+        model_ids=frozenset({_MODEL_ID}),
+        reference=reference,
+        custody_start=custody.start,
+        custody_end=custody.end,
+        custody_reference="fixture",
+        reconciliation_days=30,
+    )
+    dhm = DhmConfig(
+        endpoint=reference.endpoint,
+        bindings=(
+            DhmBinding(
+                network="dhm",
+                station_code="generic",
+                api_station_id=1,
+                level_reference="gauge_zero",
+            ),
+        ),
+        max_requests_per_batch=1,
+        max_bytes_per_batch=1000,
+        max_batch_seconds=30.0,
+    )
+    native = NativeRatingInputs(reader=Reader(), bindings=(binding,), dhm=dhm)
+    _, recording = _daily_fi_model(max_nan=365, q_lookback=365)
+    step = timedelta(days=1)
+    # Model declaration is the only source of the reporting boundary.
+    requirement = recording.input_requirement
+    requirement.dynamic[step] = requirement.dynamic[step].model_copy(
+        update={
+            "anchor": TimeAnchor(origin=timedelta(hours=18), label=FIPeriodLabel.START)
+        }
+    )
+    adapter = ForecastInterfaceAdapter(
+        recording, station_code_resolver=lambda sid: str(sid)
+    )
+    station, basin, obs, _, state, forcing = _make_stores_and_sources(
+        SID, with_obs=False, with_nwp=False
+    )
+    entry, weather = entry_and_store(days=30)
+    selected = assemble(entry, weather)
+    common = dict(
+        model=adapter,
+        model_id=_MODEL_ID,
+        issue_time=ISSUE,
+        cycle_time=ISSUE,
+        forcing_source=forcing,
+        weather_forecast_store=weather,
+        obs_store=obs,
+        station_store=station,
+        basin_store=basin,
+        model_state_store=state,
+        clock=lambda: ISSUE,
+        forecast_horizon_steps=1,
+        time_step=step,
+        rating_inputs=native,
+    )
+    if group_path:
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="generic period",
+            station_ids=frozenset({SID}),
+            created_at=ISSUE,
+        )
+        assembled = assemble_group_operational_inputs_outcome(
+            **common,
+            group=group,
+            nwp_source_by_station={SID: "ifs_ecmwf"},
+            selected_weather_by_station={SID: selected},
+        )
+        assert assembled.inputs is not None
+        model_inputs = assembled.inputs
+        frame = model_inputs.for_station(SID).past_targets
+        metadata = assembled.metadata_by_station[SID]
+    else:
+        result = assemble_station_operational_inputs(
+            **common, station_id=SID, nwp_source="ifs_ecmwf", selected_weather=selected
+        )
+        assert result is not None
+        model_inputs, metadata = result
+        frame = model_inputs.data.past_targets
+    assert frame.height == 365
+    assert frame["discharge"].is_finite().sum() == (1 if availability == "known" else 0)
+    assert all(start >= ISSUE - timedelta(days=30) for start, _ in requests)
+    assert requests[0][0] == FIRST - timedelta(days=29)
+    assert requests[-1][1] == FIRST
+    delivered = adapter.evidence_inputs(model_inputs)
+    series = (
+        delivered.stations[str(SID) if group_path else "station"]
+        .dynamic[step]
+        .data[FISpatialRepresentation.POINT]
+        .past_known["obs"]["discharge"]
+        .data
+    )
+    assert series["discharge"].is_finite().sum() == (
+        1 if availability == "known" else 0
+    )
+    if availability == "known":
+        finite = series.filter(pl.col("discharge").is_finite())
+        assert finite["datetime"].to_list() == [FIRST - step]
+        assert finite["available_at_us"].to_list() == [
+            int(recorded_at.timestamp() * 1_000_000)
+        ]
+        assert metadata.input_lineage is not None
+    else:
+        assert series["available_at_us"].null_count() == 365
+        assert metadata.input_lineage is None

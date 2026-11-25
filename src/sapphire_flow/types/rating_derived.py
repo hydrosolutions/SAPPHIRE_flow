@@ -37,6 +37,7 @@ class RatingDerivedDischarge:
     content: str
     capture_id: CaptureId | None = None
     evidence_version: int = 1
+    recorded_at: UtcDatetime | None = None
 
     def __post_init__(self) -> None:
         if (self.discharge is None) != (self.rejection is not None):

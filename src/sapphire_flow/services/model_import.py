@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError, ModelLoadError
+from sapphire_flow.services.training_data import resolved_aggregation_methods
 from sapphire_flow.store.audited_writer import AuditedWriter
 from sapphire_flow.types.enums import (
     ArtifactScope,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
         StationId,
         TenantId,
     )
+    from sapphire_flow.types.model import ModelDataRequirements
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger()
@@ -434,11 +436,31 @@ def import_external_artifact(  # noqa: PLR0913
             "refusing to store"
         ) from exc
 
+    requirements = cast("ModelDataRequirements | None", model.data_requirements)
+    grid = requirements.time_grid if requirements is not None else None
     log.info(
         "model_import.validated",
         model_id=str(model_id),
         station_id=str(station_id) if station_id is not None else None,
         group_id=str(group_id) if group_id is not None else None,
+        time_grid=(
+            {
+                "step_seconds": int(grid.grid.step.total_seconds()),
+                "origin_seconds": int(grid.grid.phase.total_seconds()),
+                "label": grid.label.value,
+            }
+            if grid is not None
+            else None
+        ),
+        target_aggregations=(
+            {
+                name: method.value
+                for name, method in resolved_aggregation_methods(requirements).items()
+                if name in requirements.target_parameters
+            }
+            if requirements is not None
+            else {}
+        ),
     )
 
     artifact_path_for_cleanup: str | None = None

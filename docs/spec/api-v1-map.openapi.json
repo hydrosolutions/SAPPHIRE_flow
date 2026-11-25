@@ -2788,6 +2788,27 @@
             "title": "Label",
             "type": "string"
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Definition"
+          },
           "provenance": {
             "const": "sap_assembly_derived_daily",
             "default": "sap_assembly_derived_daily",
@@ -6039,6 +6060,18 @@
             "title": "Assessed",
             "type": "integer"
           },
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
           "day": {
             "format": "date-time",
             "title": "Day",
@@ -8935,7 +8968,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.6"
+    "version": "3.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9191,7 +9224,7 @@
     },
     "/api/v1/forecasts/{forecast_id}/rating-input-history": {
       "get": {
-        "description": "Reviewer/admin forecast-specific provisional rating history. Seven completed UTC days anchored to actual issued_at; daily SAP assembly-derived Q, not the final model tensor or measured-Q history. no_retained_derived_day is not a missing-input claim. Uses frozen linked evidence and exact frozen curve identity/validity, preserving quality and actual extrapolation flags. No arbitrary range or fingerprints. Scope precedes protected reads. All responses, outer errors, redirects and supported preflight are no-store.",
+        "description": "Reviewer/admin forecast-specific provisional rating history. Seven completed daily periods anchored to actual issued_at, using retained period_definition or legacy UTC days; daily SAP assembly-derived Q, not the final model tensor or measured-Q history. no_retained_derived_day is not a missing-input claim. Uses frozen linked evidence and exact frozen curve identity/validity, preserving quality and actual extrapolation flags. No arbitrary range or fingerprints. Scope precedes protected reads. All responses, outer errors, redirects and supported preflight are no-store.",
         "operationId": "rating_input_history_api_v1_forecasts__forecast_id__rating_input_history_get",
         "parameters": [
           {

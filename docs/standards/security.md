@@ -2429,3 +2429,20 @@ the API verifies original blob integrity and these bindings before use. The
 projection is not proof against a malicious worker/DB owner. Store and generic
 table-browser reads preserve purpose isolation. Backfill requires a configured
 tenant write principal and scoped explicit forecast IDs; GET never writes.
+
+
+Migration 0095 records rating-derived availability with a database clock INSERT
+trigger and the existing immutable-row guard. Existing rows use migration-time
+upper bounds. The native forecast-lineage guard validates v2 daily grids and
+requires each consumed fingerprint to be recorded by issue time. Forecast rating
+history retains its fixed search path, tenant/station checks, resource bounds and
+API-only EXECUTE grants; v1 evidence remains readable. No raw-source grants change.
+
+Recording-time semantics: `recorded_at` is the database INSERT timestamp, not the
+transaction commit time. A later rerun with an issue inside the original write
+transaction can therefore admit evidence committed just after that issue. This
+path does not promise exact historical transaction visibility or reconstruct
+superseded versions; changed unreconciled/current-only evidence stays missing.
+Migration 0095 locks the table before assigning one stable statement timestamp to
+old rows, avoiding a full table rewrite, then restores the clock default for new
+inserts. Quiesce writers during the normal migration rollout.

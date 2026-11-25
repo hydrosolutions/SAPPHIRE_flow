@@ -3038,3 +3038,45 @@ def test_unselected_at_most_group_keeps_strict_track_admission() -> None:
         GroupMemberInputReason.INSUFFICIENT_FUTURE
     }
     assert recording.predict_inputs is None
+
+
+def test_group_target_projection_preserves_mixed_availability(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    first, second = StationId(uuid4()), StationId(uuid4())
+    known = _make_station_inputs(first, 10.0)
+    unknown = _make_station_inputs(second, 20.0)
+    column = "available_at_us:discharge"
+    known = replace(
+        known,
+        data=replace(
+            known.data,
+            past_targets=known.data.past_targets.with_columns(
+                pl.Series(column, [100, None], dtype=pl.Int64)
+            ),
+        ),
+    )
+    model = FakeGroupForecastModel()
+    model.data_requirements = replace(
+        model.data_requirements,
+        required_past_targets=frozenset({"discharge"}),
+        static_features=frozenset(),
+    )
+    _patch_station_assembler(
+        monkeypatch,
+        {first: (known, _make_metadata(1)), second: (unknown, _make_metadata(1))},
+        [],
+    )
+    result = _call_assemble_group_outcome(
+        _make_group(first, second), {first: "fixture", second: "fixture"}, model
+    )
+    assert result.inputs is not None
+    assert result.inputs.for_station(first).past_targets[column].to_list() == [
+        100,
+        None,
+    ]
+    assert result.inputs.for_station(second).past_targets[column].to_list() == [
+        None,
+        None,
+    ]
+    assert result.inputs.for_station(second).past_targets.schema[column] == pl.Int64

@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import AggregationMethod
 from sapphire_flow.types.forecast_rating_history import (
     ForecastRatingHistory,
     RatingHistoryCurve,
@@ -100,6 +101,11 @@ def _verify_day(
     value = math.fsum(
         s.discharge / len(accepted) for s in accepted if s.discharge is not None
     )
+    if (
+        evidence.period_definition is not None
+        and evidence.period_definition.aggregation is AggregationMethod.MAX
+    ):
+        value = max(s.discharge for s in accepted if s.discharge is not None)
     if not math.isfinite(value):
         raise ValueError("nonfinite daily rating discharge")
     return value
@@ -148,4 +154,9 @@ def build_forecast_rating_history(
         start=evidence.start,
         end=evidence.end,
         days=tuple(days),
+        period_definition=(
+            evidence.period_definition.content
+            if evidence.period_definition is not None
+            else None
+        ),
     )

@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import AggregationMethod
+from sapphire_flow.types.forecast_period import (  # noqa: TC001 — boundary schema
+    ForecastPeriodDefinition,
+)
 from sapphire_flow.types.ids import (  # noqa: TC001 — boundary schema annotations
     ArtifactId,
     ForecastId,
@@ -78,6 +83,7 @@ class RatingHistorySupport:
     first: datetime
     last: datetime
     warnings: tuple[HistoryWarning, ...]
+    available_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for value in (self.day, self.first, self.last):
@@ -114,13 +120,23 @@ class RatingHistoryEvidence:
     days: tuple[RatingHistorySupport, ...]
     samples: tuple[RatingHistorySample, ...]
     omissions: tuple[datetime, ...]
+    period_definition: ForecastPeriodDefinition | None = None
 
     def __post_init__(self) -> None:
         for value in (self.issued_at, self.start, self.end, *self.omissions):
             require_utc(value)
-        if self.end != self.issued_at.replace(
-            hour=0, minute=0, second=0, microsecond=0
+        period = self.period_definition
+        if period is not None and (
+            period.grid.step != timedelta(days=1)
+            or period.aggregation not in (AggregationMethod.MEAN, AggregationMethod.MAX)
         ):
+            raise ValueError("unsupported rating history period")
+        expected_end = (
+            period.grid.floor(ensure_utc(self.issued_at))
+            if period
+            else self.issued_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        if self.end != expected_end:
             raise ValueError("rating window differs from issue")
         if self.start != self.end - timedelta(days=7):
             raise ValueError("invalid rating window")
@@ -132,12 +148,18 @@ class RatingHistoryEvidence:
             raise ValueError("duplicate rating source timestamp")
         if any(
             not self.start <= d.day < self.end
-            or d.day != d.day.replace(hour=0, minute=0, second=0, microsecond=0)
+            or (d.day - self.start) % timedelta(days=1)
             for d in self.days
         ):
             raise ValueError("invalid retained rating day")
         if any(not self.start <= t < self.end for t in self.omissions):
             raise ValueError("invalid rating omission timestamp")
+        if period is not None and any(
+            d.available_at is None
+            or not d.day + timedelta(days=1) <= d.available_at <= self.issued_at
+            for d in self.days
+        ):
+            raise ValueError("invalid rating history availability")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -167,6 +189,7 @@ class ForecastRatingHistory:
     start: datetime
     end: datetime
     days: tuple[RatingHistoryDay, ...]
+    period_definition: dict[str, int | str] | None = None
     data_use: Literal["provisional_rating"] = "provisional_rating"
     resolution: Literal["P1D"] = "P1D"
     unit: Literal["m3/s"] = "m3/s"

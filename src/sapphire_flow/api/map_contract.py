@@ -27,7 +27,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "3.6"
+MAP_CONTRACT_VERSION = "3.7"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -220,7 +220,8 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
     ),
     ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"): (
         "Reviewer/admin forecast-specific provisional rating history. Seven completed "
-        "UTC days anchored to actual issued_at; daily SAP assembly-derived Q, not "
+        "daily periods anchored to actual issued_at, using retained period_definition "
+        "or legacy UTC days; daily SAP assembly-derived Q, not "
         "the final model tensor or measured-Q history. no_retained_derived_day is "
         "not a missing-input claim. Uses frozen linked evidence and exact frozen "
         "curve identity/validity, preserving quality and actual extrapolation flags. "

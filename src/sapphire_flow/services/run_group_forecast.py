@@ -602,11 +602,28 @@ def assemble_group_operational_inputs_outcome(
     # model provides explicit past-known declarations; native legacy models
     # without that declaration retain their original target frames.
     target_names = sorted(requirements.required_past_targets or ())
+    availability_names = [
+        f"available_at_us:{name}"
+        for name in target_names
+        if any(
+            f"available_at_us:{name}" in inp.data.past_targets.columns
+            for inp in station_inputs
+        )
+    ]
     past_targets = [
         (
             inp.station_id,
             (
-                inp.data.past_targets.select("timestamp", *target_names)
+                inp.data.past_targets.select(
+                    "timestamp",
+                    *target_names,
+                    *(
+                        pl.col(name)
+                        if name in inp.data.past_targets.columns
+                        else pl.lit(None, dtype=pl.Int64).alias(name)
+                        for name in availability_names
+                    ),
+                )
                 if target_names
                 else pl.DataFrame()
             )

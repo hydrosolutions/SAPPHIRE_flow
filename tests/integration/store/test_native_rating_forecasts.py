@@ -115,6 +115,7 @@ def native_pair(conn: sa.Connection) -> tuple[OperationalForecast, OperationalFo
     assert sample.evidence_version == 1 and sample.capture_id is None
     values = asdict(sample)
     values.pop("warnings")
+    values.pop("recorded_at")
     # Keep this v1 fixture usable by the historical 0079 migration test.
     values.pop("capture_id")
     values.pop("evidence_version")
