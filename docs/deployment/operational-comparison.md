@@ -236,8 +236,14 @@ queried members is a partial result, not weather availability or forecast readin
 Deployment support must apply row and encoded-data limits to the union of all
 selected observation windows before loading them, counting overlaps once. A scope
 that exceeds these limits must stop rather than being split into individually
-passing pieces. The qualified root reader requires fresh inventory accounting;
-combining it with prior metadata reads needs the remaining integration checks.
+passing pieces. The integrated private runner shares one accounting ledger across
+metadata, observation roots and linked evidence in its qualified local cases.
+Every selected model must also load and declare its requirements within the reviewed
+runtime limits. A failed constructor check leaves the inventory incomplete; it is
+not evidence that observations are absent or permission to omit that model.
+Deployment support must resolve that gate before source execution. See the
+[integration record](../plans/2026-11-22-operational-deployment-recipe.md#integrated-local-inventory-and-constructor-hold)
+for the currently qualified cases and remaining blocker.
 
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
