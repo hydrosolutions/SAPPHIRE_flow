@@ -109,7 +109,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Station gauge type and sensor elevation chain 0087 onto 0086 (Plan 540 M2).
 # Migration 0090 adds audited operator retries with forward-only evidence.
 # Migration 0091 adds immutable declared forecast periods.
-_RELEASE_B_HEAD = "0091"
+# Migration 0092 adds nullable threshold skill provenance.
+_RELEASE_B_HEAD = "0092"
 
 
 def _down_revisions() -> dict[str, str | None]:

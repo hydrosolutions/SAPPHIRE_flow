@@ -130,3 +130,8 @@ grants cover added columns; no privilege expansion. B READY.
 Gate inspection: the validated deployment metric allowlist excludes threshold-
 specific metric names. They cannot become automatic promotion criteria through
 this patch. A proposed extra gate filter was unnecessary and was removed.
+
+CI follow-up: advance the existing single-head, downgrade-retention and Nepal
+qualification fixture pins to reviewed migration 0092. Persistence expectations
+include the additional Brier row (14 scores); retain replay, publication failure
+and protected-observation isolation checks unchanged.
