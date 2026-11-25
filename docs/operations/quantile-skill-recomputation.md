@@ -58,7 +58,7 @@ The administrator review work will separate scientific acceptance from
 activation. Existing approval commands may promote the artifact; they must not
 be used as acceptance-only actions.
 
-## Threshold verification, computation version 4 (deployment pending)
+## Threshold verification, computation version 4
 
 Recomputation can now score quantile forecasts against canonical station thresholds
 using the shared per-time probability converter. Raw Brier score, BSS, POD/FAR/CSI,
@@ -116,3 +116,22 @@ explicit overrides remain supported. Missing edge history stays missing and mode
 validation owns length shortfalls. This is not a streaming implementation or a
 promise that arbitrary multi-year batches fit memory. The 30-date operational
 retry is a workaround; requalify a larger batch after an approved fixed release.
+
+
+## Interim candidate evaluation (2026-11-25)
+Version 4 is deployed on the Mac mini in 0.1.1194. A sequential evaluation uses
+candidate artifact `9f084ff1-8294-46ec-ab50-6dc7c8cfde02`, corrected hindcast run
+`f7fff7bf-f4b7-4bb3-9b32-9c5c21064e14`, and available per-station forecasts while
+that run continues. These are interim stored scores, not complete 2017–2020
+verification. Recompute after completion. No candidate activation is involved.
+
+The operator enables score generations for this invocation only. A reviewed
+operator subclass splits the deployed store's public insert calls into 500-row
+chunks on the same connection, preserving count reconciliation and publication.
+This avoids the PostgreSQL bind limit encountered at 3,277 scores in one insert;
+the permanent store fix makes the same bounded writes. There are no commits
+between chunks. Existing legacy rows remain for audit and are superseded by the
+published version-4 generation for the same station/model/artifact scope.
+
+The candidate-selector API addition requires release/deployment before external
+reviewers can request these inactive-artifact scores through the scoped route.

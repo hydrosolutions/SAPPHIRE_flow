@@ -53,7 +53,7 @@ from sapphire_flow.store.threshold_skill_codec import (
     encode_threshold_context,
 )
 from sapphire_flow.types.datetime import UtcDatetime
-from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 
 if TYPE_CHECKING:
     from sapphire_flow.types.domain import (
@@ -249,6 +249,7 @@ def get_qc_rules(
 def get_station_skill(
     station_id: str,
     model_id: str | None = Query(None),
+    artifact_id: UUID | None = Query(None),
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_reviewer),
 ) -> StationSkillResponse:
@@ -266,9 +267,15 @@ def get_station_skill(
         station_id=sid,
         now=now,
         model_id=ModelId(model_id) if model_id is not None else None,
+        requested_artifact_id=ArtifactId(artifact_id)
+        if artifact_id is not None
+        else None,
     )
     return StationSkillResponse(
         station_id=str(sid),
+        selection="explicit_artifact"
+        if artifact_id is not None
+        else "latest_generation_on_forecast_artifact",
         rows=[
             SkillRowResponse(
                 model_id=str(r.model_id),

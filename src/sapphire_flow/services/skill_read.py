@@ -7,7 +7,8 @@ forecast actually uses, through the ID-only
 `ModelArtifactStore.fetch_active_artifact_id_for_station` (T2, no bytes
 loaded); skill rows for that model, parameter `discharge` only, kept only
 when `model_artifact_id` equals that artifact; dropped when `eval_period_end`
-is after the injected request time (D5).
+is after the injected request time (D5). An explicit artifact selector replaces
+only artifact resolution; station/model scope and time filtering remain.
 """
 
 from __future__ import annotations
@@ -134,6 +135,7 @@ def fetch_station_skill_rows(
     station_id: StationId,
     now: UtcDatetime,
     model_id: ModelId | None = None,
+    requested_artifact_id: ArtifactId | None = None,
 ) -> list[StationSkillRow]:
     assignments = fetch_active_model_assignments(stores, station_id)
     # De-duplicate while keeping first-seen order — `fetch_active_model_assignments`
@@ -144,13 +146,15 @@ def fetch_station_skill_rows(
 
     rows: list[StationSkillRow] = []
     for mid in model_ids:
-        artifact_id = artifact_store.fetch_active_artifact_id_for_station(
-            station_id, mid
+        artifact_id = (
+            requested_artifact_id
+            if requested_artifact_id is not None
+            else artifact_store.fetch_active_artifact_id_for_station(station_id, mid)
         )
         if artifact_id is None:
             continue
         record = artifact_store.fetch_artifact_record(artifact_id)
-        if record is None:
+        if record is None or record.model_id != mid:
             continue
         scores = skill_store.fetch_latest_scores(station_id, mid, parameter=_DISCHARGE)
         for score in scores:

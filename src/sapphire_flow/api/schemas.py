@@ -618,9 +618,9 @@ class SkillRowResponse(BaseModel):
 
 class StationSkillResponse(BaseModel):
     station_id: str
-    selection: Literal["latest_generation_on_forecast_artifact"] = (
-        "latest_generation_on_forecast_artifact"
-    )
+    selection: Literal[
+        "latest_generation_on_forecast_artifact", "explicit_artifact"
+    ] = "latest_generation_on_forecast_artifact"
     rows: list[SkillRowResponse]
 
 
