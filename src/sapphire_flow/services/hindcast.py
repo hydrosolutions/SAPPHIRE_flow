@@ -488,8 +488,10 @@ def run_station_hindcast(
     rng: random.Random,
     hindcast_run_id: UUID,
     forecast_horizon_steps: int | None = None,
-    lookback_steps: int = 720,
+    lookback_steps: int | None = None,
 ) -> list[HindcastStepResult]:
+    if lookback_steps is None:
+        lookback_steps = model.data_requirements.lookback_steps
     if model.data_requirements.time_grid is not None:
         raise ConfigurationError(
             "declared-grid hindcasts require period-aware observation qualification"
@@ -682,9 +684,11 @@ def run_group_hindcast(
     rng: random.Random,
     hindcast_run_id: UUID,
     forecast_horizon_steps: int | None = None,
-    lookback_steps: int = 720,
+    lookback_steps: int | None = None,
     issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
 ) -> dict[StationId, list[HindcastStepResult]]:
+    if lookback_steps is None:
+        lookback_steps = model.data_requirements.lookback_steps
     if model.data_requirements.time_grid is not None:
         raise ConfigurationError(
             "declared-grid hindcasts require period-aware observation qualification"
