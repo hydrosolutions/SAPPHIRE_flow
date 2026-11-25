@@ -3028,3 +3028,14 @@ stable IDs, scope checks, publication gates and ETag body hashing. Regenerate th
 map OpenAPI contract when response fields change. Verify nullable legacy labels,
 FI wrapping, existing-row migration, bounded lookup and standard/provisional API
 responses. See [label contract](spec/network-overview.md#model-display-labels).
+
+### Forecast detail weather-summary performance
+
+Trace `selected_weather_evidence.validate_selected_forecast` → pure
+`services/weather_summary` reducer → `store/weather_summary_codec` and
+`forecast_weather_summary` → `api/weather_evidence`. Migration 0094 and role
+bootstrap protect immutable projections; the generic table browser must retain
+its standard-purpose filter. The backfill CLI uses tenant write-principal checks
+and preflights all explicit IDs. Test cached/fallback parity, no weather replay on
+projected reads, evidence corruption, purpose isolation, atomicity and role grants.
+Keep API/map schemas unchanged; update the projection version if reduction changes.

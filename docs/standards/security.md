@@ -2418,3 +2418,14 @@ The 21-station Nepal opt-in is capped at 288 MiB capture after qualification, be
 the absolute reader ceiling. Worker capture/validation is qualified below 3 GiB;
 fresh readers remain below 2 GiB each, paired reads below 4 GiB. Retain a compatible
 reader after rollback; pre-increase images cannot read evidence above 128 MiB.
+
+### Forecast weather summary projections
+
+Migration 0094 adds `forecast_weather_summaries`: API SELECT only, worker
+SELECT/INSERT only, with UPDATE/DELETE/TRUNCATE guards even for the owner. An
+INSERT trigger binds parent identity, final manifest/snapshot digests and summary
+identity/digest. The validating worker derives the summary from canonical weather;
+the API verifies original blob integrity and these bindings before use. The
+projection is not proof against a malicious worker/DB owner. Store and generic
+table-browser reads preserve purpose isolation. Backfill requires a configured
+tenant write principal and scoped explicit forecast IDs; GET never writes.

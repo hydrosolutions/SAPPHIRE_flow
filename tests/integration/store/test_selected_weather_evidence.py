@@ -161,6 +161,8 @@ class TestSelectedWeatherPersistence:
         stored = selected(base, weather_use=use)
         store.store_forecast(stored)
         original = store.fetch_evidence(stored.id)
+        original_summary = store.fetch_weather_summary(stored.id)
+        assert original_summary is not None
         changed = (
             replace(
                 past,
@@ -190,6 +192,8 @@ class TestSelectedWeatherPersistence:
         )
         assert store.store_forecast(replacement) == replacement.id
         assert store.fetch_evidence(stored.id) == original
+        assert store.fetch_weather_summary(stored.id) == original_summary
+        assert store.fetch_weather_summary(replacement.id) is not None
         assert store.fetch_forecasts_for_cycle(base.issued_at)[0].id == replacement.id
         retry = selected(
             replace(base, id=ForecastId(uuid4())),
@@ -197,6 +201,7 @@ class TestSelectedWeatherPersistence:
             weather_use=replace(use, past=replace(changed, snapshot_id=uuid4())),
         )
         assert store.store_forecast(retry) == replacement.id
+        assert store.fetch_weather_summary(retry.id) is None
 
     def test_typed_round_trip(
         self, stored_case: tuple[PgForecastStore, OperationalForecast]
@@ -240,11 +245,15 @@ class TestSelectedWeatherPersistence:
         stored = selected(base)
         store.store_forecast(stored)
         original = store.fetch_evidence(stored.id)
+        original_summary = store.fetch_weather_summary(stored.id)
+        assert original_summary is not None
         retry = selected(replace(base, id=ForecastId(uuid4())), seed=2)
         assert stored.evidence is not None and retry.evidence is not None
         assert stored.evidence.snapshot_sha256 != retry.evidence.snapshot_sha256
         assert store.store_forecast(retry) == stored.id
         assert store.fetch_evidence(stored.id) == original
+        assert store.fetch_weather_summary(stored.id) == original_summary
+        assert store.fetch_weather_summary(retry.id) is None
 
     def test_invalid_selected_retry_cannot_use_identical_shortcut(
         self, stored_case: tuple[PgForecastStore, OperationalForecast]

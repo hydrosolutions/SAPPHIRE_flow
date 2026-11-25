@@ -142,6 +142,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.threshold_import import ThresholdImportStatus
     from sapphire_flow.types.time_grid import TimeGrid
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
+    from sapphire_flow.types.weather_summary import PersistedWeatherSummary
     from sapphire_flow.types.write_principal import WritePrincipal
 
 
@@ -303,6 +304,11 @@ class ForecastStore(Protocol):
         raise NotImplementedError
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:
+        raise NotImplementedError
+
+    def fetch_weather_summary(
+        self, forecast_id: ForecastId
+    ) -> PersistedWeatherSummary | None:
         raise NotImplementedError
 
     def fetch_evidence(

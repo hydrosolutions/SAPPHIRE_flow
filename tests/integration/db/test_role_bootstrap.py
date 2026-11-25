@@ -588,7 +588,10 @@ class TestForecastEvidenceRoleGrants:
             ("sapphire_worker", "worker-pw-initial"),
         ),
     )
-    @pytest.mark.parametrize("table", ("forecast_evidence", "forecast_evidence_blobs"))
+    @pytest.mark.parametrize(
+        "table",
+        ("forecast_evidence", "forecast_evidence_blobs", "forecast_weather_summaries"),
+    )
     @pytest.mark.parametrize("action", ("UPDATE", "DELETE", "TRUNCATE"))
     def test_service_roles_cannot_mutate_evidence(
         self,
@@ -2207,3 +2210,86 @@ class TestHumanIdentityRoleBoundary:
         for table in tables:
             assert bootstrapped.denied(worker_url, f"SELECT * FROM {table}")
             assert not bootstrapped.denied(api_url, f"SELECT * FROM {table}")
+
+
+class TestWeatherSummaryRoleGrants:
+    @pytest.mark.parametrize(
+        "role,privilege,allowed",
+        [
+            ("sapphire_api", "SELECT", True),
+            ("sapphire_api", "INSERT", False),
+            ("sapphire_worker", "SELECT", True),
+            ("sapphire_worker", "INSERT", True),
+        ],
+    )
+    def test_read_and_append_grants(
+        self,
+        bootstrapped: _RoleBootstrapHarness,
+        role: str,
+        privilege: str,
+        allowed: bool,
+    ) -> None:
+        with bootstrapped.owner_engine.connect() as conn:
+            assert (
+                conn.scalar(
+                    sa.text(
+                        "SELECT has_table_privilege(:role, "
+                        "'forecast_weather_summaries', :privilege)"
+                    ),
+                    {"role": role, "privilege": privilege},
+                )
+                is allowed
+            )
+
+    def test_worker_can_backfill_with_invoker_trigger(
+        self,
+        bootstrapped: _RoleBootstrapHarness,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from sapphire_flow.store.weather_summary_backfill import (
+            BackfillMode,
+            BackfillResult,
+            backfill_weather_summary,
+        )
+        from sapphire_flow.types.enums import ForecastDataUse
+        from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+        from tests.integration.store.test_forecast_store import (
+            _make_forecast,
+            _seed_artifact,
+            _seed_model,
+            _seed_station,
+            savepoint_factory,
+        )
+        from tests.integration.store.test_selected_weather_evidence import selected
+
+        with bootstrapped.owner_engine.begin() as conn:
+            sid = _seed_station(conn)
+            mid = _seed_model(conn)
+            aid = _seed_artifact(conn, sid, mid)
+            forecast = selected(_make_forecast(sid, mid, aid))
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "sapphire_flow.store.forecast_weather_summary.insert_weather_summary",
+                    lambda *args, **kwargs: None,
+                )
+                PgForecastStore(
+                    conn, transaction_factory=savepoint_factory(conn)
+                ).store_forecast(forecast)
+        engine = sa.create_engine(
+            bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        )
+        try:
+            with engine.begin() as conn:
+                assert (
+                    backfill_weather_summary(
+                        conn,
+                        forecast.id,
+                        tenant_id=DEFAULT_TENANT_ID,
+                        data_use=ForecastDataUse.STANDARD,
+                        mode=BackfillMode.APPLY,
+                    )
+                    is BackfillResult.CREATED
+                )
+        finally:
+            engine.dispose()

@@ -61,6 +61,7 @@ def ordinary_forecast_rows(table: sa.Table) -> sa.ColumnElement[bool]:
     if table.name in {
         "forecast_values",
         "forecast_evidence",
+        "forecast_weather_summaries",
         "forecast_preservation_attestations",
         "protected_backup_forecast_proofs",
     }:

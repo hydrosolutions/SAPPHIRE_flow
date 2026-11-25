@@ -55,6 +55,7 @@ _TABLES = (
     "forecast_input_stations",
     "forecast_values",
     "forecast_evidence",
+    "forecast_weather_summaries",
     "forecast_evidence_blobs",
     "rejected_forecasts",
     "observations",
@@ -300,7 +301,24 @@ def restored(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Restored]:
                 _evidence(),
                 manifest_json=json.dumps({"runtime_image_digest": IMAGE_DIGEST}),
             )
-            ordinary = replace(ordinary, evidence=evidence)
+            from tests.integration.store.test_selected_weather_evidence import selected
+
+            ordinary = selected(ordinary)
+            assert ordinary.evidence is not None
+            selected_manifest = json.loads(ordinary.evidence.manifest_json)
+            selected_manifest.update(
+                runtime_image_digest=IMAGE_DIGEST,
+                artifact_sha256=evidence.artifact_sha256,
+            )
+            ordinary = replace(
+                ordinary,
+                evidence=replace(
+                    ordinary.evidence,
+                    artifact=evidence.artifact,
+                    artifact_sha256=evidence.artifact_sha256,
+                    manifest_json=json.dumps(selected_manifest),
+                ),
+            )
             test_snapshot = b"synthetic-test-only-input-snapshot"
             test = replace(
                 test,
