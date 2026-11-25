@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 ---
 # Integration shards: add a third curated shard to cut the CI critical path
 
