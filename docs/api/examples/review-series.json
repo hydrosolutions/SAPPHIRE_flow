@@ -27,7 +27,7 @@
         "hindcast_run_id": "2f64fa3b-8c5a-41ea-8c9e-4b076e7d4188",
         "forcing_type": "reanalysis",
         "time_step_seconds": 86400,
-        "units": "m³/s",
+        "units": "m\u00b3/s",
         "lead_hours": [
           48
         ],
@@ -54,11 +54,13 @@
           "quartile_method": "member_empirical_type7",
           "band_reason": null,
           "valid_interval_start": null,
-          "valid_interval_end": null
+          "valid_interval_end": null,
+          "threshold_probabilities": {}
         }
       ],
       "gaps": [],
       "generation_time": null
     }
-  ]
+  ],
+  "thresholds": []
 }

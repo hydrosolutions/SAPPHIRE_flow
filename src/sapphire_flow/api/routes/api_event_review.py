@@ -193,7 +193,11 @@ def review_series(
             "366 days, ending no later than now.",
         )
     try:
-        response = ReviewSeriesResponse.from_domain(read_review_series(store, query))
+        response = ReviewSeriesResponse.from_domain(
+            read_review_series(
+                store, query, tuple(stores["station_store"].fetch_thresholds(sid))
+            )
+        )
         if len(response.model_dump_json().encode()) > MAX_REVIEW_BYTES:
             raise ReviewSeriesError(
                 "review_series_limit_exceeded",

@@ -2987,3 +2987,19 @@ all missing compatible bounds with an audit entry, or none. Canonical station
 API reads and compute-skills already consume these rows. Never infer permissions
 to enable alerts or promote models from a successful import. See the
 [operator procedure](operations/bafu-threshold-import.md).
+
+## Per-time threshold probability review
+
+`services/threshold_probability.py` is the representation-aware pure converter;
+`types/probability.py` preserves nullable point estimates and bounds. Event review
+uses it only after its existing scoped source/QC selection, with current canonical
+station thresholds supplied after route authorization. The snapshot key includes
+source, not only level. `api/event_review_schemas.py` and contract 3.3 expose these
+fields on the existing bulk route. No forecast alerts, skill generations, FI or
+publication decisions change. Skill conversion must reuse this helper rather than
+count quantiles as members or use the maximum-over-time alert helper.
+
+Verify `tests/unit/services/test_threshold_probability.py`,
+`tests/unit/services/test_event_review.py`, `tests/unit/api/test_event_review.py`
+and `tests/unit/api/test_map_contract.py`; retain integration event-review scope
+and publication regressions before merge.

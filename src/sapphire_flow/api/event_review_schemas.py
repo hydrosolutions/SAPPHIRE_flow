@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from sapphire_flow.types.enums import ForcingType, QcStatus
+from sapphire_flow.types.enums import ForcingType, QcStatus, ThresholdSource
 from sapphire_flow.types.event_review import (
     MAX_REVIEW_SOURCES,
     ReviewAvailability,
@@ -21,6 +21,7 @@ from sapphire_flow.types.event_review import (
     ReviewSourceMode,
 )
 from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
+from sapphire_flow.types.probability import ProbabilityMethod
 
 LEAD_DEFINITION = (
     "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. "
@@ -124,6 +125,24 @@ class ReviewSeriesParameters(BaseModel):
     time_step_seconds: int | None = Field(default=None, gt=0)
 
 
+class ExceedanceProbabilityResponse(BaseModel):
+    probability: float | None
+    lower: float | None
+    upper: float | None
+    method: ProbabilityMethod
+    reason: str | None
+
+
+class ReviewThresholdResponse(BaseModel):
+    key: str
+    danger_level: str
+    value: float
+    source: ThresholdSource
+    updated_at: datetime
+    parameter: Literal["discharge"]
+    units: Literal["m3/s"]
+
+
 class ReviewPointResponse(BaseModel):
     valid_time: datetime
     issued_at: datetime
@@ -139,6 +158,7 @@ class ReviewPointResponse(BaseModel):
     p75: float | None
     quartile_method: Literal["stored_quantiles", "member_empirical_type7"] | None
     band_reason: str | None
+    threshold_probabilities: dict[str, ExceedanceProbabilityResponse]
     valid_interval_start: None = None
     valid_interval_end: None = None
 
@@ -178,6 +198,18 @@ class ReviewSeriesResponse(BaseModel):
         "Do not score or automatically combine sources."
     )
     segments: tuple[ReviewSegmentResponse, ...]
+    thresholds: tuple[ReviewThresholdResponse, ...]
+    probability_definition: str = (
+        "P(forecast value > threshold), compared as stored without tolerance. "
+        "Per valid time, not a peak or window-event probability. Quantile point "
+        "estimates assume a piecewise-linear inverse CDF within supplied support; "
+        "bounds do not invent tail probabilities. Temporal support remains unknown. "
+        "qc_unchecked applies to probabilities as well as plotted values."
+    )
+    threshold_basis: str = (
+        "Current stored thresholds; historical effective dates unknown. "
+        "An empty thresholds list means thresholds not configured."
+    )
 
     @classmethod
     def from_domain(cls, series: ReviewSeries) -> ReviewSeriesResponse:
@@ -189,6 +221,9 @@ class ReviewSeriesResponse(BaseModel):
             start=query.start,
             end=query.end,
             source_mode=query.source_mode,
+            thresholds=tuple(
+                ReviewThresholdResponse(**asdict(t)) for t in series.thresholds
+            ),
             state=series.state,
             reason=series.reason,
             segments=tuple(

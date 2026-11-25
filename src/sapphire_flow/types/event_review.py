@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
+
+from sapphire_flow.types.probability import ExceedanceProbability
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
+    from sapphire_flow.types.enums import (
+        EnsembleRepresentation,
+        ForcingType,
+        QcStatus,
+        ThresholdSource,
+    )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId, TenantId
 
 MAX_REVIEW_HEADERS = 100_000
@@ -199,6 +206,9 @@ class ReviewPoint:
     p75: float | None = None
     quartile_method: Literal["stored_quantiles", "member_empirical_type7"] | None = None
     band_reason: str | None = None
+    threshold_probabilities: dict[str, ExceedanceProbability] = field(
+        default_factory=dict[str, ExceedanceProbability]
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -216,8 +226,20 @@ class ReviewSegment:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class ReviewThreshold:
+    key: str
+    danger_level: str
+    value: float
+    source: ThresholdSource
+    updated_at: UtcDatetime
+    parameter: Literal["discharge"] = "discharge"
+    units: Literal["m3/s"] = "m3/s"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ReviewSeries:
     query: ReviewSeriesQuery
     state: ReviewPointState
     reason: str | None
     segments: tuple[ReviewSegment, ...]
+    thresholds: tuple[ReviewThreshold, ...] = ()
