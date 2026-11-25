@@ -13,7 +13,11 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sapphire_flow.config.deployment_identity import load_deployment_identity_config
 from sapphire_flow.db.engine import create_engine_from_env
-from sapphire_flow.exceptions import ConfigurationError, TenantIsolationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    StoreError,
+    TenantIsolationError,
+)
 from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.services.write_principal import resolve_run_principal
 from sapphire_flow.store.tenant_store import PgTenantStore
@@ -86,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ConfigurationError,
         TenantIsolationError,
         SQLAlchemyError,
+        StoreError,
         ValueError,
     ) as exc:
         # Do not expose database parameters, evidence payloads or configuration secrets.

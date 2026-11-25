@@ -38,7 +38,7 @@ independent attestation against a malicious database owner or worker.
    Each forecast has its own transaction, so a failed run can be resumed. Existing
    identical summaries are unchanged; conflicting summaries are refused. Legacy
    forecasts without selected weather are `not_applicable`. Dry runs report
-   `would_create`; apply reports `created`. Errors exit 3 with a sanitized cause.
+   `would_create`; apply reports `created`. Errors exit 3 with a sanitized cause, including protected-store failures.
    A backfill can take time because it fully validates each retained snapshot.
 4. Compare cold and repeated detail-read latency and response content for each
    relevant model. No restart or process-cache warmup is needed after backfill.

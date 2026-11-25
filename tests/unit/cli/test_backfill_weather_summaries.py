@@ -106,3 +106,19 @@ def test_scope_refusal_precedes_any_write(
         == 3
     )
     assert not any(name == "backfill" for name, _ in harness)
+
+
+def test_protected_store_failure_is_sanitized(
+    harness: list[tuple[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sapphire_flow.exceptions import StoreError
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise StoreError("private database detail")
+
+    monkeypatch.setattr(cli, "backfill_weather_summary", refuse)
+    assert cli.main(["--tenant", "fixture", "--forecast-id", str(UUID(int=1))]) == 3
+    captured = capsys.readouterr()
+    assert "private database detail" not in captured.out + captured.err
