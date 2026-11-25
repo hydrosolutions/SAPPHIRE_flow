@@ -401,3 +401,40 @@ class TestStationSkill:
 
             app.dependency_overrides.pop(require_principal, None)
         assert resp.status_code == 403
+
+
+class TestThresholdSkillReadback:
+    def test_threshold_counts_and_provenance_are_exposed(
+        self, client: TestClient, fake_stores: dict
+    ) -> None:
+        from sapphire_flow.services.skill.thresholds import (
+            paired_threshold_probabilities,
+        )
+        from tests.unit.services.skill.test_thresholds import quantiles, threshold
+
+        mid = ModelId("threshold_skill_model")
+        station, aid = _seed_station_with_active_artifact(fake_stores, model_id=mid)
+        _, _, context = paired_threshold_probabilities(
+            [quantiles(0, 10), quantiles(0, 1)], [10.0, 0.0], threshold(), "m3/s"
+        )
+        fake_stores["skill_store"].store_skill_scores(
+            [
+                _make_score(
+                    station_id=station.id,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    computation_version=4,
+                    metric="brier_danger_High",
+                    score=0.25,
+                    sample_size=1,
+                    threshold_context=context,
+                )
+            ]
+        )
+        response = client.get(f"/api/v1/stations/{station.id}/skill")
+        assert response.status_code == 200
+        row = response.json()["rows"][0]
+        assert row["sample_size"] == 1
+        assert row["threshold_context"]["excluded_count"] == 1
+        assert row["threshold_context"]["threshold_source"] == "authority"
+        assert row["threshold_context"]["coverage"] == "conditional_resolved_subset"

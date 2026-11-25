@@ -168,9 +168,11 @@ def compute_bma_skill_cross_validated(
         for model_id, hindcasts in hindcasts_by_model.items()
     }
 
-    intersection_steps: set[UtcDatetime] = (
-        set.intersection(*steps_by_model.values()) if steps_by_model else set()  # type: ignore[arg-type]
-    )
+    intersection_steps: set[UtcDatetime] = set()
+    if steps_by_model:
+        intersection_steps = next(iter(steps_by_model.values())).intersection(
+            *steps_by_model.values()
+        )
     sorted_steps = sorted(intersection_steps)
 
     if len(sorted_steps) < 2:
@@ -292,6 +294,20 @@ def compute_bma_skill_cross_validated(
     # gate as "combined" — the flow only counts a cohort once this
     # function returns non-empty output (`compute_skills.
     # compute_combined_skills_task`'s `cohorts_combined` increment).
+    omitted = sum(
+        s.threshold_context is not None for s in [*fold1_scores, *fold2_scores]
+    )
+    if omitted:
+        log.warning(
+            "bma_cv.threshold_scores_omitted",
+            count=omitted,
+            reason="fold_averaging_has_no_paired_threshold_reference",
+        )
+    fold1_scores = [s for s in fold1_scores if s.threshold_context is None]
+    fold2_scores = [s for s in fold2_scores if s.threshold_context is None]
+    fold1_diagrams = [d for d in fold1_diagrams if d.threshold_context is None]
+    fold2_diagrams = [d for d in fold2_diagrams if d.threshold_context is None]
+
     fold1_complete = bool(fold1_scores or fold1_diagrams)
     fold2_complete = bool(fold2_scores or fold2_diagrams)
     if not (fold1_complete and fold2_complete):

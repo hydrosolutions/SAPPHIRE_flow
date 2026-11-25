@@ -98,7 +98,7 @@ def assert_metadata(
         "parameter": "discharge",
         "model_artifact_id": AID if strategy == "SINGLE" else None,
         "skill_source": SkillSource.HINDCAST_REANALYSIS,
-        "computation_version": 3,
+        "computation_version": 4,
         "lead_time_hours": 1,
         "flow_regime_config_id": REGIME,
         "eval_period_start": T,
@@ -108,7 +108,26 @@ def assert_metadata(
         "phase_offset_seconds": 0,
         "generation_id": generation,
     }
-    ignored = {"id", "season", "flow_regime"}
+    context = row.threshold_context
+    threshold_row = (
+        ("_danger_" in row.metric)
+        if isinstance(row, SkillScore)
+        else row.threshold_level is not None
+    )
+    assert (context is not None) == threshold_row
+    if context is not None:
+        assert context.danger_level == "2" and context.threshold_value == 19
+        assert (
+            context.threshold_source.value == "inferred"
+            and context.threshold_updated_at == C
+        )
+        assert context.units == "m3/s" and context.coverage == "all_paired"
+        assert context.excluded_count == 0
+        assert context.paired_count == context.scored_count
+        assert context.paired_event_count == context.scored_event_count
+        if isinstance(row, SkillScore):
+            assert context.scored_count == row.sample_size
+    ignored = {"id", "season", "flow_regime", "threshold_context"}
     if isinstance(row, SkillScore):
         common.update(
             forcing_type=ForcingType.REANALYSIS,
@@ -132,24 +151,19 @@ def assert_scores(
     clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
-        METRICS,
         REGIMES,
-        SCALAR_VALUES,
         indices,
         regime_key,
+        scalar_oracle,
     )
 
     expected: dict[tuple[str | None, RegimeKey, str], str | None] = {
         (season, regime, metric): value
         for season, regime in product((None, "winter"), REGIMES)
-        for metric, value in zip(
-            METRICS[: len(SCALAR_VALUES[strategy][regime])],
-            SCALAR_VALUES[strategy][regime],
-            strict=True,
-        )
+        for metric, value in scalar_oracle(strategy, regime).items()
     }
     keyed = {(s.season, regime_key(s.flow_regime), s.metric): s for s in scores}
-    assert len(scores) == (104 if strategy == "BMA" else 98)
+    assert len(scores) == (72 if strategy == "BMA" else 106)
     assert len(keyed) == len(scores)
     assert keyed.keys() == expected.keys()
     assert len({s.id for s in scores}) == len(scores)
@@ -161,7 +175,9 @@ def assert_scores(
         population = len(indices(key[1]))
         assert row.sample_size == (population // 2 if strategy == "BMA" else population)
         assert_scalar(row.score, reference, strategy, row.metric)
-    assert sum(math.isnan(row.score) for row in scores) == 10
+    assert sum(math.isnan(row.score) for row in scores) == (
+        0 if strategy == "BMA" else 10
+    )
 
 
 def assert_diagrams(
@@ -181,7 +197,11 @@ def assert_diagrams(
 
     expected_keys: set[tuple[str | None, RegimeKey, DiagramKind, str | None]] = {
         (season, regime, kind, None if kind == "rank_histogram" else "2")
-        for season, regime, kind in product((None, "winter"), REGIMES, KINDS)
+        for season, regime, kind in product(
+            (None, "winter"),
+            REGIMES,
+            (("rank_histogram",) if strategy == "BMA" else KINDS),
+        )
     }
     actual = {
         (
@@ -192,8 +212,8 @@ def assert_diagrams(
         ): d
         for d in diagrams
     }
-    assert len(diagrams) == len(actual) == 24
-    assert len({d.id for d in diagrams}) == 24
+    assert len(diagrams) == len(actual) == (8 if strategy == "BMA" else 24)
+    assert len({d.id for d in diagrams}) == (8 if strategy == "BMA" else 24)
     assert actual.keys() == expected_keys
     for key in expected_keys:
         row = actual[key]
@@ -316,11 +336,13 @@ def assert_clean_task_roundtrip(
     returned_scores = {row.id: row.score for row in scores}
     for raw in raw_scores:
         assert_same_source(raw.score, returned_scores[raw.id])
-    assert sum(math.isnan(raw.score) for raw in raw_scores) == 10
+    assert sum(math.isnan(raw.score) for raw in raw_scores) == (
+        0 if strategy == "BMA" else 10
+    )
     raw_diagrams = conn.execute(
         sa.select(db.skill_diagrams.c.id, db.skill_diagrams.c.data)
     ).all()
-    assert len(raw_diagrams) == 24
+    assert len(raw_diagrams) == (8 if strategy == "BMA" else 24)
     returned_diagrams = {d.id: d for d in diagrams}
     assert {r.id for r in raw_diagrams} == returned_diagrams.keys()
     undefined_counts = {"reliability": 0, "roc": 0, "rank_histogram": 0}
@@ -349,10 +371,12 @@ def assert_clean_task_roundtrip(
         undefined_counts[diagram.diagram_type] += null_count(raw.data)
     assert undefined_counts == {
         "rank_histogram": 0,
-        "reliability": (68 if strategy == "SINGLE" else 66)
+        "reliability": 0
+        if strategy == "BMA"
+        else (68 if strategy == "SINGLE" else 66)
         if perturbation is None
         else {"SINGLE": 66, "POOLED": 64, "BMA": 60}[strategy],
-        "roc": 404,
+        "roc": 0 if strategy == "BMA" else 404,
     }
     ledger = conn.execute(sa.select(db.skill_generations)).mappings().all()
     if mode == "ON":
@@ -365,11 +389,11 @@ def assert_clean_task_roundtrip(
             "parameter": "discharge",
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
-            "computation_version": 3,
+            "computation_version": 4,
             "published_at": C,
             "created_at": database_transaction_time,
             "score_count": len(scores),
-            "diagram_count": 24,
+            "diagram_count": 8 if strategy == "BMA" else 24,
         }
     else:
         assert not ledger
@@ -378,7 +402,7 @@ def assert_clean_task_roundtrip(
     record_property("worker_after", after)
     record_property("scores", len(scores))
     record_property("diagrams", len(diagrams))
-    record_property("scalar_nan_count", 10)
+    record_property("scalar_nan_count", 0 if strategy == "BMA" else 10)
     record_property("generation_mode", mode)
     return {
         "scores": {
@@ -469,27 +493,22 @@ def assert_perturbed_scores(
     clock_offset_seconds: int = 0,
 ) -> None:
     from tests.integration.services.skill_isolation_fixture import (
-        METRICS,
         PERTURBED_SCALARS,
         REGIMES,
-        SCALAR_VALUES,
         perturbed_indices,
         regime_key,
+        scalar_oracle,
     )
 
     expected: dict[tuple[str | None, RegimeKey, str], str | None] = {
         (season, regime, metric): value
         for season, regime in product((None, "winter"), REGIMES)
-        for metric, value in zip(
-            METRICS[: len(SCALAR_VALUES[strategy][regime])],
-            SCALAR_VALUES[strategy][regime],
-            strict=True,
-        )
+        for metric, value in scalar_oracle(strategy, regime).items()
     }
     keyed = {
         (row.season, regime_key(row.flow_regime), row.metric): row for row in scores
     }
-    assert len(scores) == len(keyed) == (104 if strategy == "BMA" else 98)
+    assert len(scores) == len(keyed) == (72 if strategy == "BMA" else 106)
     assert keyed.keys() == expected.keys()
     assert len({row.id for row in scores}) == len(scores)
     for key, clean_value in expected.items():
@@ -503,6 +522,16 @@ def assert_perturbed_scores(
             sum(fold_sizes) // 2 if strategy == "BMA" else len(selected)
         )
         selected_scalars = PERTURBED_SCALARS[perturbation][strategy][key[1]]
+        if row.metric == "brier_danger_2":
+            from tests.integration.services.skill_isolation_fixture import brier_oracle
+
+            assert_scalar(
+                row.score,
+                brier_oracle(strategy, key[1], perturbation),
+                strategy,
+                row.metric,
+            )
+            continue
         if row.metric in selected_scalars:
             assert_scalar(row.score, selected_scalars[row.metric], strategy, row.metric)
         elif clean_value is None:
@@ -510,7 +539,9 @@ def assert_perturbed_scores(
         else:
             # Unselected values get exact pair/readback checks, not numeric oracles.
             assert math.isfinite(row.score)
-    assert sum(math.isnan(row.score) for row in scores) == 10
+    assert sum(math.isnan(row.score) for row in scores) == (
+        0 if strategy == "BMA" else 10
+    )
 
 
 def assert_perturbed_diagrams(
@@ -531,7 +562,11 @@ def assert_perturbed_diagrams(
 
     expected_keys: set[tuple[str | None, RegimeKey, DiagramKind, str | None]] = {
         (season, regime, kind, None if kind == "rank_histogram" else "2")
-        for season, regime, kind in product((None, "winter"), REGIMES, KINDS)
+        for season, regime, kind in product(
+            (None, "winter"),
+            REGIMES,
+            (("rank_histogram",) if strategy == "BMA" else KINDS),
+        )
     }
     keyed = {
         (
@@ -542,9 +577,9 @@ def assert_perturbed_diagrams(
         ): row
         for row in diagrams
     }
-    assert len(diagrams) == len(keyed) == 24
+    assert len(diagrams) == len(keyed) == (8 if strategy == "BMA" else 24)
     assert keyed.keys() == expected_keys
-    assert len({row.id for row in diagrams}) == 24
+    assert len({row.id for row in diagrams}) == (8 if strategy == "BMA" else 24)
     for key in expected_keys:
         row = keyed[key]
         assert_metadata(
@@ -741,6 +776,15 @@ def replay_sql_fields(row: SkillScore | SkillDiagram) -> dict[str, object]:
     }
     assert row.skill_source is SkillSource.HINDCAST_REANALYSIS
     fields: dict[str, object] = asdict(row)
+    if row.threshold_context is not None:
+        context = row.threshold_context
+        fields["threshold_context"] = asdict(context) | {
+            "threshold_source": context.threshold_source.value,
+            "threshold_updated_at": context.threshold_updated_at.isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "probability_methods": [m.value for m in context.probability_methods],
+        }
     fields["skill_source"] = "hindcast_reanalysis"
     fields["flow_regime"] = regimes[row.flow_regime]
     if isinstance(row, SkillScore):
@@ -784,7 +828,7 @@ class TestSkillReplayPublication:
             wire_from_domain,
         )
 
-        count = 104 if strategy == "BMA" else 98
+        count = 72 if strategy == "BMA" else 106
         invocation = INVOCATIONS[strategy]
         other = UUID(int={"SINGLE": 85001, "POOLED": 85002, "BMA": 85003}[strategy])
         with replay_scenario(protected_pair_connection) as case:
@@ -845,7 +889,7 @@ class TestSkillReplayPublication:
                     else:
                         assert generation is None
                     fresh_ids = {row.id for row in [*scores, *diagrams]}
-                    assert len(fresh_ids) == count + 24
+                    assert len(fresh_ids) == count + (8 if strategy == "BMA" else 24)
                     assert not fresh_ids & all_returned_ids
                     all_returned_ids |= fresh_ids
                     if step < 4:
@@ -921,8 +965,10 @@ class TestSkillReplayPublication:
                         nulls[diagram.diagram_type] += null_count(wire)
                     assert nulls == {
                         "rank_histogram": 0,
-                        "roc": 404,
-                        "reliability": (68 if strategy == "SINGLE" else 66)
+                        "roc": 0 if strategy == "BMA" else 404,
+                        "reliability": 0
+                        if strategy == "BMA"
+                        else (68 if strategy == "SINGLE" else 66)
                         if step < 4
                         else {"SINGLE": 66, "POOLED": 64, "BMA": 60}[strategy],
                     }
@@ -935,10 +981,10 @@ class TestSkillReplayPublication:
                         "parameter": "discharge",
                         "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
                         "forcing_type": ForcingType.REANALYSIS.value,
-                        "computation_version": 3,
+                        "computation_version": 4,
                         "published_at": C + timedelta(seconds=step),
                         "score_count": count,
-                        "diagram_count": 24,
+                        "diagram_count": 8 if strategy == "BMA" else 24,
                     }
                     events = observer.events[first_event:]
                     expected_tables = ["skill_scores", "skill_diagrams"] + (
@@ -994,10 +1040,9 @@ class TestSkillReplayPublication:
                                     for key, row in raw["skill_diagrams"].items()
                                     if row["generation_id"] == generation
                                 }
-                                assert (
-                                    len(candidate_scores) == count
-                                    and len(candidate_diagrams) == 24
-                                )
+                                assert len(candidate_scores) == count and len(
+                                    candidate_diagrams
+                                ) == (8 if strategy == "BMA" else 24)
                                 assert candidate_scores == {
                                     row.id
                                     for row in outputs[step if new_rows else 0][0]
@@ -1042,7 +1087,7 @@ class TestSkillReplayPublication:
                     multiplier = [1, 1, 2, 2, 3][step] if mode == "ON" else 1
                     assert {name: len(rows) for name, rows in raw.items()} == {
                         "skill_scores": count * multiplier,
-                        "skill_diagrams": 24 * multiplier,
+                        "skill_diagrams": (8 if strategy == "BMA" else 24) * multiplier,
                         "skill_generations": multiplier if mode == "ON" else 0,
                     }
                     candidate_totals = {
@@ -1054,7 +1099,7 @@ class TestSkillReplayPublication:
                     }
                     assert candidate_totals == {
                         "skill_scores": count,
-                        "skill_diagrams": 24,
+                        "skill_diagrams": 8 if strategy == "BMA" else 24,
                     }
                     record_property(f"step{step}.candidate_totals", candidate_totals)
                     record_property(
@@ -1130,8 +1175,8 @@ class TestProtectedOnlySkillInput:
                 assert_clean_task_roundtrip(case, strategy, mode, positive_record)
                 positive_record("call_returned", True)
             expected = {
-                "skill_scores": 104 if strategy == "BMA" else 98,
-                "skill_diagrams": 24,
+                "skill_scores": 72 if strategy == "BMA" else 106,
+                "skill_diagrams": 8 if strategy == "BMA" else 24,
             }
             if mode == "ON":
                 expected["skill_generations"] = 1
@@ -1313,7 +1358,7 @@ def assert_first_bucket_roundtrip(
         wire_from_domain,
     )
 
-    assert len(scores) == 48 and len(diagrams) == 12
+    assert len(scores) == 52 and len(diagrams) == 12
     generations = {row.generation_id for row in [*scores, *diagrams]}
     assert len(generations) == 1
     generation = next(iter(generations))
@@ -1332,7 +1377,7 @@ def assert_first_bucket_roundtrip(
     }
     keyed_scores = {(row.season, row.flow_regime, row.metric): row for row in scores}
     assert keyed_scores.keys() == expected_keys
-    assert len({row.id for row in scores}) == 48
+    assert len({row.id for row in scores}) == 52
     for row in scores:
         assert_metadata(row, "SINGLE", generation, clock_offset_seconds=-136800)
         assert row.sample_size == 1
@@ -1374,7 +1419,7 @@ def assert_first_bucket_roundtrip(
     ).all()
     scores_by_id = {row.id: row for row in scores}
     assert (
-        len(raw_scores) == 48 and {row.id for row in raw_scores} == scores_by_id.keys()
+        len(raw_scores) == 52 and {row.id for row in raw_scores} == scores_by_id.keys()
     )
     for row in raw_scores:
         assert_same_source(row.score, scores_by_id[row.id].score)
@@ -1409,18 +1454,18 @@ def assert_first_bucket_roundtrip(
                 "parameter": "discharge",
                 "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
                 "forcing_type": ForcingType.REANALYSIS.value,
-                "computation_version": 3,
+                "computation_version": 4,
                 "published_at": FIRST_BUCKET_END,
                 "created_at": case.connection.scalar(
                     sa.select(sa.func.transaction_timestamp())
                 ),
-                "score_count": 48,
+                "score_count": 52,
                 "diagram_count": 12,
             }
         ]
     else:
         assert ledger == []
-    record("scores", 48)
+    record("scores", 52)
     record("diagrams", 12)
     record("scalar_nan_count", 24)
     record("diagram_nulls", fixture_json(undefined))
@@ -1522,11 +1567,11 @@ class TestFirstCompletedSkillBucket:
                     )
                     if mode == "ON":
                         assert generation != full_generation
-                    expected = {"skill_scores": 48, "skill_diagrams": 12}
+                    expected = {"skill_scores": 52, "skill_diagrams": 12}
                 else:
                     expected = {
-                        "skill_scores": 104 if strategy == "BMA" else 98,
-                        "skill_diagrams": 24,
+                        "skill_scores": 72 if strategy == "BMA" else 106,
+                        "skill_diagrams": 8 if strategy == "BMA" else 24,
                     }
                 if label != "before" and mode == "ON":
                     expected["skill_generations"] = 1
@@ -1622,7 +1667,7 @@ class TestMissingHalfSkillRetention:
                 full_record("call_started", True)
                 assert_clean_task_roundtrip(case, "BMA", mode, full_record)
                 full_record("call_returned", True)
-            expected = {"skill_scores": 104, "skill_diagrams": 24}
+            expected = {"skill_scores": 72, "skill_diagrams": 8}
             if mode == "ON":
                 expected["skill_generations"] = 1
             assert [event.table for event in observer.events] == list(expected)
@@ -1745,7 +1790,7 @@ class TestAbsentRequestedRunSkillRetention:
             skill_catalog_columns,
         )
 
-        expected_scores = 98 if strategy == "POOLED" else 104
+        expected_scores = 106 if strategy == "POOLED" else 72
         conn = protected_pair_connection
         catalog = skill_catalog_columns(conn)
         record_property(
@@ -1769,7 +1814,10 @@ class TestAbsentRequestedRunSkillRetention:
                 full_record("call_started", True)
                 assert_clean_task_roundtrip(case, strategy, mode, full_record)
                 full_record("call_returned", True)
-            expected = {"skill_scores": expected_scores, "skill_diagrams": 24}
+            expected = {
+                "skill_scores": expected_scores,
+                "skill_diagrams": 8 if strategy == "BMA" else 24,
+            }
             if mode == "ON":
                 expected["skill_generations"] = 1
             assert [event.table for event in observer.events] == list(expected)
@@ -1878,7 +1926,7 @@ def assert_trailing_scores(scores: list[SkillScore], generation: UUID | None) ->
         for metric, value in metrics.items()
     }
     keyed = {(s.season, regime_key(s.flow_regime), s.metric): s for s in scores}
-    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 100
+    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 108
     assert keyed.keys() == expected.keys()
     for key, value in expected.items():
         row = keyed[key]
@@ -1921,7 +1969,6 @@ def assert_trailing_task_roundtrip(
     catalog: dict[str, set[str]],
     record: Callable[[str, object], None],
 ) -> None:
-    from enum import Enum
 
     from tests.integration.services.skill_isolation_fixture import (
         AID,
@@ -1987,20 +2034,16 @@ def assert_trailing_task_roundtrip(
     raw_diagrams = {
         r["id"]: dict(r) for r in conn.execute(sa.select(db.skill_diagrams)).mappings()
     }
-    assert len(raw_scores) == 100 and len(raw_diagrams) == 24
+    assert len(raw_scores) == 108 and len(raw_diagrams) == 24
     assert raw_scores.keys() == {r.id for r in scores}
     assert raw_diagrams.keys() == {r.id for r in diagrams}
     for row in scores:
-        expected = {
-            k: v.value if isinstance(v, Enum) else v for k, v in asdict(row).items()
-        }
+        expected = replay_sql_fields(row)
         assert set(raw_scores[row.id]) == catalog["skill_scores"] == set(expected)
         assert_same_source(raw_scores[row.id], expected)
     undefined = {"rank_histogram": 0, "reliability": 0, "roc": 0}
     for row in diagrams:
-        expected = {
-            k: v.value if isinstance(v, Enum) else v for k, v in asdict(row).items()
-        }
+        expected = replay_sql_fields(row)
         payload = trailing_payload(
             regime_key(row.flow_regime), row.diagram_type, "json"
         )
@@ -2022,15 +2065,15 @@ def assert_trailing_task_roundtrip(
             "parameter": "discharge",
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
-            "computation_version": 3,
+            "computation_version": 4,
             "published_at": TRAILING_CLOCK,
             "created_at": transaction_time,
-            "score_count": 100,
+            "score_count": 108,
             "diagram_count": 24,
         }
     else:
         assert ledger == []
-    record("scores", 100)
+    record("scores", 108)
     record("diagrams", 24)
     record("scalar_nan_count", 10)
     record("raw_null_counts", fixture_json(undefined))
@@ -2075,7 +2118,7 @@ class TestTrailingBucketSkillIsolation:
                 full_record("call_started", True)
                 assert_clean_task_roundtrip(case, "SINGLE", mode, full_record)
                 full_record("call_returned", True)
-            expected = {"skill_scores": 98, "skill_diagrams": 24}
+            expected = {"skill_scores": 106, "skill_diagrams": 24}
             if mode == "ON":
                 expected["skill_generations"] = 1
             assert [e.table for e in observer.events] == list(expected)
@@ -2099,7 +2142,7 @@ class TestTrailingBucketSkillIsolation:
                 candidate_record("call_started", True)
                 assert_trailing_task_roundtrip(case, mode, catalog, candidate_record)
                 candidate_record("call_returned", True)
-            expected = {"skill_scores": 100, "skill_diagrams": 24}
+            expected = {"skill_scores": 108, "skill_diagrams": 24}
             if mode == "ON":
                 expected["skill_generations"] = 1
             assert [e.table for e in observer.events] == list(expected)
@@ -2124,7 +2167,7 @@ def assert_surviving_scores(
 
     expected = surviving_score_oracle(strategy, layer)
     keyed = {(s.season, regime_key(s.flow_regime), s.metric): s for s in scores}
-    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 104
+    assert len(scores) == len(keyed) == len({s.id for s in scores}) == 112
     assert keyed.keys() == expected.keys()
     for key, (value, samples, offset, _) in expected.items():
         row = keyed[key]
@@ -2207,7 +2250,7 @@ def assert_surviving_persistence(
     assert_surviving_diagrams(diagrams, strategy, generation)
     candidate_scores = {row.id: asdict(row) for row in scores}
     candidate_diagrams = {row.id: asdict(row) for row in diagrams}
-    assert len(set(candidate_scores) | set(candidate_diagrams)) == 128
+    assert len(set(candidate_scores) | set(candidate_diagrams)) == 136
     assert set(candidate_scores).isdisjoint(prior.scores)
     assert set(candidate_diagrams).isdisjoint(prior.diagrams)
     origins = surviving_score_oracle(strategy, "mixed")
@@ -2244,10 +2287,10 @@ def assert_surviving_persistence(
             "parameter": "discharge",
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
-            "computation_version": 3,
+            "computation_version": 4,
             "published_at": C + timedelta(seconds=1),
             "created_at": conn.scalar(sa.select(sa.func.transaction_timestamp())),
-            "score_count": 104,
+            "score_count": 112,
             "diagram_count": 24,
         }
     public_scores = (
@@ -2289,10 +2332,10 @@ def assert_surviving_persistence(
         assert_surviving_diagrams(stored_diagrams, strategy, generation)
         assert set(prior.scores).isdisjoint(actual.scores)
         assert set(prior.diagrams).isdisjoint(actual.diagrams)
-        assert len(raw_scores) == 202 and len(raw_diagrams) == 48 and len(ledger) == 2
+        assert len(raw_scores) == 218 and len(raw_diagrams) == 48 and len(ledger) == 2
         for gid, counts in [
-            (next(iter(prior.rows["skill_generations"])), (98, 24)),
-            (generation, (104, 24)),
+            (next(iter(prior.rows["skill_generations"])), (106, 24)),
+            (generation, (112, 24)),
         ]:
             assert (
                 tuple(
@@ -2303,7 +2346,7 @@ def assert_surviving_persistence(
             )
     else:
         assert_diagrams(stored_diagrams, strategy, None)
-        assert len(raw_scores) == 104 and len(raw_diagrams) == 24 and ledger == {}
+        assert len(raw_scores) == 112 and len(raw_diagrams) == 24 and ledger == {}
         assert set(candidate_scores) & set(raw_scores) == new_peak_ids
         assert set(candidate_diagrams).isdisjoint(raw_diagrams)
     undefined = {"rank_histogram": 0, "reliability": 0, "roc": 0}
@@ -2385,7 +2428,7 @@ def assert_surviving_persistence(
                 }
             },
         )
-    record("returned", fixture_json({"scores": 104, "diagrams": 24}))
+    record("returned", fixture_json({"scores": 112, "diagrams": 24}))
     record(
         "raw_counts",
         fixture_json({name: len(rows) for name, rows in actual.rows.items()}),
@@ -2515,7 +2558,7 @@ class TestSurvivingHalfSkillPersistence:
             surviving_half_scenario,
         )
 
-        expected_scores = 98
+        expected_scores = 106
         conn = protected_pair_connection
         catalog = skill_catalog_columns(conn)
         record_property(
@@ -2578,7 +2621,7 @@ class TestSurvivingHalfSkillPersistence:
             conn, candidate_record, half, strategy, mode, prior, catalog
         ) as case:
             before = replay_snapshot(case, strategy)
-            assert_absent_run_snapshot(case, before, catalog, mode, 98)
+            assert_absent_run_snapshot(case, before, catalog, mode, 106)
             assert_same_source(asdict(before), asdict(prior))
             assert_missing_half_inputs(case, half)
             candidate_record("new_run_inventory_before", True)

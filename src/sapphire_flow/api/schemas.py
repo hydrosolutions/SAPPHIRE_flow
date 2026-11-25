@@ -9,6 +9,9 @@ from sapphire_flow.api.weather_evidence import WeatherUseResponse  # noqa: TC001
 from sapphire_flow.store.forecast_period_codec import (
     ForecastPeriodPayload,  # noqa: TC001
 )
+from sapphire_flow.store.threshold_skill_codec import (
+    ThresholdContextPayload,  # noqa: TC001
+)
 
 # NOT moved under TYPE_CHECKING (would trip ruff TC001): these are `Literal`
 # type aliases, not classes — pydantic resolves them at class-body evaluation
@@ -610,6 +613,7 @@ class SkillRowResponse(BaseModel):
     metric: str
     score: float | None
     sample_size: int
+    threshold_context: ThresholdContextPayload | None = None
 
 
 class StationSkillResponse(BaseModel):

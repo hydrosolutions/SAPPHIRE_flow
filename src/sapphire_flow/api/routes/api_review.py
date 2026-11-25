@@ -48,6 +48,10 @@ from sapphire_flow.services.station_qc_overrides import (
     is_ingest_station_judged,
     resolve_configured_station_qc,
 )
+from sapphire_flow.store.threshold_skill_codec import (
+    ThresholdContextPayload,
+    encode_threshold_context,
+)
 from sapphire_flow.types.datetime import UtcDatetime
 from sapphire_flow.types.ids import ModelId, StationId
 
@@ -286,6 +290,11 @@ def get_station_skill(
                 metric=r.metric,
                 score=r.score if math.isfinite(r.score) else None,
                 sample_size=r.sample_size,
+                threshold_context=ThresholdContextPayload.model_validate(
+                    encode_threshold_context(r.threshold_context)
+                )
+                if r.threshold_context is not None
+                else None,
             )
             for r in rows
         ],

@@ -57,3 +57,46 @@ quantile score is not eligible for BMA.
 The administrator review work will separate scientific acceptance from
 activation. Existing approval commands may promote the artifact; they must not
 be used as acceptance-only actions.
+
+## Threshold verification, computation version 4 (deployment pending)
+
+Recomputation can now score quantile forecasts against canonical station thresholds
+using the shared per-time probability converter. Raw Brier score, BSS, POD/FAR/CSI,
+reliability and ROC use the same resolved paired subset. Quantile tails without a
+point estimate are excluded, never clamped or invented. Member probabilities use
+all members at each time, even when ensemble sizes differ.
+
+Each threshold score and diagram carries `threshold_context`: threshold value,
+source and update time; probability methods; paired/scored/excluded and event
+counts; strict `>` comparison; decision probability 0.5; and temporal/threshold
+basis. `sample_size` is the scored count. Partial coverage is explicitly
+`conditional_resolved_subset`; do not rank models with different subsets or use
+these conditional scores for automatic skill-gate approval. Zero resolved dates
+produce null API scores with zero samples and the exclusion context. Undefined
+metric denominators remain null, never zero. Exclusions include unresolved tails
+and invalid probability input; they are not selected by observed outcome.
+
+BSS uses the event rate in the same scored subset as an in-sample reference. It is
+not skill against the separately fitted climatology model, and is undefined when
+that subset contains only events or only non-events. Reliability keeps the
+existing bin-centre x coordinates and per-bin counts.
+
+Temporal basis remains the existing legacy step aggregation: daily discharge is
+daily-mean exceedance, not instantaneous flood-peak risk. Declared-period outputs
+remain rejected until matching observation periods are supported. Thresholds are
+current snapshots; historical effective dates are unknown. Ambiguous sources for
+one danger level are refused before writes. BMA cross-validation omits threshold
+metrics/diagrams rather than averaging incompatible fold statistics; its other
+scores and single-pass pooled scores remain supported.
+
+Migration 0093 adds nullable context columns. Old results remain readable with null
+context; no metadata is invented. Rollback software can still write null, but a
+schema downgrade refuses once context-bearing results exist. Existing insert-only
+worker grants and generation publication remain unchanged. Context-only changes
+(including threshold update time) change generation fingerprints. Do not activate
+artifacts or run production evaluation merely because this code is merged.
+
+Diagram context is persisted and available to backend store readers. The existing
+stored-skill JSON route serves scalar rows only; this patch adds no new diagram
+API or chart renderer. The legacy model page loads diagram rows but does not yet
+present this context. Consumer diagram presentation remains a follow-on.

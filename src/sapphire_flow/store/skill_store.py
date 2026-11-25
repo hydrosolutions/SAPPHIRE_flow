@@ -13,6 +13,10 @@ from sapphire_flow.store.skill_diagram_codec import (
     decode_skill_diagram_data,
     encode_skill_diagram_data,
 )
+from sapphire_flow.store.threshold_skill_codec import (
+    decode_threshold_context,
+    encode_threshold_context,
+)
 from sapphire_flow.types.enums import (
     FlowRegime,
     ForcingType,
@@ -498,7 +502,7 @@ class PgSkillStore:
         return result.rowcount
 
 
-def _score_to_row(s: SkillScore) -> dict:  # type: ignore[type-arg]
+def _score_to_row(s: SkillScore) -> dict[str, object]:
     return {
         "id": s.id,
         "station_id": s.station_id,
@@ -523,10 +527,11 @@ def _score_to_row(s: SkillScore) -> dict:  # type: ignore[type-arg]
         "time_step_seconds": s.time_step_seconds,
         "phase_offset_seconds": s.phase_offset_seconds,
         "generation_id": s.generation_id,
+        "threshold_context": encode_threshold_context(s.threshold_context),
     }
 
 
-def _diagram_to_row(d: SkillDiagram) -> dict:  # type: ignore[type-arg]
+def _diagram_to_row(d: SkillDiagram) -> dict[str, object]:
     return {
         "id": d.id,
         "station_id": d.station_id,
@@ -548,6 +553,7 @@ def _diagram_to_row(d: SkillDiagram) -> dict:  # type: ignore[type-arg]
         "time_step_seconds": d.time_step_seconds,
         "phase_offset_seconds": d.phase_offset_seconds,
         "generation_id": d.generation_id,
+        "threshold_context": encode_threshold_context(d.threshold_context),
     }
 
 
@@ -584,6 +590,7 @@ def _row_to_score(row: sa.engine.row.RowMapping) -> SkillScore:
         time_step_seconds=row["time_step_seconds"],
         phase_offset_seconds=row["phase_offset_seconds"],
         generation_id=row["generation_id"],
+        threshold_context=decode_threshold_context(row.get("threshold_context")),
     )
 
 
@@ -616,4 +623,5 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         time_step_seconds=row["time_step_seconds"],
         phase_offset_seconds=row["phase_offset_seconds"],
         generation_id=row["generation_id"],
+        threshold_context=decode_threshold_context(row.get("threshold_context")),
     )

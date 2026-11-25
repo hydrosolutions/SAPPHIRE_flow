@@ -64,7 +64,7 @@ class TestSkillPersistence:
         # No model, flow engine, serializer patch or pre-store payload conversion.
         scores, diagrams = run_task()
 
-        assert len(scores) == 13
+        assert len(scores) == 14
         assert len(diagrams) == 3
         computed: dict[str, dict[str, Any]] = {
             diagram.diagram_type: asdict(diagram)["data"] for diagram in diagrams
@@ -85,7 +85,7 @@ class TestSkillPersistence:
         assert compute_generation_fingerprint(
             fetched_scores, fetched_diagrams
         ) == compute_generation_fingerprint(scores, diagrams)
-        assert len(fetched_scores) == 13
+        assert len(fetched_scores) == 14
         assert len(fetched_diagrams) == 3
         raw = case.connection.execute(
             sa.select(skill_diagrams.c.data).where(
@@ -108,7 +108,7 @@ class TestSkillPersistence:
         ledger = case.connection.execute(sa.select(skill_generations)).mappings().all()
         if enabled:
             assert len(ledger) == 1
-            assert ledger[0]["score_count"] == 13
+            assert ledger[0]["score_count"] == 14
             assert ledger[0]["diagram_count"] == 3
             assert {row.generation_id for row in scores + diagrams} == {ledger[0]["id"]}
         else:
@@ -119,7 +119,7 @@ class TestSkillPersistence:
         run_task()
         assert (
             case.connection.scalar(sa.select(sa.func.count()).select_from(skill_scores))
-            == 13
+            == 14
         )
         assert (
             case.connection.scalar(
@@ -174,7 +174,7 @@ class TestSkillPersistence:
             )
         assert (
             case.connection.scalar(sa.select(sa.func.count()).select_from(skill_scores))
-            == 13
+            == 14
         )
         assert (
             case.connection.scalar(

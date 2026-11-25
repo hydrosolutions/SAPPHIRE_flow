@@ -47,16 +47,71 @@ def compute_mae(predicted: np.ndarray, observed: np.ndarray) -> float:
     return float(np.mean(np.abs(predicted - observed)))
 
 
-def compute_bss(ensemble: np.ndarray, observed: np.ndarray, threshold: float) -> float:
-    # ensemble: 2D (n_times, n_members), observed: 1D (n_times)
-    forecast_prob = np.mean(ensemble > threshold, axis=1)
-    observed_binary = (observed > threshold).astype(float)
-    bs = np.mean((forecast_prob - observed_binary) ** 2)
-    climatology = np.mean(observed_binary)
-    bs_ref = climatology * (1 - climatology)
-    if bs_ref == 0:
+def validate_probability_pairs(probabilities: np.ndarray, events: np.ndarray) -> None:
+    if probabilities.ndim != 1 or events.shape != probabilities.shape:
+        raise ValueError(
+            "probabilities and events must be paired one-dimensional arrays"
+        )
+    if (
+        not np.all(np.isfinite(probabilities))
+        or np.any(probabilities < 0)
+        or np.any(probabilities > 1)
+        or not np.all(np.isin(events, [0, 1]))
+    ):
+        raise ValueError("probabilities must be in [0, 1] and events binary")
+
+
+def compute_brier_from_probabilities(
+    probabilities: np.ndarray, events: np.ndarray
+) -> float:
+    validate_probability_pairs(probabilities, events)
+    return (
+        float(np.mean((probabilities - events) ** 2)) if len(events) else float("nan")
+    )
+
+
+def compute_bss_from_probabilities(
+    probabilities: np.ndarray, events: np.ndarray
+) -> float:
+    bs = compute_brier_from_probabilities(probabilities, events)
+    if not len(events):
         return float("nan")
-    return float(1.0 - bs / bs_ref)
+    climatology = float(np.mean(events))
+    reference = climatology * (1 - climatology)
+    return float(1 - bs / reference) if reference else float("nan")
+
+
+def compute_bss(ensemble: np.ndarray, observed: np.ndarray, threshold: float) -> float:
+    return compute_bss_from_probabilities(
+        np.mean(ensemble > threshold, axis=1), observed > threshold
+    )
+
+
+def compute_contingency_from_probabilities(
+    probabilities: np.ndarray,
+    events: np.ndarray,
+    decision_probability: float,
+) -> tuple[float, float, float]:
+    validate_probability_pairs(probabilities, events)
+    if not 0 <= decision_probability <= 1:
+        raise ValueError("decision probability must be in [0, 1]")
+    forecast_yes = probabilities >= decision_probability
+    observed_yes = events.astype(bool)
+    hits = np.sum(forecast_yes & observed_yes)
+    misses = np.sum(~forecast_yes & observed_yes)
+    false_alarms = np.sum(forecast_yes & ~observed_yes)
+    pod = float(hits / (hits + misses)) if hits + misses else float("nan")
+    far = (
+        float(false_alarms / (hits + false_alarms))
+        if hits + false_alarms
+        else float("nan")
+    )
+    csi = (
+        float(hits / (hits + misses + false_alarms))
+        if hits + misses + false_alarms
+        else float("nan")
+    )
+    return pod, far, csi
 
 
 def compute_contingency(
@@ -65,25 +120,11 @@ def compute_contingency(
     threshold: float,
     decision_probability: float,
 ) -> tuple[float, float, float]:
-    # Returns (POD, FAR, CSI)
-    forecast_prob = np.mean(ensemble > threshold, axis=1)
-    forecast_yes = forecast_prob >= decision_probability
-    observed_yes = observed > threshold
-    hits = np.sum(forecast_yes & observed_yes)
-    misses = np.sum(~forecast_yes & observed_yes)
-    false_alarms = np.sum(forecast_yes & ~observed_yes)
-    pod = float(hits / (hits + misses)) if (hits + misses) > 0 else float("nan")
-    far = (
-        float(false_alarms / (hits + false_alarms))
-        if (hits + false_alarms) > 0
-        else float("nan")
+    return compute_contingency_from_probabilities(
+        np.mean(ensemble > threshold, axis=1),
+        observed > threshold,
+        decision_probability,
     )
-    csi = (
-        float(hits / (hits + misses + false_alarms))
-        if (hits + misses + false_alarms) > 0
-        else float("nan")
-    )
-    return pod, far, csi
 
 
 def compute_peak_timing_error(

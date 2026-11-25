@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import FlowRegime, ForcingType, SkillSource
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+    from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
 EvaluatedOn = Literal[
     "training_period", "outside_training_period", "overlaps_training_period", "unknown"
@@ -56,6 +57,7 @@ class StationSkillRow:
     metric: str
     score: float
     sample_size: int
+    threshold_context: ThresholdSkillContext | None = None
 
 
 def evaluated_on(
@@ -182,6 +184,7 @@ def fetch_station_skill_rows(
                     metric=score.metric,
                     score=score.score,
                     sample_size=score.sample_size,
+                    threshold_context=score.threshold_context,
                 )
             )
     rows.sort(key=_sort_key)

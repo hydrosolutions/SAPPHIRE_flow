@@ -7218,3 +7218,15 @@ shared classifier without writes. PostgreSQL callers supply a real transaction.
 The existing overwrite method remains available to its existing callers, but is
 not used to overwrite a conflicting import. Successful operator/onboarding import
 records `AuditEventType.THRESHOLDS_IMPORTED` with source digest and retrieval time.
+
+### Threshold verification context (computation version 4)
+
+`SkillScore.threshold_context` and `SkillDiagram.threshold_context` are nullable
+`ThresholdSkillContext` values, stored in separate JSONB object-or-null columns.
+`store/threshold_skill_codec.py` validates JSON at the boundary. The domain value
+checks finite thresholds, nonnegative counts and paired/scored/excluded/event
+identities. A context records threshold provenance, probability methods, coverage,
+decision threshold and temporal/reference assumptions; it is part of generation
+fingerprints. Historical null context is preserved without backfill. The stored
+skill API includes the same context (map contract 3.5). See
+[operator semantics](../operations/quantile-skill-recomputation.md).
