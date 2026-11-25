@@ -1526,6 +1526,39 @@ forecast_evidence = sa.Table(
     ),
 )
 
+forecast_weather_summaries = sa.Table(
+    "forecast_weather_summaries",
+    metadata,
+    sa.Column(
+        "forecast_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("forecast_evidence.forecast_id"),
+        primary_key=True,
+    ),
+    sa.Column("schema_version", sa.SmallInteger, primary_key=True),
+    sa.Column("weather_evidence_version", sa.SmallInteger, nullable=False),
+    sa.Column("manifest_sha256", sa.Text, nullable=False),
+    sa.Column("snapshot_sha256", sa.Text, nullable=False),
+    sa.Column("summary_json", sa.Text, nullable=False),
+    sa.Column("summary_sha256", sa.Text, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint("schema_version > 0", name="ck_weather_summary_schema"),
+    sa.CheckConstraint(
+        "weather_evidence_version IN (1, 2)", name="ck_weather_summary_evidence_version"
+    ),
+    sa.CheckConstraint(
+        "manifest_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND snapshot_sha256 ~ '^[0-9a-f]{64}$' "
+        "AND summary_sha256 ~ '^[0-9a-f]{64}$'",
+        name="ck_weather_summary_hashes",
+    ),
+)
+
 forecast_preservation_attestations = sa.Table(
     "forecast_preservation_attestations",
     metadata,

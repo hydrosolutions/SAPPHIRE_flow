@@ -5369,7 +5369,7 @@ def run_qualification_case(
                 revision = conn.scalar(
                     sa.text("SELECT version_num FROM alembic_version")
                 )
-                assert revision == "0093"
+                assert revision == "0094"
 
                 database_now = conn.scalar(sa.select(sa.func.clock_timestamp()))
                 assert isinstance(database_now, datetime) and now <= database_now

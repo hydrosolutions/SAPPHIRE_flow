@@ -663,6 +663,11 @@ GRANT INSERT ON observation_versions TO sapphire_worker;
 GRANT INSERT, UPDATE ON forecasts TO sapphire_worker;
 GRANT INSERT ON forecast_values TO sapphire_worker;
 GRANT INSERT ON forecast_evidence_blobs, forecast_evidence TO sapphire_worker;
+DO $$ BEGIN
+ IF to_regclass('public.forecast_weather_summaries') IS NOT NULL THEN
+  GRANT INSERT ON public.forecast_weather_summaries TO sapphire_worker;
+ END IF;
+END $$;
 GRANT INSERT ON forecast_preservation_attestations TO sapphire_worker;
 GRANT INSERT, UPDATE ON alerts TO sapphire_worker;
 GRANT INSERT ON weather_forecasts TO sapphire_worker;

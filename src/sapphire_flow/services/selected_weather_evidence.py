@@ -319,7 +319,9 @@ def validate_selected_capture(
     )
 
 
-def validate_selected_forecast(forecast: OperationalForecast) -> None:
+def validate_selected_forecast(
+    forecast: OperationalForecast,
+) -> WeatherUse | DerivedWeatherUse | WeatherUseV2 | DerivedWeatherUseV2 | None:
     evidence = forecast.evidence
     if forecast.weather_evidence_version in (1, 2):
         if (
@@ -338,10 +340,12 @@ def validate_selected_forecast(forecast: OperationalForecast) -> None:
             raise WeatherEvidenceCaptureError(
                 "selected forecast weather station mismatch"
             )
+        return weather[forecast.station_id]
     elif evidence is not None and evidence.weather_evidence_version is not None:
         raise WeatherEvidenceCaptureError(
             "unselected forecast cannot carry selected weather evidence"
         )
+    return None
 
 
 def selected_weather_retry_key(

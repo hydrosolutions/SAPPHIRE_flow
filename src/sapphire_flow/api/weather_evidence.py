@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-import json
+from dataclasses import asdict
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from sapphire_flow.services.selected_weather_evidence import restore_selected_weather
-from sapphire_flow.types.operational_weather import (
-    DerivedWeatherUse,
-    FutureWeatherUse,
-    PastWeatherUse,
-    WeatherUse,
-)
-from sapphire_flow.types.operational_weather_v2 import (
-    DerivedWeatherUseV2,
-    FutureWeatherUseV2,
-    PastWeatherUseV2,
-    WeatherUseV2,
+from sapphire_flow.services.weather_summary import summarize_weather_use
+from sapphire_flow.services.weather_summary_parent import validate_summary_parent
+from sapphire_flow.store.weather_summary_codec import (
+    SUMMARY_SCHEMA_VERSION,
+    summary_digest,
 )
 
 if TYPE_CHECKING:
@@ -26,6 +20,15 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import ForecastDataUse
     from sapphire_flow.types.ids import ForecastId, ModelId, StationId
+    from sapphire_flow.types.operational_weather import (
+        DerivedWeatherUse,
+        WeatherUse,
+    )
+    from sapphire_flow.types.operational_weather_v2 import (
+        DerivedWeatherUseV2,
+        WeatherUseV2,
+    )
+    from sapphire_flow.types.weather_summary import WeatherUseSummary
 
 
 class WeatherSourceRunResponse(BaseModel):
@@ -68,90 +71,16 @@ class WeatherUseResponse(BaseModel):
     future: WeatherLegResponse
 
 
-def _leg(
-    use: WeatherUse | WeatherUseV2 | None, leg: Literal["past", "future"]
-) -> WeatherLegResponse:
-    if use is None:
-        return WeatherLegResponse(freshness="unknown", uses=[])
-    fact = use.past if leg == "past" else use.future
-    if isinstance(fact, (PastWeatherUse, PastWeatherUseV2)):
-        source_runs = sorted(
-            {
-                (row.source.value, row.source_run)
-                for day in (
-                    fact.periods if isinstance(fact, PastWeatherUseV2) else fact.days
-                )
-                for row in day.samples
-            }
-            | {
-                (row.nwp_source, row.cycle_time)
-                for fill in fact.gap_fills
-                for row in fill.donor_records
-            }
-        )
-        reason = fact.refresh_outcome.reason
-        snapshot_id, digest, retrieved = (
-            str(fact.snapshot_id),
-            fact.snapshot_sha256,
-            fact.retrieved_at,
-        )
-    elif isinstance(fact, (FutureWeatherUse, FutureWeatherUseV2)):
-        source_runs = [(fact.receipt.scope.source, fact.receipt.cycle_time)]
-        reason = fact.refresh_attempt.outcome.reason
-        snapshot_id, digest, retrieved = (
-            None,
-            fact.receipt.row_sha256,
-            fact.receipt.validated_at,
-        )
-    else:
-        return WeatherLegResponse(freshness="unused", uses=[])
-    return WeatherLegResponse(
-        freshness=fact.freshness.value,
-        uses=[
-            WeatherLegUseResponse(
-                freshness=fact.freshness.value,
-                failure_code=reason.value if reason is not None else None,
-                failure_at=use.refresh_finished_at if reason is not None else None,
-                snapshot_id=snapshot_id,
-                snapshot_sha256=digest,
-                retrieved_at=retrieved,
-                age_at_use_seconds=(use.used_at - retrieved).total_seconds(),
-                sources=[
-                    WeatherSourceRunResponse(source=source, source_run=run)
-                    for source, run in source_runs
-                ],
-            )
-        ],
+def _response(summary: WeatherUseSummary) -> WeatherUseResponse:
+    return WeatherUseResponse.model_validate(
+        {**asdict(summary), "station_id": str(summary.station_id)}
     )
 
 
 def _summary(
     use: WeatherUse | DerivedWeatherUse | WeatherUseV2 | DerivedWeatherUseV2,
 ) -> WeatherUseResponse:
-    facts = (
-        [item.weather_use for item in use.contributors]
-        if isinstance(use, (DerivedWeatherUse, DerivedWeatherUseV2))
-        else [use]
-    )
-
-    def aggregate(leg: Literal["past", "future"]) -> WeatherLegResponse:
-        summaries = [_leg(fact, leg) for fact in facts]
-        states = {summary.freshness for summary in summaries}
-        freshness: Literal["current", "stale", "unused", "unknown"] = "unused"
-        for state in ("current", "unknown", "stale"):
-            if state in states:
-                freshness = state
-        return WeatherLegResponse(
-            freshness=freshness,
-            uses=[item for summary in summaries for item in summary.uses],
-        )
-
-    return WeatherUseResponse(
-        station_id=str(use.station_id),
-        issue_time=use.issue_time,
-        past=aggregate("past"),
-        future=aggregate("future"),
-    )
+    return _response(summarize_weather_use(use))
 
 
 def read_weather_summary(
@@ -172,18 +101,27 @@ def read_weather_summary(
         evidence = store.fetch_evidence(forecast_id)
         if evidence is None:
             raise ValueError("selected evidence missing")
-        manifest = json.loads(evidence.manifest_json)
-        if not isinstance(manifest, dict):
-            raise ValueError("selected weather manifest is not an object")
-        manifest = cast("dict[str, object]", manifest)
-        if (
-            manifest.get("weather_evidence_version") != version
-            or manifest.get("forecast_id") != str(forecast_id)
-            or manifest.get("station_id") != str(station_id)
-            or manifest.get("issued_at") != issue_time.isoformat()
-            or manifest.get("data_use") != data_use.value
-        ):
-            raise ValueError("selected weather parent identity mismatch")
+        validate_summary_parent(
+            evidence,
+            version=version,
+            forecast_id=forecast_id,
+            station_id=station_id,
+            model_id=model_id,
+            issue_time=issue_time,
+            data_use=data_use,
+        )
+        projection = store.fetch_weather_summary(forecast_id)
+        if projection is not None:
+            if (
+                projection.schema_version != SUMMARY_SCHEMA_VERSION
+                or projection.weather_evidence_version != version
+                or projection.manifest_sha256 != summary_digest(evidence.manifest_json)
+                or projection.snapshot_sha256 != evidence.snapshot_sha256
+                or projection.summary.station_id != station_id
+                or projection.summary.issue_time != issue_time
+            ):
+                raise ValueError("weather summary evidence binding mismatch")
+            return _response(projection.summary)
         facts = restore_selected_weather(
             evidence, model_id=model_id, issue_time=issue_time
         )

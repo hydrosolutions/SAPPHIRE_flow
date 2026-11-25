@@ -142,6 +142,7 @@ if TYPE_CHECKING:
     from sqlalchemy import RowMapping
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.weather_summary import PersistedWeatherSummary
 
 
 def _validate_combined_weather_contributors(
@@ -244,7 +245,7 @@ class PgForecastStore:
                 validate_selected_forecast,
             )
 
-            validate_selected_forecast(forecast)
+            validated_weather = validate_selected_forecast(forecast)
             with self._begin() as txn:
                 _validate_combined_weather_contributors(txn, forecast)
                 # Plan 327 — a cycle that died partway is re-runnable. An
@@ -391,20 +392,55 @@ class PgForecastStore:
                         or hashlib.sha256(retained.payload).hexdigest() != digest
                     ):
                         raise ValueError("retained forecast evidence blob mismatch")
+                manifest_json = json.dumps(
+                    manifest, sort_keys=True, separators=(",", ":")
+                )
                 txn.execute(
                     sa.insert(forecast_evidence).values(
                         forecast_id=forecast.id,
                         status=status.value,
-                        manifest_json=json.dumps(
-                            manifest, sort_keys=True, separators=(",", ":")
-                        ),
+                        manifest_json=manifest_json,
                         snapshot_sha256=evidence.snapshot_sha256,
                         artifact_sha256=evidence.artifact_sha256,
                         thresholds_json=thresholds_json,
                         reason=reason,
                     )
                 )
+                if validated_weather is not None:
+                    from sapphire_flow.services.weather_summary import (
+                        summarize_weather_use,
+                    )
+                    from sapphire_flow.store.forecast_weather_summary import (
+                        insert_weather_summary,
+                    )
+                    from sapphire_flow.store.weather_summary_codec import (
+                        bind_weather_summary,
+                    )
+
+                    assert evidence.snapshot_sha256 is not None
+                    assert forecast.weather_evidence_version in (1, 2)
+                    insert_weather_summary(
+                        txn,
+                        forecast.id,
+                        bind_weather_summary(
+                            summarize_weather_use(validated_weather),
+                            manifest_json=manifest_json,
+                            snapshot_sha256=evidence.snapshot_sha256,
+                            weather_evidence_version=forecast.weather_evidence_version,
+                        ),
+                        data_use=self._data_use,
+                    )
             return forecast.id
+
+    def fetch_weather_summary(
+        self, forecast_id: ForecastId
+    ) -> PersistedWeatherSummary | None:
+        from sapphire_flow.store.forecast_weather_summary import fetch_weather_summary
+
+        with protect_lineage_errors(self._data_use):
+            return fetch_weather_summary(
+                self._conn, forecast_id, data_use=self._data_use
+            )
 
     def fetch_evidence(
         self, forecast_id: ForecastId

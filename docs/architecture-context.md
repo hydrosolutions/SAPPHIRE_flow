@@ -1912,6 +1912,12 @@ incomplete.
 The manifest binds the forecast ID, model/artifact, weather cycle, QC and input
 quality, rating curve and as-used threshold hash. Threshold values are stored
 beside it. `PgForecastStore.fetch_evidence(id)` verifies blob hashes on read.
+Forecast detail readers can reuse a digest-bound, append-only weather summary
+written atomically with evidence after canonical validation. They still fetch and
+hash-check canonical blobs and verify parent/manifest bindings; only absent
+summaries use full replay. This optimization is shared by all selected-weather
+models and does not replace scientific replay or evidence attestation. See
+[summary rollout and backfill](operations/forecast-weather-summary-backfill.md).
 Missing provenance, thresholds or the worker's `SAPPHIRE_IMAGE_DIGEST`
 environment value produces an explicit `evidence_incomplete` reason, including
 for forecasts written before this capture existed. Existing Compose workers do

@@ -3514,6 +3514,7 @@ class ForecastStore(Protocol):
         # Every other storage failure still propagates raw (Plan 038 D5).
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None: ...
     def fetch_evidence(self, forecast_id: ForecastId) -> PersistedForecastEvidence | None: ...
+    def fetch_weather_summary(self, forecast_id: ForecastId) -> PersistedWeatherSummary | None: ...
         # PERSISTED evidence. Fetching the forecast does NOT hydrate it, so the
         # resume path fetches it deliberately before rebinding a combination
         # contributor. None = no such forecast; a pre-0057 forecast yields a
@@ -7230,3 +7231,16 @@ decision threshold and temporal/reference assumptions; it is part of generation
 fingerprints. Historical null context is preserved without backfill. The stored
 skill API includes the same context (map contract 3.5). See
 [operator semantics](../operations/quantile-skill-recomputation.md).
+
+### Retained weather summary projection
+
+`WeatherUseSummary` and its leg/source records are frozen domain dataclasses.
+`PersistedWeatherSummary` binds a supported reducer schema version and weather
+evidence version to the SHA256 of the final stored manifest and snapshot.
+`forecast_weather_summaries` has composite key `(forecast_id, schema_version)`,
+strict summary JSON with its own SHA256, and append-only guards. Writes validate
+canonical weather first and are atomic with forecast/evidence storage. Reads
+filter the store's exact `data_use`; absent projections return None. Present
+invalid rows raise rather than silently replaying. The API retains canonical
+blob hash and parent checks before using a summary. Public response fields do not
+change. See [backfill and rollout](../operations/forecast-weather-summary-backfill.md).

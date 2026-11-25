@@ -218,6 +218,7 @@ def test_standard_selected_scope_denial_precedes_weather_read(
         pytest.fail("out-of-scope weather evidence must not be read")
 
     monkeypatch.setattr(store, "fetch_evidence", forbidden)
+    monkeypatch.setattr(store, "fetch_weather_summary", forbidden)
     principal = Principal(
         token_id=AccessTokenId(uuid4()),
         role=AccessTokenRole.CONSUMER,

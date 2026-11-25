@@ -12,7 +12,7 @@ from collections.abc import (
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta  # noqa: TC003
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -167,6 +167,10 @@ from sapphire_flow.types.weather import (  # noqa: TC001
 _ObservationNaturalKey: TypeAlias = tuple[
     StationId, UtcDatetime, str, ObservationSource
 ]
+
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.weather_summary import PersistedWeatherSummary
 
 
 class FakeObservationStore:
@@ -802,6 +806,7 @@ class FakeForecastStore:
         # pre-migration-0057 historical case, which `fetch_evidence` reports as
         # a synthetic `pre_capture_forecast` marker rather than `None`.
         self._evidence: dict[ForecastId, PersistedForecastEvidence] = {}
+        self._weather_summaries: dict[ForecastId, PersistedWeatherSummary] = {}
 
     @property
     def data_use(self) -> ForecastDataUse:
@@ -833,7 +838,7 @@ class FakeForecastStore:
             validate_selected_forecast,
         )
 
-        validate_selected_forecast(forecast)
+        validated_weather = validate_selected_forecast(forecast)
         key = (
             forecast.station_id,
             forecast.model_id,
@@ -915,7 +920,26 @@ class FakeForecastStore:
             thresholds_json=None,
             reason=evidence.reason,
         )
+        if validated_weather is not None:
+            from sapphire_flow.services.weather_summary import summarize_weather_use
+            from sapphire_flow.store.weather_summary_codec import bind_weather_summary
+
+            assert evidence.snapshot_sha256 is not None
+            assert forecast.weather_evidence_version in (1, 2)
+            self._weather_summaries[forecast.id] = bind_weather_summary(
+                summarize_weather_use(validated_weather),
+                manifest_json=evidence.manifest_json,
+                snapshot_sha256=evidence.snapshot_sha256,
+                weather_evidence_version=forecast.weather_evidence_version,
+            )
         return forecast.id
+
+    def fetch_weather_summary(
+        self, forecast_id: ForecastId
+    ) -> PersistedWeatherSummary | None:
+        if self.fetch_forecast(forecast_id) is None:
+            return None
+        return self._weather_summaries.get(forecast_id)
 
     def seed_pre_capture_forecast(self, forecast: OperationalForecast) -> ForecastId:
         """Write a forecast with NO evidence record — the pre-migration-0057
