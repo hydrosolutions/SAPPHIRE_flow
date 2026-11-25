@@ -1,13 +1,21 @@
 ---
-status: DRAFT
+status: READY
 ---
 # Install CPU-only torch and torchvision on Linux
 
-**Status:** DRAFT rev 3, 2026-11-25 (rev 1 both NEEDS CHANGES, folded; rev 2 delta: Codex
-NEEDS CHANGES on acceptance 2-3, folded). No plan ID yet (owner grants IDs). HIGH RISK under
-`AGENTS.md` (CI, dependencies, supply chain, image identity). Needs fresh independent Claude and Codex reviews; the owner merges.
-Spike: draft PR #663, branch `spike/cpu-only-torch`, commit `e7209f7e4` (do not merge; the
-implementation PR re-does or cherry-picks it).
+**Status:** READY rev 4, 2026-11-25. No plan ID yet (owner grants IDs). HIGH RISK under
+`AGENTS.md` (CI, dependencies, supply chain, image identity). Reviews: Claude round-2 READY
+(`d921aa19a`), rev-3 READY (`bdffac224`); Codex READY (`bdffac224`). Rev 4 adds only the owner
+decisions, the GPU note and the FlashRNN check below. The owner merges. Spike: draft PR #663,
+commit `e7209f7e4` (not merged; the implementation PR redoes it).
+
+## Owner decisions (2026-11-25)
+1. Linux CPU-only torch/torchvision approved; a future GPU route is documented, not built.
+2. Both PyTorch hosts accepted with the availability risk; no mirror.
+3. The REVIEW classifier (new/changed index, changed lock registry source) goes in this PR.
+4. Merge only after successful predictions on x86_64 AND arm64 and a separate FlashRNN CPU
+   check. Deployment builds and qualifies images from the exact PR commit while the PR is open.
+5. Integration sharding is approved separately, after this change; not started here.
 
 ## Problem
 `uv.lock` resolves `torch==2.10.0` / `torchvision==0.25.0` from PyPI. On Linux x86_64 that pulls
@@ -105,7 +113,11 @@ Wheel-only guard (`ci.yml:701`) omits `--extra aquacast`, so it never checks tor
    --no-build --no-cache -v <exclusions>`; `--no-cache` makes it uncached, and the log must show
    the `+cpu` wheel URLs and the lock hashes for torch and torchvision. Chosen over `uv pip
    install --only-binary` because it uses the real lock and installs what the image installs.
-   If any other package fails `--no-build`, list it as a named exclusion in the PR.
+   `flashrnn` 1.0.6 is locked with both an sdist and a `py3-none-any` wheel (`uv.lock` ~:1442), so
+   `--no-build` should take the wheel; add `--no-install-package flashrnn` only if the run shows
+   it falls back to the sdist (it would then run a build backend, so name it in the PR). Evidence
+   is the `uv sync` log (wheel URLs) cross-checked against the hashes in `uv.lock`. If any other
+   package fails `--no-build`, list it as a named exclusion in the PR.
 3. One-off SBOM of the exact Aquacast candidate image (CI SBOM covers the default torch-free
    image, `ci.yml:1292`; the Aquacast job has Trivy only); record scanner and DB versions. Both
    `torch` and `torchvision` `+cpu` must appear in the SBOM and scanner input. Presence proves
@@ -119,6 +131,11 @@ Wheel-only guard (`ci.yml:701`) omits `--extra aquacast`, so it never checks tor
    the arm64 image. This also covers triton/FlashRNN (triton now installs without CUDA torch;
    import/run on CPU UNVERIFIED until this passes). The PR is not merged before this check unless
    the owner explicitly accepts, with deployment qualification then gating publish.
+   Owner decision 4: merge waits for both architectures.
+4b. Separate FlashRNN CPU check on both architectures. cmal_small is a plain LSTM and does not
+   exercise FlashRNN. Re-inspect the actual candidate's Aquacast source (LSTM vs XLSTM/FlashRNN
+   code paths) and state which paths the registered models reach. If any reaches FlashRNN, run it
+   on CPU (import and one forward). CPU tests do not qualify GPU Triton kernels.
 5. Timings: two real runs each of main and PR with cache evidence recorded; claims limited to the
    extra-enabled jobs.
 6. Deployment hand-off sent and its result recorded before any publish decision.
@@ -141,9 +158,8 @@ needs a separate decision). Revert is a new resolution, not a rollback: revert t
 dependency commit together (keeping unrelated work), then `uv lock --check` and the gates. If
 re-resolution is needed (uv 0.11.7 only), review the full lock diff.
 
-## Open questions for the owner
-1. Is dropping Linux GPU installs acceptable, or keep a future GPU route?
-2. Accept `download.pytorch.org` and `download-r2.pytorch.org` as trusted hosts (hash-pinned,
-   availability risk accepted)?
-3. Add the REVIEW classifier in this PR (recommended), or record the gap as accepted?
-4. Merge before the arm64/x86_64 predict check, or only after it (recommended)?
+## Future GPU route (note only, not implemented)
+Add a second explicit index (for example `pytorch-cu1xx`) and select it by an extra or a
+separate dependency group with conflicting-extras declared in `[tool.uv]`, or by a separate lock
+for GPU hosts; the Linux marker on the CPU source would then be replaced by a non-GPU condition.
+It needs its own plan, review, image variant, scanner evidence and Triton kernel qualification.
