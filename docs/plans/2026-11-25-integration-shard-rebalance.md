@@ -3,8 +3,8 @@ status: READY
 ---
 # Integration shards: add a third curated shard to cut the CI critical path
 
-**Status:** DRAFT rev 2, 2026-11-25 (rev 1 reviewed by Claude and Codex, both NEEDS CHANGES, folded
-after checking each finding against the code). No plan ID yet (owner grants IDs). HIGH RISK under
+**Status:** READY rev 2, 2026-11-25 (rev 1 reviewed by Claude and Codex, both NEEDS CHANGES, folded
+after checking each finding against the code; rev 2 reviewed READY by both). No plan ID yet (owner grants IDs). HIGH RISK under
 `AGENTS.md`: CI gates, `ci-attest`, `WORKFLOW_SHA256`, and the staging-release gate inventory
 (an external contract). Needs fresh independent reviews of rev 2; merge needs the owner.
 Independent of the CPU-torch plan for `aquacast-release-image-proof`, which is not planned here.
@@ -71,6 +71,9 @@ store/test_daily_forecast_one_shot_runtime 22.7, db/test_bafu_claude_followups 2
 api/test_network_overview 21.7.
 - `test_network_overview_performance.py` (timing-sensitive, 45.6 s) lands in `mid`, no longer
   beside the `rest` neighbours; first runs must show it still passes (see Risks).
+- Implementation basis (supersedes the 586.8/664.2/667.1 s provisional figures): means over
+  runs 45607849353, 45613021117, 45640371082, 45663947921 give the same 16 `rest` files and
+  heavy/mid/rest of about 612/653/652 s.
 - Spread: the spike run `45608279136` gives the same recipe heavy/mid/rest = 600.2/710.2/685.6 s
   (+7 percent on mid), so run-to-run noise is real. Implementer reads at least these two runs
   plus one fresh run before freezing, records run ids, and re-balances if the legs differ by
@@ -132,8 +135,8 @@ api/test_network_overview 21.7.
 1. Cold run of the PR: all three legs pass; record each leg's wall and step times.
 2. At least two further full runs of all three legs (re-run and a later push): zero failures; any
    failure is a new state leak to investigate, not a retry.
-3. The partition proof prints exactly `3004 selected nodes, 217 non-live files` (main's value in
-   run 45607849353) unless the diff adds tests, in which case state the delta.
+3. The partition proof prints exactly `3036 selected nodes, 218 non-live files` (measured identically on origin/main
+   `2cac7e00f` and this branch; the older 3004/217 was main at run 45607849353) unless the diff adds tests, in which case state the delta.
 4. Slowest leg compared with 21.7 min; goal 15-16 min or better. Runner minutes from `gh run view`.
 5. Repo-wide grep finds no stale pair: `integration-rest`, `integration (rest)`, `["heavy"`,
    `heavy/rest`, `GATE_NAMES`, with every hit either updated or justified.

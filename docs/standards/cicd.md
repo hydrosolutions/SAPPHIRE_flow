@@ -739,6 +739,8 @@ uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-miss
 set -euo pipefail
 PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args heavy)"
 uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow"
+PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args mid)"
+uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow"
 PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args rest)"
 uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow"
 uv run ruff format --check src/ tests/
@@ -832,11 +834,11 @@ The original integration split used six curated `heavy` files and a computed
 On 2026-10-31, PR #430 run `41198457664` reached the 25-minute limit in
 `rest` at 97% of tests, while `heavy` passed in 6m33s. The curated `heavy`
 set now also includes `test_skill_data_use_isolation.py` and
-`test_observation_unit_readers.py`. Log timestamp differences attribute about
+`test_observation_unit_readers.py` (the latter moved to `mid` on 2026-11-25). Log timestamp differences attribute about
 199s and 145s to those files; these are approximate, not JUnit durations or
 proof of the new balance. Fresh passing CI jobs remain the acceptance gate.
 
-Both shards remain serial internally, with unchanged filters and timeouts.
+All three shards remain serial internally, with unchanged filters and timeouts.
 The computed catch-all and native collection proof retain every selected test
 exactly once. Moving fixtures can duplicate container setup across runners;
 measure actual job wall times before claiming a speed improvement.
@@ -963,7 +965,7 @@ Two workflow-level properties of `ci.yml` that the table below does not carry, b
 | 3 | `integration-shard` | `Upload failed Swiss overview performance evidence` (`uses: actions/upload-artifact`, one literal runner-temp JSON, `retention-days: 7`, `if-no-files-found: error`, `continue-on-error: true`, `timeout-minutes: 1`) | failed, non-cancelled `overview_performance` step in `heavy` | n/a — the local JSON remains at the configured output path | Yes — bounded failure diagnostic; upload failure cannot replace or hide the pytest failure |
 | 3 | `integration-shard` | `PYTEST_ARGS="$(uv run python tools/integration_shards.py --pytest-args <shard>)"` followed by `uv run pytest ${PYTEST_ARGS} --ignore=tests/integration/live -v -m "not slow" --junitxml ...` (three parallel CI jobs, one each for `heavy`, `mid` and `rest`; pytest remains serial inside each job; live-API tests belong to the nightly, not the PR path) | performance gate first in `heavy`; no extra process in `mid` or `rest` | Run each shard command separately; each needs postgres service + system deps | No (but requires postgres) |
 | 3 | `integration-shard` | `Upload integration JUnit durations` (`uses: actions/upload-artifact`, unique `integration-junit-<shard>` names, `retention-days: 14`, `if: ${{ !cancelled() }}`) | integration pytest | n/a — bounded diagnostic artifact upload only | Yes — Actions artifact service |
-| 3 | `integration` | Aggregate verdict: fail unless `needs.integration-shard.result == 'success'` | `integration-shard` | n/a — local equivalent is both shard commands passing | Yes — preserves the existing required check context |
+| 3 | `integration` | Aggregate verdict: fail unless `needs.integration-shard.result == 'success'` | `integration-shard` | n/a — local equivalent is all three shard commands passing | Yes — preserves the existing required check context |
 | 4 | `aquacast-release-image-proof` | `Prepare hosted runner capacity` — token-present only, `timeout-minutes: 2`, after checkout identity and before buildx; requires 20 GB free and conditionally validates/removes only the two stock SDK roots | exact GitHub-hosted job context | No destructive local equivalent. Contract tests execute only a temporary-root copy with fake commands. | Yes — exclusive to the disposable `ubuntu-latest` runner; never run the production script locally |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
@@ -1010,7 +1012,8 @@ Before the change `rest` ran 20.6 min of pytest (JUnit 1209 s) against 11.9 min
 for `heavy` (709 s). `mid` holds the 16 largest former-`rest` files by mean JUnit
 time plus `test_observation_unit_readers.py` and `test_operator_role.py`, moved
 out of `heavy`. The modelled legs are about 612 s (heavy), 653 s (mid) and 652 s
-(rest) of test time; this is an estimate, not a measurement, and ignores the extra
+(rest) of test time from the four-run means; these supersede the plan's rev-2
+provisional figures (586.8/664.2/667.1 s, from two runs). This is an estimate, not a measurement, and ignores the extra
 proof collections and per-leg fixture setup. Re-balance from fresh JUnit, never per
 PR. The partition proof still runs only in the `heavy` leg, so a stale or renamed
 curated `mid` path surfaces as a `heavy`-leg failure. The staging-release gate
@@ -2017,7 +2020,7 @@ SBOM. Any required component failure keeps the aggregate image gate failed, even
 later independent checks pass.
 Private `disk-snapshots.jsonl` records total/used/free bytes, device and path labels
 before the gate loop, after every result (including blocked/aggregate gates), and
-after builder cleanup: 14 ordered samples. Root, workspace, attempt work and default
+after builder cleanup: 15 ordered samples. Root, workspace, attempt work and default
 Docker-root paths are labelled; matching device IDs identify shared filesystems.
 Unavailable observations are explicit nulls, never zero capacity. These boundary
 snapshots are sampled evidence, not peak-use measurements, and do not discover a
@@ -2031,7 +2034,7 @@ killed before delivery supplies no report or snapshots.
 | `unit-coverage` | Require all four successful shards and nonempty files; combine with `--keep`; whole-suite report, still informational/no new threshold. |
 | `wheel-only-guard` | Separate environment; no-build/no-cache guard before the existing ForecastInterface/recap exception reinstall. No new exception. |
 | `integration-shard` | Gate names `integration-heavy`, `integration-mid`, `integration-rest`, native partition proof, unchanged live/slow exclusions and a fresh pinned PostGIS container per shard. `integration-heavy` runs the selectable performance group first in its own pytest process and JUnit, then heavy; `integration-mid` and `integration-rest` run their groups only. |
-| `integration` | Explicit fail-closed dependency assertion over both integration results; a failed/missing shard blocks the aggregate. |
+| `integration` | Explicit fail-closed dependency assertion over all three integration results; a failed/missing shard blocks the aggregate. |
 | `build-image-and-scan` | Actual default amd64 build/load, curated operator-script smoke, Trivy JSON/envelope/table gate and private SARIF, Syft/valid CycloneDX, existing immutable-image identity/resource/optional-dependency probes and entrypoint/venv isolation; mandatory twice-clean deployment smoke with sentinel and separately retained component outcome. |
 | `aquacast-release-image-proof` | Actual Aquacast amd64 build/load and existing identity/shim/import/entrypoint/isolation proof, without missing-token degradation. Also applies the same private scan/SBOM gates to this variant. |
 
@@ -2135,7 +2138,7 @@ The corrected native probe remains in the unchanged CI suite.
 through `staging-release`; it is not an automatic PR/main private verifier. Legacy
 CI and its package secrets remain unchanged. The bounded owner-approved ADMIN-key
 exception replaces the earlier bootstrap route without satisfying old isolation
-criteria. All eight substantive gates/twelve outcomes remain; PR-only comparisons
+criteria. All eight substantive gates remain, as thirteen outcomes (twelve before the third integration shard); PR-only comparisons
 are explicitly mapped to canonical publisher/source/tag/state validation, not fake
 PR fields or green skips.
 
