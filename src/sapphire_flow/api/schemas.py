@@ -204,6 +204,13 @@ class _ForecastSummaryFields(BaseModel):
     id: str
     station_id: str
     model_id: str
+    model_display_name: str = Field(
+        default_factory=lambda data: str(data["model_id"]),
+        description="Registered full display name; falls back to model_id.",
+    )
+    model_display_name_short: str | None = Field(
+        default=None, description="Optional compact label; not a unique identifier."
+    )
     model_tier: str
     issued_at: datetime = Field(
         description=(

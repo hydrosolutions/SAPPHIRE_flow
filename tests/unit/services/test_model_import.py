@@ -53,6 +53,7 @@ class _SpyModel:
     config_hash = _CONFIG_HASH
     artifact_scope = ArtifactScope.STATION
     display_name = "Spy Model"
+    display_name_short = "Spy"
     description = "test double"
     data_requirements = None
 
@@ -303,6 +304,9 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         record = artifact_store.fetch_artifact_record(artifact_id)
         assert record is not None
         assert record.status == ModelArtifactStatus.ACTIVE
+        registered = model_store.fetch_model(_MODEL_ID)
+        assert registered is not None
+        assert registered.display_name_short == "Spy"
 
     def test_provenance_row_records_external_source(self) -> None:
         model = _SpyModel(deserialize_ok=True)

@@ -192,6 +192,8 @@ class TestCombinedPurposeAdmission:
         assert response.status_code == 200, response.text
         entries = response.json()["items"][0]["forecasts"]
         assert len(entries) == model_count * len(purposes)
+        assert all(entry["model_display_name"] for entry in entries)
+        assert all(entry["model_display_name_short"] is None for entry in entries)
         for purpose in purposes:
             selected = [entry for entry in entries if entry["data_use"] == purpose]
             assert len(selected) == model_count
@@ -993,3 +995,43 @@ def test_declared_period_is_exposed_to_reviewer_in_overview_and_detail(
     )
     assert listing.status_code == 200, listing.text
     assert listing.json()["items"][0]["period_definition"] == expected
+
+
+@pytest.mark.parametrize("purpose", ["standard", "provisional_rating"])
+def test_model_labels_across_overview_listing_detail_and_etag(
+    overview_case: tuple, purpose: str
+) -> None:
+    from sapphire_flow.db.metadata import models
+
+    conn, client, native, ordinary, network, _ = overview_case
+    forecast = ordinary if purpose == "standard" else native
+    params = {"data_use": purpose}
+    path = f"/api/v1/networks/{network}/overview"
+    before = client.get(path, params=params)
+    assert before.status_code == 200, before.text
+    conn.execute(sa.text("RESET ROLE"))
+    conn.execute(
+        sa.update(models)
+        .where(models.c.id == forecast.model_id)
+        .values(display_name="CMAL Static Encoder", display_name_short="CMAL SE")
+    )
+    conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+    after = client.get(
+        path, params=params, headers={"If-None-Match": before.headers["etag"]}
+    )
+    detail = client.get(f"/api/v1/forecasts/{forecast.id}", params=params)
+    listing = client.get(
+        f"/api/v1/stations/{forecast.station_id}/forecasts",
+        params={
+            **params,
+            "start": (forecast.issued_at - timedelta(days=1)).isoformat(),
+            "end": (forecast.issued_at + timedelta(days=1)).isoformat(),
+        },
+    )
+    for response in [after, detail, listing]:
+        assert response.status_code == 200, response.text
+    assert after.headers["etag"] != before.headers["etag"]
+    entries = [entry for item in after.json()["items"] for entry in item["forecasts"]]
+    for item in [*entries, detail.json(), *listing.json()["items"]]:
+        assert item["model_display_name"] == "CMAL Static Encoder"
+        assert item["model_display_name_short"] == "CMAL SE"

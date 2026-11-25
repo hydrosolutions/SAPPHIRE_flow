@@ -80,6 +80,13 @@ class OverviewForecastResponse(OverviewSchema):
         default=None, exclude_if=lambda value: value is None
     )
     model_id: str
+    model_display_name: str = Field(
+        default_factory=lambda data: str(data["model_id"]),
+        description="Registered full display name; falls back to model_id.",
+    )
+    model_display_name_short: str | None = Field(
+        default=None, description="Optional compact label; not a unique identifier."
+    )
     parameter: str | None
     data_use: ForecastDataUse
     availability: (

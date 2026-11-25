@@ -138,6 +138,7 @@ def _register_model_class_task(
     record = ModelRecord(
         id=entry.id,
         display_name=entry.display_name,
+        display_name_short=entry.display_name_short,
         artifact_scope=entry.artifact_scope,
         description=entry.description,
         created_at=clock(),  # type: ignore[operator]

@@ -898,5 +898,6 @@ class CmalNepalStaticEncoder20261123(AquacastShim):
     """23 November artifact: daily START18UTC, explicit missing-Q tolerance."""
 
     CONFIG_FILENAME = "cmal_nepal_static_encoder_20261123.yaml"
+    display_name_short = "CMAL SE"
     model_tier = ModelTier.SKILL
     alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION

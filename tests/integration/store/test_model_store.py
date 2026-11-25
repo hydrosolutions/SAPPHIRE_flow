@@ -21,6 +21,7 @@ class TestPgModelStore:
         record = ModelRecord(
             id=ModelId("linear_regression_v1"),
             display_name="Linear Regression v1",
+            display_name_short="LR",
             artifact_scope=ArtifactScope.STATION,
             description="Baseline linear regression model",
             created_at=_CREATED_AT,
@@ -32,6 +33,7 @@ class TestPgModelStore:
         assert result is not None
         assert result.id == ModelId("linear_regression_v1")
         assert result.display_name == "Linear Regression v1"
+        assert result.display_name_short == "LR"
         assert result.artifact_scope == ArtifactScope.STATION
         assert result.description == "Baseline linear regression model"
 
@@ -78,3 +80,24 @@ class TestPgModelStore:
         ids = {r.id for r in results}
         assert ModelId("model_alpha") in ids
         assert ModelId("model_beta") in ids
+
+    def test_batch_is_deduplicated_and_registration_preserves_labels(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        store = PgModelStore(db_connection)
+        record = ModelRecord(
+            id=ModelId("labels"),
+            display_name="Original",
+            display_name_short="SE",
+            artifact_scope=ArtifactScope.GROUP,
+            description="",
+            created_at=_CREATED_AT,
+        )
+        store.register_model(record)
+        store.register_model(replace(record, display_name_short="Changed"))
+        assert store.fetch_models_by_ids([record.id, record.id, ModelId("absent")]) == [
+            record
+        ]
+        assert store.fetch_models_by_ids([]) == []

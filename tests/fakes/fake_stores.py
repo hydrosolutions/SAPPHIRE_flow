@@ -2009,6 +2009,11 @@ class FakeModelStore:
     def fetch_all_models(self) -> list[ModelRecord]:
         return list(self._models.values())
 
+    def fetch_models_by_ids(self, model_ids: Collection[ModelId]) -> list[ModelRecord]:
+        return [
+            self._models[mid] for mid in sorted(set(model_ids)) if mid in self._models
+        ]
+
 
 class FakeModelStateStore:
     def __init__(self) -> None:
