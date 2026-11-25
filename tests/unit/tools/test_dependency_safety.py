@@ -292,6 +292,94 @@ class TestClassifyUvLock:
         assert classify_uv_lock_diff(old, new) == []
 
 
+class TestClassifyPackageIndexes:
+    _PYPI = (
+        '[[tool.uv.index]]\nname = "pypi"\n'
+        'url = "https://pypi.org/simple"\ndefault = true\n'
+    )
+    _CPU = (
+        '[[tool.uv.index]]\nname = "pytorch-cpu"\n'
+        'url = "https://download.pytorch.org/whl/cpu"\nexplicit = true\n'
+    )
+
+    def test_unchanged_indexes_are_silent(self) -> None:
+        assert classify_pyproject_diff(self._PYPI, self._PYPI) == []
+
+    def test_new_index_reviews(self) -> None:
+        finding = _only(classify_pyproject_diff(self._PYPI, self._PYPI + self._CPU))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:uv-index"
+        assert "download.pytorch.org" in finding.message
+
+    def test_changed_index_url_reviews(self) -> None:
+        new = self._PYPI.replace("pypi.org/simple", "mirror.example/simple")
+        finding = _only(classify_pyproject_diff(self._PYPI, new))
+        assert finding.key == "pyproject.toml:uv-index"
+
+    def test_removed_index_reviews(self) -> None:
+        finding = _only(classify_pyproject_diff(self._PYPI + self._CPU, self._PYPI))
+        assert finding.key == "pyproject.toml:uv-index"
+
+    def test_new_source_index_binding_reviews(self) -> None:
+        old = self._PYPI + self._CPU
+        new = old + '[tool.uv.sources]\ntorch = { index = "pytorch-cpu" }\n'
+        finding = _only(classify_pyproject_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "pyproject.toml:uv-source-index"
+
+    def test_git_only_source_change_is_not_an_index_finding(self) -> None:
+        old = '[tool.uv.sources]\nfoo = { git = "https://x/y.git", rev = "a" }\n'
+        new = old.replace('"a"', '"b"')
+        assert classify_pyproject_diff(old, new) == []
+
+
+class TestClassifyLockRegistrySource:
+    @staticmethod
+    def _lock(*pkgs: tuple[str, str, str]) -> str:
+        return "".join(
+            f'[[package]]\nname = "{n}"\nversion = "{v}"\n'
+            f'source = {{ registry = "{r}" }}\n'
+            for n, v, r in pkgs
+        )
+
+    _PYPI = "https://pypi.org/simple"
+    _CPU = "https://download.pytorch.org/whl/cpu"
+
+    def test_same_registry_version_bump_is_silent(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(("torch", "2.10.1", self._PYPI))
+        assert classify_uv_lock_diff(old, new) == []
+
+    def test_registry_change_reviews(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(("torch", "2.10.0+cpu", self._CPU))
+        finding = _only(classify_uv_lock_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert finding.key == "uv.lock:registry-source"
+        assert "torch" in finding.message
+        assert "download.pytorch.org" in finding.message
+
+    def test_new_registry_for_new_package_reviews(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        new = old + self._lock(("b", "1", "https://other.example/simple"))
+        finding = _only(classify_uv_lock_diff(old, new))
+        assert finding.key == "uv.lock:registry-source"
+        assert "other.example" in finding.message
+
+    def test_new_package_on_existing_registry_is_silent(self) -> None:
+        old = self._lock(("a", "1", self._PYPI))
+        new = old + self._lock(("b", "1", self._PYPI))
+        assert classify_uv_lock_diff(old, new) == []
+
+    def test_package_split_across_registries_is_compared_as_a_set(self) -> None:
+        old = self._lock(("torch", "2.10.0", self._PYPI))
+        new = self._lock(
+            ("torch", "2.10.0", self._PYPI), ("torch", "2.10.0+cpu", self._CPU)
+        )
+        finding = _only(classify_uv_lock_diff(old, new))
+        assert finding.key == "uv.lock:registry-source"
+
+
 class TestClassifyCiWorkflowPostgisServices:
     def test_postgis_major_confined_to_ephemeral_services_reviews_not_blocks(
         self,

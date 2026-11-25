@@ -593,8 +593,63 @@ def _build_backend_inputs(data: dict[str, Any]) -> tuple[object, ...]:
     )
 
 
+def _uv_indexes(data: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    uv = _as_dict(_as_dict(data.get("tool")).get("uv"))
+    entries = uv.get("index")
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(
+        (str(e.get("name", "")), str(e.get("url", "")))
+        for e in entries
+        if isinstance(e, dict)
+    )
+
+
+def _uv_source_indexes(data: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    """(package, index name) for each `[tool.uv.sources]` entry naming an index."""
+    uv = _as_dict(_as_dict(data.get("tool")).get("uv"))
+    pairs: set[tuple[str, str]] = set()
+    for pkg, spec in _as_dict(uv.get("sources")).items():
+        for item in spec if isinstance(spec, list) else [spec]:
+            if isinstance(item, dict) and "index" in item:
+                pairs.add((str(pkg), str(item["index"])))
+    return frozenset(pairs)
+
+
+def _classify_package_indexes(
+    old_data: dict[str, Any], new_data: dict[str, Any]
+) -> list[Finding]:
+    """REVIEW: a package index or a package-to-index binding was added, removed or
+    changed. A new index is a new supply-chain host (docs/standards/security.md)."""
+    findings: list[Finding] = []
+    for key, label, extract in (
+        ("pyproject.toml:uv-index", "`[[tool.uv.index]]`", _uv_indexes),
+        (
+            "pyproject.toml:uv-source-index",
+            "`[tool.uv.sources]` index",
+            _uv_source_indexes,
+        ),
+    ):
+        old, new = extract(old_data), extract(new_data)
+        if old == new:
+            continue
+        message = (
+            f"⚠️ {label} changed: added {sorted(new - old)}, removed "
+            f"{sorted(old - new)}. A new package index is a new supply-chain host; "
+            "verify the host is accepted in docs/standards/security.md § Supply "
+            "chain, that the index is `explicit`, and that the lock hash-pins it."
+        )
+        findings.append(
+            Finding(
+                verdict=Verdict.REVIEW, file="pyproject.toml", key=key, message=message
+            )
+        )
+    return findings
+
+
 def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
-    """BLOCK on any `requires-python` change; REVIEW on FI/build-backend provenance."""
+    """BLOCK on any `requires-python` change; REVIEW on FI/build-backend provenance
+    and on package index changes."""
     findings: list[Finding] = []
 
     old_rp_match = _REQUIRES_PYTHON_RE.search(old_text)
@@ -625,6 +680,7 @@ def classify_pyproject_diff(old_text: str, new_text: str) -> list[Finding]:
     except tomllib.TOMLDecodeError:
         old_data = {}
         new_data = {}
+    findings.extend(_classify_package_indexes(old_data, new_data))
     old_backend = _build_backend_inputs(old_data)
     new_backend = _build_backend_inputs(new_data)
     if old_backend != new_backend:
@@ -667,10 +723,48 @@ def _lock_versions(text: str) -> dict[str, str]:
     return {str(p["name"]): str(p.get("version", "")) for p in packages if "name" in p}
 
 
+def _lock_registries(text: str) -> dict[str, frozenset[str]]:
+    """Package name -> set of registry URLs it is locked from (a package may be
+    locked from several, one entry per resolution marker)."""
+    try:
+        data: dict[str, Any] = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    out: dict[str, set[str]] = {}
+    for p in data.get("package") or []:
+        registry = _as_dict(p.get("source")).get("registry")
+        if registry and "name" in p:
+            out.setdefault(str(p["name"]), set()).add(str(registry))
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def _classify_lock_registry_sources(old_text: str, new_text: str) -> list[Finding]:
+    """REVIEW: a locked package changed registry, or a new registry URL appeared."""
+    old, new = _lock_registries(old_text), _lock_registries(new_text)
+    moved = sorted(n for n in old.keys() & new.keys() if old[n] != new[n])
+    new_urls = sorted(set().union(*new.values()) - set().union(*old.values()))
+    if not moved and not new_urls:
+        return []
+    message = (
+        f"⚠️ `uv.lock` registry source changed. Packages moved: {moved}; new "
+        f"registry URLs: {new_urls}. Verify the host is accepted in "
+        "docs/standards/security.md § Supply chain and every wheel is hash-pinned."
+    )
+    return [
+        Finding(
+            verdict=Verdict.REVIEW,
+            file="uv.lock",
+            key="uv.lock:registry-source",
+            message=message,
+        )
+    ]
+
+
 def classify_uv_lock_diff(old_text: str, new_text: str) -> list[Finding]:
-    """REVIEW: a MAJOR bump of a listed native/compiled-extension runtime dep."""
+    """REVIEW: a MAJOR bump of a listed native/compiled-extension runtime dep, or a
+    change of a locked package's registry source."""
     old_versions, new_versions = _lock_versions(old_text), _lock_versions(new_text)
-    findings: list[Finding] = []
+    findings: list[Finding] = _classify_lock_registry_sources(old_text, new_text)
     for name in _NATIVE_EXTENSION_PACKAGES:
         old_v, new_v = old_versions.get(name), new_versions.get(name)
         if not old_v or not new_v or old_v == new_v:
