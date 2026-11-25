@@ -128,7 +128,14 @@ name = "pypi"
 url = "https://pypi.org/simple"
 default = true
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux'" }
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", rev = "c1faa2e70b3832502efc5c22c99274635c027bb4" }
 recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
 aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "fc772226703940f26d29d8e62a5c39175851b2f8" }
