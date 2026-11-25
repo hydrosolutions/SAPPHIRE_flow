@@ -954,3 +954,41 @@ identity readback, complete SQL integration, final frozen helper regressions and
 an omission-aware aggregate contract remain prerequisites to completing B0; B1/B2
 remain DRAFT. The corrected operational release and successful current-model
 qualification are external prerequisites for the new comparison packet.
+
+### Omission-aware report and bounded observation roots
+
+The private version-2 inventory report keeps each admitted member's read, omission,
+exclusion or pending state explicit. Partial failures preserve known coverage;
+omitted targets remain NOT_CHECKED and mixed cohorts retain partial aggregate scope.
+A scoped PASS requires at least one actual read, complete planned-root checks,
+observed route readback, positive membership evidence and the existing identity and
+rollback gates. Supplied local facts cannot satisfy those gates. Version-1 evidence
+remains unchanged; consumers reject the other schema version. Closed output retains
+the 16-KiB cap and fixed overflow refusal; a 42-member ledger fits without truncation.
+
+The root adapter checks station/tenant custody under the worker role in a read-only,
+repeatable-read snapshot. It requires fresh accounting and bounds the entire union
+of observation and applicable rating-level windows before materialization. Overlaps
+count once against global limits but remain attributable to each member. Accepted,
+rejected and trailing-freshness reads retain distinct bounds. Omitted members cause
+no observation query and carry unknown counts rather than zero.
+
+One independent Claude plan review and one relevant patch review completed. The
+patch review tightened membership evidence, rejected reused accounting and required
+query-size checks after PostgreSQL parameter expansion. All **250 combined private
+unit checks and 54 synthetic PostgreSQL rehearsal cases pass**, including 43 frozen
+helper cases reused by reference on source `a8f6f6f7`. Ruff, formatting and strict
+changed-module types pass. The first rehearsal stopped at an obsolete fixture
+revision pin; migration 0091 changes forecasts outside its catalogue table subset.
+Only that expected revision stamp was advanced, preserving every schema comparison
+and old test function. The successful run took 79 seconds locally, with no native
+performance claim. Independent cleanup readbacks for both attempts confirm zero
+owned containers/networks and preservation of baseline resources.
+
+This qualifies local report/root behavior, not a complete source inventory. Actual
+installed constructor/identity collection, complete metadata/closure SQL guarding
+and integration with the runtime supervisor remain due. Test readbacks are not
+operational evidence. B0 remains incomplete; B1/B2 and reconstruction/commissioning
+remain DRAFT. No source database, agency data, provider requests or cloud resources
+were used. Public application code and administrator commands are unchanged; full
+test and review evidence remains private.
