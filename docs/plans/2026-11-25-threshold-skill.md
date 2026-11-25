@@ -139,3 +139,7 @@ and protected-observation isolation checks unchanged.
 Merge reconciliation: preserve main’s model-label migration 0092 and chain the
 threshold-context migration as 0093. Retain both API schema additions and both
 touchpoint entries; verify the combined contract and migration chain.
+
+The combined API contract is 3.5: main already introduced 3.4 for model labels.
+Validate both generated-schema drift and the version-increase gate against the
+updated PR base after merging main.
