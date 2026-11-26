@@ -277,8 +277,7 @@ def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
         related = False
     if not related:
         raise ReleaseIdentityError(
-            "event merge first parent must be the event base or its descendant"
-            " (parents)"
+            "event merge parents: the first must be the event base or its descendant"
         )
     head = read_release_target(head_sha, cwd=root)
     if (
