@@ -5,6 +5,9 @@ from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
+from sapphire_flow.api.forecast_peak_comparison import (
+    PeakWaterLevelComparisonResponse,  # noqa: TC001
+)
 from sapphire_flow.api.forecast_probabilities import (
     ForecastProbabilitiesResponse,  # noqa: TC001
 )
@@ -300,6 +303,14 @@ class EnsembleResponse(BaseModel):
 
 
 class _ForecastDetailFields(BaseModel):
+    peak_water_level_comparison: PeakWaterLevelComparisonResponse | None = Field(
+        default=None,
+        description=(
+            "Explicit reviewer-only provisional comparison of remaining "
+            "pointwise P50/P90 discharge maxima to equivalent levels; "
+            "not forecast input provenance."
+        ),
+    )
     threshold_probabilities: ForecastProbabilitiesResponse | None = Field(
         default=None,
         description=(

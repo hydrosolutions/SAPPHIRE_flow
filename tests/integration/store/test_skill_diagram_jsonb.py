@@ -309,6 +309,7 @@ class TestSkillDiagramBoundaryControls:
             payload.pop("bins")
         diagram = make_public_diagram("reliability", payload)
         row = asdict(diagram)
+        assert row.pop("evaluation_context") is None
         row["skill_source"] = diagram.skill_source.value
         conn = skill_persistence_case.connection
         # Explicit owner historical-fixture write, never a worker delete/update.
@@ -319,6 +320,7 @@ class TestSkillDiagramBoundaryControls:
             conn.execute(sa.text("SET LOCAL ROLE sapphire_worker"))
         assert conn.scalar(sa.text("SELECT current_user")) == "sapphire_worker"
         fetched = skill_persistence_case.skill_store.fetch_latest_diagrams(SID, MID)[0]
+        assert fetched.evaluation_context is None
         value = asdict(fetched)["data"]["observed_freq"][0]
         if shape == "complete":
             assert math.isnan(value)

@@ -745,3 +745,57 @@ instantaneous peak. The legacy administrator hindcasts.json route returns 422
 for declared-period data and directs callers to review-series.
 
 Declared `evaluation_context` additionally retains `source_periods` (the canonical native input/verification source catalogue) and `source_periods_sha256`. Native period labels, sampling, stored-label shifts, input displacements and evidence survive independently of the canonical comparison label. Source qualifications with identical numerical scores remain distinct.
+
+## Provisional peak water-level comparison (contract 3.13)
+
+Reviewers/admins may request
+`GET /api/v1/forecasts/{id}?data_use=standard&rating_comparison=provisional_rating`.
+Use `data_use=provisional_rating` for a provisional parent forecast. The optional
+`peak_water_level_comparison` is independently labelled `provisional_rating`;
+it does not change the parent's purpose, publication state, QC or provenance.
+Absent opt-in, the field is null and no curve is read. Consumers receive 403
+before parent lookup. Existing hidden/out-of-scope 404 and withdrawn 410 responses
+carry no comparison. Responses remain `no-store`.
+
+`remaining_peaks` contains quantiles 0.5 and 0.9. These are independent maxima of
+pointwise discharge quantiles over remaining stored timesteps; their times can
+differ. Call P90 an **upper envelope**, not a percentile of trajectory maxima or
+a 90% probability of remaining below a level. Stored percentiles require exact
+0.5/0.9 coordinates. Member P50 is the median; P90 uses type-7 interpolation with
+at least five members. Missing P90 leaves the median usable. Any missing required
+percentile at an eligible time makes that entire percentile peak unavailable.
+
+The response echoes `as_of` and the parent `period_definition`. Declared periods
+are included when their physical end exceeds `as_of`, including partly elapsed
+periods. Unknown support includes labels at/after `as_of`, without invented
+bounds. Each peak retains its label, support bounds and method. A daily-mean
+forecast produces the **water-level equivalent of its discharge statistic**,
+not mean water level or an instantaneous flood maximum. Quantiles are computed
+in discharge space before inversion; nonlinear transformation of member values
+before type-7 interpolation would give a different quantity.
+
+Conversion uses the exact configured station/tenant/model provisional reference
+and the ordinary stored curve matching its complete immutable snapshot. The
+response exposes curve id/version, validity dates, interpolation and tabulated
+ranges, but no curve points or private reference evidence. Curve validity is
+assessed at `as_of` and over each peak's physical support. `valid_to` is exclusive.
+Expired configured curves remain explicitly provisional with expiry warnings;
+not-yet-valid curves and periods beginning before validity have no numeric level.
+This is read-time comparison context, not a claim about a curve used by the model
+at issuance. No historic forecast values are changed.
+
+Only the existing provisional linear/nonnegative curve policy is admitted.
+Inverse conversion never clamps or extrapolates: `range_flag=below|above` gives
+null level; exact discharge plateaus give `ambiguous`. Other reasons include
+`reference_not_configured`, `reference_ambiguous`, `curve_missing`, `curve_changed`,
+`reference_from_future`, `unsupported_interpolation`, and invalid forecast/QC.
+Discharge peaks remain present when only the conversion is unavailable.
+
+Verified reference offsets are subtracted once to return the measurement frame.
+Match frontend threshold units/reference to `water_level_unit` (`m`) and
+`water_level_reference` (`gauge_zero` or `masl`). Only `masl` means metres above
+sea level. Owner-assumed same-zero comparisons carry that explicit basis, a
+warning, and null reference; they cannot establish compatibility with an explicit
+datum threshold. They may be displayed only with the same disclosed assumption.
+The Nepal overview currently exposes no backend thresholds for its 21 stations;
+this feature imports none and does not certify the frontend's threshold metadata.

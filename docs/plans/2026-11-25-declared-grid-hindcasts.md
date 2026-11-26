@@ -4,9 +4,9 @@ status: READY
 
 Owner: Nepal/model-onboarding session.
 Branch: `feat/declared-grid-hindcast`.
-Base: `cffe874a` (remote main refreshed 26 November; includes #670 runoff inputs,
+Base: `66d2dac2` (remote main refreshed 26 November; includes #670 runoff inputs,
 the latest skill API changes, #683 threshold probabilities, #688 retained forecasts
-and #689 qualification documentation; #691 retained overview merged before CI).
+and #689 qualification documentation, #691 retained overview and #690 peak levels).
 
 Review outcome, 26 November: **NOT READY** for the earlier full-feed proposal.
 The owner subsequently directed proceeding without the Aquacast optimization and
@@ -599,3 +599,8 @@ local. Legacy computation and no-grid admission remain unchanged.
 The existing current-head assertions now expect migration 0097. The migration
 chain check, protected-schema rollback guard and Nepal readiness isolation
 regressions pass against that head.
+
+Legacy skill integration fixtures explicitly require null evaluation context in
+domain rows, all six null period columns in SQL rows, and null generation context.
+Historical JSONB seeding omits the domain-only field. These fixture updates keep
+the existing complete-row isolation and replay assertions intact under 0097.

@@ -8,6 +8,7 @@ import pytest
 
 from sapphire_flow.services.rating_conversion import (
     ConversionResult,
+    InverseRatingStatus,
     RatingConversionError,
     RatingConverter,
     RatingRange,
@@ -155,3 +156,64 @@ class TestValidation:
         conv = RatingConverter.from_curve(_curve(_RT))
         with pytest.raises(RatingConversionError, match="finite"):
             conv.convert(math.nan)
+
+
+class TestInverse:
+    @pytest.mark.parametrize("method", list(InterpolationMethod))
+    def test_round_trip_and_literal_midpoint(self, method: InterpolationMethod) -> None:
+        converter = RatingConverter.from_curve(
+            _curve(
+                [
+                    {"water_level": 1.0, "discharge": 10.0},
+                    {"water_level": 3.0, "discharge": 90.0},
+                ],
+                method,
+            )
+        )
+        discharge = 50.0 if method is InterpolationMethod.LINEAR else 30.0
+        assert converter.inverse(discharge).water_level == pytest.approx(2.0)
+        for level in (1.0, 1.4, 2.8, 3.0):
+            result = converter.inverse(converter.convert(level).discharge)
+            assert result.status is InverseRatingStatus.IN_RANGE
+            assert result.water_level == pytest.approx(level)
+
+    @pytest.mark.parametrize(
+        "flows,ambiguous", [([1, 1, 3, 4], 1), ([1, 2, 2, 4], 2), ([1, 2, 4, 4], 4)]
+    )
+    def test_plateau_only_refuses_its_exact_discharge(
+        self, flows: list[int], ambiguous: int
+    ) -> None:
+        converter = RatingConverter.from_curve(
+            _curve(
+                [
+                    {"water_level": float(i), "discharge": float(q)}
+                    for i, q in enumerate(flows)
+                ]
+            )
+        )
+        assert converter.inverse(ambiguous).status is InverseRatingStatus.AMBIGUOUS
+        assert converter.inverse(ambiguous).water_level is None
+        nearby = 1.5 if ambiguous in (1, 2) else 3.5
+        assert converter.inverse(nearby).status is InverseRatingStatus.IN_RANGE
+
+    @pytest.mark.parametrize("method", list(InterpolationMethod))
+    @pytest.mark.parametrize(
+        "value,status",
+        [
+            (-1, InverseRatingStatus.BELOW),
+            (0, InverseRatingStatus.BELOW),
+            (59, InverseRatingStatus.BELOW),
+            (82, InverseRatingStatus.ABOVE),
+        ],
+    )
+    def test_no_clamp_or_extrapolation(
+        self, method: InterpolationMethod, value: float, status: InverseRatingStatus
+    ) -> None:
+        result = RatingConverter.from_curve(_curve(_RT, method)).inverse(value)
+        assert result.status is status
+        assert result.water_level is None
+
+    @pytest.mark.parametrize("value", [math.inf, math.nan, -math.inf])
+    def test_nonfinite_discharge_refused(self, value: float) -> None:
+        with pytest.raises(RatingConversionError, match="finite"):
+            RatingConverter.from_curve(_curve(_RT)).inverse(value)
