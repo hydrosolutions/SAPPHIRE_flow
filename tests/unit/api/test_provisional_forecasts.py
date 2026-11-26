@@ -507,7 +507,7 @@ class TestOriginalForecastCallShape:
     def test_positional_standard_dependencies_still_work(self) -> None:
         from sapphire_flow.api.publication_gate import PublicationGate
         from sapphire_flow.api.routes.api_forecasts import get_forecast
-        from tests.fakes.fake_stores import FakeForecastStore
+        from tests.fakes.fake_stores import FakeForecastStore, FakeStationStore
 
         forecast = _make_operational_forecast(
             station_id=StationId(uuid4()), rng=random.Random(7)
@@ -521,7 +521,10 @@ class TestOriginalForecastCallShape:
             station_ids=frozenset(),
         )
         response = get_forecast(
-            str(forecast.id), {"forecast_store": store}, principal, PublicationGate()
+            str(forecast.id),
+            {"forecast_store": store, "station_store": FakeStationStore()},
+            principal,
+            PublicationGate(),
         )
         assert response.id == str(forecast.id)
         assert response.weather_use is None

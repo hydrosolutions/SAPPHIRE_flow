@@ -3113,3 +3113,8 @@ outer score/diagram table. Referencing that outer table implicitly adds an
 uncorrelated self-join and lets unrelated baselines hide valid generations.
 Keep station/artifact/forcing isolation regressions for scores and diagrams,
 same-scope version precedence, and reflected-table reader coverage.
+
+Forecast-detail contract changes also require the standard-route byte fixtures
+(`test_standard_route_bytes.py`) and direct dependency-call tests
+(`test_provisional_forecasts.py`); these fixtures must supply the station store
+used to read threshold snapshots.

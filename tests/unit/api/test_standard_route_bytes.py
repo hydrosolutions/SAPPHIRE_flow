@@ -13,7 +13,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_connection, get_stores
 from sapphire_flow.api.security import require_principal
 from sapphire_flow.types.ids import ForecastId, StationId
-from tests.fakes.fake_stores import FakeForecastStore
+from tests.fakes.fake_stores import FakeForecastStore, FakeStationStore
 from tests.unit.api.conftest import ADMIN_PRINCIPAL, _DummyConnection
 from tests.unit.api.test_api_forecasts import _make_operational_forecast
 
@@ -27,7 +27,10 @@ def standard_route_bytes() -> dict[str, str]:
     store = FakeForecastStore()
     store.store_forecast(forecast)
     previous = app.dependency_overrides.copy()
-    app.dependency_overrides[get_stores] = lambda: {"forecast_store": store}
+    app.dependency_overrides[get_stores] = lambda: {
+        "forecast_store": store,
+        "station_store": FakeStationStore(),
+    }
     app.dependency_overrides[get_connection] = lambda: _DummyConnection()
     app.dependency_overrides[require_principal] = lambda: ADMIN_PRINCIPAL
     client = TestClient(app)
