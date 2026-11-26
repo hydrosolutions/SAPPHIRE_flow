@@ -1225,7 +1225,9 @@ class PgDailyForecastStore:
             sa.select(
                 sa.func.count().label("attempts"),
                 sa.func.sum(size).label("bytes"),
-                sa.func.sum(sa.literal_column(_MEMBER_BUDGET_SQL)).label("members"),
+                sa.func.sum(sa.literal_column(_MEMBER_BUDGET_SQL, sa.Integer())).label(
+                    "members"
+                ),
             )
             .select_from(selected)
             .cte("budget")
