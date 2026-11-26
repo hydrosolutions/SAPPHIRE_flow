@@ -102,3 +102,21 @@ class TestAptStepNeverUpgrades:
         assert "apt-get" in run
         assert "update" in run
         assert "for attempt in" in run
+
+
+class TestAptStepFetchesBaseSuiteOnly:
+    @pytest.mark.parametrize(("workflow", "job"), _SITES)
+    def test_update_and_install_share_the_restricted_sources(
+        self, workflow: str, job: str
+    ) -> None:
+        """2026-11-26: -updates/-security InRelease stalled all three attempts.
+
+        Both `update` and `install` must use APT_OPTS carrying the one-line
+        base-suite list, so apt never needs lists it did not fetch.
+        """
+        run = _apt_run(workflow, job)
+
+        assert "Dir::Etc::sourcelist=" in run
+        assert "Dir::Etc::sourceparts=/dev/null" in run
+        assert "${VERSION_CODENAME} main universe" in run
+        assert run.count('apt-get "${APT_OPTS[@]}"') == 2
