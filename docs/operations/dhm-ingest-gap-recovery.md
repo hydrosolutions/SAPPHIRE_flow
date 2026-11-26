@@ -42,3 +42,31 @@ A capped station is not a failure and raises no WARNING.
    ([new-station-by-hand.md](new-station-by-hand.md)). The old station is retired
    (#455) and its history is kept; a retired station is already outside ingest
    eligibility.
+
+## Pausing ingest for a station that is down or out of service
+
+To stop polling a station (for example a destroyed gauge that DHM no longer
+publishes), use the operator command; it writes the flag and one audit row
+(operator, reason, old and new value) in one transaction. Run the dry run
+first, then repeat with `--apply`:
+
+```bash
+python -m sapphire_flow.cli.ingest_pause --tenant chwrr --network <network> \
+  --code <code> --operator <you> --reason "gauge destroyed" --pause
+# review the output, then add --apply
+```
+
+To resume polling, use `--resume` instead of `--pause` (same dry run, same
+`--apply`). Repeating a change that is already in effect prints `NO CHANGE`
+and writes nothing. Exit codes: 0 ok, 2 invalid input or unknown station,
+3 the station belongs to another tenant.
+
+It changes polling only: forecasts, QC and the station status are untouched.
+
+Host prerequisites:
+
+- The image is at or after the release containing #676, with migration 0096
+  applied (otherwise the station queries fail).
+- `SAPPHIRE_CONFIG` (or `--config`) and `DATABASE_URL` are set.
+- The `[deployment]` section lists the tenant in `writable_tenants` (`chwrr` in
+  `config/overlays/nepal-cloud.toml`) or sets `global_admin`.
