@@ -69,7 +69,7 @@ from sapphire_flow.types.ids import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractContextManager
 
     from sqlalchemy import RowMapping
@@ -226,6 +226,88 @@ def _snapshot(row: RowMapping) -> DailyAttemptSnapshot:
         if row["failure_reason"]
         else None,
         recovery=parse_recovery(row["recovery"]) if row["recovery"] else None,
+    )
+
+
+MAX_EARLIER_ATTEMPTS = 224
+MAX_EARLIER_BYTES = 8 * 1024 * 1024
+MAX_EARLIER_MEMBERS = 25000
+
+
+def _order_attempts(
+    by_id: dict[UUID, DailyAttemptSnapshot],
+) -> tuple[DailyAttemptSnapshot, ...]:
+    """One day's attempts, newest first (raises `ValueError` on a broken chain)."""
+    if all(isinstance(item.claim, DailyClaim) for item in by_id.values()):
+        return tuple(
+            sorted(
+                by_id.values(),
+                key=lambda item: cast("DailyClaim", item.claim).ordinal.value,
+                reverse=True,
+            )
+        )
+    parents = {item.claim.parent_id for item in by_id.values()}
+    leaves = [item for ident, item in by_id.items() if ident not in parents]
+    if by_id and len(leaves) != 1:
+        raise ValueError("daily authority has no unique latest parent-chain leaf")
+    ordered: list[DailyAttemptSnapshot] = []
+    item = leaves[0] if leaves else None
+    while item is not None:
+        if item in ordered:
+            raise ValueError("daily authority contains a parent cycle")
+        ordered.append(item)
+        item = by_id.get(item.claim.parent_id) if item.claim.parent_id else None
+    if len(ordered) != len(by_id):
+        raise ValueError("daily authority contains a disconnected parent chain")
+    return tuple(ordered)
+
+
+def _authority_and_earlier(
+    attempts: tuple[DailyAttemptSnapshot, ...],
+) -> tuple[DailyAttemptSnapshot | None, tuple[DailyAttemptSnapshot, ...]]:
+    authoritative = next(
+        (attempt for attempt in attempts if attempt.outcomes is not None), None
+    )
+    if attempts and isinstance(attempts[0].claim, OperatorDailyClaim):
+        authoritative = attempts[0] if attempts[0].outcomes is not None else None
+    # Attempts are newest first: the older ones are the suffix after authority.
+    earlier = (
+        tuple(
+            a
+            for a in attempts[attempts.index(authoritative) + 1 :]
+            if a.outcomes is not None
+        )
+        if authoritative is not None
+        else ()
+    )
+    return authoritative, earlier
+
+
+def _requested_keys(keys: tuple[DailyClaimKey, ...]) -> sa.CTE:
+    return (
+        sa.values(
+            sa.column("key_index", sa.Integer()),
+            sa.column("tenant_id", sa.Uuid()),
+            sa.column("deployment", sa.Text()),
+            sa.column("group_id", sa.Uuid()),
+            sa.column("model_id", sa.Text()),
+            sa.column("issued_at", sa.DateTime(timezone=True)),
+            name="overview_daily_keys",
+        )
+        .data(
+            [
+                (
+                    i,
+                    key.tenant_id,
+                    key.deployment,
+                    key.group_id,
+                    key.model_id,
+                    key.context.issue_time,
+                )
+                for i, key in enumerate(keys)
+            ]
+        )
+        .cte()
     )
 
 
@@ -871,57 +953,12 @@ class PgDailyForecastStore:
                 .all()
             )
         try:
-            by_id = {row["id"]: _snapshot(row) for row in rows}
-            if all(isinstance(item.claim, DailyClaim) for item in by_id.values()):
-                attempts = tuple(
-                    sorted(
-                        by_id.values(),
-                        key=lambda item: cast("DailyClaim", item.claim).ordinal.value,
-                        reverse=True,
-                    )
-                )
-            else:
-                parents = {item.claim.parent_id for item in by_id.values()}
-                leaves = [item for ident, item in by_id.items() if ident not in parents]
-                if by_id and len(leaves) != 1:
-                    raise ValueError(
-                        "daily authority has no unique latest parent-chain leaf"
-                    )
-                ordered: list[DailyAttemptSnapshot] = []
-                item = leaves[0] if leaves else None
-                while item is not None:
-                    if item in ordered:
-                        raise ValueError("daily authority contains a parent cycle")
-                    ordered.append(item)
-                    item = (
-                        by_id.get(item.claim.parent_id)
-                        if item.claim.parent_id
-                        else None
-                    )
-                if len(ordered) != len(by_id):
-                    raise ValueError(
-                        "daily authority contains a disconnected parent chain"
-                    )
-                attempts = tuple(ordered)
+            attempts = _order_attempts({row["id"]: _snapshot(row) for row in rows})
         except ValueError as exc:
             raise DailyAuthorityIntegrityError(
                 "invalid persisted daily authority"
             ) from exc
-        authoritative = next(
-            (attempt for attempt in attempts if attempt.outcomes is not None), None
-        )
-        if attempts and isinstance(attempts[0].claim, OperatorDailyClaim):
-            authoritative = attempts[0] if attempts[0].outcomes is not None else None
-        # Attempts are newest first: the older ones are the suffix after authority.
-        earlier = (
-            tuple(
-                a
-                for a in attempts[attempts.index(authoritative) + 1 :]
-                if a.outcomes is not None
-            )
-            if authoritative is not None
-            else ()
-        )
+        authoritative, earlier = _authority_and_earlier(attempts)
         recovery = (
             DailyRecoveryStatus.OPERATOR_RECOVERED
             if any(attempt.recovery is not None for attempt in attempts)
@@ -944,31 +981,7 @@ class PgDailyForecastStore:
             return {}
         from sapphire_flow.db.metadata import daily_forecast_attempts as attempts
 
-        requested = (
-            sa.values(
-                sa.column("key_index", sa.Integer()),
-                sa.column("tenant_id", sa.Uuid()),
-                sa.column("deployment", sa.Text()),
-                sa.column("group_id", sa.Uuid()),
-                sa.column("model_id", sa.Text()),
-                sa.column("issued_at", sa.DateTime(timezone=True)),
-                name="overview_daily_keys",
-            )
-            .data(
-                [
-                    (
-                        i,
-                        key.tenant_id,
-                        key.deployment,
-                        key.group_id,
-                        key.model_id,
-                        key.context.issue_time,
-                    )
-                    for i, key in enumerate(keys)
-                ]
-            )
-            .cte()
-        )
+        requested = _requested_keys(keys)
         scoped = sa.select(attempts.c.id).where(
             attempts.c.tenant_id == requested.c.tenant_id,
             attempts.c.deployment == requested.c.deployment,
@@ -1145,6 +1158,97 @@ class PgDailyForecastStore:
                 )
                 for row in identities
             }
+        except (ValueError, TypeError, KeyError) as exc:
+            raise DailyAuthorityIntegrityError(
+                "invalid persisted daily authority"
+            ) from exc
+
+    def read_earlier_attempts(
+        self,
+        keys: tuple[DailyClaimKey, ...],
+        authoritative_ids: Mapping[DailyClaimKey, UUID],
+    ) -> dict[DailyClaimKey, tuple[DailyAttemptSnapshot, ...]]:
+        """The attempts older than each key's authoritative one, newest first.
+
+        Loads the full attempt rows of the requested keys only, so callers pass the
+        few keys whose authoritative member failed. Authority is recomputed with the
+        `read_day` rule and must equal the one already read.
+        """
+        if len(keys) > 112 or len(set(keys)) != len(keys):
+            raise DailyAuthorityIntegrityError("daily key admission exceeded")
+        if not keys:
+            return {}
+        from sapphire_flow.db.metadata import daily_forecast_attempts as attempts
+
+        requested = _requested_keys(keys)
+        on = sa.and_(
+            attempts.c.tenant_id == requested.c.tenant_id,
+            attempts.c.deployment == requested.c.deployment,
+            attempts.c.group_id == requested.c.group_id,
+            attempts.c.model_id == requested.c.model_id,
+            attempts.c.issued_at == requested.c.issued_at,
+        )
+        scope = sa.and_(
+            attempts.c.data_use == ForecastDataUse.STANDARD.value,
+            attempts.c.trigger_kind.in_(("scheduled", "operator_retry")),
+        )
+        size = (
+            sa.func.octet_length(sa.cast(attempts.c.roster, sa.Text()))
+            + sa.func.octet_length(sa.cast(attempts.c.output_contracts, sa.Text()))
+            + sa.func.coalesce(
+                sa.func.octet_length(sa.cast(attempts.c.summary, sa.Text())), 0
+            )
+            + sa.func.coalesce(
+                sa.func.octet_length(sa.cast(attempts.c.recovery, sa.Text())), 0
+            )
+            + sa.func.coalesce(
+                sa.func.octet_length(sa.cast(attempts.c.operator_metadata, sa.Text())),
+                0,
+            )
+        )
+        members = sa.func.jsonb_array_length(attempts.c.roster) + sa.func.coalesce(
+            sa.func.jsonb_array_length(attempts.c.summary), 0
+        )
+        with self._begin() as txn:
+            txn.execute(sa.text("SET LOCAL statement_timeout = '2s'"))
+            count, byte_count, member_count = txn.execute(
+                sa.select(
+                    sa.func.count(),
+                    sa.func.coalesce(sa.func.sum(size), 0),
+                    sa.func.coalesce(sa.func.sum(members), 0),
+                )
+                .select_from(attempts.join(requested, on))
+                .where(scope)
+            ).one()
+            if (
+                count > MAX_EARLIER_ATTEMPTS
+                or byte_count > MAX_EARLIER_BYTES
+                or member_count > MAX_EARLIER_MEMBERS
+            ):
+                raise DailyAuthorityIntegrityError("daily earlier-attempt admission")
+            rows = (
+                txn.execute(
+                    sa.select(attempts, requested.c.key_index)
+                    .select_from(attempts.join(requested, on))
+                    .where(scope)
+                )
+                .mappings()
+                .all()
+            )
+        try:
+            by_key: dict[int, dict[UUID, DailyAttemptSnapshot]] = {}
+            for row in rows:
+                by_key.setdefault(row["key_index"], {})[row["id"]] = _snapshot(row)
+            result: dict[DailyClaimKey, tuple[DailyAttemptSnapshot, ...]] = {}
+            for index, key in enumerate(keys):
+                authoritative, earlier = _authority_and_earlier(
+                    _order_attempts(by_key.get(index, {}))
+                )
+                expected = authoritative_ids.get(key)
+                if authoritative is None or authoritative.claim.id != expected:
+                    raise ValueError("authority disagrees with the bounded read")
+                result[key] = earlier
+            return result
         except (ValueError, TypeError, KeyError) as exc:
             raise DailyAuthorityIntegrityError(
                 "invalid persisted daily authority"

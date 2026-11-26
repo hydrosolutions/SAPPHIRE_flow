@@ -939,6 +939,224 @@ class TestRejectedDailyOverview:
         assert record.id not in selected
 
 
+def _daily(response: dict) -> dict:
+    return next(
+        f
+        for item in response["items"]
+        for f in item["forecasts"]
+        if f["model_id"] == "cmal_small"
+    )
+
+
+def _add_retry(conn: sa.Connection, attempt: object, outcomes: tuple) -> object:
+    """Insert a scheduled retry (ordinal 2) over `attempt` with the given summary."""
+    import json
+
+    from sapphire_flow.db.metadata import daily_forecast_attempts
+    from sapphire_flow.store.daily_forecast_documents import outcomes_json
+
+    conn.execute(sa.text("RESET ROLE"))
+    row = (
+        conn.execute(
+            sa.select(daily_forecast_attempts).where(
+                daily_forecast_attempts.c.id == attempt
+            )
+        )
+        .mappings()
+        .one()
+    )
+    retry = uuid4()
+    conn.execute(
+        sa.insert(daily_forecast_attempts).values(
+            **{
+                **row,
+                "id": retry,
+                "ordinal": 2,
+                "parent_id": attempt,
+                "state": "incomplete",
+                "recovery": sa.null(),
+                "summary": json.loads(outcomes_json(outcomes)),
+            }
+        )
+    )
+    conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+    return retry
+
+
+def _failed(member: object) -> object:
+    from sapphire_flow.types.daily_forecast_outcome import (
+        DailyMemberReason,
+        DailyMemberState,
+    )
+
+    return replace(
+        member,  # type: ignore[type-var]
+        state=DailyMemberState.MODEL_FAILED,
+        references=(),
+        reason=DailyMemberReason.MODEL_FAILURE,
+    )
+
+
+class TestRetainedDailyOverview:
+    def test_failed_retry_keeps_earlier_forecast_with_label(
+        self, daily_overview_case: tuple
+    ) -> None:
+        conn, client, record, _, network, _, _, attempt, member = daily_overview_case
+        path = f"/api/v1/networks/{network}/overview"
+        before = _daily(client.get(path).json())
+        assert "retained_result" not in before
+        retry = _add_retry(conn, attempt, (_failed(member),))
+        response = client.get(path)
+        assert response.status_code == 200, response.text
+        daily = _daily(response.json())
+        assert daily["forecast_id"] == str(record.id)
+        assert daily["peak"] is not None
+        assert daily.pop("retained_result") == {
+            "kind": "earlier_attempt_after_failed_retry",
+            "original_issued_at": record.issued_at.isoformat().replace("+00:00", "Z"),
+            "original_attempt_id": str(attempt),
+            "superseding_attempt_id": str(retry),
+            "superseding_state": "model_failed",
+            "superseding_reason": "model_failure",
+        }
+        # Freshness labelling is that of any forecast with the same record.
+        assert daily == before
+
+    @pytest.mark.parametrize("daily_overview_case", ["rejected"], indirect=True)
+    def test_rejected_earlier_result_stays_absent_without_label(
+        self, daily_overview_case: tuple
+    ) -> None:
+        conn, client, record, _, network, _, _, attempt, member = daily_overview_case
+        _add_retry(conn, attempt, (_failed(member),))
+        response = client.get(f"/api/v1/networks/{network}/overview")
+        assert response.status_code == 200, response.text
+        daily = _daily(response.json())
+        assert daily["availability"] == "withheld_or_ineligible"
+        assert daily["forecast_id"] is None and "retained_result" not in daily
+
+    def test_superseded_earlier_forecast_stays_absent(
+        self, daily_overview_case: tuple
+    ) -> None:
+        conn, client, record, _, network, _, _, attempt, member = daily_overview_case
+        _add_retry(conn, attempt, (_failed(member),))
+        conn.execute(sa.text("RESET ROLE"))
+        conn.execute(
+            sa.text("UPDATE forecasts SET status = 'superseded' WHERE id = :id"),
+            {"id": record.id},
+        )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        daily = _daily(client.get(f"/api/v1/networks/{network}/overview").json())
+        assert daily["availability"] == "withheld_or_ineligible"
+        assert daily["forecast_id"] is None and "retained_result" not in daily
+
+    def test_publication_gate_still_withholds_a_retained_forecast(
+        self, daily_overview_case: tuple
+    ) -> None:
+        from sapphire_flow.api.publication_gate import (
+            PublicationGate,
+            get_publication_gate,
+        )
+        from sapphire_flow.db.metadata import forecast_publication_selections
+
+        conn, client, record, _, network, _, tenant, attempt, member = (
+            daily_overview_case
+        )
+        retry = _add_retry(conn, attempt, (_failed(member),))
+        app.dependency_overrides[get_publication_gate] = lambda: PublicationGate(
+            active_tenant_ids=frozenset({tenant})
+        )
+        path = f"/api/v1/networks/{network}/overview"
+        withheld = _daily(client.get(path).json())
+        assert withheld["availability"] == "withheld_or_ineligible"
+        assert withheld["forecast_id"] is None and withheld["peak"] is None
+        assert "retained_result" not in withheld
+        conn.execute(sa.text("RESET ROLE"))
+        conn.execute(
+            sa.insert(forecast_publication_selections).values(
+                tenant_id=tenant,
+                station_id=record.station_id,
+                parameter="discharge",
+                issued_at=record.issued_at,
+                selected_forecast_id=record.id,
+                version=1,
+            )
+        )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        shown = _daily(client.get(path).json())
+        assert shown["forecast_id"] == str(record.id)
+        assert shown["retained_result"]["superseding_attempt_id"] == str(retry)
+
+    def test_168_hour_window_still_filters_a_daily_reference(
+        self, daily_overview_case: tuple
+    ) -> None:
+        from types import SimpleNamespace
+
+        from sapphire_flow.api.network_overview import NetworkOverviewReader
+        from sapphire_flow.api.publication_gate import PublicationGate
+        from sapphire_flow.store.daily_forecast_store import PgDailyForecastStore
+        from sapphire_flow.types.daily_forecast import ScheduledDailyForecast
+        from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
+        from sapphire_flow.types.enums import ForecastDataUse
+        from sapphire_flow.types.ids import ModelId
+
+        conn, _, record, _, _, _, tenant, attempt, member = daily_overview_case
+        conn.execute(sa.text("RESET ROLE"))
+        key = DailyClaimKey(
+            tenant_id=tenant,
+            deployment="test",
+            group_id=conn.execute(
+                sa.text("SELECT group_id FROM daily_forecast_attempts WHERE id=:a"),
+                {"a": attempt},
+            ).scalar_one(),
+            model_id=ModelId("cmal_small"),
+            context=ScheduledDailyForecast(scheduled_tick=record.issued_at),
+        )
+        from contextlib import nullcontext
+
+        summary = (
+            PgDailyForecastStore(lambda: nullcontext(conn))
+            .read_days_bounded((key,))[key]
+            .authoritative
+        )
+        reader = NetworkOverviewReader(
+            conn,
+            SimpleNamespace(is_admin=True),  # type: ignore[arg-type]
+            None,
+            PublicationGate(active_tenant_ids=frozenset()),
+        )
+        refs = {
+            (
+                record.station_id,
+                ModelId("cmal_small"),
+                "discharge",
+                ForecastDataUse.STANDARD,
+            ): (
+                summary,
+                member.references[0],
+            )
+        }
+        keys = {(record.station_id, ModelId("cmal_small"))}
+        inside = reader._headers(
+            [record.station_id],
+            keys,
+            [],
+            refs,
+            keys,
+            (ForecastDataUse.STANDARD,),
+            ensure_utc(record.issued_at + timedelta(hours=100)),
+        )
+        late = reader._headers(
+            [record.station_id],
+            keys,
+            [],
+            refs,
+            keys,
+            (ForecastDataUse.STANDARD,),
+            ensure_utc(record.issued_at + timedelta(hours=169)),
+        )
+        assert set(inside) == set(refs) and late == {}
+
+
 class TestOverviewNumericPurposeEligibility:
     @pytest.mark.parametrize("overview_case", ["unchecked"], indirect=True)
     def test_unchecked_provisional_forecast_keeps_honest_label(

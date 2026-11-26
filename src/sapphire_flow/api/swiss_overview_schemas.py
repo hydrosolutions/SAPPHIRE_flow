@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from sapphire_flow.types.evaluation_forecast import RetainedResult
 from sapphire_flow.types.swiss_overview import HeadlineAbsence
 
 
@@ -69,6 +70,20 @@ class RetainedResultOut(BaseModel):
     superseding_attempt_id: str
     superseding_state: str | None
     superseding_reason: str | None
+
+
+def retained_result_out(retained: RetainedResult) -> RetainedResultOut:
+    return RetainedResultOut(
+        original_issued_at=retained.earlier_issued_at,
+        original_attempt_id=str(retained.earlier_attempt_id),
+        superseding_attempt_id=str(retained.superseding_attempt_id),
+        superseding_state=retained.superseding_state.value
+        if retained.superseding_state
+        else None,
+        superseding_reason=retained.superseding_reason.value
+        if retained.superseding_reason
+        else None,
+    )
 
 
 class CmalWithheld(BaseModel):

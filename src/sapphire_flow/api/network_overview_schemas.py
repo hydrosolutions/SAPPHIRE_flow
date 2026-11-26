@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from sapphire_flow.api.schemas import ThresholdResponse
+from sapphire_flow.api.swiss_overview_schemas import RetainedResultOut
 from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.types.enums import ForecastDataUse, QcStatus
 from sapphire_flow.types.network_overview import (
@@ -148,6 +149,14 @@ class OverviewForecastResponse(OverviewSchema):
             "Relative URL for this forecast including its "
             "data-use category; use unchanged for detail "
             "retrieval."
+        ),
+    )
+    retained_result: RetainedResultOut | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Present only when this forecast is an earlier same-day attempt shown "
+            "because a later attempt failed for the station; names both attempts."
         ),
     )
 
