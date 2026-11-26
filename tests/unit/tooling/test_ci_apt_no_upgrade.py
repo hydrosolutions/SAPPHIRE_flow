@@ -56,7 +56,7 @@ def _install_command(run: str) -> str:
     """
     lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
     joined = " ".join(line.rstrip(" \\") for line in lines)
-    _, _, after = joined.partition("apt-get")
+    _, _, after = joined.rpartition("apt-get")
     return after
 
 
@@ -102,3 +102,34 @@ class TestAptStepNeverUpgrades:
         assert "apt-get" in run
         assert "update" in run
         assert "for attempt in" in run
+
+
+class TestAptStepFetchesBaseSuiteOnly:
+    @pytest.mark.parametrize(("workflow", "job"), _SITES)
+    def test_update_and_install_share_the_restricted_sources(
+        self, workflow: str, job: str
+    ) -> None:
+        """2026-11-26: -updates/-security InRelease stalled all three attempts.
+
+        Both `update` and `install` must use APT_OPTS carrying the one-line
+        base-suite list, so apt never needs lists it did not fetch.
+        """
+        run = _apt_run(workflow, job)
+
+        assert "Dir::Etc::sourcelist=" in run
+        assert "Dir::Etc::sourceparts=/dev/null" in run
+        assert "${VERSION_CODENAME} main universe" in run
+        assert run.count('apt-get "${APT_OPTS[@]}"') == 2
+
+
+def test_private_verification_script_uses_the_same_base_suite_only_options() -> None:
+    script = (_REPO_ROOT / "tools/private_verification_gates.sh").read_text()
+
+    assert "Dir::Etc::sourcelist=" in script
+    assert "Dir::Etc::sourceparts=/dev/null" in script
+    assert "${VERSION_CODENAME} main universe" in script
+    assert script.count('apt-get "${APT_OPTS[@]}"') == 2
+    command = _install_command(script)
+    assert "--no-upgrade" in command
+    for package in ("libeccodes0", "libexpat1", "libgeos-c1v5"):
+        assert package in command

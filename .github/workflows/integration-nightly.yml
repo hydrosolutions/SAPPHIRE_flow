@@ -89,9 +89,25 @@ jobs:
           # further from the runner than a same-datacentre mirror; a few
           # seconds against ten lost runs.
           echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
+          # Base release suite only (main + universe hold all three packages).
+          # On 2026-11-26 all three `update` attempts, in two runs / five jobs,
+          # stalled on the noble-updates and noble-security InRelease files at
+          # archive.ubuntu.com. Nothing here needs those suites: --no-upgrade
+          # (below) leaves everything the runner already has alone, and the
+          # release pocket is frozen, so its .debs cannot be pulled the way
+          # the -updates build was on 2026-09-24. A one-line sources list also
+          # skips the runner's other repos (microsoft, google). The SAME
+          # options go to `install`, so apt never needs the unfetched lists.
+          # Trade-off: a package missing from the image installs at its
+          # release-pocket version, not the latest security build.
+          . /etc/os-release
+          SRC_LIST="$(mktemp)"
+          echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ ${VERSION_CODENAME} main universe" > "$SRC_LIST"
           APT_OPTS=(-o Acquire::Retries=3
                     -o Acquire::http::Timeout=30
-                    -o Acquire::https::Timeout=30)
+                    -o Acquire::https::Timeout=30
+                    -o Dir::Etc::sourcelist="$SRC_LIST"
+                    -o Dir::Etc::sourceparts=/dev/null)
           for attempt in 1 2 3; do
             if sudo timeout --kill-after=10 90 apt-get "${APT_OPTS[@]}" update; then
               break

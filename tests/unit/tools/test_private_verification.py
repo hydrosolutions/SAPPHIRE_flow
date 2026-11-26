@@ -648,8 +648,11 @@ elif name == 'docker' and 'ls /app/scripts' in args:
         evidence = work / "evidence"
         work.mkdir(mode=0o700)
         evidence.mkdir(mode=0o700)
+        os_release = tmp_path / "os-release"
+        os_release.write_text("VERSION_CODENAME=noble\n")
         env.update(
             {
+                "OS_RELEASE_FILE": str(os_release),
                 "PRIVATE_WORK": str(work),
                 "PRIVATE_EVIDENCE": str(evidence),
                 "PRIVATE_TEST_SCENARIO": scenario,
