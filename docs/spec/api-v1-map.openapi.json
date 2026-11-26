@@ -3642,6 +3642,7 @@
         "title": "InputQualityLevel",
         "type": "string"
       },
+      "JsonValue": {},
       "LatestObservationsResponse": {
         "properties": {
           "generated_at": {
@@ -3744,6 +3745,39 @@
           "observation"
         ],
         "title": "LatestStationObservationResponse",
+        "type": "object"
+      },
+      "MissingSkillDiagram": {
+        "properties": {
+          "diagram_type": {
+            "enum": [
+              "reliability",
+              "roc"
+            ],
+            "title": "Diagram Type",
+            "type": "string"
+          },
+          "lead_time_hours": {
+            "title": "Lead Time Hours",
+            "type": "integer"
+          },
+          "reason": {
+            "const": "no_matching_stored_diagram",
+            "default": "no_matching_stored_diagram",
+            "title": "Reason",
+            "type": "string"
+          },
+          "threshold_level": {
+            "title": "Threshold Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lead_time_hours",
+          "threshold_level",
+          "diagram_type"
+        ],
+        "title": "MissingSkillDiagram",
         "type": "object"
       },
       "ModelAssignmentResponse": {
@@ -8300,6 +8334,87 @@
         "title": "StationSchema",
         "type": "object"
       },
+      "StationSkillDiagramsResponse": {
+        "properties": {
+          "availability": {
+            "enum": [
+              "available",
+              "partial",
+              "no_stored_diagrams"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "diagrams": {
+            "items": {
+              "$ref": "#/components/schemas/StoredSkillDiagram"
+            },
+            "title": "Diagrams",
+            "type": "array"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/MissingSkillDiagram"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "model_artifact_id": {
+            "title": "Model Artifact Id",
+            "type": "string"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "parameter": {
+            "const": "discharge",
+            "default": "discharge",
+            "title": "Parameter",
+            "type": "string"
+          },
+          "station_id": {
+            "title": "Station Id",
+            "type": "string"
+          },
+          "training_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Period End"
+          },
+          "training_period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Period Start"
+          }
+        },
+        "required": [
+          "station_id",
+          "model_id",
+          "model_artifact_id",
+          "availability",
+          "training_period_start",
+          "training_period_end",
+          "diagrams",
+          "missing"
+        ],
+        "title": "StationSkillDiagramsResponse",
+        "type": "object"
+      },
       "StationSkillOptionsResponse": {
         "properties": {
           "artifacts": {
@@ -8467,6 +8582,129 @@
           "sapphire_forecasts"
         ],
         "title": "StatusBlockSchema",
+        "type": "object"
+      },
+      "StoredSkillDiagram": {
+        "properties": {
+          "computation_version": {
+            "title": "Computation Version",
+            "type": "integer"
+          },
+          "data": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Data",
+            "type": "object"
+          },
+          "diagram_id": {
+            "title": "Diagram Id",
+            "type": "string"
+          },
+          "diagram_type": {
+            "enum": [
+              "reliability",
+              "roc"
+            ],
+            "title": "Diagram Type",
+            "type": "string"
+          },
+          "eval_period_end": {
+            "format": "date-time",
+            "title": "Eval Period End",
+            "type": "string"
+          },
+          "eval_period_start": {
+            "format": "date-time",
+            "title": "Eval Period Start",
+            "type": "string"
+          },
+          "evaluated_on": {
+            "enum": [
+              "training_period",
+              "outside_training_period",
+              "overlaps_training_period",
+              "unknown"
+            ],
+            "title": "Evaluated On",
+            "type": "string"
+          },
+          "forcing_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForcingType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Id"
+          },
+          "lead_time_hours": {
+            "title": "Lead Time Hours",
+            "type": "integer"
+          },
+          "phase_offset_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Offset Seconds"
+          },
+          "skill_source": {
+            "$ref": "#/components/schemas/SkillSource"
+          },
+          "threshold_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThresholdContextPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threshold_level": {
+            "title": "Threshold Level",
+            "type": "string"
+          },
+          "time_step_seconds": {
+            "title": "Time Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generation_id",
+          "skill_source",
+          "forcing_type",
+          "computation_version",
+          "time_step_seconds",
+          "phase_offset_seconds",
+          "eval_period_start",
+          "eval_period_end",
+          "evaluated_on",
+          "diagram_id",
+          "diagram_type",
+          "threshold_level",
+          "lead_time_hours",
+          "threshold_context",
+          "data"
+        ],
+        "title": "StoredSkillDiagram",
         "type": "object"
       },
       "SwissObservationHistoryResponse": {
@@ -9167,7 +9405,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.8"
+    "version": "3.9"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11383,6 +11621,154 @@
           }
         ],
         "summary": "Get station skill scores",
+        "tags": [
+          "Quality and evaluation"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/skill-diagrams": {
+      "get": {
+        "description": "Stored reliability and ROC, exact model and artifact, discharge only. Repeat lead_hours (1\u201316 values) and threshold_level (1\u20138 values); all-season/all-flow only. Latest published diagrams must match current scalar generation, cadence and evaluation period. Missing combinations are explicit; undefined bins remain null. No computation on GET. Response is at most 4 MiB and 1024 diagrams; overflow is 422, never truncation. Inactive artifacts require an active scoped model assignment. Legacy forcing and counts remain unknown where not recorded. No-store.",
+        "operationId": "get_station_skill_diagrams_api_v1_stations__station_id__skill_diagrams_get",
+        "parameters": [
+          {
+            "description": "Station UUID returned by the station list, not the provider code.",
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Model Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lead_hours",
+            "required": true,
+            "schema": {
+              "items": {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "title": "Lead Hours",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "threshold_level",
+            "required": true,
+            "schema": {
+              "items": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "title": "Threshold Level",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationSkillDiagramsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Invalid selectors or stored diagrams exceed response limit."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read stored reliability and ROC diagrams",
         "tags": [
           "Quality and evaluation"
         ]

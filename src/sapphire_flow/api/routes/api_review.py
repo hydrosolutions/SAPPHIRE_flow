@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import Field
 
 from sapphire_flow.api.deps import get_connection, get_observation_clock, get_stores
 from sapphire_flow.api.schemas import (
@@ -28,6 +29,11 @@ from sapphire_flow.api.security import (
     Principal,
     ensure_station_in_scope,
     require_reviewer,
+)
+from sapphire_flow.api.skill_diagrams import (
+    StationSkillDiagramsResponse,
+    encode_diagram_response,
+    read_skill_diagrams,
 )
 from sapphire_flow.api.skill_options import (
     StationSkillOptionsResponse,
@@ -65,6 +71,43 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig
 
 router = APIRouter(prefix="/api/v1", tags=["api-review"])
+
+
+@router.get(
+    "/stations/{station_id}/skill-diagrams", response_model=StationSkillDiagramsResponse
+)
+def get_station_skill_diagrams(
+    station_id: str,
+    model_id: str = Query(min_length=1),
+    artifact_id: UUID = Query(),
+    lead_hours: list[Annotated[int, Field(ge=0, le=2147483647)]] = Query(
+        min_length=1, max_length=16
+    ),
+    threshold_level: list[Annotated[str, Field(min_length=1, max_length=64)]] = Query(
+        min_length=1, max_length=8
+    ),
+    stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_reviewer),
+    conn: sa.Connection = Depends(get_connection),
+    now: datetime = Depends(get_observation_clock),
+) -> Response:
+    sid = _parse_station_id(station_id)
+    ensure_station_in_scope(principal, sid)
+    if stores["station_store"].fetch_station(sid) is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    result = read_skill_diagrams(
+        conn,
+        forecast_lab_stores_from_dict(stores),
+        station_id=sid,
+        model_id=ModelId(model_id),
+        artifact_id=ArtifactId(artifact_id),
+        lead_hours=tuple(sorted(set(lead_hours))),
+        threshold_levels=tuple(sorted(set(threshold_level))),
+        now=ensure_utc(now),
+    )
+    return Response(
+        content=encode_diagram_response(result), media_type="application/json"
+    )
 
 
 @router.get(
