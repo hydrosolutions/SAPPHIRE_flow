@@ -71,6 +71,7 @@ _EXPECTED_PATHS = {
     "/api/v1/forecasts/{forecast_id}/rating-input-history",
     "/api/v1/qc/rules",
     "/api/v1/stations/{station_id}/skill",
+    "/api/v1/stations/{station_id}/skill-options",
     "/api/v1/stations/{station_id}/review-options",
     "/api/v1/stations/{station_id}/review-series",
     # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
@@ -95,6 +96,7 @@ class TestApiGuideExamples:
             ("forecast-standard.json", "/api/v1/forecasts/{forecast_id}"),
             ("forecast-provisional.json", "/api/v1/forecasts/{forecast_id}"),
             ("observations.json", "/api/v1/stations/{station_id}/observations"),
+            ("skill-options.json", "/api/v1/stations/{station_id}/skill-options"),
         ],
     )
     def test_complete_example_matches_response_contract(

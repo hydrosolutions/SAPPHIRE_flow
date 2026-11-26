@@ -194,6 +194,11 @@ class TestCombinedPurposeAdmission:
         assert len(entries) == model_count * len(purposes)
         assert all(entry["model_display_name"] for entry in entries)
         assert all(entry["model_display_name_short"] is None for entry in entries)
+        assert all(
+            entry["model_artifact_id"] is None
+            for entry in entries
+            if entry["availability"] == "no_forecast"
+        )
         for purpose in purposes:
             selected = [entry for entry in entries if entry["data_use"] == purpose]
             assert len(selected) == model_count
@@ -481,6 +486,9 @@ class TestNetworkOverviewNativeRole:
         assert item["water_level"]["latest"]["sample"] is not None
         assert item["discharge"]["latest"]["sample"] is None
         assert item["forecasts"][0]["forecast_id"] == str(native.id)
+        assert item["forecasts"][0]["model_artifact_id"] == str(
+            native.model_artifact_id
+        )
         assert item["forecasts"][0]["peak"] is not None
         tag = response.headers["etag"]
         app.dependency_overrides[get_observation_clock] = lambda: ensure_utc(
@@ -524,6 +532,7 @@ class TestNetworkOverviewNativeRole:
         )
         assert response.headers["cache-control"] == "no-store"
         assert "etag" not in response.headers
+        assert str(native.model_artifact_id) not in response.text
 
 
 class TestOverviewIsolationAndCors:
@@ -590,6 +599,7 @@ class TestOverviewIsolationAndCors:
         )
         assert denied.status_code == 403
         assert denied.headers["cache-control"] == "no-store"
+        assert str(native.model_artifact_id) not in denied.text
 
     def test_route_only_cors_and_negotiated_gzip(self, overview_case: tuple) -> None:
         from sapphire_flow.api.cors import ScopedCorsMiddleware
@@ -864,6 +874,7 @@ class TestDailyOverviewAuthority:
         )
         assert daily["availability"] == "withheld_or_ineligible"
         assert daily["forecast_id"] is None and daily["peak"] is None
+        assert daily["model_artifact_id"] is None
         assert record.id not in selected
         conn.execute(sa.text("RESET ROLE"))
         conn.execute(
@@ -895,7 +906,7 @@ class TestDailyOverviewAuthority:
         assert withdrawn.status_code == 200
         assert not selected
         assert all(
-            f["forecast_id"] is None
+            f["forecast_id"] is None and f["model_artifact_id"] is None
             for item in withdrawn.json()["items"]
             for f in item["forecasts"]
         )

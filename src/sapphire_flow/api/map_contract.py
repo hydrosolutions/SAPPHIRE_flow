@@ -27,7 +27,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "3.7"
+MAP_CONTRACT_VERSION = "3.8"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
@@ -48,6 +48,7 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/forecasts/{forecast_id}/rating-input-history"),
         ("GET", "/api/v1/qc/rules"),
         ("GET", "/api/v1/stations/{station_id}/skill"),
+        ("GET", "/api/v1/stations/{station_id}/skill-options"),
         ("GET", "/api/v1/stations/{station_id}/review-options"),
         ("GET", "/api/v1/stations/{station_id}/review-series"),
         # Plan 404 T3 — additive (MAP_CONTRACT_VERSION 1.0 -> 1.1, D14).
@@ -61,6 +62,7 @@ _REVIEW_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
+        "/api/v1/stations/{station_id}/skill-options",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
         "/api/v1/swiss/overview",
@@ -93,6 +95,7 @@ _400_PATHS: frozenset[str] = frozenset(
         "/api/v1/stations/{station_id}/forecasts",
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
+        "/api/v1/stations/{station_id}/skill-options",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
         "/api/v1/stations/{station_id}/rejected-forecasts",
@@ -111,6 +114,7 @@ _404_PATHS: frozenset[str] = frozenset(
         "/api/v1/forecasts/{forecast_id}",
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
+        "/api/v1/stations/{station_id}/skill-options",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
         "/api/v1/stations/{station_id}/rejected-forecasts",
@@ -119,6 +123,14 @@ _404_PATHS: frozenset[str] = frozenset(
 )
 
 _DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("GET", "/api/v1/stations/{station_id}/skill-options"): (
+        "Stored discharge skill artifacts for actively assigned models, including "
+        "inactive artifacts. Same station scope, latest published generations and "
+        "evaluation-end cutoff as scalar skill. Exact model IDs, no aliases. "
+        "Current forecasting status does not identify a previously issued forecast; "
+        "use its model_artifact_id. At most 256 evaluation scopes; overflow is 503, "
+        "never truncation. Optional model_id narrows discovery. No-store."
+    ),
     ("GET", "/api/v1/stations/{station_id}/review-series"): (
         "Bulk ordinary discharge at an exact lead over a half-open valid-time period "
         "of at most 366 days. Pinned hindcast identities, historical artifacts, "
@@ -307,6 +319,10 @@ _OPERATION_LABELS: dict[str, tuple[str, str]] = {
         "Inspect current quality-control rules",
         "Quality and evaluation",
     ),
+    "/api/v1/stations/{station_id}/skill-options": (
+        "List scored artifacts at a station",
+        "Quality and evaluation",
+    ),
     "/api/v1/stations/{station_id}/skill": (
         "Get station skill scores",
         "Quality and evaluation",
@@ -455,6 +471,10 @@ def build_map_openapi() -> dict[str, Any]:
                 responses["404"] = _error_response(
                     "Unknown or out-of-scope station/forecast — the same "
                     "body either way (never reveals which)."
+                )
+            if path == "/api/v1/stations/{station_id}/skill-options":
+                responses["503"] = _error_response(
+                    "Stored skill catalogue exceeds admission limit."
                 )
             if path in {
                 "/api/v1/stations",

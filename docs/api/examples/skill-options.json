@@ -1,0 +1,27 @@
+{
+  "station_id": "00000000-0000-0000-0000-000000000001",
+  "parameter": "discharge",
+  "availability": "available",
+  "artifacts": [
+    {
+      "model_id": "example_quantile_model",
+      "model_artifact_id": "00000000-0000-0000-0000-000000000002",
+      "forecasting_status": "not_active_at_station",
+      "training_period_start": null,
+      "training_period_end": null,
+      "evaluations": [
+        {
+          "generation_id": "00000000-0000-0000-0000-000000000003",
+          "skill_source": "hindcast_reanalysis",
+          "forcing_type": "reanalysis",
+          "computation_version": 4,
+          "time_step_seconds": 86400,
+          "phase_offset_seconds": 64800,
+          "eval_period_start": "2017-01-02T18:00:00Z",
+          "eval_period_end": "2020-12-31T18:00:00Z",
+          "evaluated_on": "unknown"
+        }
+      ]
+    }
+  ]
+}
