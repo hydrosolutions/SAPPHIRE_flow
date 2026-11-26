@@ -1,5 +1,5 @@
 ---
-status: S3-A COMPLETE_CUSTODY; S3-B PREPARED_PENDING_OWNER_REVIEW; S3-C–D DRAFT
+status: S3-A COMPLETE_CUSTODY; S3-B COMPLETE_LOCAL; native-host preparation PENDING_OWNER_REVIEW; S3-C–D DRAFT
 owner: deployment orchestrator
 parent: 2026-11-26-source-inventory-admission.md
 ---
@@ -60,6 +60,15 @@ admit image loading, fixture runtime or cloud provisioning. Resolve any new mate
 findings with the owner; there is no automatic review loop.
 S3-B uses the frozen input contract and synthetic stand-ins; its exit does not
 depend on receipt delivery or the source owner's complete cohort handoff.
+
+The owner accepted S3-B's corrected preparation through PR #689. The
+[native-host transport amendment](2026-11-26-inventory-native-host-transport.md)
+now covers the remaining explicit socket, same-host fixture paths, installed
+Prefect template and frozen controller environment. Its T1 is local preparation
+only, with 347 passing checks and author corrections to its independent patch
+review findings awaiting owner disposition. The complete source-owner comparison
+list has been requested; runtime still
+requires that whole layout, the capacity check and a concrete resource packet.
 
 ### Complete cohort and report capacity
 
@@ -164,10 +173,9 @@ addresses, network interfaces, security
 groups, temporary keys and tunnels that this attempt created. Cleanup uncertainty
 leaves the milestone incomplete.
 
-The concrete S3-C packet must resolve Docker socket and bind-mount paths on the
-native host and record its observed platform. The copied S1 local harness still
-needs that transport adaptation; its former local/emulation assumptions are not
-runtime evidence for a remote host.
+The concrete S3-C packet must bind the separately prepared native-host transport
+to the actual host and record its observed platform. Local tests of its socket,
+mount and dependency checks do not establish installed Linux behavior.
 
 ## Documentation and final acceptance
 
@@ -190,7 +198,7 @@ separate execution admission. No release or operational commissioning follows
 automatically from this milestone.
 
 ```json
-{"phases":[{"id":"S3-A","status":"COMPLETE_CUSTODY","depends_on":["S1_COMPLETE_LOCAL","S2_COMPLETE_LOCAL","independent_plan_review"]},{"id":"S3-B","status":"PREPARED_PENDING_OWNER_REVIEW","depends_on":["S3-A_input_contract"]},{"id":"S3-C","status":"DRAFT","depends_on":["S3-A_custody_complete","S3-B","actual_cohort_output_preflight","independent_patch_review","concrete_resource_packet"]},{"id":"S3-D","status":"DRAFT","depends_on":["S3-C_attempt_ended"],"required_after_failure":true}],"capacity_failure":"BLOCKED_CAPACITY","source_execution":"NOT_ADMITTED","reconstruction":"NOT_ADMITTED"}
+{"phases":[{"id":"S3-A","status":"COMPLETE_CUSTODY","depends_on":["S1_COMPLETE_LOCAL","S2_COMPLETE_LOCAL","independent_plan_review"]},{"id":"S3-B","status":"COMPLETE_LOCAL","depends_on":["S3-A_input_contract"]},{"id":"S3-C","status":"DRAFT","depends_on":["S3-A_custody_complete","S3-B","native_host_transport","actual_cohort_output_preflight","independent_patch_review","concrete_resource_packet"]},{"id":"S3-D","status":"DRAFT","depends_on":["S3-C_attempt_ended"],"required_after_failure":true}],"capacity_failure":"BLOCKED_CAPACITY","source_execution":"NOT_ADMITTED","reconstruction":"NOT_ADMITTED"}
 ```
 
 ## Independent review disposition
@@ -228,7 +236,8 @@ implemented those corrections and added focused regressions: 256 inventory/adapt
 tests and 54 collector tests pass, with lint and changed-module strict types clean.
 The original S1/S2/F4 inputs remain unchanged. No second review was commissioned;
 the review's original changes-required verdict and correction evidence are retained
-privately for owner disposition. This is not reviewer approval of the revised bytes.
+privately. The owner accepted the corrected preparation through PR #689; this is
+not reviewer approval of the revised bytes.
 
 Preparation now covers full planned custody intervals, genuinely empty off-grid
 authority, an identified worker backend before timeout and its absence afterward,
@@ -236,5 +245,6 @@ exact ordered member/count/coverage assertions, and the longer excluded-member
 classification at the report-size boundary. Local checks exercise the refusal and
 assertion logic; actual backend cleanup and installed-image outcomes remain untested
 until S3-C. No server, container, provider call, source inventory or reconstruction
-was performed. Owner disposition, the complete cohort capacity check and the concrete
-native-host execution/cleanup packet still precede runtime admission.
+was performed. The separate transport review disposition, complete cohort capacity
+check and concrete native-host execution/cleanup packet still precede runtime
+admission.
