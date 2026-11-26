@@ -221,6 +221,11 @@ class PgRatingReferenceStore:
         return content
 
 
+def reference_append_lock_key(evidence_id: RatingReferenceProofId) -> str:
+    """Advisory-lock key serializing appends of one protected reference id."""
+    return f"rating_reference_proofs:{evidence_id}"
+
+
 class PgProtectedReferenceWriter:
     """Owner-only reference append on the caller's transaction; never commits."""
 
@@ -248,6 +253,12 @@ class PgProtectedReferenceWriter:
         checked = parse_reference_evidence(content)
         if checked != evidence or canonical_content(asdict(checked)) != content:
             raise ValueError("protected reference content disagreement")
+        # The lock must precede the INSERT: ON CONFLICT (id) cannot absorb a race
+        # on uq_rating_reference_scope. Held until the caller's commit/rollback.
+        self._conn.execute(
+            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": reference_append_lock_key(evidence.id)},
+        )
         self._conn.execute(
             insert(rating_reference_proofs)
             .values(
