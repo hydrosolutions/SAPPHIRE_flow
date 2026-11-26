@@ -443,6 +443,7 @@ class AuditEventType(Enum):
     RATING_CURVE_STORED = "rating_curve_stored"
     THRESHOLDS_IMPORTED = "thresholds_imported"
     OPERATIONAL_WEATHER_REFRESH = "operational_weather_refresh"
+    STATION_INGEST_PAUSE_CHANGED = "station_ingest_pause_changed"
 
 
 class ProvisionalIfsTailMode(Enum):

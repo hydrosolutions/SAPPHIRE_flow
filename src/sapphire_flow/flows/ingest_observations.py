@@ -646,6 +646,7 @@ def _append_fetch_health_record(
     outcomes: tuple[StationFetchOutcome, ...],
     unit_dispatch: BafuDispatchResult | None = None,
     lookback_capped: list[dict[str, object]] | None = None,
+    ingest_paused_station_ids: list[str] | None = None,
 ) -> None:
     # Best-effort (mirrors flows/collect_bafu_observations.py's identically
     # -shaped helper): a health-store outage must never fail the ingest run
@@ -661,6 +662,8 @@ def _append_fetch_health_record(
     detail = _fetch_health_detail(outcomes)
     # Informational only: a capped station is not a failure.
     detail["lookback_capped"] = lookback_capped or []
+    # Informational only: paused stations are not polled and not failures.
+    detail["ingest_paused_station_ids"] = ingest_paused_station_ids or []
     failed_station_ids = {
         outcome.station_id
         for outcome in outcomes
@@ -1710,12 +1713,16 @@ def ingest_observations_flow(
             qc_threshold_not_applicable=len(threshold_config.not_applicable),
         )
 
-    log.info("ingest.starting", stations=len(eligible))
+    # Paused stations are not polled; they stay in `eligible` for QC, native
+    # recovery and BAFU dispatch.
+    polled = [s for s in eligible if not s.ingest_paused]
+    paused_ids = sorted(str(s.id) for s in eligible if s.ingest_paused)
+    log.info("ingest.starting", stations=len(polled), paused=len(paused_ids))
 
     # --- Build since dict ---
     default_since = ensure_utc(now - timedelta(hours=default_lookback_hours))
     since: dict[StationId, UtcDatetime] = {}
-    for station in eligible:
+    for station in polled:
         param = _cursor_parameter_for_station(station)
         latest = cast("ObservationStore", obs_store).fetch_latest_capture_timestamp(
             station.id, param
@@ -1749,17 +1756,22 @@ def ingest_observations_flow(
         except Exception:
             native_dhm = None
     # --- Step 2.1: Fetch observations ---
-    batch_result = (
-        _fetch_configured_dhm(
+    if not polled:
+        # Every eligible station is paused: nothing to poll (the fetch task's run
+        # name also needs a non-empty `since`).
+        from sapphire_flow.types.observation import HydroScraperBatchResult
+
+        batch_result = HydroScraperBatchResult(outcomes=())
+    elif dhm_config is not None:
+        batch_result = _fetch_configured_dhm(
             dhm_config,
-            eligible,
+            polled,
             since,
             now,
             request_clock=cast("Callable[[], UtcDatetime]", clock),
         )
-        if dhm_config is not None
-        else _fetch_observations_task(adapter, eligible, since)
-    )
+    else:
+        batch_result = _fetch_observations_task(adapter, polled, since)
     raw_obs = batch_result.observations
     log.info("ingest.fetch_complete", observations=len(raw_obs))
 
@@ -1769,7 +1781,7 @@ def ingest_observations_flow(
     # mass-429 run used to report success because `raw_obs` being empty
     # short-circuited before any failure was ever recorded.
     lookback_capped = (
-        _lookback_capped_intervals(dhm_config, eligible, since, now, raw_obs)
+        _lookback_capped_intervals(dhm_config, polled, since, now, raw_obs)
         if dhm_config is not None
         else []
     )
@@ -1778,6 +1790,7 @@ def ingest_observations_flow(
         checked_at=now,
         outcomes=batch_result.outcomes,
         lookback_capped=lookback_capped,
+        ingest_paused_station_ids=paused_ids,
     )
     fetch_failed = batch_result.failed
     fetch_failed_station_ids = {o.station_id for o in fetch_failed}
@@ -1818,6 +1831,7 @@ def ingest_observations_flow(
             outcomes=batch_result.outcomes,
             unit_dispatch=unit_dispatch,
             lookback_capped=lookback_capped,
+            ingest_paused_station_ids=paused_ids,
         )
     if (
         not raw_obs
@@ -1826,7 +1840,7 @@ def ingest_observations_flow(
     ):
         log.info("ingest.no_new_data")
         return IngestResult(
-            stations_polled=len(eligible),
+            stations_polled=len(polled),
             observations_fetched=0,
             observations_stored=0,
             observations_skipped=0,
@@ -2077,7 +2091,7 @@ def ingest_observations_flow(
         fetch_failed_station_ids | qc_failed_station_ids | storage_failed_station_ids
     )
     result = IngestResult(
-        stations_polled=len(eligible),
+        stations_polled=len(polled),
         observations_fetched=len(raw_obs),
         observations_stored=stored_count,
         observations_skipped=skipped_count,

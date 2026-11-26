@@ -142,6 +142,7 @@ erDiagram
         TEXT ownership "default own"
         TEXT wigos_id "NULL"
         TEXT gauging_status "default gauged"
+        BOOLEAN ingest_paused "default false; stops observation polling only"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
         UUID tenant_id FK "NOT NULL, canonical (R4) — UK (id, tenant_id)"
@@ -674,6 +675,7 @@ erDiagram
         TEXT ownership "default own"
         TEXT wigos_id "NULL"
         TEXT gauging_status "default gauged"
+        BOOLEAN ingest_paused "default false; stops observation polling only"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
         UUID tenant_id FK "NOT NULL, canonical (R4) — UK (id, tenant_id)"

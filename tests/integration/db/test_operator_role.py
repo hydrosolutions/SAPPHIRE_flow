@@ -1770,7 +1770,7 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0095"
+        assert before[0] == "0096"
         with pytest.raises(RuntimeError, match="0095 retains.*downgrade refused"):
             _alembic("downgrade", "0066")
         assert snapshot() == before

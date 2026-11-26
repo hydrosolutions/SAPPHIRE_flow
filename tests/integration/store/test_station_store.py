@@ -616,3 +616,25 @@ class TestImportThresholds:
         assert len(store.fetch_thresholds(station.id)) == 4
         transaction.rollback()
         assert store.fetch_thresholds(station.id) == []
+
+
+class TestIngestPausedRoundTrip:
+    def test_default_false_store_and_dedicated_update(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationStore(db_connection)
+        station = make_station_config(station_id=StationId(uuid.uuid4()), code="IP-1")
+        store.store_station(station)
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.ingest_paused is False
+        store.update_station_ingest_paused(station.id, True)
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.ingest_paused is True
+        assert fetched.station_status is station.station_status
+        # update_station must not clobber the switch
+        store.update_station(fetched)
+        again = store.fetch_station(station.id)
+        assert again is not None
+        assert again.ingest_paused is True

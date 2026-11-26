@@ -2274,6 +2274,13 @@ class FakeStationStore:
         if station is not None:
             self._stations[station_id] = replace(station, station_status=new_status)
 
+    def update_station_ingest_paused(
+        self, station_id: StationId, ingest_paused: bool
+    ) -> None:
+        station = self._stations.get(station_id)
+        if station is not None:
+            self._stations[station_id] = replace(station, ingest_paused=ingest_paused)
+
     def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
         station = self._stations.get(station_id)
         if station is not None:

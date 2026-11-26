@@ -155,6 +155,7 @@ class PgStationStore:
                 ownership=station.ownership.value,
                 wigos_id=station.wigos_id,
                 gauging_status=station.gauging_status.value,
+                ingest_paused=station.ingest_paused,
                 tenant_id=station.tenant_id,
             )
         )
@@ -395,6 +396,15 @@ class PgStationStore:
             .values(station_status=new_status.value)
         )
 
+    def update_station_ingest_paused(
+        self, station_id: StationId, ingest_paused: bool
+    ) -> None:
+        self._conn.execute(
+            sa.update(stations)
+            .where(stations.c.id == station_id)
+            .values(ingest_paused=ingest_paused)
+        )
+
     def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
         """Plan 120 fixer round (basin_importer.py): bind a station to its
         operational basin. A single-column `UPDATE` — conflict/no-op
@@ -437,6 +447,7 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         ownership=StationOwnership(row["ownership"]),
         wigos_id=row["wigos_id"],
         gauging_status=GaugingStatus(row["gauging_status"]),
+        ingest_paused=row["ingest_paused"],
         water_level_datum_masl=row["water_level_datum_masl"],
         water_level_unit=row["water_level_unit"],
         water_level_gauge_type=WaterLevelGaugeType(gauge_raw)

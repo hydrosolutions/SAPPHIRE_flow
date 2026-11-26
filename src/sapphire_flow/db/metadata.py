@@ -367,6 +367,12 @@ stations = sa.Table(
     ),
     sa.Column("wigos_id", sa.Text, nullable=True),
     sa.Column(
+        "ingest_paused",
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.false(),
+    ),
+    sa.Column(
         "gauging_status",
         sa.Text,
         sa.CheckConstraint(
