@@ -39,6 +39,7 @@ class DhmConfig:
     window_hours: float = 24.0
     max_pages_per_station: int = 100
     min_request_interval_s: float = 5.0
+    polling_lookback_days: float = 7.0
 
     def __post_init__(self) -> None:
         try:
@@ -58,6 +59,7 @@ class DhmConfig:
             self.window_hours,
             self.min_request_interval_s,
             self.max_batch_seconds,
+            self.polling_lookback_days,
         ):
             if (
                 type(limit) not in (int, float)
@@ -108,6 +110,7 @@ class _ConfigPayload(BaseModel):
     window_hours: float = Field(default=24.0, gt=0, allow_inf_nan=False)
     max_pages_per_station: int = Field(default=100, gt=0)
     min_request_interval_s: float = Field(default=5.0, ge=5, allow_inf_nan=False)
+    polling_lookback_days: float = Field(default=7.0, gt=0, allow_inf_nan=False)
 
 
 def parse_dhm_config(raw: object) -> DhmConfig:
@@ -132,6 +135,7 @@ def parse_dhm_config(raw: object) -> DhmConfig:
             window_hours=parsed.window_hours,
             max_pages_per_station=parsed.max_pages_per_station,
             min_request_interval_s=parsed.min_request_interval_s,
+            polling_lookback_days=parsed.polling_lookback_days,
         )
     except (ValidationError, ValueError, OverflowError):
         # Validation errors can embed the input, including an endpoint credential.
