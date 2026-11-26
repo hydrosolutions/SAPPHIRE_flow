@@ -101,6 +101,13 @@ class OverviewForecastResponse(OverviewSchema):
         ),
     )
     forecast_id: str | None = None
+    model_artifact_id: str | None = Field(
+        default=None,
+        description=(
+            "Artifact of the visible forecast, not the currently active artifact. "
+            "Null for absent or withheld forecasts."
+        ),
+    )
     unit: str | None = None
     issued_at: datetime | None = None
     original_horizon_steps: int | None = None

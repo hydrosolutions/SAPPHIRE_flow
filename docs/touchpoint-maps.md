@@ -1,5 +1,17 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
+### Forecast artifact and stored-skill discovery
+
+`api/network_overview.py` copies `model_artifact_id` only from the already admitted
+forecast. Keep absence/publication/provisional redaction equivalent to detail.
+`api/skill_options.py` projects scalar evaluation metadata using
+`store/skill_store.py::latest_generation_predicate`, existing active model
+assignments and the active-artifact resolver. Inactive artifacts are readable only
+under the same model/station policy as explicit `/skill` reads. Never infer skill
+from a hindcast or expose artifact file paths. Update reviewer auth inventory,
+no-store/CORS paths and generated map contract together. Verify
+`tests/integration/api/test_skill_options.py` and `test_network_overview.py`.
+
 ### Event-review options and series (M2–M3)
 
 The reviewer-only `api/routes/api_event_review.py` route delegates to

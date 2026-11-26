@@ -1,5 +1,5 @@
 ---
-status: F1–F3 COMPLETE locally; F4 awaits maintained-image handoff
+status: F1–F4 COMPLETE for release 0.1.1197; source execution remains DRAFT
 created: 2026-11-25
 owner: deployment orchestrator
 baseline: efe2613a
@@ -154,7 +154,7 @@ update its supported-runtime instructions only after a maintained image qualifie
 Full reviews, private paths, agency inputs and detailed diagnostics stay outside Git.
 
 ```json
-{"phases":[{"id":"F1","status":"COMPLETE","depends_on":["independent_plan_review"]},{"id":"F2","status":"COMPLETE","depends_on":["F1"]},{"id":"F3","status":"COMPLETE_LOCAL_EXPERIMENT","depends_on":["F2"]},{"id":"F4","status":"PENDING_HANDOFF","depends_on":["F3","maintained_cpu_image"]}],"source_execution":"DRAFT","implementation_admission":"owner_authorized_F1_to_F3","ci_handoff_evidence_spec":"CI coordination and documentation"}
+{"phases":[{"id":"F1","status":"COMPLETE","depends_on":["independent_plan_review"]},{"id":"F2","status":"COMPLETE","depends_on":["F1"]},{"id":"F3","status":"COMPLETE_LOCAL_EXPERIMENT","depends_on":["F2"]},{"id":"F4","status":"COMPLETE_RELEASE_0.1.1197","depends_on":["F3","maintained_cpu_image"]}],"source_execution":"DRAFT","implementation_admission":"owner_authorized_F1_to_F4","ci_handoff_evidence_spec":"CI coordination and documentation"}
 ```
 
 One independent Claude plan review completed. Its two findings were incorporated:
@@ -207,3 +207,32 @@ were used. Repository application code, packaging and CI were not changed.
 F1–F3 are complete for this local experimental runtime. F4 must qualify the
 maintained image supplied by the CI/CPU-build owner before the intended runtime
 can be admitted. B1/B2 and reconstruction/commissioning remain DRAFT.
+
+## Maintained-image qualification — 2026-11-26
+
+Release 0.1.1197, source `1b6e2236`, was independently verified against the owner's
+original produced/delivered receipts from build run `45785745222`. Source CI was
+reused; delivery gates ran, but the release-version suite was not rerun. No image
+was relabelled, application file replaced or execution limit widened.
+
+The first native Linux amd64 attempt passed all eight base cases, then refused a
+stale private registry implementation pin. The merged display-label change was
+reviewed; its whole-file hash matched both the released Git source and installed
+image. A fresh private packet updated that one pin and its aggregate digest while
+preserving all original evidence. One independent patch review found no blockers;
+all 183 affected checks, Ruff and strict changed-module types passed.
+
+The second isolated run matched all ten expected outcomes across base, mixed and
+declared-only scenarios. Mixed produced its scoped PASS; declared-only retained
+the expected `HOLD requirements_unknown` after successful real declaration and
+explicit omission. Every child was reaped, identities checked and database
+backends closed. All owned containers/networks and both temporary servers, disks,
+interfaces, security groups, keys and access rules were removed with readback.
+No live application, job, database or operational secret was changed by this test.
+
+F4 is complete for this exact maintained image. The source has since advanced to
+release 0.1.1199 with changed declared-grid rating inputs and schema; the old omission
+qualification is not transferable by updating hashes. The
+[source-admission plan](2026-11-26-source-inventory-admission.md) separates its
+collector, current-route qualification and source execution gates. B1/B2 and
+reconstruction/commissioning remain DRAFT.

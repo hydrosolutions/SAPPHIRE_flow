@@ -1,21 +1,16 @@
-"""Plan 402 — the two REVIEW-gated routes the flow map reads: T1's
-`GET /api/v1/qc/rules[?station_id=]` and T2's
-`GET /api/v1/stations/{id}/skill`. Both require a reviewer or admin token
-(`Depends(require_reviewer)`, Plan 401) and, when they serve station data,
-the principal's station scope (`ensure_station_in_scope`) exactly like every
-other station-scoped route.
-"""
+"""Station-scoped reviewer QC, stored skill and scored-artifact discovery."""
 
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.deps import get_connection, get_observation_clock, get_stores
 from sapphire_flow.api.schemas import (
     ForecastQcRuleResponse,
     ForecastQcRuleSetResponse,
@@ -33,6 +28,10 @@ from sapphire_flow.api.security import (
     Principal,
     ensure_station_in_scope,
     require_reviewer,
+)
+from sapphire_flow.api.skill_options import (
+    StationSkillOptionsResponse,
+    read_skill_options,
 )
 from sapphire_flow.config.forecast_qc_rules import resolve_forecast_qc_rules
 from sapphire_flow.config.qc_rules import resolve_qc_rules
@@ -52,7 +51,7 @@ from sapphire_flow.store.threshold_skill_codec import (
     ThresholdContextPayload,
     encode_threshold_context,
 )
-from sapphire_flow.types.datetime import UtcDatetime
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 
 if TYPE_CHECKING:
@@ -66,6 +65,30 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig
 
 router = APIRouter(prefix="/api/v1", tags=["api-review"])
+
+
+@router.get(
+    "/stations/{station_id}/skill-options", response_model=StationSkillOptionsResponse
+)
+def get_station_skill_options(
+    station_id: str,
+    model_id: str | None = Query(None),
+    stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_reviewer),
+    conn: sa.Connection = Depends(get_connection),
+    now: datetime = Depends(get_observation_clock),
+) -> StationSkillOptionsResponse:
+    sid = _parse_station_id(station_id)
+    ensure_station_in_scope(principal, sid)
+    if stores["station_store"].fetch_station(sid) is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    return read_skill_options(
+        conn,
+        forecast_lab_stores_from_dict(stores),
+        station_id=sid,
+        now=ensure_utc(now),
+        model_id=ModelId(model_id) if model_id is not None else None,
+    )
 
 
 def _parse_station_id(value: str) -> StationId:
@@ -252,6 +275,7 @@ def get_station_skill(
     artifact_id: UUID | None = Query(None),
     stores: dict[str, Any] = Depends(get_stores),
     principal: Principal = Depends(require_reviewer),
+    now: datetime = Depends(get_observation_clock),
 ) -> StationSkillResponse:
     sid = _parse_station_id(station_id)
     ensure_station_in_scope(principal, sid)
@@ -259,13 +283,12 @@ def get_station_skill(
     if station is None:
         raise HTTPException(status_code=404, detail="Station not found")
 
-    now = UtcDatetime(datetime.now(UTC))
     rows = fetch_station_skill_rows(
         forecast_lab_stores_from_dict(stores),
         stores["artifact_store"],
         stores["skill_store"],
         station_id=sid,
-        now=now,
+        now=ensure_utc(now),
         model_id=ModelId(model_id) if model_id is not None else None,
         requested_artifact_id=ArtifactId(artifact_id)
         if artifact_id is not None

@@ -745,6 +745,9 @@ class NetworkOverviewReader:
             availability=series.availability,
             freshness=freshness.freshness,
             forecast_id=str(record.id),
+            model_artifact_id=str(record.model_artifact_id)
+            if record.model_artifact_id is not None
+            else None,
             unit=record.ensemble.units,
             issued_at=record.issued_at,
             original_horizon_steps=record.ensemble.forecast_horizon_steps,
