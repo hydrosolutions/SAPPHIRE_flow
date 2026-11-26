@@ -268,9 +268,10 @@ not prove that the original measurement arrived late. Current revalidation also
 does not reconstruct what a historical forecast consumed. Keep deliberately omitted
 stored discharge visible even when the rating-input read succeeds.
 
-This reporting extension is [planned](../plans/2026-11-26-retained-input-inventory.md)
-and still needs qualification against the admitted release. Its completed status
-will describe a bounded, partial inventory; it will not establish weather
+The private reporting extension has passed a
+[local synthetic test](../plans/2026-11-26-retained-input-inventory.md#s2-local-result--2026-11-26)
+and still needs qualification against the admitted release. A completed report
+describes a bounded, partial inventory; it does not establish weather
 availability, whether the data can form model inputs, or restoration readiness.
 The whole intended report must fit the existing
 size limit; an output-limit stop is unresolved work, not permission to drop members.
