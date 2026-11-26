@@ -208,6 +208,7 @@ class PgRatingDerivedStore:
                 for record in records:
                     values = asdict(record)
                     values.pop("warnings")
+                    values.pop("recorded_at")
                     added = conn.execute(
                         insert(rating_derived_discharge)
                         .values(
@@ -357,12 +358,19 @@ class PgRatingDerivedStore:
             )
             source_count = len(current) + len(held)
             fingerprints = [record.fingerprint for record in current]
-            stored = set(
+            stored = dict(
                 conn.execute(
-                    sa.select(rating_derived_discharge.c.fingerprint).where(
+                    sa.select(
+                        rating_derived_discharge.c.fingerprint,
+                        rating_derived_discharge.c.recorded_at,
+                    ).where(
                         rating_derived_discharge.c.fingerprint.in_(fingerprints),
+                        rating_derived_discharge.c.tenant_id == binding.tenant_id,
+                        rating_derived_discharge.c.station_id == binding.station_id,
                     )
-                ).scalars()
+                )
+                .tuples()
+                .all()
             )
             for record in current:
                 if record.fingerprint in stored:
@@ -386,7 +394,9 @@ class PgRatingDerivedStore:
                 start=start,
                 end=end,
                 records=tuple(
-                    record for record in current if record.fingerprint in stored
+                    replace(record, recorded_at=stored[record.fingerprint])
+                    for record in current
+                    if record.fingerprint in stored
                 ),
                 held=tuple(held),
                 source_count=source_count,

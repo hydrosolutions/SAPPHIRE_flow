@@ -269,7 +269,7 @@ curl --fail --silent --show-error \
   "${API_BASE}/forecasts/${FORECAST_ID}/rating-input-history"
 ```
 
-This returns seven completed UTC days before that forecast's issue date, with
+This returns seven completed daily periods before that forecast's issue time, with
 daily discharge, support, warnings and frozen curve identities/validity. It is
 daily input-assembly context, **not** native discharge history or the final model
 tensor. `no_retained_derived_day` does not prove the model had no input. The
@@ -440,3 +440,11 @@ skill response returns `training_period_start: null`, `training_period_end: null
 and `evaluated_on: "unknown"` for their scores. These scores do not establish
 independence from training. Existing known-period classifications are unchanged.
 Event-review training bounds are also null when unknown.
+
+
+For declared-grid rating inputs, `rating-input-history` includes `period_definition`
+(step/origin seconds, label, aggregation). Its `day` is always the physical period
+start; the definition states how the model labels that interval. Legacy history
+has null period metadata and UTC-midnight days. Optional support `available_at`
+is a conservative system-recording bound, not a claimed provider publication time.
+Native timestamps and partial-support warnings remain unchanged.

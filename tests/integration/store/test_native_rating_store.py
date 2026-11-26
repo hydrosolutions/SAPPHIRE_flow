@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from uuid import uuid4
 
@@ -128,8 +129,11 @@ class TestNativeRatingStore:
         window = dict(start=_NOW, end=_NOW + timedelta(hours=1), at=_NOW)
         first = store.reconcile_chunk(binding, dhm, **window)
         assert len(first) == 1 and first[0].discharge == pytest.approx(4.0)
+        persisted = store.read_current(binding, dhm, **window)
+        assert all(record.recorded_at is not None for record in persisted)
+        assert tuple(replace(record, recorded_at=None) for record in persisted) == first
         assert store.reconcile_chunk(binding, dhm, **window) == first
-        assert store.read_current(binding, dhm, **window) == first
+        assert store.read_current(binding, dhm, **window) == persisted
         with engine.begin() as conn:
             assert (
                 conn.scalar(

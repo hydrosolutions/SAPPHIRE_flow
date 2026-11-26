@@ -111,8 +111,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Migration 0091 adds immutable declared forecast periods.
 # Migration 0092 adds model display labels.
 # Migration 0093 adds nullable threshold skill provenance.
-# Migration 0094 adds digest-bound weather summaries.
-_RELEASE_B_HEAD = "0094"
+# Migration 0095 retains declared rating periods and database availability.
+_RELEASE_B_HEAD = "0095"
 
 
 def _down_revisions() -> dict[str, str | None]:

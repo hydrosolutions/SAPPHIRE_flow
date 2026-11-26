@@ -140,8 +140,14 @@ def test_worker_admits_reconciles_and_records_noop_outcome(
             assert len(first) == 1
             assert first[0].evidence_version == 2
             assert first[0].discharge is not None
-            assert store.read_current(binding, dhm, **window) == first
+            persisted = store.read_current(binding, dhm, **window)
+            assert all(record.recorded_at is not None for record in persisted)
+            assert (
+                tuple(replace(record, recorded_at=None) for record in persisted)
+                == first
+            )
             assert store.reconcile_chunk(binding, dhm, **window) == first
+            assert store.read_current(binding, dhm, **window) == persisted
 
             import threading
 
@@ -253,7 +259,9 @@ def test_worker_admits_reconciles_and_records_noop_outcome(
         assert len(first) == 6
         assert sum(r.discharge is not None for r in first) == 2
         assert sum(r.rejection is not None for r in first) == 4
-        assert store.read_current(binding, dhm, **window) == first
+        persisted = store.read_current(binding, dhm, **window)
+        assert all(record.recorded_at is not None for record in persisted)
+        assert tuple(replace(record, recorded_at=None) for record in persisted) == first
         audit_query = sa.select(audit_log.c.detail).where(
             audit_log.c.target_id == str(native.station_id),
             audit_log.c.detail["command"].astext == "rating-derived-reconcile",

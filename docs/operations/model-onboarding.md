@@ -418,13 +418,36 @@ The older UTC-day retained-cache shortcut is disabled on this V2 path. Period-aw
 current-snapshot gap filling and receipt-proved donor selection still follow the
 configured gap policy; a failed refresh does not reuse a V1 retained snapshot.
 
-The declared-grid standard path supplies missing discharge on the model's own
-calendar. Stored DHM daily values with a different physical boundary are excluded,
-not relabelled, and no observation availability timestamp is invented. Observation
-coverage flags retain the missing inputs. Mixed or unknown/known group grids,
-END-labelled inputs and unscoped selections refuse. This input integration alone
-does not activate the replacement: output-period persistence/API qualification,
-artifact registration and isolated worker deployment remain required.
+At onboarding, confirm the model's daily step, UTC boundary, START/END label and
+per-variable aggregation in its FI input declaration and artifact training grid.
+The adapter checks their agreement during artifact deserialization, before import
+writes. The `model_import.validated` event reports the grid and target
+aggregations for the onboarding record. These declarations remain the runtime source of truth; there is no second
+deployment day setting and no question to answer on each forecast run. Legacy
+models with unknown grids retain their existing UTC-day route.
+
+The declared-grid standard path still leaves incompatible stored daily means
+missing. With an explicit station/model native-rating opt-in, the provisional
+route instead aggregates native point discharge on the declared daily boundary.
+MEAN and MAX are supported with partial-support warnings; SUM of sparse point
+rates is refused. Completed periods only are read, bounded by the configured
+reconciliation window. A longer model lookback is padded with missing values and
+left to its FI tolerance gate. No station/model binding is added automatically.
+
+Availability is the conservative database recording time of each exact derived
+fingerprint, bounded below by period closure. Unknown or post-issue sources are
+excluded. Migration 0095 assigns existing evidence its migration recording time:
+it becomes usable for subsequent issues, not retroactively for older issues.
+Neither validation time nor an observation's original creation time proves when
+its current value became available. Availability survives station/group assembly
+and reaches FI as nullable integer UTC microseconds.
+
+The live declared-weather route still requires daily START-labelled group models
+and matching selected V2 weather. END/subdaily live weather remains refused even
+though the reusable rating reducer and retained history understand both labels.
+The accepted 15-minute DHM/model-day comparison concerns daily-mean verification;
+it does not shift native point observations or turn UTC-day means into 18:00 days.
+This change does not activate bindings, hindcasts or scoring.
 
 
 ### 23 November static-encoder CMAL output contract
@@ -487,3 +510,12 @@ CMAL model's missing short name to `CMAL SE`; other existing models retain a nul
 short name. New registrations of that model declare the same label. No general
 rename endpoint is introduced. The API exposes them as `model_display_name` and
 `model_display_name_short`; frontend labels must never replace model IDs as keys.
+
+Recording-time semantics: `recorded_at` is the database INSERT timestamp, not the
+transaction commit time. A later rerun with an issue inside the original write
+transaction can therefore admit evidence committed just after that issue. This
+path does not promise exact historical transaction visibility or reconstruct
+superseded versions; changed unreconciled/current-only evidence stays missing.
+Migration 0095 locks the table before assigning one stable statement timestamp to
+old rows, avoiding a full table rewrite, then restores the clock default for new
+inserts. Quiesce writers during the normal migration rollout.

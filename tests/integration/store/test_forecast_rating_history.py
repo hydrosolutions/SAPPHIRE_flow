@@ -1589,3 +1589,207 @@ class TestFrozenCustody:
         )
         assert len(result["samples"]) == 1
         assert result["samples"][0]["discharge"] is not None
+
+
+@pytest.mark.parametrize("phase_hours", [0, 6, 18])
+@pytest.mark.parametrize("label", ["start", "end"])
+@pytest.mark.parametrize("aggregation", ["mean", "max"])
+def test_declared_period_frozen_history_roundtrip(
+    db_connection: sa.Connection,
+    label: str,
+    aggregation: str,
+    phase_hours: int,
+) -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+
+    import polars as pl
+    from pydantic import TypeAdapter
+
+    from sapphire_flow.db.metadata import rating_derived_discharge
+    from sapphire_flow.services.forecast_rating_history import (
+        build_forecast_rating_history,
+    )
+    from sapphire_flow.services.rating_inputs import merge_rating_days
+    from sapphire_flow.store.forecast_period_codec import parse_forecast_period
+    from sapphire_flow.store.forecast_store import PgForecastStore
+    from sapphire_flow.types.enums import AggregationMethod
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.forecast_rating_history import RatingHistoryEvidence
+    from sapphire_flow.types.rating_derived import RatingDerivedDischarge
+    from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+    from tests.integration.store.test_native_rating_forecasts import native_pair
+    from tests.integration.store.test_rejected_forecast_store import savepoint_factory
+
+    _, parent = native_pair(db_connection)
+    row = db_connection.execute(sa.select(rating_derived_discharge)).mappings().one()
+    known = row["timestamp"] + timedelta(hours=6)
+    # Simulate a historical database clock only inside this rolled-back fixture.
+    db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+    db_connection.execute(sa.update(rating_derived_discharge).values(recorded_at=known))
+    db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+    sample = RatingDerivedDischarge(
+        **{
+            key: row[key]
+            for key in (
+                "tenant_id",
+                "station_id",
+                "observation_id",
+                "rating_curve_id",
+                "file_id",
+                "timestamp",
+                "discharge",
+                "rejection",
+                "content",
+            )
+        },
+        warnings=tuple(json.loads(row["content"])["warnings"]),
+        recorded_at=known,
+    )
+    period = ForecastPeriodDefinition(
+        grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=phase_hours)),
+        label=PeriodLabel(label),
+        aggregation=AggregationMethod(aggregation),
+    )
+    frame, lineage, _ = merge_rating_days(
+        pl.DataFrame(),
+        (sample,),
+        issue_time=parent.issued_at,
+        weather_cycle_time=parent.issued_at,
+        period=period,
+    )
+    assert lineage is not None and lineage.rating_input is not None
+    lineage = replace(
+        lineage,
+        rating_input=replace(
+            lineage.rating_input, artifact_id=parent.model_artifact_id
+        ),
+    )
+    parent = replace(parent, input_lineage=lineage)
+    store = PgForecastStore(
+        db_connection,
+        data_use=parent.data_use,
+        transaction_factory=savepoint_factory(db_connection),
+    )
+    store.store_forecast(parent)
+    loaded = store.fetch_forecast(parent.id)
+    assert loaded is not None and loaded.input_lineage == lineage
+    raw = db_connection.scalar(
+        sa.select(sa.func.forecast_rating_input_history(parent.id))
+    )
+    assert raw["period_definition"] == period.content
+    raw["period_definition"] = parse_forecast_period(raw["period_definition"])
+    evidence = TypeAdapter(RatingHistoryEvidence).validate_python(raw)
+    history = build_forecast_rating_history(evidence)
+    assert history.days[-1].daily_discharge == frame["discharge"][0]
+    assert history.days[-1].day.hour == phase_hours
+    assert history.days[-1].support.available_at == max(
+        known, period.grid.floor(sample.timestamp) + timedelta(days=1)
+    )
+    assert history.period_definition == period.content
+
+
+def test_recording_time_is_database_assigned_and_immutable(
+    db_connection: sa.Connection,
+) -> None:
+    from sapphire_flow.db.metadata import rating_derived_discharge
+    from tests.integration.store.test_native_rating_forecasts import native_pair
+
+    before = db_connection.scalar(sa.select(sa.func.clock_timestamp()))
+    native_pair(db_connection)
+    row = db_connection.execute(sa.select(rating_derived_discharge)).mappings().one()
+    after = db_connection.scalar(sa.select(sa.func.clock_timestamp()))
+    assert before <= row["recorded_at"] <= after
+    assert row["recorded_at"] > row["captured_at"]
+    changed = dict(row)
+    changed.pop("stored_order")
+    changed.pop("stored_order_basis")
+    content = json.loads(row["content"])
+    content["source"]["qc_rule_version"] = "changed-version"
+    changed["content"] = canonical_content(content)
+    changed["fingerprint"] = content_digest(changed["content"])
+    changed["recorded_at"] = row["captured_at"]
+    db_connection.execute(sa.insert(rating_derived_discharge).values(**changed))
+    actual = db_connection.scalar(
+        sa.select(rating_derived_discharge.c.recorded_at).where(
+            rating_derived_discharge.c.fingerprint == changed["fingerprint"]
+        )
+    )
+    assert actual >= row["recorded_at"]
+    assert actual != changed["recorded_at"]
+    with pytest.raises(sa.exc.DBAPIError, match="immutable"):
+        db_connection.execute(
+            sa.update(rating_derived_discharge).values(recorded_at=row["captured_at"])
+        )
+
+
+@pytest.mark.parametrize(
+    "fault,error",
+    [
+        ("future_record", "identity or tenant disagreement"),
+        ("wrong_availability", "availability disagrees"),
+        ("misaligned", "daily input"),
+        ("invalid_period", "period definition invalid"),
+        ("unknown_policy", "purpose and lineage disagree"),
+    ],
+)
+def test_declared_period_sql_guard_refuses_invalid_evidence(
+    db_connection: sa.Connection,
+    fault: str,
+    error: str,
+) -> None:
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from sapphire_flow.db.metadata import forecasts, rating_derived_discharge
+
+    parent = _stored_parent(db_connection)
+    row = dict(
+        db_connection.execute(sa.select(forecasts).where(forecasts.c.id == parent.id))
+        .mappings()
+        .one()
+    )
+    content = json.loads(row["input_lineage"])
+    rating = content["rating_input"]
+    rating.update(
+        policy="declared-day-sample-first-measured-precedence-v2",
+        availability_basis="database_recording_upper_bound",
+        period_definition={
+            "step_seconds": 86400,
+            "origin_seconds": 0,
+            "label": "start",
+            "aggregation": "mean",
+        },
+    )
+    rating["days"][0]["available_at"] = parent.issued_at.isoformat()
+    db_connection.execute(sa.text("SET LOCAL session_replication_role=replica"))
+    db_connection.execute(
+        sa.update(rating_derived_discharge).values(
+            recorded_at=parent.issued_at + timedelta(hours=2)
+            if fault == "future_record"
+            else parent.issued_at - timedelta(hours=1)
+        )
+    )
+    db_connection.execute(sa.text("SET LOCAL session_replication_role=origin"))
+    if fault == "wrong_availability":
+        rating["days"][0]["available_at"] = (
+            parent.issued_at - timedelta(hours=1)
+        ).isoformat()
+    elif fault == "misaligned":
+        from datetime import datetime
+
+        rating["days"][0]["day"] = (
+            datetime.fromisoformat(rating["days"][0]["day"]) + timedelta(minutes=1)
+        ).isoformat()
+    elif fault == "invalid_period":
+        rating["period_definition"]["aggregation"] = "sum"
+    elif fault == "unknown_policy":
+        rating["policy"] = "unknown"
+    rating["issue_time"] = (parent.issued_at + timedelta(hours=1)).isoformat()
+    row.update(
+        id=uuid4(),
+        issued_at=parent.issued_at + timedelta(hours=1),
+        input_lineage=canonical_content(content),
+    )
+    with pytest.raises(sa.exc.DBAPIError, match=error):
+        db_connection.execute(sa.insert(forecasts).values(**row))

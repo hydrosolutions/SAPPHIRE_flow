@@ -1770,8 +1770,8 @@ class TestCurrentHeadDowngradeRefusal:
                 )
 
         before = snapshot()
-        assert before[0] == "0094"
-        with pytest.raises(RuntimeError, match="operator retry evidence requires"):
+        assert before[0] == "0095"
+        with pytest.raises(RuntimeError, match="0095 retains.*downgrade refused"):
             _alembic("downgrade", "0066")
         assert snapshot() == before
         assert _guard_object_counts(db) == (10, 3)

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from sapphire_flow.types.enums import AggregationMethod
-    from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+from sapphire_flow.types.enums import AggregationMethod  # noqa: TC001
+from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid  # noqa: TC001
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

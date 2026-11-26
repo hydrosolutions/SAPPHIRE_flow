@@ -498,7 +498,11 @@ is [retained separately](api-v1-implementation-history.md#provisional-read-regre
 
 See [daily input history](../api/README.md#get-observations-and-discharge-history).
 Preserve frozen-evidence validation, exact curve identity/validity, scoped
-reviewer/admin authorization and seven completed issue-anchored UTC days. Evidence
+reviewer/admin authorization and seven completed issue-anchored daily periods.
+Contract 3.7 adds nullable `period_definition` and support `available_at`. Legacy
+v1 history keeps UTC-midnight periods; declared v2 history uses its retained
+physical boundary and MEAN/MAX aggregation. `day` remains the physical period
+start even for END-labelled model inputs. Original native timestamps are retained. Evidence
 failures/limits return 503 rather than current-curve recomputation. Responses,
 outer errors, redirects and preflights are no-store. Existing summary/detail
 `rating_provenance_status` does not change.

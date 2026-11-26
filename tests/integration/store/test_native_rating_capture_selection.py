@@ -205,6 +205,9 @@ class TestNativeRatingCaptureSelection:
         (record,) = store.reconcile_chunk(binding, dhm, **window)
         assert record.evidence_version == 2
         assert record.discharge == pytest.approx(4.0)
+        (current,) = store.read_current(binding, dhm, **window)
+        assert current.fingerprint == record.fingerprint
+        assert current.recorded_at is not None and current.recorded_at > _NOW
         PgObservationStore(db_connection).update_qc(
             observation.id, QcStatus.QC_PASSED, [], qc_rule_version="new-generation"
         )

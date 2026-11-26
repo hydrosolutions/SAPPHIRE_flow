@@ -1134,7 +1134,11 @@ def build_superset_requirements(
 
 
 def _normalize_provisional_discharge(
-    frame: pl.DataFrame, *, start: UtcDatetime, end: UtcDatetime
+    frame: pl.DataFrame,
+    *,
+    start: UtcDatetime,
+    end: UtcDatetime,
+    grid: TimeGrid | None = None,
 ) -> pl.DataFrame:
     timestamps = frame["timestamp"]
     dtype = timestamps.dtype
@@ -1146,7 +1150,14 @@ def _normalize_provisional_discharge(
         )
     if ((timestamps < start) | (timestamps >= end)).any():
         raise ConfigurationError("provisional discharge labels outside assembly bounds")
-    if (timestamps != timestamps.dt.truncate("1d")).any():
+    phase = grid.phase if grid is not None else timedelta(0)
+    ticks_per_second = {"ns": 1_000_000_000, "us": 1_000_000, "ms": 1_000}[
+        dtype.time_unit
+    ]
+    phase_ticks = int(phase.total_seconds()) * ticks_per_second
+    if (
+        (timestamps.cast(pl.Int64) - phase_ticks) % (86400 * ticks_per_second) != 0
+    ).any():
         raise ConfigurationError("provisional discharge labels off the UTC daily grid")
     if frame.is_empty():
         return frame
@@ -1254,7 +1265,6 @@ def assemble_station_operational_inputs(
             or selected_weather is None
             or not isinstance(selected_weather.use, WeatherUseV2)
             or selected_weather.use.grid != declared_grid.grid
-            or rating_inputs is not None
             or reqs.required_past_targets != frozenset({"discharge"})
             or reqs.target_parameters != frozenset({"discharge"})
             or getattr(model, "artifact_scope", None) is not ArtifactScope.GROUP
@@ -1347,13 +1357,46 @@ def assemble_station_operational_inputs(
     latest_rating_timestamp = None
     if rating_inputs is not None:
         from sapphire_flow.services.rating_inputs import merge_rating_days
+        from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
 
         if time_step != timedelta(days=1):
             raise ConfigurationError(
                 "provisional rating input requires native daily cadence"
             )
-        rating_window = rating_inputs.read_window(
-            station_id, model_id, start=past_targets_start, end=past_targets_end, at=now
+        rating_period = (
+            ForecastPeriodDefinition(
+                grid=declared_grid.grid,
+                label=declared_grid.label,
+                aggregation=resolved_aggregation_methods(reqs)["discharge"],
+            )
+            if declared_grid is not None
+            else None
+        )
+        rating_start = (
+            rating_inputs.period_start(
+                station_id,
+                model_id,
+                start=past_targets_start,
+                issue=issue_time,
+                period=rating_period,
+            )
+            if rating_period is not None
+            else past_targets_start
+        )
+        from sapphire_flow.types.rating_reconciliation import RatingWindowRead
+
+        rating_window = (
+            rating_inputs.read_window(
+                station_id, model_id, start=rating_start, end=past_targets_end, at=now
+            )
+            if rating_start < past_targets_end
+            else RatingWindowRead(
+                start=past_targets_start,
+                end=past_targets_end,
+                records=(),
+                held=(),
+                source_count=0,
+            )
         )
         from sapphire_flow.types.rating_input_lineage import RatingUnreconciledSource
 
@@ -1374,6 +1417,7 @@ def assemble_station_operational_inputs(
             issue_time=issue_time,
             weather_cycle_time=cycle_time,
             unreconciled_sources=omissions,
+            period=rating_period,
         )
         if rating_lineage is None:
             log.info(
@@ -1402,12 +1446,20 @@ def assemble_station_operational_inputs(
                 ).with_columns(pl.lit(float("nan")).alias("discharge"))
         else:
             assert rating_lineage.rating_input is not None
-            rejected_measured = obs_store.fetch_observations(
-                station_id=station_id,
-                parameter="discharge",
-                start=past_targets_start,
-                end=past_targets_end,
-                qc_status=(QcStatus.QC_FAILED, QcStatus.QC_SUSPECT, QcStatus.MISSING),
+            rejected_measured = (
+                obs_store.fetch_observations(
+                    station_id=station_id,
+                    parameter="discharge",
+                    start=past_targets_start,
+                    end=past_targets_end,
+                    qc_status=(
+                        QcStatus.QC_FAILED,
+                        QcStatus.QC_SUSPECT,
+                        QcStatus.MISSING,
+                    ),
+                )
+                if declared_grid is None
+                else []
             )
             rejected_counts: dict[UtcDatetime, int] = {}
             for observation in rejected_measured:
@@ -1459,7 +1511,9 @@ def assemble_station_operational_inputs(
         rating_inputs is not None
         and time_step == timedelta(days=1)
         and reqs.target_parameters == frozenset({"discharge"})
-        and set(past_targets.columns) == {"timestamp", "discharge"}
+        and {"timestamp", "discharge"} <= set(past_targets.columns)
+        and set(past_targets.columns)
+        <= {"timestamp", "discharge", "available_at_us:discharge"}
         and isinstance(model, GroupInputGate)
     )
     try:
@@ -1469,7 +1523,10 @@ def assemble_station_operational_inputs(
             )
         elif normalize_discharge:
             past_targets = _normalize_provisional_discharge(
-                past_targets, start=past_targets_start, end=past_targets_end
+                past_targets,
+                start=past_targets_start,
+                end=past_targets_end,
+                grid=declared_grid.grid if declared_grid is not None else None,
             )
         # The shared cadence guard reads integer durations as microseconds.
         # Exact daily alignment above makes this validation-only cast lossless.

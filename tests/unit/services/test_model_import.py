@@ -937,3 +937,45 @@ class TestUnknownTrainingProvenance:
                 training_period_end=dates[2],
                 training_provenance=TrainingProvenance(declaration),
             )
+
+
+def test_import_reports_model_day_without_a_deployment_override() -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from structlog.testing import capture_logs
+
+    from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
+    from tests.fakes.fake_models import FakeGroupForecastModel
+
+    model = _SpyModel()
+    model.data_requirements = replace(
+        FakeGroupForecastModel.data_requirements,
+        time_grid=ModelTimeGrid(
+            grid=TimeGrid(step=timedelta(days=1), phase=timedelta(hours=6)),
+            label=PeriodLabel.END,
+        ),
+    )
+    stations = FakeStationStore()
+    station = make_station_config()
+    stations.store_station(station)
+    with capture_logs() as events:
+        _import(
+            model=model,
+            model_id=_MODEL_ID,
+            artifact_bytes=b"fixture",
+            station_id=station.id,
+            station_store=stations,
+            artifact_store=FakeModelArtifactStore(),
+            provenance_recorder=FakeArtifactProvenanceStore(),
+            model_store=FakeModelStore(),
+        )
+    event = next(
+        event for event in events if event["event"] == "model_import.validated"
+    )
+    assert event["time_grid"] == {
+        "step_seconds": 86400,
+        "origin_seconds": 21600,
+        "label": "end",
+    }
+    assert event["target_aggregations"] == {"discharge": "mean"}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import sqlalchemy as sa
 from fastapi import Depends, HTTPException
@@ -15,6 +15,7 @@ from sapphire_flow.api.provisional_forecasts import (
 from sapphire_flow.api.security import Principal, require_reviewer
 from sapphire_flow.db.metadata import forecasts, stations
 from sapphire_flow.services.forecast_rating_history import build_forecast_rating_history
+from sapphire_flow.store.forecast_period_codec import parse_forecast_period
 from sapphire_flow.types.forecast_rating_history import (
     ForecastRatingHistory,
     RatingHistoryEvidence,
@@ -68,6 +69,14 @@ class ForecastRatingHistoryReader:
             raw = self.conn.scalar(
                 sa.select(sa.func.forecast_rating_input_history(forecast_id))
             )
+            if isinstance(raw, dict) and "period_definition" in raw:
+                raw = cast("dict[str, object]", raw)
+                raw = {
+                    **raw,
+                    "period_definition": parse_forecast_period(
+                        raw["period_definition"]
+                    ),
+                }
             evidence = _EVIDENCE.validate_python(raw)
             actual = (
                 evidence.forecast_id,

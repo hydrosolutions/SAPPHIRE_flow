@@ -3443,6 +3443,12 @@ rating_derived_discharge = sa.Table(
     sa.Column("rejection", sa.Text),
     sa.Column("content", sa.Text, nullable=False),
     sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column(
+        "recorded_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("clock_timestamp()"),
+    ),
     sa.Column("capture_id", UUID(as_uuid=True)),
     sa.Column("evidence_version", sa.Integer, nullable=False, server_default="1"),
     sa.Column("stored_order", sa.BigInteger, sa.Identity(always=True), nullable=False),
