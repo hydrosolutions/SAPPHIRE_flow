@@ -36,6 +36,10 @@ def set_station_ingest_paused(
     """Return True if the switch changed, False if it already had that value."""
     if not reason.strip():
         raise ConfigurationError("a reason is required to change the ingest switch")
+    if principal.id is None or not principal.id.strip():
+        raise ConfigurationError(
+            "an operator identity is required to change the ingest switch"
+        )
     station = stations.fetch_station(station_id)
     if station is None:
         raise ConfigurationError(f"unknown station {station_id}")

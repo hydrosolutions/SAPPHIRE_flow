@@ -76,3 +76,16 @@ def test_other_tenant_is_refused_and_flag_unchanged() -> None:
     stored = store.fetch_station(config.id)
     assert stored is not None
     assert stored.ingest_paused is False
+
+
+@pytest.mark.parametrize("operator", [None, "  "])
+def test_unidentified_operator_is_refused_without_write_or_audit(operator) -> None:  # noqa: ANN001
+    config = station()
+    store, audit = stations(config), FakeAuditLogStore()
+    who = WritePrincipal(id=operator, tenant_id=None)
+    with pytest.raises(ConfigurationError):
+        _set(store, config, audit, principal=who)
+    stored = store.fetch_station(config.id)
+    assert stored is not None
+    assert stored.ingest_paused is False
+    assert audit.entries == []
