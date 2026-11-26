@@ -159,7 +159,9 @@ class TestSwissOverview:
                 "qc_status",
                 "model_id",
                 "issued_at",
+                "retained_result",
             }
+            assert item["forecast"]["retained_result"] is None
         else:
             assert item["forecast"]["state"] == "available"
 

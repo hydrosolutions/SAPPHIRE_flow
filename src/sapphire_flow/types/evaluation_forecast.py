@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.daily_forecast_claim import DailyFailureReason
     from sapphire_flow.types.daily_forecast_outcome import (
         DailyMemberOutcome,
+        DailyMemberReason,
+        DailyMemberState,
         DailyOutputReference,
     )
     from sapphire_flow.types.daily_forecast_recovery import DailyRecoveryStatus
@@ -76,6 +78,17 @@ class EvaluationCandidate:
     reference: DailyOutputReference
     record: OperationalForecast | PersistedRejectedForecast
     age: timedelta
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RetainedResult:
+    """An earlier same-day result shown because a later attempt failed."""
+
+    earlier_attempt_id: UUID
+    earlier_issued_at: UtcDatetime
+    superseding_attempt_id: UUID
+    superseding_state: DailyMemberState | None
+    superseding_reason: DailyMemberReason | None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

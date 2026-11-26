@@ -569,6 +569,16 @@
             "title": "Reason",
             "type": "null"
           },
+          "retained_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetainedResultOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "series": {
             "anyOf": [
               {
@@ -762,6 +772,16 @@
             "default": "publication_gate",
             "title": "Reason",
             "type": "string"
+          },
+          "retained_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetainedResultOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "state": {
             "const": "withheld",
@@ -6499,6 +6519,61 @@
         "title": "RejectedForecastValuePoint",
         "type": "object"
       },
+      "RetainedResultOut": {
+        "description": "An earlier same-day result shown because a later attempt failed.",
+        "properties": {
+          "kind": {
+            "const": "earlier_attempt_after_failed_retry",
+            "default": "earlier_attempt_after_failed_retry",
+            "title": "Kind",
+            "type": "string"
+          },
+          "original_attempt_id": {
+            "title": "Original Attempt Id",
+            "type": "string"
+          },
+          "original_issued_at": {
+            "format": "date-time",
+            "title": "Original Issued At",
+            "type": "string"
+          },
+          "superseding_attempt_id": {
+            "title": "Superseding Attempt Id",
+            "type": "string"
+          },
+          "superseding_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseding Reason"
+          },
+          "superseding_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseding State"
+          }
+        },
+        "required": [
+          "original_issued_at",
+          "original_attempt_id",
+          "superseding_attempt_id",
+          "superseding_state",
+          "superseding_reason"
+        ],
+        "title": "RetainedResultOut",
+        "type": "object"
+      },
       "ReviewAvailability": {
         "enum": [
           "available",
@@ -9564,7 +9639,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.10"
+    "version": "3.11"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -43,6 +43,7 @@ from sapphire_flow.types.evaluation_forecast import (
     EvaluationReferenceDiagnostic,
     EvaluationReferenceUsability,
     EvaluationSelectionKind,
+    RetainedResult,
 )
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.forecast_reference import ForecastOutputKey
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sapphire_flow.types.daily_forecast_one_shot import OperationalDailyClaim
+    from sapphire_flow.types.daily_forecast_outcome import DailyMemberOutcome
     from sapphire_flow.types.ids import ModelId, StationId
 
 if TYPE_CHECKING:
@@ -387,10 +389,120 @@ def select_current_member(
     )
 
 
+def retained_source(
+    day: DailyDaySnapshot, station_id: StationId
+) -> DailyAttemptSnapshot | None:
+    """The earlier attempt whose PRODUCED member may stand in for a failed retry.
+
+    Only a station whose authoritative member is not PRODUCED (or is absent) is
+    looked up. The newest earlier attempt that PRODUCED it is the only candidate:
+    older attempts are never consulted, so a rejection cannot be masked.
+    """
+    if day.authoritative is None:
+        return None
+    member = _member(day.authoritative, station_id)
+    if member is not None and member.state is DailyMemberState.PRODUCED:
+        return None
+    return next(
+        (
+            attempt
+            for attempt in day.earlier
+            if (m := _member(attempt, station_id)) is not None
+            and m.state is DailyMemberState.PRODUCED
+        ),
+        None,
+    )
+
+
+def _member(
+    attempt: DailyAttemptSnapshot, station_id: StationId
+) -> DailyMemberOutcome | None:
+    return next((m for m in attempt.outcomes or () if m.station_id == station_id), None)
+
+
+def select_retained_member(
+    *,
+    day: DailyDaySnapshot,
+    station_id: StationId,
+    parameters: tuple[str, ...],
+    candidates: Mapping[
+        tuple[OperationalDailyClaim, DailyOutputReference], EvaluationCandidate | None
+    ],
+    valid_at: UtcDatetime,
+) -> tuple[CurrentMemberSelection, RetainedResult | None] | None:
+    """`select_current_member` plus the retained earlier result, or None."""
+    summary = day.authoritative
+    selected = select_current_member(
+        summary=summary,
+        station_id=station_id,
+        parameters=parameters,
+        candidates=candidates,
+        valid_at=valid_at,
+    )
+    source = retained_source(day, station_id)
+    if summary is None or source is None:
+        return None if selected is None else (selected, None)
+    retained = select_current_member(
+        summary=source,
+        station_id=station_id,
+        parameters=parameters,
+        candidates=candidates,
+        valid_at=valid_at,
+    )
+    if retained is None:
+        return None if selected is None else (selected, None)
+    if not retained.candidates:
+        # Unavailable or expired: never fall through to an older attempt.
+        return retained, None
+    superseding = _member(summary, station_id)
+    return retained, RetainedResult(
+        earlier_attempt_id=source.claim.id,
+        earlier_issued_at=source.claim.key.context.issue_time,
+        superseding_attempt_id=summary.claim.id,
+        superseding_state=superseding.state if superseding else None,
+        superseding_reason=superseding.reason if superseding else None,
+    )
+
+
+def select_current_daily_retained(
+    *,
+    station_id: StationId,
+    parameters: tuple[str, ...],
+    days: Mapping[DailyClaimKey, DailyDaySnapshot],
+    candidates: Mapping[
+        tuple[OperationalDailyClaim, DailyOutputReference], EvaluationCandidate | None
+    ],
+    now: UtcDatetime,
+    valid_at: UtcDatetime,
+) -> tuple[CurrentMemberSelection, RetainedResult | None]:
+    """`select_current_daily` that may show an earlier result, with its label."""
+    available = [
+        (key, day) for key, day in days.items() if daily_day_available(day, key, now)
+    ]
+    for _, day in sorted(available, key=lambda item: str(item[0].group_id)):
+        result = select_retained_member(
+            day=day,
+            station_id=station_id,
+            parameters=parameters,
+            candidates=candidates,
+            valid_at=valid_at,
+        )
+        if result is not None:
+            return result
+    return (
+        CurrentMemberSelection(
+            parameters=parameters, candidates={}, uncovered=frozenset()
+        ),
+        None,
+    )
+
+
 def daily_day_available(
     day: DailyDaySnapshot, key: DailyClaimKey, now: UtcDatetime
 ) -> bool:
-    snapshots = tuple(s for s in (day.latest, day.authoritative) if s is not None)
+    snapshots = tuple(
+        s for s in (day.latest, day.authoritative, *day.earlier) if s is not None
+    )
     if any(
         s.claim.key.tenant_id != key.tenant_id
         or s.claim.key.deployment != key.deployment

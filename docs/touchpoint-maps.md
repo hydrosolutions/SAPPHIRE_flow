@@ -2683,6 +2683,12 @@ regressions, Nepal latest discharge/water-level semantics, native lineage isolat
 four observation queries, constant group/day reads, and one BAFU directory listing.
 See `spec/api-v1-review.md` for the version 2.6 wire contract and disabled default.
 
+Retained result (#581, contract 3.11): `read_day` fills `DailyDaySnapshot.earlier`
+(older same-day attempts with outcomes, newest first; `read_days_bounded` leaves it
+empty). Only `select_current_daily_retained` uses it, so the network overview and
+evaluation selection keep their behaviour until a follow-up. Scope and
+not-in-the-future validation of `earlier` lives in `daily_day_available`.
+
 Swiss overview review corrections: current candidate maps are keyed by the frozen
 `DailyClaim` and `DailyOutputReference`, preserving group/attempt/contract authority.
 Exact STANDARD batch record construction raises `StoredForecastDecodeError`

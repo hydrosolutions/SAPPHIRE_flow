@@ -58,6 +58,19 @@ class HeadlineUnavailable(BaseModel):
     reason: HeadlineAbsence
 
 
+class RetainedResultOut(BaseModel):
+    """An earlier same-day result shown because a later attempt failed."""
+
+    kind: Literal["earlier_attempt_after_failed_retry"] = (
+        "earlier_attempt_after_failed_retry"
+    )
+    original_issued_at: datetime
+    original_attempt_id: str
+    superseding_attempt_id: str
+    superseding_state: str | None
+    superseding_reason: str | None
+
+
 class CmalWithheld(BaseModel):
     state: Literal["withheld"] = "withheld"
     reason: Literal["publication_gate"] = "publication_gate"
@@ -66,6 +79,7 @@ class CmalWithheld(BaseModel):
     qc_status: str
     model_id: str
     issued_at: datetime
+    retained_result: RetainedResultOut | None = None
 
 
 class BafuWithheld(BaseModel):
@@ -131,6 +145,7 @@ class CmalAvailable(HeadlineAvailable):
     input_quality: str | None
     input_quality_flags: list[OverviewInputFlag]
     series: CmalSeries | None = None
+    retained_result: RetainedResultOut | None = None
 
 
 class BafuAvailable(HeadlineAvailable):

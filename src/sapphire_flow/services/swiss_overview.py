@@ -14,7 +14,8 @@ from sapphire_flow.services.evaluation_forecasts import (
     EvaluationStores,
     daily_candidate_from_record,
     daily_day_available,
-    select_current_daily,
+    retained_source,
+    select_current_daily_retained,
 )
 from sapphire_flow.services.forecast_lab.bafu_archive import (
     BafuArchiveRun,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.evaluation_forecast import (
         EvaluationCandidate,
         EvaluationReadSettings,
+        RetainedResult,
     )
     from sapphire_flow.types.ids import StationId
 
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
 class CurrentHeadline:
     candidate: EvaluationCandidate | None
     absence: HeadlineAbsence | None
+    retained: RetainedResult | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -216,6 +219,18 @@ def read_current_headlines(
         if member.station_id in scope
         for ref in member.references
     ]
+    # Earlier attempts are read only for stations whose newest attempt did not
+    # produce them, so a day without a failed retry fetches exactly what it did.
+    references.extend(
+        (source, ref)
+        for key, day in days.items()
+        if daily_day_available(day, key, as_of)
+        for sid in station_ids
+        if (source := retained_source(day, sid)) is not None
+        for member in source.outcomes or ()
+        if member.station_id == sid
+        for ref in member.references
+    )
     accepted = stores.forecasts.fetch_forecasts_by_ids(
         list(
             dict.fromkeys(
@@ -248,7 +263,7 @@ def read_current_headlines(
     }
     result: dict[StationId, CurrentHeadline] = {}
     for sid in station_ids:
-        selected = select_current_daily(
+        selected, retained = select_current_daily_retained(
             station_id=sid,
             parameters=settings.parameters,
             days=days,
@@ -266,7 +281,9 @@ def read_current_headlines(
             )
             if not any(day.authoritative is not None for day in days.values()):
                 absence = HeadlineAbsence.PENDING_CURRENT_ISSUE
-        result[sid] = CurrentHeadline(candidate=candidate, absence=absence)
+        result[sid] = CurrentHeadline(
+            candidate=candidate, absence=absence, retained=retained
+        )
     return result
 
 

@@ -30,6 +30,7 @@ from sapphire_flow.api.swiss_overview_schemas import (
     OverviewObservation,
     OverviewSample,
     OverviewStation,
+    RetainedResultOut,
     SwissOverviewItem,
     SwissOverviewResponse,
 )
@@ -79,12 +80,29 @@ def _cmal(
             reason=headline.absence or HeadlineAbsence.NO_CURRENT_CANDIDATE
         )
     row = candidate.record
+    retained = headline.retained
+    label = (
+        RetainedResultOut(
+            original_issued_at=retained.earlier_issued_at,
+            original_attempt_id=str(retained.earlier_attempt_id),
+            superseding_attempt_id=str(retained.superseding_attempt_id),
+            superseding_state=retained.superseding_state.value
+            if retained.superseding_state
+            else None,
+            superseding_reason=retained.superseding_reason.value
+            if retained.superseding_reason
+            else None,
+        )
+        if retained is not None
+        else None
+    )
     identity = CmalWithheld(
         output_id=str(row.id),
         output_source=candidate.reference.source.value,
         qc_status=row.qc_status.value,
         model_id=str(row.model_id),
         issued_at=row.issued_at,
+        retained_result=label,
     )
     if withheld:
         return identity
@@ -131,6 +149,7 @@ def _cmal(
         ]
         if isinstance(row, OperationalForecast)
         else [],
+        retained_result=label,
     )
 
 
