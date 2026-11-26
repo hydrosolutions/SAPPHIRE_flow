@@ -192,7 +192,7 @@ class TestSelector:
             {
                 (newer.claim, newer_ref): _candidate(case, newer_ref),
                 # Shifted forward, the earlier result would cover valid_at.
-                (case.summary.claim, ref): _candidate(case, ref, shift=6),
+                (case.summary.claim, ref): _candidate(case, ref, shift=4),
             },
             hours=5,
         )
@@ -261,6 +261,27 @@ class TestSelector:
         assert selection.candidates["discharge"].reference == older_ref
         assert retained is not None
         assert retained.earlier_attempt_id == older.claim.id
+
+    def test_integrity_rejected_authoritative_member_is_not_a_result(
+        self, case: SimpleNamespace
+    ) -> None:
+        rejected_ref = replace(
+            case.summary.outcomes[0].references[0],
+            source=DailyOutputSource.REJECTED,
+            output_id=UUID(int=402),
+        )
+        newest = _failed(
+            case.summary,
+            1,
+            DailyMemberState.INTEGRITY_REJECTED,
+            references=(rejected_ref,),
+        )
+        selection, retained = _select(
+            case,
+            _day(newest),
+            {(newest.claim, rejected_ref): _candidate(case, rejected_ref)},
+        )
+        assert selection.candidates == {} and retained is None
 
     def test_newest_integrity_rejected_member_shows_earlier_with_state(
         self, case: SimpleNamespace
