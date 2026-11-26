@@ -11,6 +11,13 @@ under the same model/station policy as explicit `/skill` reads. Never infer skil
 from a hindcast or expose artifact file paths. Update reviewer auth inventory,
 no-store/CORS paths and generated map contract together. Verify
 `tests/integration/api/test_skill_options.py` and `test_network_overview.py`.
+`api/skill_diagrams.py` additionally requires a matching current scalar cohort,
+including generation, cadence/phase, lead and evaluation interval. Alias its joined
+generation ledger separately from `latest_generation_predicate` subqueries. Keep
+stored null bins/context intact, bound selected leads/thresholds and rows, reject
+oversize payloads before transferring JSON from PostgreSQL, and enforce the exact
+4-MiB encoded response ceiling. Verify `tests/integration/api/test_skill_diagrams.py`;
+never fall back to an older diagram after a scalar-only generation is published.
 
 ### Event-review options and series (M2–M3)
 

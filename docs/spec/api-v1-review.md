@@ -180,6 +180,49 @@ pretraining leakage. Scalar sample/excluded counts remain in `/skill`.
 The synthetic [catalogue example](../api/examples/skill-options.json) is a contract
 fixture, not evidence of deployed model coverage.
 
+## Stored diagrams (`GET /api/v1/stations/{id}/skill-diagrams`)
+
+Contract 3.9 adds one bulk reviewer/admin read for reliability and ROC. Required
+selectors are exact `model_id`, UUID `artifact_id`, repeated `lead_hours` (1–16
+nonnegative integer values), and repeated `threshold_level` (1–8 names, at most
+64 characters each). For example: `?model_id=cmal_small&artifact_id=<uuid>&lead_hours=24&lead_hours=48&threshold_level=High`.
+The response covers discharge, all seasons and all flow regimes together; it does
+not recompute or slice skill to a requested event period. Inactive artifacts remain
+readable under the same active model-assignment and station scope as `/skill`.
+
+Both diagram kinds retain their stored arrays under `data`: reliability has `bins`,
+`forecast_freq`, `sample_counts`, `observed_freq`; ROC has `thresholds`, `hit_rate`,
+`false_alarm_rate`, `n_events`, `n_non_events`. Legacy payloads retain their stored
+shape. Undefined entries remain null, never zero. `threshold_context`, when stored,
+provides the threshold snapshot/source, scored and excluded counts, event counts,
+probability method and temporal caveats. Absent historical context remains null;
+no counts or source are inferred. Forcing comes from the published generation;
+legacy rows without a generation report null forcing.
+
+Each diagram states its generation, source, computation version, evaluation dates,
+cadence/phase and `evaluated_on`; the envelope carries training dates. The current
+scalar generation/cohort must match: a newer scalar publication cannot leave an
+older curve visible. Sources/forcing cohorts remain separate rows. These remain
+stored evaluations, not a score of today's displayed forecast or proof of held-out
+training. Match their artifact and generation to the scalar read.
+
+`availability` is `available`, `partial` or `no_stored_diagrams`. `missing` lists
+requested lead/threshold/kind combinations without any matching readable current
+diagram. This does not claim that the historical run itself is complete. An unknown,
+unassigned or mismatched artifact returns no diagrams, without exposing metadata
+from another artifact. Out-of-scope stations return 404.
+Empty results always have null training dates, including an existing artifact of
+the same model that has no readable diagrams at this station.
+
+The uncompressed response ceiling is 4 MiB, with a maximum of 1024 diagram rows.
+The database also bounds stored JSON text before transfer; whitespace can make
+that pre-check slightly stricter than the compact response size.
+Oversize reads fail with 422 and an error envelope, never truncation; invalid query
+shapes use FastAPI's validation envelope (both are in the contract). Narrow the bulk
+selection on overflow. Responses and allowed GET preflights are no-store. No
+per-lead or per-threshold HTTP fan-out is needed. The synthetic
+[diagram fixture](../api/examples/skill-diagrams.json) illustrates the wire shape.
+
 ## Skill (`GET /api/v1/stations/{id}/skill`)
 
 Optional `artifact_id=<UUID>` selects stored skill for that artifact, including
