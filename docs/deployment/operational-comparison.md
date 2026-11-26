@@ -275,6 +275,12 @@ describes a bounded, partial inventory; it does not establish weather
 availability, whether the data can form model inputs, or restoration readiness.
 The whole intended report must fit the existing
 size limit; an output-limit stop is unresolved work, not permission to drop members.
+Before the [current-image rehearsal](../plans/2026-11-26-current-image-inventory-qualification.md),
+give deployment support the complete private list of stations, models and forecast
+jobs to compare, including exclusions and the corresponding trained-model references.
+Checking an image archive and preparing synthetic fixtures do not run that rehearsal
+or inspect live data. If the complete report does not fit, settle the scope or report
+design explicitly before starting a temporary server.
 
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
