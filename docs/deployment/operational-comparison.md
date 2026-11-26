@@ -241,9 +241,25 @@ metadata, observation roots and linked evidence in its qualified local cases.
 Every selected model must also load and declare its requirements within the reviewed
 runtime limits. A failed constructor check leaves the inventory incomplete; it is
 not evidence that observations are absent or permission to omit that model.
-Deployment support must resolve that gate before source execution. See the
-[integration record](../plans/2026-11-22-operational-deployment-recipe.md#integrated-local-inventory-and-constructor-hold)
-for the currently qualified cases and remaining blocker.
+Deployment support must resolve that gate for the exact source runtime before
+source execution. The maintained release 0.1.1197 passed its isolated constructor
+and inventory-runner checks; this is not source-data acceptance. See the
+[qualification record](../plans/2026-11-25-constructor-environment-guard.md#maintained-image-qualification--2026-11-26)
+and [source-admission plan](../plans/2026-11-26-source-inventory-admission.md).
+
+After an upgrade, ask deployment support to recheck which inputs the selected model
+actually consumes. A newer route may use rating-derived runoff where an older one
+deliberately omitted it. Verify registered settings against the actual worker and
+forecast child; a run-level override or successful configuration parse alone does
+not establish the executed selection. Reuse the maintained
+[configuration reference](nhs-forecast-configuration.md#runtime-selection-and-consistent-configuration)
+and [model-onboarding instructions](../operations/model-onboarding.md).
+
+Deployment support has an isolated qualification of the private metadata checker.
+Its result establishes configuration/process consistency only. An absent forecast
+child remains unverified; do not start a live forecast merely to satisfy this check.
+The source image, current input-read behavior and scientific readiness still need
+their separate checks before an operational comparison.
 
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
@@ -260,6 +276,11 @@ mapping in the required private reconstruction receipt. Renewed rows do not reta
 the runtime warning that their original insertion order was unknown. Therefore
 exclude model-performance evaluation until that warning can be preserved durably;
 forecast operation and history selection still need their own acceptance checks.
+A retained input's recording time can determine whether a forecast was allowed
+to use it. Such availability evidence is outside this bookkeeping exception;
+renewing it can change model inputs. Deployment support must settle and test its
+preservation before admitting reconstruction on a release that uses it.
+
 This limited exception is not a general backup/restore procedure or evidence of
 the original chronology. Deployment support must verify the receipt against
 committed data and actual service-role reads before admitting the target. If the

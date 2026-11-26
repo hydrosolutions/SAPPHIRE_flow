@@ -1078,3 +1078,26 @@ This qualifies the private helper against the experimental CPU-wheel derivative,
 not a maintained or current-main release image. The CI/CPU-build owner supplies
 that image for F4 requalification. Until that handoff and the separate source
 packet gates complete, B1/B2 and reconstruction/commissioning remain DRAFT.
+
+### Maintained runtime complete; current-source admission pending
+
+The [maintained-image qualification](2026-11-25-constructor-environment-guard.md#maintained-image-qualification--2026-11-26)
+passed on release 0.1.1197 using independently verified delivery receipts and a
+disposable native Linux amd64 server. All three scenarios/ten cases matched their
+expected outcomes. A reviewed stale registry-pin correction passed 183 affected
+checks; original failure evidence was preserved. Temporary runtime/cloud/access
+resources were removed and verified; no live application changes were made.
+
+The source now runs release 0.1.1199, whose declared-grid rating input and recording-
+time availability differ from the qualified omission route. Neither the prior
+planner nor its synthetic controller is a current source collector. The
+[next bounded plan](2026-11-26-source-inventory-admission.md) defines source metadata
+collection, a reviewed current-read amendment, matching-runtime qualification and
+only then an explicitly admitted inventory. Input recording time is outside the
+earlier renewable-bookkeeping exception. B1/B2, reconstruction and commissioning
+remain DRAFT; current model validation stays with the source-deployment owner.
+
+The owner's separately admitted S1 metadata collector is now locally qualified;
+see its [bounded qualification record](2026-11-26-source-inventory-admission.md#s1-local-qualification--2026-11-26).
+This verifies actual worker/child selection on synthetic infrastructure. It does
+not admit the newer source runtime, application-data reads or reconstruction.
