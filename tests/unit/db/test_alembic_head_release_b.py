@@ -113,7 +113,8 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Migration 0093 adds nullable threshold skill provenance.
 # Migration 0095 retains declared rating periods and database availability.
 # Migration 0096 adds the per-station ingest-paused switch.
-_RELEASE_B_HEAD = "0096"
+# Migration 0097 retains declared hindcast and verification period identity.
+_RELEASE_B_HEAD = "0097"
 
 
 def _down_revisions() -> dict[str, str | None]:

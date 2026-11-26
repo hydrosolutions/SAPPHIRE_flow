@@ -595,3 +595,7 @@ window for prediction and evidence capture, and requires generation publication
 for declared scoring. The same reviewer verified all four corrections with no
 remaining finding. Full CI remains required before owner merge; full reports stay
 local. Legacy computation and no-grid admission remain unchanged.
+
+The existing current-head assertions now expect migration 0097. The migration
+chain check, protected-schema rollback guard and Nepal readiness isolation
+regressions pass against that head.
