@@ -432,7 +432,8 @@ Protected Nepal delivery rows are excluded even for admins. The existing
 `/observations/latest` defaults and water-level behavior are unchanged.
 
 `forecast` is only today's shared CURRENT daily evaluation selection. There is
-no ordinary, yesterday, or staged fallback. All current groups are validated before
+no ordinary, yesterday, or staged fallback; the one exception is the labelled
+retained result described below. All current groups are validated before
 selection; an invalid daily authority makes every CMAL component unavailable with
 `authority_integrity_error`. A typed failure decoding an exact authoritative stored
 record has the same component-only result; observations and BAFU survive.
@@ -446,6 +447,21 @@ Candidate keys retain the full frozen claim and output reference, so another
 group cannot overwrite the first group’s eligibility. The station
 panel still runs its fallback/history/diagnostic path; yesterday-only diagnostic
 corruption can fail that panel while a valid current-only overview remains usable.
+
+Retained result (contract 3.11, issue #581). When a later attempt of the same
+issue day is authoritative but did not produce a station (model failed, input
+excluded, integrity rejected, or the station is absent from it), the newest
+earlier attempt of that day that did produce it may stay visible. The CMAL
+object (available or withheld) then carries `retained_result`
+`{kind: "earlier_attempt_after_failed_retry", original_issued_at,
+original_attempt_id, superseding_attempt_id, superseding_state,
+superseding_reason}`; the last two are the superseding attempt's member state
+and reason, null when the station is absent from it. The field is null or absent
+otherwise. `output_id` and `issued_at` are those of the retained output. The
+earlier output passes the same eligibility, QC, superseded and withholding rules
+as any current output; if it is rejected, expired or not covering the time the
+headline is unavailable, never an older attempt. Only the Swiss overview applies
+this; the network overview and station evaluation selection are unchanged.
 
 Available CMAL includes `output_id`, `output_source` (`forecast` or `rejected`),
 `qc_status`, `model_id`, source `daily_cmal`, and input-quality labels. Eligible

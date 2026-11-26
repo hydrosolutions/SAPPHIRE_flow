@@ -912,6 +912,16 @@ class PgDailyForecastStore:
         )
         if attempts and isinstance(attempts[0].claim, OperatorDailyClaim):
             authoritative = attempts[0] if attempts[0].outcomes is not None else None
+        # Attempts are newest first: the older ones are the suffix after authority.
+        earlier = (
+            tuple(
+                a
+                for a in attempts[attempts.index(authoritative) + 1 :]
+                if a.outcomes is not None
+            )
+            if authoritative is not None
+            else ()
+        )
         recovery = (
             DailyRecoveryStatus.OPERATOR_RECOVERED
             if any(attempt.recovery is not None for attempt in attempts)
@@ -921,6 +931,7 @@ class PgDailyForecastStore:
             latest=attempts[0] if attempts else None,
             authoritative=authoritative,
             recovery_status=recovery,
+            earlier=earlier,
         )
 
     def read_days_bounded(

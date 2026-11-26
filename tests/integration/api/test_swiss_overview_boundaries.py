@@ -276,6 +276,7 @@ class TestSwissOverviewBoundaries:
                 "qc_status": "qc_passed",
                 "model_id": str(b.record.model_id),
                 "issued_at": b.record.issued_at.isoformat().replace("+00:00", "Z"),
+                "retained_result": None,
             }
         else:
             assert forecast["state"] == "available"

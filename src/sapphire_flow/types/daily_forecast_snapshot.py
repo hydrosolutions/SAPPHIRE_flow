@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -93,3 +93,7 @@ class DailyDaySnapshot:
     latest: DailyAttemptSnapshot | None
     authoritative: DailyAttemptSnapshot | None
     recovery_status: DailyRecoveryStatus
+    # Older attempts of the same issue day that have outcomes, newest first and
+    # all older than `authoritative`. Only `read_day` fills it; `read_days_bounded`
+    # leaves it empty. Not part of equality: it is history, not authority.
+    earlier: tuple[DailyAttemptSnapshot, ...] = field(default=(), compare=False)
