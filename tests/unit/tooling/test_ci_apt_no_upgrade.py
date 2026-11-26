@@ -120,3 +120,13 @@ class TestAptStepFetchesBaseSuiteOnly:
         assert "Dir::Etc::sourceparts=/dev/null" in run
         assert "${VERSION_CODENAME} main universe" in run
         assert run.count('apt-get "${APT_OPTS[@]}"') == 2
+
+
+def test_private_verification_script_uses_the_same_base_suite_only_options() -> None:
+    script = (_REPO_ROOT / "tools/private_verification_gates.sh").read_text()
+
+    assert "Dir::Etc::sourcelist=" in script
+    assert "Dir::Etc::sourceparts=/dev/null" in script
+    assert "${VERSION_CODENAME} main universe" in script
+    assert script.count('apt-get "${APT_OPTS[@]}"') == 2
+    assert "--no-upgrade" in script
