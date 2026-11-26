@@ -141,6 +141,10 @@ def _observations(value: OverviewObservations) -> OverviewObservationResponse:
     )
 
 
+MAX_ASSIGNMENTS = 3200
+MAX_OUTPUTS_PER_PURPOSE = 3200
+
+
 class NetworkOverviewReader:
     def __init__(
         self,
@@ -222,9 +226,9 @@ class NetworkOverviewReader:
         )
         admitted_keys = set(headers) | set(daily_refs)
         missing = self._missing_outputs(assignments, purposes, admitted_keys)
-        projected_counts = Counter((key[0], key[3]) for key in admitted_keys)
-        projected_counts.update((key[0], key[3]) for key in missing)
-        if any(count > 4 for count in projected_counts.values()):
+        projected_counts = Counter(key[3] for key in admitted_keys)
+        projected_counts.update(key[3] for key in missing)
+        if any(count > MAX_OUTPUTS_PER_PURPOSE for count in projected_counts.values()):
             raise ValueError("overview output admission exceeded")
         records = self._records(headers)
         output: dict[StationId, list[OverviewForecastResponse]] = {
@@ -273,9 +277,10 @@ class NetworkOverviewReader:
                 )
             )
         if any(
-            count > 4
-            for items in output.values()
-            for count in Counter(item.data_use for item in items).values()
+            count > MAX_OUTPUTS_PER_PURPOSE
+            for count in Counter(
+                item.data_use for items in output.values() for item in items
+            ).values()
         ):
             raise ValueError("overview output admission exceeded")
         observations = PgObservationStore(self.conn).fetch_overview_observations(
@@ -407,11 +412,9 @@ class NetworkOverviewReader:
                 group_model_assignments.c.status == "active",
             )
         )
-        rows = self.conn.execute(direct.union(grouped).limit(801)).all()
+        rows = self.conn.execute(direct.union(grouped).limit(MAX_ASSIGNMENTS + 1)).all()
         result = {(StationId(row[0]), ModelId(row[1])) for row in rows}
-        if len(result) > 800 or any(
-            count > 4 for count in Counter(sid for sid, _ in result).values()
-        ):
+        if len(result) > MAX_ASSIGNMENTS:
             raise ValueError("overview assignment admission exceeded")
         return result
 
@@ -593,14 +596,12 @@ class NetworkOverviewReader:
                 forecasts.c.version.desc(),
                 forecasts.c.id.desc(),
             )
-            .limit(200 * 4 * len(purposes) + 1)
+            .limit(MAX_OUTPUTS_PER_PURPOSE * len(purposes) + 1)
         )
         rows = self.conn.execute(query).mappings().all()
-        if len(rows) > 200 * 4 * len(purposes) or any(
-            count > 4
-            for count in Counter(
-                (row["station_id"], row["data_use"]) for row in rows
-            ).values()
+        if len(rows) > MAX_OUTPUTS_PER_PURPOSE * len(purposes) or any(
+            count > MAX_OUTPUTS_PER_PURPOSE
+            for count in Counter(row["data_use"] for row in rows).values()
         ):
             raise ValueError("overview output admission exceeded")
         return {
