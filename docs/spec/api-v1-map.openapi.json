@@ -2440,6 +2440,17 @@
             "title": "Status",
             "type": "string"
           },
+          "threshold_probabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastProbabilitiesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-time exceedance probabilities for this exact forecast; no window-event probability or alert decision."
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -2642,6 +2653,143 @@
           "p75"
         ],
         "title": "ForecastPointResponse",
+        "type": "object"
+      },
+      "ForecastProbabilitiesResponse": {
+        "properties": {
+          "availability": {
+            "enum": [
+              "available",
+              "partial",
+              "unavailable",
+              "thresholds_not_configured"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "kind": {
+            "const": "operational",
+            "default": "operational",
+            "title": "Kind",
+            "type": "string"
+          },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastProbabilityPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "probability_definition": {
+            "default": "P(stored forecast value > threshold), without tolerance or rounding. Per valid time; the forecast identity, issue time, QC and provisional status are those of the parent forecast. Quantile tails have bounds, not invented point probabilities. Members use empirical frequencies. Exceedance of an aggregated value is not the probability of a peak anywhere in its period. Unknown temporal support implies no aggregation.",
+            "title": "Probability Definition",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "temporal_support": {
+            "enum": [
+              "declared_period",
+              "unknown"
+            ],
+            "title": "Temporal Support",
+            "type": "string"
+          },
+          "threshold_basis": {
+            "default": "Current stored discharge thresholds in m3/s; updated_at is snapshot metadata, not a historical effective date.",
+            "title": "Threshold Basis",
+            "type": "string"
+          },
+          "thresholds": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewThresholdResponse"
+            },
+            "title": "Thresholds",
+            "type": "array"
+          },
+          "window_event_probability": {
+            "const": "unsupported",
+            "default": "unsupported",
+            "title": "Window Event Probability",
+            "type": "string"
+          }
+        },
+        "required": [
+          "availability",
+          "reason",
+          "temporal_support",
+          "period_definition",
+          "thresholds",
+          "points"
+        ],
+        "title": "ForecastProbabilitiesResponse",
+        "type": "object"
+      },
+      "ForecastProbabilityPoint": {
+        "properties": {
+          "support_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support End"
+          },
+          "support_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support Start"
+          },
+          "threshold_probabilities": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExceedanceProbabilityResponse"
+            },
+            "title": "Threshold Probabilities",
+            "type": "object"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "title": "Valid Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "valid_time",
+          "support_start",
+          "support_end",
+          "threshold_probabilities"
+        ],
+        "title": "ForecastProbabilityPoint",
         "type": "object"
       },
       "ForecastQcRuleResponse": {
@@ -5482,6 +5630,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "threshold_probabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastProbabilitiesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-time exceedance probabilities for this exact forecast; no window-event probability or alert decision."
           },
           "updated_at": {
             "format": "date-time",
@@ -9405,7 +9564,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.9"
+    "version": "3.10"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -5,6 +5,9 @@ from typing import Annotated, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
+from sapphire_flow.api.forecast_probabilities import (
+    ForecastProbabilitiesResponse,  # noqa: TC001
+)
 from sapphire_flow.api.weather_evidence import WeatherUseResponse  # noqa: TC001
 from sapphire_flow.store.forecast_period_codec import (
     ForecastPeriodPayload,  # noqa: TC001
@@ -296,6 +299,13 @@ class EnsembleResponse(BaseModel):
 
 
 class _ForecastDetailFields(BaseModel):
+    threshold_probabilities: ForecastProbabilitiesResponse | None = Field(
+        default=None,
+        description=(
+            "Per-time exceedance probabilities for this exact forecast; "
+            "no window-event probability or alert decision."
+        ),
+    )
     weather_use: WeatherUseResponse | None = Field(
         default=None,
         description=(

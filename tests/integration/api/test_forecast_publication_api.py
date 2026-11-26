@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
@@ -31,6 +32,9 @@ from tests.integration.store.test_forecast_publication_store import (
     _add_candidate,
     _seed,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestPublicationApiPostgres:
@@ -85,7 +89,7 @@ class TestPublicationApiPostgres:
         assert "overdue" in overdue.remaining_reasons[0]
 
     def test_human_replacement_preserves_old_values_then_withdraws_only_old_id(
-        self, db_connection: sa.Connection
+        self, db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from uuid import uuid4
 
@@ -183,7 +187,21 @@ class TestPublicationApiPostgres:
                 assert old_selected.status_code == 200
                 assert old_selected.json()["publication_state"] == "selected"
                 assert old_selected.json()["status"] == "superseded"
-                assert client.get(f"/api/v1/forecasts/{forecast_b}").status_code == 404
+
+                def forbidden_threshold_read(*args: object) -> None:
+                    raise AssertionError(
+                        "Unpublished forecast must not read thresholds"
+                    )
+
+                with monkeypatch.context() as guard:
+                    guard.setattr(
+                        stores["station_store"],
+                        "fetch_thresholds",
+                        forbidden_threshold_read,
+                    )
+                    assert (
+                        client.get(f"/api/v1/forecasts/{forecast_b}").status_code == 404
+                    )
 
                 replacement = client.post(
                     f"/api/v1/review/forecasts/{forecast_b}/publish",
@@ -209,7 +227,15 @@ class TestPublicationApiPostgres:
                     },
                 )
                 assert withdrawal.status_code == 200, withdrawal.text
-                assert client.get(f"/api/v1/forecasts/{forecast_a}").status_code == 410
+                with monkeypatch.context() as guard:
+                    guard.setattr(
+                        stores["station_store"],
+                        "fetch_thresholds",
+                        forbidden_threshold_read,
+                    )
+                    withdrawn_detail = client.get(f"/api/v1/forecasts/{forecast_a}")
+                assert withdrawn_detail.status_code == 410
+                assert "threshold_probabilities" not in withdrawn_detail.json()
                 latest = client.get(
                     f"/api/v1/stations/{station_id}/forecasts/latest-published",
                     params={"parameter": "discharge"},

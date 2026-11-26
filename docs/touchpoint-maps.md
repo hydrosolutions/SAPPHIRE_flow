@@ -1,5 +1,18 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
+### Operational threshold probabilities
+
+`api/routes/api_forecasts.py` enriches detail only after station, publication and
+provisional admission. `api/forecast_probabilities.py` uses the existing
+`services/threshold_probability.py` converter and current station thresholds.
+Keep strict exceedance, null unknown tails, canonical discharge units, parent
+QC/data-use identity and declared period support; never infer peak/window events
+from marginal quantiles or compare stage thresholds with discharge. A withdrawn
+or denied forecast must not fetch thresholds or expose the enrichment. Update
+both detail schemas, generated map contract and examples together. Verify
+`test_forecast_probabilities.py`, `test_api_forecasts.py`,
+`test_provisional_forecast_reads.py`, and `test_forecast_publication_api.py`.
+
 ### Forecast artifact and stored-skill discovery
 
 `api/network_overview.py` copies `model_artifact_id` only from the already admitted
@@ -3100,3 +3113,12 @@ outer score/diagram table. Referencing that outer table implicitly adds an
 uncorrelated self-join and lets unrelated baselines hide valid generations.
 Keep station/artifact/forcing isolation regressions for scores and diagrams,
 same-scope version precedence, and reflected-table reader coverage.
+
+Forecast-detail contract changes also require the standard-route byte fixtures
+(`test_standard_route_bytes.py`) and direct dependency-call tests
+(`test_provisional_forecasts.py`); these fixtures must supply the station store
+used to read threshold snapshots.
+
+Include the API integration callers when checking forecast-detail dependencies:
+consumer isolation, selected-weather corruption, large legacy weather isolation,
+and native selected-weather tests all read detail directly with PostgreSQL stores.

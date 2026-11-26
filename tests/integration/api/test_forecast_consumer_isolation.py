@@ -18,6 +18,7 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_latest_forecast_for_model,
     fetch_latest_publication_cycle_time,
 )
+from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.enums import AccessTokenRole, ForecastStatus
 from sapphire_flow.types.ids import AccessTokenId
 from tests.integration.store.test_forecast_data_use import _pair, _stores
@@ -66,7 +67,10 @@ class TestPgConsumerIsolation:
         assert _page(standard_store, ordinary, offset=1).total == 1
         detail = get_forecast(
             str(ordinary.id),
-            stores={"forecast_store": standard_store},
+            stores={
+                "forecast_store": standard_store,
+                "station_store": PgStationStore(structural_connection),
+            },
             principal=_principal(),
             gate=PublicationGate(),
         )
@@ -74,7 +78,10 @@ class TestPgConsumerIsolation:
         with pytest.raises(HTTPException, match="Forecast not found"):
             get_forecast(
                 str(test.id),
-                stores={"forecast_store": standard_store},
+                stores={
+                    "forecast_store": standard_store,
+                    "station_store": PgStationStore(structural_connection),
+                },
                 principal=_principal(),
                 gate=PublicationGate(),
             )
@@ -131,7 +138,6 @@ class TestPgRejectedConsumerIsolation:
             get_rejected_forecasts,
         )
         from sapphire_flow.store.rejected_forecast_store import PgRejectedForecastStore
-        from sapphire_flow.store.station_store import PgStationStore
         from sapphire_flow.types.enums import ForecastDataUse
         from tests.integration.store.test_rejected_forecast_store import _seed_station
 
@@ -206,7 +212,6 @@ class TestPgPublicationConsumerIsolation:
             PgForecastPublicationStore,
         )
         from sapphire_flow.store.forecast_store import PgForecastStore
-        from sapphire_flow.store.station_store import PgStationStore
         from sapphire_flow.types.enums import ForecastDataUse
         from sapphire_flow.types.human_auth import (
             HumanPermission,
