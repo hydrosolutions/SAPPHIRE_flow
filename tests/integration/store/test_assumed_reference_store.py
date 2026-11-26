@@ -10,6 +10,7 @@ from sapphire_flow.store.provisional_discharge_store import PgProvisionalDischar
 from sapphire_flow.store.rating_reference_store import (
     PgProtectedReferenceWriter,
     PgRatingReferenceStore,
+    reference_append_lock_key,
 )
 from sapphire_flow.types.ids import RatingReferenceProofId
 from sapphire_flow.types.observation import Observation
@@ -185,6 +186,50 @@ class TestReferenceAppendTransactions:
             outcomes = [future.result(timeout=20) for future in futures]
         assert outcomes.count("conflict") == int(conflicting)
         assert outcomes.count(str(reference.id)) == 2 - int(conflicting)
+
+    def test_append_waits_on_id_lock_before_insert(
+        self, isolated_committed_db_engine: sa.Engine
+    ) -> None:
+        engine = isolated_committed_db_engine
+        with engine.begin() as conn:
+            reference = replace(
+                assumed_reference(seed(conn)[3]), id=RatingReferenceProofId(uuid4())
+            )
+        statements: list[str] = []
+
+        def capture(conn, cursor, statement, *args):  # type: ignore[no-untyped-def]
+            statements.append(statement)
+
+        with engine.connect() as holder:
+            holding = holder.begin()
+            holder.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": reference_append_lock_key(reference.id)},
+            )
+            with engine.connect() as contender:
+                sa.event.listen(contender, "before_cursor_execute", capture)
+                contending = contender.begin()
+                contender.execute(sa.text("SET LOCAL lock_timeout = '300ms'"))
+                with pytest.raises(sa.exc.OperationalError):
+                    PgProtectedReferenceWriter(contender).append_reference_evidence(
+                        reference
+                    )
+                contending.rollback()
+            assert any("pg_advisory_xact_lock" in s for s in statements)
+            assert not any(
+                "INSERT INTO rating_reference_proofs" in s for s in statements
+            )
+            holding.commit()
+        with engine.connect() as conn:
+            assert (
+                PgRatingReferenceStore(conn).fetch_reference_evidence(reference.id)
+                is None
+            )
+        with engine.begin() as conn:
+            assert (
+                PgProtectedReferenceWriter(conn).append_reference_evidence(reference)
+                == reference.id
+            )
 
     def test_caller_rollback_removes_new_append(
         self, isolated_committed_db_engine: sa.Engine
