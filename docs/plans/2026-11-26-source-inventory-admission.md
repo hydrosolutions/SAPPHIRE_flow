@@ -1,5 +1,5 @@
 ---
-status: DRAFT — independent review revised; owner disposition pending for S1
+status: READY — S1 locally qualified; S2–S4 DRAFT
 owner: deployment orchestrator
 parent: 2026-11-22-operational-deployment-recipe.md
 ---
@@ -186,7 +186,7 @@ record only concise generic outcomes in this plan and its parent. A code PR requ
 affected tests, lint, changed-module types and the full final suite locally or in CI.
 
 ```json
-{"phases":[{"id":"S1","status":"DRAFT","depends_on":["independent_plan_review"]},{"id":"S2","status":"DRAFT","depends_on":["current_route_design_review"]},{"id":"S3","status":"DRAFT","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
+{"phases":[{"id":"S1","status":"COMPLETE_LOCAL","depends_on":["independent_plan_review"]},{"id":"S2","status":"DRAFT","depends_on":["current_route_design_review"]},{"id":"S3","status":"DRAFT","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
 ```
 
 ## Independent review disposition
@@ -197,7 +197,31 @@ adds those limits, controller-owned provenance with independent source checks,
 exact-release refusal, before/after identity checks, a mandatory reserve value and
 explicit nonsecret selector/file admission. No repeat review was requested.
 
-These are proposed resolutions for the owner's disposition. S1 remains DRAFT;
-the orchestrator will admit only its local implementation/qualification after that
-disposition. S2–S4, source execution and reconstruction retain their separate gates.
+The owner accepted proceeding with the isolated read-only checker on 2026-11-26,
+after the review requirements and scope were explained. The orchestrator admits
+S1 local implementation and isolated qualification only. Patch review must complete
+before runtime qualification. S2–S4, source execution and reconstruction retain
+their separate gates. The PR remains draft at the owner's explicit request.
 The full review and detailed evidence remain private.
+
+## S1 local qualification — 2026-11-26
+
+The private collector passed its isolated real-Prefect/process test against the
+independently verified 0.1.1197 image: worker inheritance and the actual launch
+override passed; the misleading advertised selection refused; secret-error output
+was redacted; the timed-out probe was reaped and its process group removed.
+All five outcomes matched. The final helper suite passed 54 checks, Ruff and strict
+changed-module types. One independent patch reviewer covered the implementation
+and the bounded transport/cleanup corrections; reports and failed-attempt evidence
+remain private. No collection limit was widened.
+
+The test used Linux amd64 emulation on a local arm64 Docker host, with synthetic
+configuration, an internal network and no application database or provider access.
+Owned containers and the network were removed and verified. Concurrent Docker
+activity changed the shared host baseline, so this is not a whole-host
+unchanged-baseline assertion or native current-source qualification.
+
+No source inventory, live forecast, deployment change or reconstruction occurred.
+S2–S4 retain their separate gates. The administrator consequence is documented in
+the [comparison guide](../deployment/operational-comparison.md); this private helper
+is not a new public operator command. The PR remains draft.

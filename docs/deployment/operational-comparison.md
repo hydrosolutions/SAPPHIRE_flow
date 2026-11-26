@@ -255,6 +255,12 @@ not establish the executed selection. Reuse the maintained
 [configuration reference](nhs-forecast-configuration.md#runtime-selection-and-consistent-configuration)
 and [model-onboarding instructions](../operations/model-onboarding.md).
 
+Deployment support has an isolated qualification of the private metadata checker.
+Its result establishes configuration/process consistency only. An absent forecast
+child remains unverified; do not start a live forecast merely to satisfy this check.
+The source image, current input-read behavior and scientific readiness still need
+their separate checks before an operational comparison.
+
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
 record by that order. Preserve the required selection semantics and qualify subsequent

@@ -1096,3 +1096,8 @@ collection, a reviewed current-read amendment, matching-runtime qualification an
 only then an explicitly admitted inventory. Input recording time is outside the
 earlier renewable-bookkeeping exception. B1/B2, reconstruction and commissioning
 remain DRAFT; current model validation stays with the source-deployment owner.
+
+The owner's separately admitted S1 metadata collector is now locally qualified;
+see its [bounded qualification record](2026-11-26-source-inventory-admission.md#s1-local-qualification--2026-11-26).
+This verifies actual worker/child selection on synthetic infrastructure. It does
+not admit the newer source runtime, application-data reads or reconstruction.
