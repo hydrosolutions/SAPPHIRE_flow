@@ -3128,3 +3128,35 @@ used to read threshold snapshots.
 Include the API integration callers when checking forecast-detail dependencies:
 consumer isolation, selected-weather corruption, large legacy weather isolation,
 and native selected-weather tests all read detail directly with PostgreSQL stores.
+
+
+### Declared-grid hindcasts and skill (2026-11-26)
+
+`services/hindcast_inputs.py` qualifies native support and prepares observations
+and forcing once; `services/hindcast.py` projects issue views and uses the existing
+FI batch contract. Native source declarations and target availability must survive
+batch union. Never use import time as historical publication time. Tests cover
+START/END, another phase, leap day, partial batches, known-late inputs and the
+18:05 issue versus accepted 18:15 closure. Retrospective unknown-discharge closure
+is explicit; legacy no-declaration behavior is retained.
+
+Migration 0097, `store/hindcast_period_codec.py`, `store/hindcast_store.py` and
+`types/hindcast_inputs.py` retain immutable source/period/policy evidence.
+Conflicting same-key writes raise StoreError before replacing values; concurrent
+writers are covered. Downgrade refuses after any declared evidence is stored.
+`services/hindcast_verification.py` matches physical reference support, including
+explicit +900-second comparison, without nearest timestamp joins. Periods must
+close before scoring. `types/skill.py`, `store/skill_period_codec.py` and the six
+skill indexes retain evaluation context. Latest baselines/generations compare
+only compatible contexts; publish complete cohort sets, never partial results.
+
+All skill readers (including reflected admin readers), diagram scalar joins and
+event-review sources must expose/partition context. Keep null legacy and exact/
+approximate identities distinct. Declared event-review periods must fit wholly
+inside the requested window; signed elapsed leads retain label semantics. Legacy
+operational period exclusion and publication/purpose/tenant guards remain.
+Tests: declared sections in test_hindcast, FI adapter predict, hindcast/skill store,
+compute_skills, event_review and skill_diagrams; new hindcast_inputs/verification,
+period codec and migration 0097 tests. The runbook is operations/model-onboarding.md.
+
+Review fixes: source catalogues are retained in skill context and fingerprint/cohort identity; the derived SHA256 bounds natural indexes without dropping native evidence. Require `enable_skill_generations` for every declared skill run. The FI boundary refuses conflicting/unknown variable label overrides and applies each variable's own physical eligibility window; do not drop genuine null slots while slicing. Preserve legacy no-grid gating.

@@ -29,7 +29,7 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
-from sapphire_flow.types.skill import SkillDiagram, SkillScore
+from sapphire_flow.types.skill import SkillDiagram, SkillEvaluationContext, SkillScore
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
@@ -2098,3 +2098,178 @@ class TestBaselineGenerationScopeIsolation:
             else store.fetch_latest_diagrams(sid, mid, parameter="discharge")
         )
         assert any(row.generation_id == generation for row in results)
+
+
+def _period_context(displacement_seconds: int = 0) -> SkillEvaluationContext:
+    from datetime import timedelta
+
+    from sapphire_flow.types.enums import AggregationMethod
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.hindcast_inputs import (
+        HistoricalAvailabilityPolicy,
+        HistoricalSourcePeriod,
+    )
+    from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+
+    def period(phase: timedelta) -> ForecastPeriodDefinition:
+        return ForecastPeriodDefinition(
+            grid=TimeGrid(step=timedelta(days=1), phase=phase),
+            label=PeriodLabel.START,
+            aggregation=AggregationMethod.MEAN,
+        )
+
+    displacement = timedelta(seconds=displacement_seconds)
+    return SkillEvaluationContext(
+        forecast_period=period(timedelta(hours=18)),
+        reference_period=period(timedelta(hours=18) + displacement),
+        reference_displacement=displacement,
+        input_availability_policy=HistoricalAvailabilityPolicy.RETROSPECTIVE_CLOSURE,
+        source_periods=(
+            HistoricalSourcePeriod(
+                station_id=StationId(uuid.UUID(int=1)),
+                source="measured",
+                parameter="discharge",
+                period=period(timedelta(hours=18) + displacement),
+                evidence="declared daily archive",
+            ),
+        ),
+    )
+
+
+class TestSkillEvaluationIdentity:
+    def test_baselines_do_not_hide_other_periods_or_legacy(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from dataclasses import replace
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        approximate = _period_context(900)
+        revised_source = replace(
+            approximate,
+            source_periods=(
+                replace(approximate.source_periods[0], evidence="requalified archive"),
+            ),
+        )
+        contexts = (None, _period_context(), approximate, revised_source)
+        rows = [
+            replace(
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=version,
+                    phase_offset_seconds=64800,
+                ),
+                evaluation_context=context,
+            )
+            for version, context in zip((4, 5, 6, 7), contexts, strict=True)
+        ]
+        assert store.store_skill_scores(rows) == 4
+        fetched = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        assert {row.evaluation_context for row in fetched} == set(contexts)
+        assert {row.id for row in fetched} == {row.id for row in rows}
+
+    @pytest.mark.parametrize("source_identity", [False, True])
+    def test_new_generation_replaces_only_matching_evaluation(
+        self,
+        db_connection: sa.Connection,
+        source_identity: bool,
+    ) -> None:
+        from dataclasses import replace
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        exact, approximate = _period_context(), _period_context(900)
+        if source_identity:
+            exact = replace(
+                approximate,
+                source_periods=(
+                    replace(
+                        approximate.source_periods[0],
+                        evidence="previous source qualification",
+                    ),
+                ),
+            )
+        baseline = _make_score(sid, mid, aid, computation_version=4)
+        store.store_skill_scores([baseline])
+        old_generation, new_generation = uuid.uuid4(), uuid.uuid4()
+        for generation, contexts, when in (
+            (old_generation, (exact, approximate), _T2),
+            (new_generation, (approximate,), _T3),
+        ):
+            scores = [
+                replace(
+                    _make_score(
+                        sid, mid, aid, computation_version=5, generation_id=generation
+                    ),
+                    evaluation_context=context,
+                )
+                for context in contexts
+            ]
+            diagrams = [
+                replace(
+                    _make_diagram(
+                        sid, mid, aid, computation_version=5, generation_id=generation
+                    ),
+                    evaluation_context=context,
+                )
+                for context in contexts
+            ]
+            assert store.store_skill_scores(scores) == len(contexts)
+            assert store.store_skill_diagrams(diagrams) == len(contexts)
+            store.publish_generation(
+                generation_id=generation,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                parameter="discharge",
+                skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+                forcing_type=None,
+                computation_version=5,
+                published_at=when,
+                score_count=len(contexts),
+                diagram_count=len(contexts),
+                evaluation_contexts=contexts,
+            )
+        scores = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        diagrams = store.fetch_latest_diagrams(sid, mid)
+        assert {(row.evaluation_context, row.generation_id) for row in scores} == {
+            (None, None),
+            (exact, old_generation),
+            (approximate, new_generation),
+        }
+        assert {(row.evaluation_context, row.generation_id) for row in diagrams} == {
+            (exact, old_generation),
+            (approximate, new_generation),
+        }
+
+    def test_generation_replay_cannot_change_evaluation_context(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        arguments = dict(
+            generation_id=uuid.uuid4(),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=5,
+            published_at=_T2,
+            score_count=0,
+            diagram_count=0,
+        )
+        store.publish_generation(**arguments, evaluation_contexts=(_period_context(),))
+        with pytest.raises(ValueError, match="evaluation_contexts"):
+            store.publish_generation(
+                **arguments, evaluation_contexts=(_period_context(900),)
+            )

@@ -3,18 +3,25 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from dataclasses import replace
+from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid5
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import timedelta
 
 import numpy as np
 import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError, SkillGenerationIncompleteError
+from sapphire_flow.services.hindcast_verification import (
+    declared_observation_fetch_bounds,
+    declared_observation_lookup,
+    evaluation_context,
+    verification_sources,
+)
 from sapphire_flow.services.skill.diagrams import (
     compute_rank_histogram,
     compute_reliability_from_probabilities,
@@ -38,6 +45,7 @@ from sapphire_flow.services.training_data import (
     aggregation_method_for,
     resample_to_time_step,
 )
+from sapphire_flow.store.skill_period_codec import evaluation_context_content
 from sapphire_flow.store.threshold_skill_codec import encode_threshold_context
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, FlowRegime, SkillFreshness
@@ -47,6 +55,11 @@ if TYPE_CHECKING:
     from sapphire_flow.types.domain import SeasonDefinition, StationThreshold
     from sapphire_flow.types.enums import ForcingType, SkillSource
     from sapphire_flow.types.forecast import HindcastForecast
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.hindcast_inputs import (
+        HistoricalAvailabilityPolicy,
+        HistoricalSourcePeriod,
+    )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
@@ -65,10 +78,18 @@ log = structlog.get_logger(__name__)
 # never occupy, so the insert succeeds AND `fetch_latest_scores`'s
 # `max(computation_version)` picks the new rows up automatically.
 _COMPUTATION_VERSION = 4
+_DECLARED_COMPUTATION_VERSION = 5
 _DEFAULT_DECISION_PROBABILITY = 0.5
 
 
 ForecastSample = np.ndarray | QuantileSample
+HindcastCohortKey = tuple[
+    timedelta,
+    int | None,
+    "ForecastPeriodDefinition | None",
+    "HistoricalAvailabilityPolicy | None",
+    "tuple[HistoricalSourcePeriod, ...]",
+]
 
 
 def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> ForecastSample:
@@ -167,12 +188,13 @@ def validate_homogeneous_time_step_and_phase(
             f"phase within time_step {time_step} — partition by "
             "(time_step, phase) before computing skill (Plan 228 D4)."
         )
+    evaluation_context(hindcasts)
     return time_step, (next(iter(phases)) if phases else None)
 
 
 def partition_by_time_step_and_phase(
     hindcasts: list[HindcastForecast],
-) -> tuple[dict[tuple[timedelta, int | None], list[HindcastForecast]], int]:
+) -> tuple[dict[HindcastCohortKey, list[HindcastForecast]], int]:
     """Split ``hindcasts`` into the homogeneous ``(time_step, phase)``
     cohorts ``validate_homogeneous_time_step_and_phase`` requires (Plan 228
     review fixer round, major).
@@ -209,9 +231,7 @@ def partition_by_time_step_and_phase(
     ``cohorts_complete`` and published a generation that was a valid
     SUBSET, not the whole thing.
     """
-    groups: dict[tuple[timedelta, int | None], list[HindcastForecast]] = defaultdict(
-        list
-    )
+    groups: dict[HindcastCohortKey, list[HindcastForecast]] = defaultdict(list)
     rejected = 0
     for hc in hindcasts:
         time_step = hc.ensemble.time_step
@@ -226,12 +246,32 @@ def partition_by_time_step_and_phase(
             )
             rejected += 1
             continue
-        groups[(time_step, phase)].append(hc)
+        groups[
+            (
+                time_step,
+                phase,
+                hc.ensemble.period_definition,
+                hc.input_availability_policy,
+                tuple(
+                    sorted(
+                        hc.source_periods,
+                        key=lambda item: (
+                            str(item.station_id),
+                            item.source,
+                            item.parameter,
+                        ),
+                    )
+                ),
+            )
+        ].append(hc)
     return dict(groups), rejected
 
 
 def observation_fetch_bounds(
     hindcasts: list[HindcastForecast],
+    *,
+    reference_displacement: timedelta = timedelta(0),
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
 ) -> tuple[UtcDatetime, UtcDatetime]:
     """The ``[start, end)`` window of observations a skill computation needs
     (Plan 228 ALSO FIX #2), derived from the ensemble's own ``valid_time``s
@@ -242,6 +282,11 @@ def observation_fetch_bounds(
     to an empty range that fetches nothing at all.
     """
     time_step, _phase = validate_homogeneous_time_step_and_phase(hindcasts)
+    context = evaluation_context(hindcasts, reference_displacement, source_periods)
+    if context is not None:
+        return declared_observation_fetch_bounds(
+            hindcasts, context, verification_sources(hindcasts, source_periods)
+        )
     all_valid_times = [
         vt for hc in hindcasts for vt in hc.ensemble.values["valid_time"].to_list()
     ]
@@ -371,6 +416,10 @@ def _build_strata(
                     "skill computation requires one representation and quantile grid"
                 )
             dt_diff = (vt - hc.hindcast_step).total_seconds()
+            if hc.ensemble.period_definition is not None and dt_diff % 3600:
+                raise ConfigurationError(
+                    "declared-period skill requires whole-hour elapsed leads"
+                )
             lead_hours = int(round(dt_diff / 3600))
             raw_pairs[lead_hours].append((members, obs_val, hc.hindcast_step))
 
@@ -668,6 +717,8 @@ def compute_skill_for_station(
     *,
     parameter: str,
     generation_id: UUID | None = None,
+    reference_displacement: timedelta = timedelta(0),
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     if not hindcasts:
         # Plan 228 fixer round (major): distinguish "nothing to score
@@ -697,8 +748,7 @@ def compute_skill_for_station(
         )
         return [], []
 
-    if any(hc.ensemble.period_definition is not None for hc in hindcasts):
-        raise ValueError("declared-period skill requires matching observation periods")
+    context = evaluation_context(hindcasts, reference_displacement, source_periods)
     mismatched = [hc for hc in hindcasts if hc.ensemble.parameter != parameter]
     if mismatched:
         raise ValueError(
@@ -730,8 +780,19 @@ def compute_skill_for_station(
     # (migration 0052) — see `SkillScore.time_step_seconds`.
     phase_offset_seconds = None if phase_us is None else phase_us // 1_000_000
 
-    obs_lookup = _resample_observations_to_forecast_step(
-        observations, parameter, time_step, clock()
+    obs_lookup: dict[object, float] = (
+        dict[object, float](
+            declared_observation_lookup(
+                observations,
+                sources=verification_sources(hindcasts, source_periods),
+                context=context,
+                now=clock(),
+            ).items()
+        )
+        if context is not None
+        else _resample_observations_to_forecast_step(
+            observations, parameter, time_step, clock()
+        )
     )
 
     if not obs_lookup:
@@ -826,6 +887,23 @@ def compute_skill_for_station(
             )
         )
 
+    if context is not None:
+        all_scores = [
+            replace(
+                item,
+                evaluation_context=context,
+                computation_version=_DECLARED_COMPUTATION_VERSION,
+            )
+            for item in all_scores
+        ]
+        all_diagrams = [
+            replace(
+                item,
+                evaluation_context=context,
+                computation_version=_DECLARED_COMPUTATION_VERSION,
+            )
+            for item in all_diagrams
+        ]
     return all_scores, all_diagrams
 
 
@@ -885,6 +963,14 @@ def compute_generation_fingerprint(
             if s.threshold_context is not None
             else ""
         )
+        + (
+            "|"
+            + json.dumps(
+                evaluation_context_content(s.evaluation_context), sort_keys=True
+            )
+            if s.evaluation_context is not None
+            else ""
+        )
         for s in scores
     )
     # `d.data` (the diagram's own JSONB diagnostic blob) IS included — the
@@ -926,6 +1012,14 @@ def compute_generation_fingerprint(
             "|"
             + json.dumps(encode_threshold_context(d.threshold_context), sort_keys=True)
             if d.threshold_context is not None
+            else ""
+        )
+        + (
+            "|"
+            + json.dumps(
+                evaluation_context_content(d.evaluation_context), sort_keys=True
+            )
+            if d.evaluation_context is not None
             else ""
         )
         for d in diagrams

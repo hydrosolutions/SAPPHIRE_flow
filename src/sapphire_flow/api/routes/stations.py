@@ -16,6 +16,7 @@ from sapphire_flow.api.model_visibility import (
 )
 from sapphire_flow.api.routes.tables import get_reflected
 from sapphire_flow.store.bafu_unit_read_filter import trusted_unit_predicate
+from sapphire_flow.store.skill_period_codec import SKILL_PERIOD_FIELDS
 from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import QcStatus
@@ -372,6 +373,7 @@ def station_detail(
                     sk_table.c.metric,
                     sa.func.avg(sk_table.c.score).label("avg_score"),
                     sa.func.count().label("cnt"),
+                    *(sk_table.c[name] for name in SKILL_PERIOD_FIELDS),
                 )
                 .where(
                     sa.and_(
@@ -383,7 +385,10 @@ def station_detail(
                         latest_generation_predicate(sk_table, generations_table),
                     )
                 )
-                .group_by(sk_table.c.metric)
+                .group_by(
+                    sk_table.c.metric,
+                    *(sk_table.c[name] for name in SKILL_PERIOD_FIELDS),
+                )
             )
             .mappings()
             .all()
@@ -393,6 +398,9 @@ def station_detail(
                 "metric": r["metric"],
                 "avg_score": round(float(r["avg_score"]), 4),
                 "count": r["cnt"],
+                "evaluation_context": {name: r[name] for name in SKILL_PERIOD_FIELDS}
+                if r["period_definition"] is not None
+                else None,
             }
             for r in sk_rows
         ]
@@ -601,7 +609,7 @@ def station_hindcasts_json(
     # Get hindcast forecasts for this station/parameter/range
     hf_rows = (
         conn.execute(
-            sa.select(hf.c.id, hf.c.hindcast_step)
+            sa.select(hf.c.id, hf.c.hindcast_step, hf.c.period_definition)
             .where(
                 sa.and_(
                     hf.c.station_id == station_id,
@@ -618,6 +626,15 @@ def station_hindcasts_json(
 
     if not hf_rows:
         return JSONResponse(empty)
+
+    if any(row["period_definition"] is not None for row in hf_rows):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Declared-period hindcasts require "
+                "the period-aware review-series endpoint."
+            ),
+        )
 
     hf_ids = [r["id"] for r in hf_rows]
 

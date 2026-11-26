@@ -32,7 +32,9 @@ from sapphire_flow.types.event_review import (
 )
 from sapphire_flow.types.ids import TenantId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+from sapphire_flow.types.time_grid import PeriodLabel
 from tests.integration.store.test_hindcast_store import (
+    _declare_hindcast,
     _make_hindcast,
     _seed_artifact,
     _seed_model,
@@ -98,6 +100,87 @@ def series_query(hindcast: HindcastForecast) -> ReviewSeriesQuery:
 
 
 class TestPgReviewSeries:
+    @pytest.mark.parametrize("label", [PeriodLabel.START, PeriodLabel.END])
+    def test_declared_hindcast_support_and_signed_leads(
+        self,
+        db_connection: sa.Connection,
+        hindcast: HindcastForecast,
+        label: PeriodLabel,
+    ) -> None:
+        from sapphire_flow.api.event_review_schemas import ReviewSeriesResponse
+        from sapphire_flow.services.event_review import read_review_series
+
+        declared = _declare_hindcast(
+            replace(hindcast, id=uuid4(), hindcast_run_id=uuid4()),
+            label,
+        )
+        PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        ).store_hindcast(declared)
+        period = declared.ensemble.period_definition
+        assert period is not None
+        physical_start = period.grid.floor(declared.hindcast_step)
+        stamp = physical_start + (
+            period.grid.step if label is PeriodLabel.END else timedelta(0)
+        )
+        lead = int((stamp - declared.hindcast_step).total_seconds() / 3600)
+        selection = replace(
+            series_query(declared),
+            lead_hours=lead,
+            start=physical_start,
+            end=physical_start + period.grid.step,
+        )
+        store = PgEventReviewStore(db_connection)
+        response = ReviewSeriesResponse.from_domain(
+            read_review_series(store, selection)
+        )
+        assert response.temporal_support == "declared_period"
+        source = response.segments[0].source
+        assert source.lead_hours == (lead,)
+        assert source.period_definition is not None
+        assert source.period_definition.label == label.value
+        assert source.input_availability_policy.value == "retrospective_closure"
+        point = response.segments[0].points[0]
+        assert (point.valid_interval_start, point.valid_interval_end) == (
+            physical_start,
+            physical_start + timedelta(days=1),
+        )
+        assert point.valid_time == stamp
+        # An incomplete physical interval is not offered as a complete day.
+        partial = read_review_series(
+            store, replace(selection, end=selection.end - timedelta(minutes=1))
+        )
+        assert partial.segments[0].points == ()
+
+    def test_mixed_legacy_and_declared_run_is_refused(
+        self,
+        db_connection: sa.Connection,
+        hindcast: HindcastForecast,
+    ) -> None:
+        from sapphire_flow.services.event_review import read_review_series
+
+        declared = _declare_hindcast(
+            replace(hindcast, id=uuid4(), hindcast_run_id=uuid4())
+        )
+        legacy = replace(
+            declared,
+            id=uuid4(),
+            ensemble=replace(declared.ensemble, period_definition=None),
+            source_periods=(),
+            input_availability_policy=None,
+            hindcast_step=declared.hindcast_step + timedelta(days=1),
+        )
+        legacy = aligned(legacy)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        store.store_hindcast(declared)
+        store.store_hindcast(legacy)
+        with pytest.raises(ReviewSeriesError, match="incompatible temporal contracts"):
+            read_review_series(
+                PgEventReviewStore(db_connection), series_query(declared)
+            )
+
     def test_only_selected_lead_values_consume_series_budget(
         self,
         db_connection: sa.Connection,

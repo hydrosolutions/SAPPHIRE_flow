@@ -132,7 +132,9 @@
       if (!data.series || data.series.length === 0) return;
       const metricColors = {"nse": "#1976D2", "kge": "#E53935", "mae": "#43A047", "rmse": "#FB8C00", "crps": "#8E24AA", "bias": "#00ACC1"};
       const traces = data.series.map(function(s) {
-        const label = s.metric + " / " + s.parameter + " / " + s.station_id.slice(0, 8);
+        const context = s.evaluation_context;
+        const periodLabel = context ? " / " + context.period_definition.label + " / reference shift " + context.reference_displacement_seconds + " s / " + context.input_availability_policy : " / legacy";
+        const label = s.metric + " / " + s.parameter + " / " + s.station_id.slice(0, 8) + periodLabel;
         return {
           type: "scatter", x: s.lead_times, y: s.scores, mode: "lines+markers",
           name: label, line: {color: metricColors[s.metric] || "#666", width: 1.5},

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from sapphire_flow.store.forecast_period_codec import ForecastPeriodPayload
 from sapphire_flow.types.enums import ForcingType, QcStatus, ThresholdSource
 from sapphire_flow.types.event_review import (
     MAX_REVIEW_SOURCES,
@@ -18,8 +19,10 @@ from sapphire_flow.types.event_review import (
     ReviewOptions,
     ReviewPointState,
     ReviewSeries,
+    ReviewSource,
     ReviewSourceMode,
 )
+from sapphire_flow.types.hindcast_inputs import HistoricalAvailabilityPolicy
 from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
 from sapphire_flow.types.probability import ProbabilityMethod
 
@@ -27,6 +30,7 @@ LEAD_DEFINITION = (
     "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. "
     "A 48-hour lead uses the issue anchored exactly 48 hours earlier. "
     "Hindcast issue anchors are retrospective, not forecasts published then."
+    " Declared start labels can precede the issue anchor and have negative leads."
 )
 
 
@@ -57,15 +61,35 @@ class ReviewSourceResponse(BaseModel):
     )
     units: str
     lead_hours: tuple[int, ...] = Field(
-        description="Exact nonnegative integer leads stored; not the model horizon."
+        description=(
+            "Exact integer elapsed leads stored; declared start labels may be negative."
+        )
     )
     first_valid_time: datetime | None
     last_valid_time: datetime | None = Field(
         description="Inclusive last valid time; bounds do not promise full coverage."
     )
-    temporal_support: Literal["unknown"] = "unknown"
+    temporal_support: Literal["unknown", "declared_period"] = "unknown"
+    period_definition: ForecastPeriodPayload | None = None
+    input_availability_policy: HistoricalAvailabilityPolicy | None = None
     completeness: ReviewCompleteness
     reasons: tuple[str, ...]
+
+    @classmethod
+    def from_domain(cls, source: ReviewSource) -> ReviewSourceResponse:
+        fields = asdict(source)
+        fields["period_definition"] = (
+            source.period_definition.content if source.period_definition else None
+        )
+        return cls(
+            **fields,
+            temporal_support="declared_period"
+            if source.period_definition
+            else "unknown",
+            model_role="baseline"
+            if source.model_id == CLIMATOLOGY_FALLBACK_MODEL_ID
+            else "model",
+        )
 
 
 class ReviewOptionsResponse(BaseModel):
@@ -92,13 +116,7 @@ class ReviewOptionsResponse(BaseModel):
                 else None
             ),
             sources=tuple(
-                ReviewSourceResponse(
-                    **asdict(source),
-                    model_role="baseline"
-                    if source.model_id == CLIMATOLOGY_FALLBACK_MODEL_ID
-                    else "model",
-                )
-                for source in options.sources
+                ReviewSourceResponse.from_domain(source) for source in options.sources
             ),
         )
 
@@ -115,7 +133,7 @@ class ReviewErrorResponse(BaseModel):
 class ReviewSeriesParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_id: str = Field(min_length=1, max_length=200)
-    lead_hours: int = Field(ge=0, le=8784)
+    lead_hours: int = Field(ge=-24, le=8784)
     start: AwareDatetime
     end: AwareDatetime
     source_mode: ReviewSourceMode
@@ -159,8 +177,8 @@ class ReviewPointResponse(BaseModel):
     quartile_method: Literal["stored_quantiles", "member_empirical_type7"] | None
     band_reason: str | None
     threshold_probabilities: dict[str, ExceedanceProbabilityResponse]
-    valid_interval_start: None = None
-    valid_interval_end: None = None
+    valid_interval_start: datetime | None = None
+    valid_interval_end: datetime | None = None
 
 
 class ReviewGapResponse(BaseModel):
@@ -192,7 +210,7 @@ class ReviewSeriesResponse(BaseModel):
     lead_definition: str = LEAD_DEFINITION
     state: ReviewPointState
     reason: str | None
-    temporal_support: Literal["unknown"] = "unknown"
+    temporal_support: Literal["unknown", "declared_period"] = "unknown"
     support_message: str = (
         "Timestamped values; interval support is unknown. "
         "Do not score or automatically combine sources."
@@ -203,7 +221,8 @@ class ReviewSeriesResponse(BaseModel):
         "P(forecast value > threshold), compared as stored without tolerance. "
         "Per valid time, not a peak or window-event probability. Quantile point "
         "estimates assume a piecewise-linear inverse CDF within supplied support; "
-        "bounds do not invent tail probabilities. Temporal support remains unknown. "
+        "bounds do not invent tail probabilities. "
+        "Refer to each source's temporal support. "
         "qc_unchecked applies to probabilities as well as plotted values."
     )
     threshold_basis: str = (
@@ -214,6 +233,9 @@ class ReviewSeriesResponse(BaseModel):
     @classmethod
     def from_domain(cls, series: ReviewSeries) -> ReviewSeriesResponse:
         query = series.query
+        declared = bool(series.segments) and all(
+            segment.source.period_definition is not None for segment in series.segments
+        )
         return cls(
             station_id=query.scope.station_id,
             model_id=query.model_id,
@@ -226,14 +248,16 @@ class ReviewSeriesResponse(BaseModel):
             ),
             state=series.state,
             reason=series.reason,
+            temporal_support="declared_period" if declared else "unknown",
+            support_message=(
+                "Declared aggregate periods wholly contained in the requested window; "
+                "verification must match their physical support and aggregation."
+                if declared
+                else cls.model_fields["support_message"].default
+            ),
             segments=tuple(
                 ReviewSegmentResponse(
-                    source=ReviewSourceResponse(
-                        **asdict(segment.source),
-                        model_role="baseline"
-                        if segment.source.model_id == CLIMATOLOGY_FALLBACK_MODEL_ID
-                        else "model",
-                    ),
+                    source=ReviewSourceResponse.from_domain(segment.source),
                     points=tuple(
                         ReviewPointResponse(**asdict(point)) for point in segment.points
                     ),

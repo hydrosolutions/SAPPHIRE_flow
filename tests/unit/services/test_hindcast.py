@@ -2278,3 +2278,278 @@ class TestDeclaredHindcastLookback:
             assert data.past_targets["timestamp"].to_list() == [
                 t for t in expected if not (missing_oldest and t == oldest)
             ]
+
+
+class TestDeclaredPeriodHindcast:
+    @pytest.mark.parametrize("known_late", [False, True])
+    @pytest.mark.parametrize("path", ["station", "group", "batch"])
+    @pytest.mark.parametrize("phase_hours", [6, 18])
+    @pytest.mark.parametrize("label_text", ["start", "end"])
+    def test_full_span_preparation_and_bounded_issue_views(
+        self,
+        path: str,
+        phase_hours: int,
+        label_text: str,
+        known_late: bool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.services import hindcast_inputs
+        from sapphire_flow.types.enums import AggregationMethod
+        from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+        from sapphire_flow.types.hindcast_inputs import (
+            HistoricalAvailabilityPolicy,
+            HistoricalSourcePeriod,
+        )
+        from sapphire_flow.types.time_grid import ModelTimeGrid, PeriodLabel, TimeGrid
+        from tests.fakes.fake_models import FakeGroupForecastModel
+
+        label = PeriodLabel(label_text)
+        grid = ModelTimeGrid(
+            grid=TimeGrid(step=_STEP, phase=timedelta(hours=phase_hours)),
+            label=label,
+        )
+        period = ForecastPeriodDefinition(
+            grid=grid.grid,
+            label=label,
+            aggregation=AggregationMethod.MEAN,
+        )
+        seen: list[StationModelInputs] = []
+        batch_lengths: list[int] = []
+
+        class Model(FakeGroupForecastModel, FakeStationForecastModel):
+            data_requirements = replace(
+                FakeGroupForecastModel.data_requirements,
+                lookback_steps=2,
+                forecast_horizon_steps=2,
+                past_dynamic_features=frozenset({"precipitation"}),
+                future_dynamic_features=frozenset({"precipitation"}),
+                time_grid=grid,
+            )
+
+            @property
+            def supports_batch_hindcast(self) -> bool:
+                return True
+
+            def predict(
+                self,
+                artifact: ModelArtifact,
+                inputs: StationModelInputs,
+                rng: random.Random,
+                prior_state: bytes | None = None,
+            ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+                seen.append(inputs)
+                eligible = inputs.data.past_targets.filter(
+                    pl.col("available_at_us:discharge")
+                    <= int(inputs.issue_time.timestamp() * 1_000_000)
+                )
+                value = float(eligible["discharge"][-1])
+                first = grid.grid.floor(inputs.issue_time)
+                if label is PeriodLabel.END:
+                    first = ensure_utc(first + _STEP)
+                ensemble = ForecastEnsemble.from_members(
+                    station_id=inputs.station_id,
+                    issued_at=inputs.issue_time,
+                    parameter="discharge",
+                    units="m³/s",
+                    time_step=_STEP,
+                    period_definition=period,
+                    values=pl.DataFrame(
+                        {
+                            "valid_time": [first, first + _STEP],
+                            "member_id": [0, 0],
+                            "value": [value, value],
+                        }
+                    ),
+                )
+                return {"discharge": ensemble}, None
+
+            def predict_batch(
+                self,
+                artifact: ModelArtifact,
+                inputs: GroupModelInputs,
+                rng: random.Random,
+            ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
+                from sapphire_flow.types.model import StationModelInputs
+
+                return {
+                    sid: self.predict(
+                        artifact,
+                        StationModelInputs(
+                            station_id=sid,
+                            data=inputs.for_station(sid),
+                            issue_time=inputs.issue_time,
+                            forecast_horizon_steps=inputs.forecast_horizon_steps,
+                            time_step=inputs.time_step,
+                            time_grid=inputs.time_grid,
+                        ),
+                        rng,
+                    )
+                    for sid in inputs.station_ids
+                }
+
+            def hindcast_batch(
+                self,
+                artifact: ModelArtifact,
+                inputs: tuple[GroupModelInputs, ...],
+                rng: random.Random,
+            ) -> dict[
+                UtcDatetime,
+                dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]],
+            ]:
+                batch_lengths.append(len(inputs))
+                return {
+                    item.issue_time: self.predict_batch(artifact, item, rng)
+                    for item in inputs
+                }
+
+        station = make_station_config()
+        sid = station.id
+        stations = FakeStationStore()
+        stations.store_station(station)
+        stations.store_weather_source(_make_weather_source(sid))
+        observations = FakeObservationStore()
+        start = _utc(2024, 2, 27, phase_hours)
+        rng = random.Random(17)
+        source_observations = [
+            make_observation(
+                station_id=sid,
+                timestamp=ensure_utc(start + timedelta(hours=i)),
+                value=float(i),
+                rng=rng,
+            )
+            for i in range(9 * 24)
+        ]
+        observations.store_observations(source_observations)
+        forcing = FakeWeatherReanalysisSource(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    valid_time=start + timedelta(hours=i),
+                    value=1.0,
+                )
+                for i in range(9 * 24)
+            ]
+        )
+        sources = tuple(
+            HistoricalSourcePeriod(
+                station_id=sid,
+                source=source,
+                parameter=parameter,
+                evidence="hourly archive interval contract",
+                period=ForecastPeriodDefinition(
+                    grid=TimeGrid(step=timedelta(hours=1), phase=timedelta(0)),
+                    label=PeriodLabel.START,
+                    aggregation=aggregation,
+                ),
+            )
+            for source, parameter, aggregation in [
+                ("measured", "discharge", AggregationMethod.MEAN),
+                ("camels-ch", "precipitation", AggregationMethod.SUM),
+            ]
+        )
+        aggregate_calls: list[str] = []
+        aggregate = hindcast_inputs.aggregate_historical_periods
+
+        def counted_aggregate(
+            frame: pl.DataFrame,
+            *,
+            source: HistoricalSourcePeriod,
+            target: ForecastPeriodDefinition,
+            availability_policy: HistoricalAvailabilityPolicy,
+            support_displacement: timedelta,
+        ) -> pl.DataFrame:
+            aggregate_calls.append(source.parameter)
+            return aggregate(
+                frame,
+                source=source,
+                target=target,
+                availability_policy=availability_policy,
+                support_displacement=support_displacement,
+            )
+
+        monkeypatch.setattr(
+            hindcast_inputs, "aggregate_historical_periods", counted_aggregate
+        )
+        saved = FakeHindcastStore()
+        model = Model()
+        common = dict(
+            model=model,
+            artifact=b"artifact",
+            model_id=ModelId("declared-grid"),
+            artifact_id=ArtifactId(uuid4()),
+            period_start=_utc(2024, 3, 1),
+            period_end=_utc(2024, 3, 6),
+            time_step=_STEP,
+            forcing_source=forcing,
+            obs_store=observations,
+            hindcast_store=saved,
+            station_store=stations,
+            basin_store=FakeBasinStore(),
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=uuid4(),
+            source_periods=sources,
+            availability_policy=HistoricalAvailabilityPolicy.RETROSPECTIVE_CLOSURE,
+            observed_availability={
+                item.id: _utc(2024, 3, 3)
+                for item in source_observations
+                if start + _STEP <= item.timestamp < start + 2 * _STEP
+            }
+            if known_late
+            else None,
+        )
+        if path == "station":
+            results = run_station_hindcast(station_id=sid, **common)
+        else:
+            group = StationGroup(
+                id=StationGroupId(uuid4()),
+                name="declared grid",
+                station_ids=frozenset({sid}),
+                created_at=_fixed_clock(),
+            )
+            results = run_group_hindcast(
+                group=group,
+                issue_batch_size=2 if path == "batch" else 1,
+                **common,
+            )[sid]
+        assert len(results) == 5 and all(item.success for item in results)
+        assert aggregate_calls == ["discharge", "precipitation"]
+        assert forcing.fetch_reanalysis_call_count == 1
+        assert batch_lengths == ([2, 2, 1] if path == "batch" else [])
+        assert all(item.time_grid == grid for item in seen)
+        assert seen[0].data.past_targets["discharge"].to_list() == [11.5, 35.5]
+        assert seen[-1].data.past_targets["discharge"].to_list() == [107.5, 131.5]
+        label_offset = _STEP if label is PeriodLabel.END else timedelta(0)
+        assert seen[0].data.past_targets["timestamp"].to_list() == [
+            _utc(2024, 2, 27, phase_hours) + label_offset,
+            _utc(2024, 2, 28, phase_hours) + label_offset,
+        ]
+        assert seen[0].data.future_dynamic["timestamp"].to_list() == [
+            _utc(2024, 2, 29, phase_hours) + label_offset,
+            _utc(2024, 3, 1, phase_hours) + label_offset,
+        ]
+        assert all(
+            item.data.future_dynamic["precipitation"].to_list() == [24.0, 24.0]
+            for item in seen
+        )
+        outputs = saved.fetch_hindcasts(
+            station_id=sid,
+            model_id=ModelId("declared-grid"),
+            start=_utc(2024, 3, 1),
+            end=_utc(2024, 3, 6),
+        )
+        assert len(outputs) == 5
+        assert all(item.ensemble.period_definition == period for item in outputs)
+        assert all(item.source_periods == sources for item in outputs)
+        assert all(
+            item.input_availability_policy
+            is HistoricalAvailabilityPolicy.RETROSPECTIVE_CLOSURE
+            for item in outputs
+        )
+        first_value = 11.5 if known_late else 35.5
+        assert outputs[0].ensemble.values["value"].to_list() == [
+            first_value,
+            first_value,
+        ]

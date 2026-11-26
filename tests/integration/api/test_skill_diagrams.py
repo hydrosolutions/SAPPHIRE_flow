@@ -16,6 +16,7 @@ from sapphire_flow.db.metadata import skill_scores as scores
 from tests.integration.api.test_network_overview import overview_case as overview_case
 from tests.integration.api.test_skill_options import _seed_scores
 from tests.integration.db.test_role_bootstrap import role_harness as role_harness
+from tests.integration.store.test_skill_store import _period_context
 
 if TYPE_CHECKING:
     from sapphire_flow.types.forecast import OperationalForecast
@@ -33,6 +34,103 @@ ROC = {
     "n_events": 1,
     "n_non_events": 0,
 }
+
+
+def test_readers_preserve_all_evaluation_contexts_in_one_generation(
+    overview_case: tuple,
+) -> None:
+    import json
+    from dataclasses import replace
+
+    from sapphire_flow.store.skill_period_codec import evaluation_context_content
+    from sapphire_flow.store.skill_store import PgSkillStore
+    from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.enums import ForcingType, SkillSource
+
+    candidate = _seed_diagrams(overview_case)
+    conn, client, record, _, _, _ = overview_case
+    conn.execute(sa.text("RESET ROLE"))
+    generation = uuid4()
+    approximate = _period_context(900)
+    revised_source = replace(
+        approximate,
+        source_periods=(
+            replace(
+                approximate.source_periods[0], evidence="requalified native archive"
+            ),
+        ),
+    )
+    contexts = (_period_context(), approximate, revised_source)
+    for table in (scores, diagrams):
+        original = (
+            conn.execute(
+                sa.select(table)
+                .where(table.c.model_artifact_id == UUID(candidate))
+                .order_by(table.c.computation_version.desc())
+                .limit(1)
+            )
+            .mappings()
+            .one()
+        )
+        for context in contexts:
+            conn.execute(
+                sa.insert(table).values(
+                    {
+                        **dict(original),
+                        "id": uuid4(),
+                        "computation_version": 5,
+                        "generation_id": generation,
+                        "lead_time_hours": -6,
+                        **evaluation_context_content(context),
+                    }
+                )
+            )
+    PgSkillStore(conn).publish_generation(
+        generation_id=generation,
+        station_id=record.station_id,
+        model_id=record.model_id,
+        model_artifact_id=UUID(candidate),
+        parameter="discharge",
+        skill_source=SkillSource.HINDCAST_REANALYSIS,
+        forcing_type=ForcingType.REANALYSIS,
+        computation_version=5,
+        published_at=ensure_utc(datetime(2025, 7, 1, tzinfo=UTC)),
+        score_count=3,
+        diagram_count=3,
+        evaluation_contexts=contexts,
+    )
+    conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+    path = f"/api/v1/stations/{record.station_id}"
+    options = client.get(path + "/skill-options").json()["artifacts"]
+    selected = next(item for item in options if item["model_artifact_id"] == candidate)
+    scalar = client.get(path + "/skill", params={"artifact_id": candidate})
+    diagram = client.get(
+        path + "/skill-diagrams",
+        params={
+            **_params(record, candidate),
+            "lead_hours": [-6, 24],
+        },
+    )
+    assert scalar.status_code == diagram.status_code == 200
+    for rows in (
+        selected["evaluations"],
+        scalar.json()["rows"],
+        diagram.json()["diagrams"],
+    ):
+        assert {
+            row["evaluation_context"]["reference_displacement_seconds"]
+            if row["evaluation_context"] is not None
+            else None
+            for row in rows
+        } == {None, 0, 900}
+        assert {
+            json.dumps(row["evaluation_context"], sort_keys=True)
+            for row in rows
+            if row["evaluation_context"] is not None
+        } == {
+            json.dumps(evaluation_context_content(context), sort_keys=True)
+            for context in contexts
+        }
 
 
 def _seed_diagrams(case: tuple) -> str:

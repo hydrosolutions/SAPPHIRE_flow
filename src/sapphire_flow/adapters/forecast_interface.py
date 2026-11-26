@@ -65,6 +65,7 @@ from forecast_interface import (
 from forecast_interface import (
     Unknown as FIUnknown,
 )
+from forecast_interface.input.variable import effective_label
 
 from sapphire_flow.exceptions import (
     ConfigurationError,
@@ -976,6 +977,14 @@ class ForecastInterfaceAdapter:
             raise UnsupportedModelRequirementError(
                 "model time grid requires both a known origin and period label"
             )
+        for spec in req.dynamic[step].data.values():
+            for variables in (*spec.past_known.values(), *spec.future_known.values()):
+                for name, variable in variables.items():
+                    if effective_label(variable, anchor) is not anchor.label:
+                        raise UnsupportedModelRequirementError(
+                            f"variable {name!r} label differs "
+                            "from the supported branch label"
+                        )
         return ModelTimeGrid(
             grid=TimeGrid(step=step, phase=anchor.origin),
             label=PeriodLabel(anchor.label.value),
@@ -1158,6 +1167,8 @@ class ForecastInterfaceAdapter:
         future_dynamic: pl.DataFrame,
         time_step: timedelta | None = None,
         forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
+        time_grid: ModelTimeGrid | None = None,
+        issue_time: UtcDatetime | None = None,
     ) -> dict[str, int]:
         # Gated independently per temporality (past_known vs future_known) and
         # checked against ONLY that temporality's frame(s). A model may declare
@@ -1189,7 +1200,8 @@ class ForecastInterfaceAdapter:
         # with the LEGACY default and ``time_step is None``, so it lands on
         # the same flattened branch it always did.
         future_steps_by_name: dict[str, int] = {}
-        if forcing_route is ForcingRoute.PER_TRACK:
+        past_steps_by_name: dict[str, int] = {}
+        if forcing_route is ForcingRoute.PER_TRACK or time_grid is not None:
             # The route is the ONLY discriminant: a missing ``time_step`` must
             # never demote a PER_TRACK input onto the flattened legacy branch,
             # which would silently apply tolerances this input never selected.
@@ -1216,6 +1228,16 @@ class ForecastInterfaceAdapter:
             future_tolerances, future_steps_by_name = (
                 self._future_known_nan_tolerances_for_spec(spec)
             )
+            if time_grid is not None:
+                if issue_time is None:
+                    raise ConfigurationError(
+                        "declared input gate requires an issue time"
+                    )
+                for variables in spec.past_known.values():
+                    for name, variable in variables.items():
+                        past_steps_by_name[name] = max(
+                            past_steps_by_name.get(name, 0), variable.lookback
+                        )
         else:
             past_tolerances = self._past_known_nan_tolerances()
             future_tolerances = self._future_known_nan_tolerances()
@@ -1231,6 +1253,22 @@ class ForecastInterfaceAdapter:
                 ),
                 temporality="past_known",
             )
+            if time_grid is not None and issue_time is not None:
+                start, end = time_grid.grid.lookback_bounds(
+                    issue_time, past_steps_by_name[name]
+                )
+                frame = self._declared_window(frame, time_grid, start, end)
+                availability = f"available_at_us:{name}"
+                if availability in frame.columns:
+                    frame = frame.with_columns(
+                        pl.when(
+                            pl.col(availability)
+                            <= int(issue_time.timestamp() * 1_000_000)
+                        )
+                        .then(pl.col(name))
+                        .otherwise(None)
+                        .alias(name)
+                    )
             missing_count = self._missing_value_count(frame=frame, name=name)
             if missing_count > tolerance:
                 over_tolerance[f"past_known.{name}"] = missing_count
@@ -1247,7 +1285,17 @@ class ForecastInterfaceAdapter:
             # frame a sibling feature/assignment needed. `future_steps_by_name`
             # is empty on every non-PER_TRACK route (D10), so the LEGACY
             # superset route and unselected GROUP paths remain unchanged.
-            if name in future_steps_by_name:
+            if time_grid is not None and issue_time is not None:
+                start = time_grid.grid.floor(issue_time)
+                frame = self._declared_window(
+                    frame,
+                    time_grid,
+                    start,
+                    ensure_utc(
+                        start + future_steps_by_name[name] * time_grid.grid.step
+                    ),
+                )
+            elif name in future_steps_by_name:
                 frame = self._slice_to_future_steps(
                     frame=frame, name=name, future_steps=future_steps_by_name[name]
                 )
@@ -1256,6 +1304,19 @@ class ForecastInterfaceAdapter:
                 over_tolerance[f"future_known.{name}"] = missing_count
 
         return over_tolerance
+
+    @staticmethod
+    def _declared_window(
+        frame: pl.DataFrame,
+        grid: ModelTimeGrid,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> pl.DataFrame:
+        offset = grid.grid.step if grid.label is PeriodLabel.END else timedelta(0)
+        return frame.filter(
+            (pl.col("timestamp") >= start + offset)
+            & (pl.col("timestamp") < end + offset)
+        )
 
     def _missing_value_count(self, *, frame: pl.DataFrame, name: str) -> int:
         series = frame.get_column(name)
@@ -1346,6 +1407,8 @@ class ForecastInterfaceAdapter:
                     future_dynamic=inputs.for_station(station_id).future_dynamic,
                     time_step=inputs.time_step,
                     forcing_route=inputs.forcing_route,
+                    time_grid=inputs.time_grid,
+                    issue_time=inputs.issue_time,
                 )
             )
             return self._model_inputs_from_group_data(
@@ -1379,6 +1442,8 @@ class ForecastInterfaceAdapter:
             future_dynamic=inputs.data.future_dynamic,
             time_step=inputs.time_step,
             forcing_route=inputs.forcing_route,
+            time_grid=inputs.time_grid,
+            issue_time=inputs.issue_time,
         )
         if over_tolerance:
             raise ModelOutputError(
@@ -1424,6 +1489,8 @@ class ForecastInterfaceAdapter:
                 future_dynamic=data.future_dynamic,
                 time_step=inputs.time_step,
                 forcing_route=inputs.forcing_route,
+                time_grid=inputs.time_grid,
+                issue_time=inputs.issue_time,
             )
             if over_tolerance:
                 log.warning(
@@ -1658,6 +1725,7 @@ class ForecastInterfaceAdapter:
                             station_key=code,
                             station_vars=sliced,
                             issue_datetime=issue,
+                            time_grid=first.time_grid,
                         )
                         if ensembles:
                             results[issue][codes[code]] = (ensembles, None)

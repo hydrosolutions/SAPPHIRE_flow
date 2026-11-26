@@ -50,6 +50,13 @@ def compute_combined_skill(
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     from sapphire_flow.types.forecast import HindcastForecast
 
+    if any(
+        hc.ensemble.period_definition is not None
+        for rows in hindcasts_by_model.values()
+        for hc in rows
+    ):
+        raise ValueError("combined skill for declared periods is not supported")
+
     if strategy == ModelCombinationStrategy.PRIMARY:
         return [], []
 
@@ -162,6 +169,13 @@ def compute_bma_skill_cross_validated(
     skill_store: object,
     generation_id: UUID | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    if any(
+        hc.ensemble.period_definition is not None
+        for rows in hindcasts_by_model.values()
+        for hc in rows
+    ):
+        raise ValueError("combined skill for declared periods is not supported")
+
     # Compute intersection of steps across all models
     steps_by_model: dict[ModelId, set[UtcDatetime]] = {
         model_id: {hc.hindcast_step for hc in hindcasts}

@@ -15,7 +15,12 @@ from sapphire_flow.services.hindcast import (
     run_group_hindcast,
     run_station_hindcast,
 )
+from sapphire_flow.store.hindcast_period_codec import parse_source_periods
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
+from sapphire_flow.types.hindcast_inputs import (
+    HistoricalAvailabilityPolicy,
+    HistoricalSourcePeriod,
+)
 from sapphire_flow.types.ids import (  # noqa: TC001
     ArtifactId,
     ModelId,
@@ -54,6 +59,10 @@ def _run_station_hindcast_task(
     clock: Callable[[], UtcDatetime],
     rng: random.Random,
     hindcast_run_id: UUID,
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    availability_policy: HistoricalAvailabilityPolicy = (
+        HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ),
 ) -> list[HindcastStepResult]:
     return run_station_hindcast(
         model=model,
@@ -72,6 +81,8 @@ def _run_station_hindcast_task(
         clock=clock,
         rng=rng,
         hindcast_run_id=hindcast_run_id,
+        source_periods=source_periods,
+        availability_policy=availability_policy,
     )
 
 
@@ -98,6 +109,10 @@ def _run_group_hindcast_task(
     rng: random.Random,
     hindcast_run_id: UUID,
     issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    availability_policy: HistoricalAvailabilityPolicy = (
+        HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ),
 ) -> dict[StationId, list[HindcastStepResult]]:
     return run_group_hindcast(
         model=model,
@@ -117,6 +132,8 @@ def _run_group_hindcast_task(
         rng=rng,
         hindcast_run_id=hindcast_run_id,
         issue_batch_size=issue_batch_size,
+        source_periods=source_periods,
+        availability_policy=availability_policy,
     )
 
 
@@ -159,10 +176,16 @@ def run_hindcast_flow(
     hindcast_run_id: UUID | None = None,
     config: object = None,
     issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
+    source_periods: list[dict[str, object]] | None = None,
+    availability_policy: HistoricalAvailabilityPolicy = (
+        HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ),
 ) -> list[HindcastStepResult] | dict[StationId, list[HindcastStepResult]]:
     from datetime import UTC, datetime
 
     from sapphire_flow.types.datetime import ensure_utc
+
+    parsed_source_periods = parse_source_periods(source_periods)
 
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -301,6 +324,8 @@ def run_hindcast_flow(
             clock=clock,
             rng=rng,
             hindcast_run_id=hindcast_run_id,
+            source_periods=parsed_source_periods,
+            availability_policy=availability_policy,
         )
     elif group_id is not None:
         group = group_store.fetch_group(group_id) if group_store else None
@@ -324,4 +349,6 @@ def run_hindcast_flow(
             rng=rng,
             hindcast_run_id=hindcast_run_id,
             issue_batch_size=issue_batch_size,
+            source_periods=parsed_source_periods,
+            availability_policy=availability_policy,
         )

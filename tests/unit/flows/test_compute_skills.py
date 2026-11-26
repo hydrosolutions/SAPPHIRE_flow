@@ -28,6 +28,138 @@ _RNG = random.Random(99)
 _EPOCH = ensure_utc(datetime(2025, 1, 15, 0, 0, tzinfo=UTC))
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_declared_generation_preserves_all_period_cohorts(complete: bool) -> None:
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from sapphire_flow.types.ids import HindcastForecastId
+    from sapphire_flow.types.time_grid import PeriodLabel
+    from tests.conftest import make_observation
+    from tests.unit.services.test_hindcast_verification import _hindcast
+
+    first = _hindcast()
+    day = timedelta(days=1)
+    end_period = replace(first.ensemble.period_definition, label=PeriodLabel.END)
+    second = replace(
+        first,
+        id=HindcastForecastId(uuid4()),
+        hindcast_step=ensure_utc(first.hindcast_step + day),
+        ensemble=replace(
+            first.ensemble,
+            issued_at=ensure_utc(first.hindcast_step + day),
+            period_definition=end_period,
+            values=first.ensemble.values.with_columns(pl.col("valid_time") + 2 * day),
+        ),
+    )
+    hindcasts, observations, skills = (
+        FakeHindcastStore(),
+        FakeObservationStore(),
+        FakeSkillStore(),
+    )
+    for item in (first, second):
+        hindcasts.store_hindcast(item)
+    physical_start = first.ensemble.values["valid_time"][0]
+    observation_rng = random.Random(17)
+    observations.store_observations(
+        [
+            make_observation(
+                station_id=first.station_id,
+                timestamp=ensure_utc(
+                    physical_start + timedelta(minutes=15) + offset * day
+                ),
+                value=12.0 + offset,
+                rng=observation_rng,
+            )
+            for offset in range(2 if complete else 1)
+        ]
+    )
+    scores, _ = compute_skills_task.fn(
+        station_id=first.station_id,
+        model_id=first.model_id,
+        artifact_id=first.model_artifact_id,
+        parameter="discharge",
+        hindcast_run_id=first.hindcast_run_id,
+        hindcast_store=hindcasts,
+        obs_store=observations,
+        skill_store=skills,
+        deployment_config=make_deployment_config(enable_skill_generations=True),
+        clock=lambda: ensure_utc(first.hindcast_step + 10 * day),
+        reference_displacement=timedelta(minutes=15),
+    )
+    current = skills.fetch_latest_scores(
+        first.station_id, first.model_id, parameter="discharge"
+    )
+    if not complete:
+        assert scores and current == []
+        return
+    assert len({item.generation_id for item in current}) == 1
+    assert {item.evaluation_context.forecast_period.label for item in current} == {
+        PeriodLabel.START,
+        PeriodLabel.END,
+    }
+    assert {item.computation_version for item in current} == {5}
+    assert {item.lead_time_hours for item in current} == {-6, 18}
+
+
+@pytest.mark.parametrize("configured", [False, None])
+@pytest.mark.parametrize("complete", [True, False])
+@pytest.mark.parametrize("previous_publication", [True, False])
+def test_declared_scoring_requires_atomic_generation_publication(
+    configured: bool | None,
+    complete: bool,
+    previous_publication: bool,
+) -> None:
+    from sapphire_flow.exceptions import ConfigurationError
+    from tests.conftest import make_observation
+    from tests.unit.services.test_hindcast_verification import _hindcast
+
+    hindcast = _hindcast()
+    hindcasts, skills = FakeHindcastStore(), FakeSkillStore()
+    hindcasts.store_hindcast(hindcast)
+    observations = FakeObservationStore()
+    observations.store_observations(
+        [
+            make_observation(
+                station_id=hindcast.station_id,
+                timestamp=ensure_utc(
+                    hindcast.ensemble.values["valid_time"][0] + timedelta(minutes=15)
+                ),
+                value=12.0,
+                rng=random.Random(17),
+            )
+        ]
+    )
+    arguments = dict(
+        station_id=hindcast.station_id,
+        model_id=hindcast.model_id,
+        artifact_id=hindcast.model_artifact_id,
+        parameter="discharge",
+        hindcast_run_id=hindcast.hindcast_run_id,
+        hindcast_store=hindcasts,
+        skill_store=skills,
+        clock=lambda: ensure_utc(hindcast.hindcast_step + timedelta(days=10)),
+        reference_displacement=timedelta(minutes=15),
+    )
+    if previous_publication:
+        compute_skills_task.fn(
+            **arguments,
+            obs_store=observations,
+            deployment_config=make_deployment_config(enable_skill_generations=True),
+        )
+    current = skills.fetch_latest_scores(hindcast.station_id, hindcast.model_id)
+    assert bool(current) is previous_publication
+    with pytest.raises(ConfigurationError, match="requires enable_skill_generations"):
+        compute_skills_task.fn(
+            **arguments,
+            obs_store=observations if complete else FakeObservationStore(),
+            deployment_config=make_deployment_config(enable_skill_generations=False)
+            if configured is False
+            else None,
+        )
+    assert skills.fetch_latest_scores(hindcast.station_id, hindcast.model_id) == current
+
+
 def _uuid() -> UUID:
     return UUID(int=_RNG.getrandbits(128), version=4)
 

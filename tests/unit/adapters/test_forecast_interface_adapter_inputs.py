@@ -738,6 +738,121 @@ def _declared_grid_inputs() -> StationModelInputs:
 
 
 class TestDeclaredTimeGrid:
+    @pytest.mark.parametrize("temporality", ["past_known", "future_known"])
+    @pytest.mark.parametrize(
+        "label",
+        [None, fi.PeriodLabel.UNKNOWN, fi.PeriodLabel.START, fi.PeriodLabel.END],
+    )
+    def test_variable_label_override_is_admitted_only_when_supported(
+        self,
+        temporality: str,
+        label: fi.PeriodLabel | None,
+    ) -> None:
+        model = GridRecordingModel(_FI_GRID)
+        spec = model.input_requirement.dynamic[timedelta(days=1)].data[
+            fi.SpatialRepresentation.POINT
+        ]
+        variables = next(iter(getattr(spec, temporality).values()))
+        name = next(iter(variables))
+        variables[name] = variables[name].model_copy(update={"label": label})
+        if label in {fi.PeriodLabel.END, fi.PeriodLabel.UNKNOWN}:
+            with pytest.raises(UnsupportedModelRequirementError, match="label differs"):
+                fi_boundary.ForecastInterfaceAdapter(model)
+        else:
+            assert (
+                fi_boundary.ForecastInterfaceAdapter(model).data_requirements.time_grid
+                == _DECLARED_GRID
+            )
+
+    @pytest.mark.parametrize("label", [PeriodLabel.START, PeriodLabel.END])
+    @pytest.mark.parametrize("gap", ["outside", "past_inside", "future_inside"])
+    def test_group_gate_uses_each_declared_variable_window(
+        self,
+        label: PeriodLabel,
+        gap: str,
+    ) -> None:
+        from uuid import uuid4
+
+        from sapphire_flow.services.hindcast import _stack_hindcast_inputs
+        from sapphire_flow.types.ids import StationGroupId
+
+        day = timedelta(days=1)
+        model = GridRecordingModel(_FI_GRID)
+        model.input_requirement.dynamic[day] = fi.SpatialInputSpec(
+            anchor=fi.TimeAnchor(
+                origin=timedelta(hours=18), label=fi.PeriodLabel(label.value)
+            ),
+            data={
+                fi.SpatialRepresentation.POINT: fi.DynamicInputSpec(
+                    past_known={
+                        "obs": {
+                            "discharge": fi.PastKnownVariable(
+                                lookback=1, max_nan=0, unit=fi.Unit.M3_PER_S
+                            )
+                        },
+                        "nwp": {
+                            "precipitation": fi.PastKnownVariable(
+                                lookback=2, max_nan=0, unit=fi.Unit.MM
+                            )
+                        },
+                    },
+                    future_known={
+                        "nwp": {
+                            "precipitation": fi.FutureKnownVariable(
+                                future_steps=1, max_nan=0, unit=fi.Unit.MM
+                            ),
+                            "temperature": fi.FutureKnownVariable(
+                                future_steps=2, max_nan=0, unit=fi.Unit.DEG_C
+                            ),
+                        }
+                    },
+                )
+            },
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(model, station_code_resolver=str)
+        grid = replace(_DECLARED_GRID, label=label)
+        issue = ensure_utc(datetime(2026, 11, 4, tzinfo=UTC))
+        boundary = grid.grid.floor(issue)
+        offset = day if label is PeriodLabel.END else timedelta(0)
+        past = [boundary - 2 * day + offset, boundary - day + offset]
+        future = [boundary + offset, boundary + day + offset]
+        inputs = StationModelInputs(
+            station_id=_SID_A,
+            issue_time=issue,
+            time_step=day,
+            time_grid=grid,
+            forecast_horizon_steps=2,
+            data=StationInputData(
+                past_targets=pl.DataFrame(
+                    {
+                        "timestamp": past,
+                        "discharge": [None, None if gap == "past_inside" else 11.0],
+                    },
+                    schema_overrides={"discharge": pl.Float64},
+                ),
+                past_dynamic=pl.DataFrame(
+                    {"timestamp": past, "precipitation": [1.0, 1.0]}
+                ),
+                future_dynamic=pl.DataFrame(
+                    {
+                        "timestamp": future,
+                        "precipitation": [
+                            None if gap == "future_inside" else 1.0,
+                            None,
+                        ],
+                        "temperature": [2.0, 2.0],
+                    },
+                    schema_overrides={"precipitation": pl.Float64},
+                ),
+                static=None,
+            ),
+        )
+        group = _stack_hindcast_inputs(StationGroupId(uuid4()), {_SID_A: inputs})
+        issues = adapter.assess_group_inputs(group)
+        assert bool(issues) is (gap != "outside")
+        if gap == "outside":
+            assert tuple(adapter.evidence_inputs(group).stations) == (str(_SID_A),)
+
     @pytest.mark.parametrize(
         "anchor",
         [

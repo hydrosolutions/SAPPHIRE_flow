@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import skill_diagrams, skill_generations, skill_scores
@@ -13,6 +14,12 @@ from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.store.skill_diagram_codec import (
     decode_skill_diagram_data,
     encode_skill_diagram_data,
+)
+from sapphire_flow.store.skill_period_codec import (
+    SKILL_PERIOD_FIELDS,
+    evaluation_context_content,
+    evaluation_contexts_content,
+    parse_evaluation_context,
 )
 from sapphire_flow.store.threshold_skill_codec import (
     decode_threshold_context,
@@ -31,6 +38,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.skill import SkillEvaluationContext
 
 log = structlog.get_logger(__name__)
 
@@ -137,6 +145,43 @@ def latest_generation_predicate(
             conditions.append(_forcing_type_expr(a) == _forcing_type_expr(b))
         return sa.and_(*conditions)
 
+    context_fields = SKILL_PERIOD_FIELDS
+
+    def _context_column(
+        t: sa.FromClause, name: str
+    ) -> sa.ColumnElement[object] | sa.ColumnElement[None]:
+        return t.c[name] if name in t.c else sa.null()
+
+    def _same_context(a: sa.FromClause, b: sa.FromClause) -> sa.ColumnElement[bool]:
+        return sa.and_(
+            *(
+                _context_column(a, name).is_not_distinct_from(_context_column(b, name))
+                for name in context_fields
+            )
+        )
+
+    def _covers_context(generation: sa.FromClause) -> sa.ColumnElement[bool]:
+        legacy = sa.and_(
+            *(_context_column(data_table, name).is_(None) for name in context_fields)
+        )
+        if "evaluation_contexts" not in generation.c:
+            return legacy
+        fields = [
+            part
+            for name in context_fields
+            for part in (
+                sa.literal(name, type_=sa.Text),
+                _context_column(data_table, name),
+            )
+        ]
+        wanted = sa.func.jsonb_build_array(
+            sa.func.jsonb_build_object(*fields), type_=JSONB
+        )
+        return sa.or_(
+            sa.and_(generation.c.evaluation_contexts.is_(None), legacy),
+            generation.c.evaluation_contexts.op("@>")(wanted),
+        )
+
     outranks = sa.or_(
         g_other.c.computation_version > g_self.c.computation_version,
         sa.and_(
@@ -153,7 +198,8 @@ def latest_generation_predicate(
     superseded = (
         sa.select(sa.literal(1))
         .select_from(g_other)
-        .where(_scope_match(g_other, g_self), outranks)
+        .where(_scope_match(g_other, g_self), _covers_context(g_other), outranks)
+        .correlate(g_self, data_table)
         .exists()
     )
 
@@ -170,6 +216,7 @@ def latest_generation_predicate(
         .select_from(other_baseline)
         .where(
             _scope_match(other_baseline, data_table),
+            _same_context(other_baseline, data_table),
             other_baseline.c.generation_id.is_(None),
             other_baseline.c.computation_version > data_table.c.computation_version,
         )
@@ -188,9 +235,11 @@ def latest_generation_predicate(
         .select_from(other_baseline)
         .where(
             _scope_match(other_baseline, g_self),
+            _same_context(other_baseline, data_table),
             other_baseline.c.generation_id.is_(None),
             other_baseline.c.computation_version > g_self.c.computation_version,
         )
+        .correlate(g_self, data_table)
         .exists()
     )
     is_current_generation = sa.and_(
@@ -199,6 +248,8 @@ def latest_generation_predicate(
         .select_from(g_self)
         .where(
             g_self.c.id == data_table.c.generation_id,
+            _scope_match(g_self, data_table),
+            _covers_context(g_self),
             sa.not_(superseded),
             sa.not_(baseline_outranks_generation),
         )
@@ -216,6 +267,7 @@ def latest_generation_predicate(
         .select_from(generations)
         .where(
             _scope_match(generations, data_table),
+            _covers_context(generations),
             generations.c.computation_version >= data_table.c.computation_version,
         )
         .exists()
@@ -284,6 +336,7 @@ class PgSkillStore:
         published_at: UtcDatetime,
         score_count: int,
         diagram_count: int,
+        evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
     ) -> None:
         """Plan 235 D3/D2c — the ONE atomic operation that makes a
         generation's already-inserted `skill_scores`/`skill_diagrams` rows
@@ -319,6 +372,7 @@ class PgSkillStore:
         scope identity fields (now including `model_artifact_id`, fixer
         round blocker) may not.
         """
+        contexts = evaluation_contexts_content(evaluation_contexts)
         stmt = (
             pg_insert(sg)
             .values(
@@ -333,6 +387,7 @@ class PgSkillStore:
                 published_at=published_at,
                 score_count=score_count,
                 diagram_count=diagram_count,
+                evaluation_contexts=contexts,
             )
             .on_conflict_do_nothing(index_elements=["id"])
             .returning(sg.c.id)
@@ -354,6 +409,7 @@ class PgSkillStore:
                     forcing_type.value if forcing_type is not None else None
                 ),
                 "computation_version": computation_version,
+                "evaluation_contexts": contexts,
             }
             mismatched = {
                 field: (existing[field], expected)  # type: ignore[index]
@@ -537,6 +593,7 @@ def _score_to_row(s: SkillScore) -> dict[str, object]:
         "phase_offset_seconds": s.phase_offset_seconds,
         "generation_id": s.generation_id,
         "threshold_context": encode_threshold_context(s.threshold_context),
+        **evaluation_context_content(s.evaluation_context),
     }
 
 
@@ -563,6 +620,7 @@ def _diagram_to_row(d: SkillDiagram) -> dict[str, object]:
         "phase_offset_seconds": d.phase_offset_seconds,
         "generation_id": d.generation_id,
         "threshold_context": encode_threshold_context(d.threshold_context),
+        **evaluation_context_content(d.evaluation_context),
     }
 
 
@@ -600,6 +658,9 @@ def _row_to_score(row: sa.engine.row.RowMapping) -> SkillScore:
         phase_offset_seconds=row["phase_offset_seconds"],
         generation_id=row["generation_id"],
         threshold_context=decode_threshold_context(row.get("threshold_context")),
+        evaluation_context=parse_evaluation_context(
+            {name: row.get(name) for name in SKILL_PERIOD_FIELDS}
+        ),
     )
 
 
@@ -633,4 +694,7 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         phase_offset_seconds=row["phase_offset_seconds"],
         generation_id=row["generation_id"],
         threshold_context=decode_threshold_context(row.get("threshold_context")),
+        evaluation_context=parse_evaluation_context(
+            {name: row.get(name) for name in SKILL_PERIOD_FIELDS}
+        ),
     )

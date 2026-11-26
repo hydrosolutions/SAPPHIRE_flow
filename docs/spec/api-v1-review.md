@@ -699,3 +699,36 @@ zero risk. This delivery does not compute stored model skill on reads.
 
 Invalid threshold snapshots (nonfinite values, duplicate keys or station mismatch)
 make the probability enrichment unavailable; the admitted forecast remains readable.
+
+
+### Declared hindcast periods and evaluation identity (contract 3.13)
+
+Reviewer skill rows, skill-options evaluations and stored diagrams now expose
+nullable `evaluation_context`: `period_definition`, `reference_period_definition`,
+`reference_displacement_seconds`, and `input_availability_policy`. Periods use the
+existing step/origin/label/aggregation payload. Null is legacy unknown support.
+Every compatible current identity is returned; exact and approximate reference
+periods, START/END labels and availability assumptions are never collapsed. A
+new generation replaces only the evaluation identities it covers. Scalar/diagram
+joins require the same context. These are additional scientific identity fields,
+not evidence that unknown training provenance has been resolved.
+
+Hindcast review sources now carry their `period_definition` and
+`input_availability_policy`, with `temporal_support="declared_period"`; point
+`valid_interval_start`/`valid_interval_end` describe physical coverage. The requested
+half-open review window must fully contain each declared interval. `valid_time`
+retains its declared label. Leads remain exact integer elapsed hours from issue
+to label, including negative START leads; the skill-diagrams selector accepts
+negative leads too. Legacy operational review remains timestamp-based and accepts
+nonnegative leads only. Mixed legacy/declared run identities refuse; automatic
+operational/hindcast fallback remains unsupported. Publication, tenant, purpose,
+reviewer authorization and work/response limits are unchanged.
+
+For example, an 18:00 START daily forecast issued at 00:00 has first lead -6;
+the same interval END-labelled has lead +18. An accepted +900-second reference
+comparison covers 18:15–18:15 instead and remains separately labelled in skill.
+Do not combine scores across these contexts or label a daily aggregate as an
+instantaneous peak. The legacy administrator hindcasts.json route returns 422
+for declared-period data and directs callers to review-series.
+
+Declared `evaluation_context` additionally retains `source_periods` (the canonical native input/verification source catalogue) and `source_periods_sha256`. Native period labels, sampling, stored-label shifts, input displacements and evidence survive independently of the canonical comparison label. Source qualifications with identical numerical scores remain distinct.

@@ -13,6 +13,11 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
 )
 from sapphire_flow.services.skill_read import EvaluatedOn, evaluated_on
+from sapphire_flow.store.skill_period_codec import (
+    SKILL_PERIOD_FIELDS,
+    SkillPeriodPayload,
+    parse_evaluation_context,
+)
 from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (  # noqa: TC001 -- Pydantic
@@ -38,6 +43,7 @@ class SkillEvaluationOption(BaseModel):
     computation_version: int
     time_step_seconds: int
     phase_offset_seconds: int | None
+    evaluation_context: SkillPeriodPayload | None = None
     eval_period_start: datetime
     eval_period_end: datetime
     evaluated_on: EvaluatedOn
@@ -81,6 +87,7 @@ def read_skill_options(
         scores.c.computation_version,
         scores.c.time_step_seconds,
         scores.c.phase_offset_seconds,
+        *(scores.c[name] for name in SKILL_PERIOD_FIELDS),
         scores.c.eval_period_start,
         scores.c.eval_period_end,
         artifacts.c.training_period_start,
@@ -149,6 +156,11 @@ def read_skill_options(
                 computation_version=row["computation_version"],
                 time_step_seconds=row["time_step_seconds"],
                 phase_offset_seconds=row["phase_offset_seconds"],
+                evaluation_context=SkillPeriodPayload.from_domain(
+                    parse_evaluation_context(
+                        {name: row[name] for name in SKILL_PERIOD_FIELDS}
+                    )
+                ),
                 eval_period_start=row["eval_period_start"],
                 eval_period_end=row["eval_period_end"],
                 evaluated_on=evaluated_on(

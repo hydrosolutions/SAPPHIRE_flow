@@ -15,6 +15,11 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
 )
 from sapphire_flow.services.skill_read import evaluated_on
+from sapphire_flow.store.skill_period_codec import (
+    SKILL_PERIOD_FIELDS,
+    SkillPeriodPayload,
+    parse_evaluation_context,
+)
 from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.store.threshold_skill_codec import (
     ThresholdContextPayload,  # noqa: TC001 -- Pydantic
@@ -98,6 +103,10 @@ def read_skill_diagrams(
                 scores.c.time_step_seconds == diagrams.c.time_step_seconds,
                 scores.c.phase_offset_seconds.is_not_distinct_from(
                     diagrams.c.phase_offset_seconds
+                ),
+                *(
+                    scores.c[name].is_not_distinct_from(diagrams.c[name])
+                    for name in SKILL_PERIOD_FIELDS
                 ),
                 scores.c.lead_time_hours == diagrams.c.lead_time_hours,
                 scores.c.eval_period_start == diagrams.c.eval_period_start,
@@ -189,6 +198,11 @@ def read_skill_diagrams(
                     computation_version=row["computation_version"],
                     time_step_seconds=row["time_step_seconds"],
                     phase_offset_seconds=row["phase_offset_seconds"],
+                    evaluation_context=SkillPeriodPayload.from_domain(
+                        parse_evaluation_context(
+                            {name: row[name] for name in SKILL_PERIOD_FIELDS}
+                        )
+                    ),
                     eval_period_start=row["eval_period_start"],
                     eval_period_end=row["eval_period_end"],
                     evaluated_on=evaluated_on(

@@ -3344,6 +3344,70 @@
         "title": "HeadlineUnavailable",
         "type": "object"
       },
+      "HistoricalAvailabilityPolicy": {
+        "enum": [
+          "recorded_only",
+          "retrospective_closure"
+        ],
+        "title": "HistoricalAvailabilityPolicy",
+        "type": "string"
+      },
+      "HistoricalSourcePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "input_support_displacement_seconds": {
+            "default": 0,
+            "title": "Input Support Displacement Seconds",
+            "type": "integer"
+          },
+          "parameter": {
+            "minLength": 1,
+            "title": "Parameter",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/ForecastPeriodPayload"
+          },
+          "sampling": {
+            "default": "interval",
+            "enum": [
+              "interval",
+              "snapshot"
+            ],
+            "title": "Sampling",
+            "type": "string"
+          },
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "station_id": {
+            "format": "uuid",
+            "title": "Station Id",
+            "type": "string"
+          },
+          "stored_label_shift_seconds": {
+            "default": 0,
+            "title": "Stored Label Shift Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "station_id",
+          "source",
+          "parameter",
+          "period",
+          "evidence"
+        ],
+        "title": "HistoricalSourcePayload",
+        "type": "object"
+      },
       "HistoryCoarseGrid": {
         "additionalProperties": false,
         "properties": {
@@ -6675,7 +6739,7 @@
             "$ref": "#/components/schemas/ReviewAvailability"
           },
           "lead_definition": {
-            "default": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then.",
+            "default": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then. Declared start labels can precede the issue anchor and have negative leads.",
             "title": "Lead Definition",
             "type": "string"
           },
@@ -6846,12 +6910,28 @@
             "type": "object"
           },
           "valid_interval_end": {
-            "title": "Valid Interval End",
-            "type": "null"
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Interval End"
           },
           "valid_interval_start": {
-            "title": "Valid Interval Start",
-            "type": "null"
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Interval Start"
           },
           "valid_time": {
             "format": "date-time",
@@ -6935,7 +7015,7 @@
             "type": "string"
           },
           "lead_definition": {
-            "default": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then.",
+            "default": "Lead is the elapsed time from the forecast issue anchor to the valid timestamp. A 48-hour lead uses the issue anchored exactly 48 hours earlier. Hindcast issue anchors are retrospective, not forecasts published then. Declared start labels can precede the issue anchor and have negative leads.",
             "title": "Lead Definition",
             "type": "string"
           },
@@ -6954,7 +7034,7 @@
             "type": "string"
           },
           "probability_definition": {
-            "default": "P(forecast value > threshold), compared as stored without tolerance. Per valid time, not a peak or window-event probability. Quantile point estimates assume a piecewise-linear inverse CDF within supplied support; bounds do not invent tail probabilities. Temporal support remains unknown. qc_unchecked applies to probabilities as well as plotted values.",
+            "default": "P(forecast value > threshold), compared as stored without tolerance. Per valid time, not a peak or window-event probability. Quantile point estimates assume a piecewise-linear inverse CDF within supplied support; bounds do not invent tail probabilities. Refer to each source's temporal support. qc_unchecked applies to probabilities as well as plotted values.",
             "title": "Probability Definition",
             "type": "string"
           },
@@ -6998,8 +7078,11 @@
             "type": "string"
           },
           "temporal_support": {
-            "const": "unknown",
             "default": "unknown",
+            "enum": [
+              "unknown",
+              "declared_period"
+            ],
             "title": "Temporal Support",
             "type": "string"
           },
@@ -7104,6 +7187,16 @@
             ],
             "title": "Hindcast Run Id"
           },
+          "input_availability_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HistoricalAvailabilityPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "kind": {
             "$ref": "#/components/schemas/ReviewKind"
           },
@@ -7121,7 +7214,7 @@
             "title": "Last Valid Time"
           },
           "lead_hours": {
-            "description": "Exact nonnegative integer leads stored; not the model horizon.",
+            "description": "Exact integer elapsed leads stored; declared start labels may be negative.",
             "items": {
               "type": "integer"
             },
@@ -7156,6 +7249,16 @@
             "description": "Recorded model version, otherwise null; not a forecast revision.",
             "title": "Model Version"
           },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reasons": {
             "items": {
               "type": "string"
@@ -7164,8 +7267,11 @@
             "type": "array"
           },
           "temporal_support": {
-            "const": "unknown",
             "default": "unknown",
+            "enum": [
+              "unknown",
+              "declared_period"
+            ],
             "title": "Temporal Support",
             "type": "string"
           },
@@ -7659,6 +7765,16 @@
             "title": "Evaluated On",
             "type": "string"
           },
+          "evaluation_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "forcing_type": {
             "anyOf": [
               {
@@ -7713,6 +7829,52 @@
         "title": "SkillEvaluationOption",
         "type": "object"
       },
+      "SkillPeriodPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "input_availability_policy": {
+            "enum": [
+              "recorded_only",
+              "retrospective_closure"
+            ],
+            "title": "Input Availability Policy",
+            "type": "string"
+          },
+          "period_definition": {
+            "$ref": "#/components/schemas/ForecastPeriodPayload"
+          },
+          "reference_displacement_seconds": {
+            "title": "Reference Displacement Seconds",
+            "type": "integer"
+          },
+          "reference_period_definition": {
+            "$ref": "#/components/schemas/ForecastPeriodPayload"
+          },
+          "source_periods": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalSourcePayload"
+            },
+            "minItems": 1,
+            "title": "Source Periods",
+            "type": "array"
+          },
+          "source_periods_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Periods Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period_definition",
+          "reference_period_definition",
+          "reference_displacement_seconds",
+          "input_availability_policy",
+          "source_periods",
+          "source_periods_sha256"
+        ],
+        "title": "SkillPeriodPayload",
+        "type": "object"
+      },
       "SkillRowResponse": {
         "properties": {
           "computation_version": {
@@ -7738,6 +7900,16 @@
             ],
             "title": "Evaluated On",
             "type": "string"
+          },
+          "evaluation_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "flow_regime": {
             "anyOf": [
@@ -8863,6 +9035,16 @@
             "title": "Evaluated On",
             "type": "string"
           },
+          "evaluation_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "forcing_type": {
             "anyOf": [
               {
@@ -9639,7 +9821,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.11"
+    "version": "3.13"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11555,7 +11737,7 @@
             "required": true,
             "schema": {
               "maximum": 8784,
-              "minimum": 0,
+              "minimum": -24,
               "title": "Lead Hours",
               "type": "integer"
             }
@@ -11902,7 +12084,7 @@
             "schema": {
               "items": {
                 "maximum": 2147483647,
-                "minimum": 0,
+                "minimum": -24,
                 "type": "integer"
               },
               "maxItems": 16,

@@ -137,6 +137,7 @@ from sapphire_flow.types.rejected_forecast import (
 from sapphire_flow.types.skill import (  # noqa: TC001
     FlowRegimeConfig,
     SkillDiagram,
+    SkillEvaluationContext,
     SkillScore,
 )
 from sapphire_flow.types.station import (  # noqa: TC001
@@ -1172,6 +1173,20 @@ class FakeHindcastStore:
         )
         existing_id = self._natural_key_to_id.get(key)
         if existing_id is not None:
+            existing = self._hindcasts[existing_id]
+            if (
+                existing.ensemble.period_definition,
+                existing.source_periods,
+                existing.input_availability_policy,
+            ) != (
+                hindcast.ensemble.period_definition,
+                hindcast.source_periods,
+                hindcast.input_availability_policy,
+            ):
+                raise StoreError(
+                    "hindcast run identity cannot change period "
+                    "or availability contract"
+                )
             # Conflict: full-replace under the existing id.
             # HindcastForecast is frozen — must use dataclasses.replace to
             # swap in the existing id so fetched objects carry the correct id.
@@ -1405,6 +1420,7 @@ class _FakeGeneration:
         "forcing_type",
         "computation_version",
         "published_at",
+        "evaluation_contexts",
     )
 
     def __init__(
@@ -1419,6 +1435,7 @@ class _FakeGeneration:
         forcing_type: ForcingType | None,
         computation_version: int,
         published_at: UtcDatetime,
+        evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
     ) -> None:
         self.id = id
         self.station_id = station_id
@@ -1429,6 +1446,7 @@ class _FakeGeneration:
         self.forcing_type = forcing_type
         self.computation_version = computation_version
         self.published_at = published_at
+        self.evaluation_contexts = evaluation_contexts
 
     def scope_key(self, *, include_forcing_type: bool = True) -> tuple[object, ...]:
         """Fixer round (major): takes `include_forcing_type` so a DIAGRAM
@@ -1449,6 +1467,13 @@ class _FakeGeneration:
             self.skill_source,
         )
         return (*base, self.forcing_type) if include_forcing_type else base
+
+    def covers(self, context: SkillEvaluationContext | None) -> bool:
+        return (
+            not self.evaluation_contexts
+            if context is None
+            else context in self.evaluation_contexts
+        )
 
     def rank(self) -> tuple[object, ...]:
         return (self.computation_version, self.published_at, self.id)
@@ -1497,6 +1522,7 @@ class FakeSkillStore:
             s.time_step_seconds,
             s.phase_offset_seconds,
             s.generation_id,
+            s.evaluation_context,
         )
 
     @staticmethod
@@ -1517,6 +1543,7 @@ class FakeSkillStore:
             d.time_step_seconds,
             d.phase_offset_seconds,
             d.generation_id,
+            d.evaluation_context,
         )
 
     def store_skill_scores(self, scores: list[SkillScore]) -> int:
@@ -1560,6 +1587,7 @@ class FakeSkillStore:
         published_at: UtcDatetime,
         score_count: int,  # noqa: ARG002 — diagnostic only, matches PgSkillStore's signature
         diagram_count: int,  # noqa: ARG002
+        evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
     ) -> None:
         self._generations.append(
             _FakeGeneration(
@@ -1572,6 +1600,7 @@ class FakeSkillStore:
                 forcing_type=forcing_type,
                 computation_version=computation_version,
                 published_at=published_at,
+                evaluation_contexts=evaluation_contexts,
             )
         )
 
@@ -1624,6 +1653,7 @@ class FakeSkillStore:
         computation_version: int,
         peers: Sequence[SkillScore] | Sequence[SkillDiagram],
         peer_forcing_type: object,
+        evaluation_context: SkillEvaluationContext | None = None,
         include_forcing_type: bool = True,
     ) -> bool:
         """`peers` is the SAME table this row came from (`self._scores` for
@@ -1664,7 +1694,9 @@ class FakeSkillStore:
             (
                 p.computation_version
                 for p in peers
-                if p.generation_id is None and _peer_scope(p) == scope
+                if p.generation_id is None
+                and _peer_scope(p) == scope
+                and p.evaluation_context == evaluation_context
             ),
             default=None,
         )
@@ -1683,7 +1715,7 @@ class FakeSkillStore:
             self_gen = next(
                 (g for g in self._generations if g.id == generation_id), None
             )
-            if self_gen is None:
+            if self_gen is None or not self_gen.covers(evaluation_context):
                 return False
             if (
                 max_baseline_version is not None
@@ -1695,6 +1727,7 @@ class FakeSkillStore:
                 for g in self._generations
                 if g.scope_key(include_forcing_type=True)
                 == self_gen.scope_key(include_forcing_type=True)
+                and g.covers(evaluation_context)
             ]
             return self_gen.rank() == max(g.rank() for g in competing_generations)
 
@@ -1702,6 +1735,7 @@ class FakeSkillStore:
             g
             for g in self._generations
             if g.scope_key(include_forcing_type=include_forcing_type) == scope
+            and g.covers(evaluation_context)
         ]
         # Baseline row: displaced by a generation at the SAME or a HIGHER
         # computation_version (never a lower one).
@@ -1713,7 +1747,9 @@ class FakeSkillStore:
             (
                 p.computation_version
                 for p in peers
-                if p.generation_id is None and _peer_scope(p) == scope
+                if p.generation_id is None
+                and _peer_scope(p) == scope
+                and p.evaluation_context == evaluation_context
             ),
             default=computation_version,
         )
@@ -1744,6 +1780,7 @@ class FakeSkillStore:
                 skill_source=s.skill_source,
                 forcing_type=s.forcing_type,
                 generation_id=s.generation_id,
+                evaluation_context=s.evaluation_context,
                 computation_version=s.computation_version,
                 peers=self._scores,
                 peer_forcing_type=lambda p: p.forcing_type,
@@ -1776,6 +1813,7 @@ class FakeSkillStore:
                 skill_source=d.skill_source,
                 forcing_type=None,
                 generation_id=d.generation_id,
+                evaluation_context=d.evaluation_context,
                 computation_version=d.computation_version,
                 peers=self._diagrams,
                 peer_forcing_type=lambda _p: None,
@@ -1809,6 +1847,7 @@ class FakeSkillStore:
                 skill_source=s.skill_source,
                 forcing_type=s.forcing_type,
                 generation_id=s.generation_id,
+                evaluation_context=s.evaluation_context,
                 computation_version=s.computation_version,
                 peers=self._scores,
                 peer_forcing_type=lambda p: p.forcing_type,
@@ -1839,6 +1878,7 @@ class FakeSkillStore:
                 skill_source=s.skill_source,
                 forcing_type=s.forcing_type,
                 generation_id=s.generation_id,
+                evaluation_context=s.evaluation_context,
                 computation_version=s.computation_version,
                 peers=self._scores,
                 peer_forcing_type=lambda p: p.forcing_type,

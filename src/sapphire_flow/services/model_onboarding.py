@@ -897,14 +897,23 @@ def evaluate_skill_gate(
             score.flow_regime,
             score.time_step_seconds,
             score.phase_offset_seconds,
+            score.evaluation_context,
         )
         versions[scope] = max(versions.get(scope, 0), score.computation_version)
     incomplete_recompute = any(version < 3 for version in versions.values())
-    max_version = max((s.computation_version for s in current_scores), default=None)
+    context_versions = {
+        context: max(
+            s.computation_version
+            for s in current_scores
+            if s.evaluation_context == context
+        )
+        for context in {s.evaluation_context for s in current_scores}
+    }
     gate_scores = [
         s
         for s in current_scores
-        if s.computation_version == max_version and s.computation_version >= 3
+        if s.computation_version == context_versions[s.evaluation_context]
+        and s.computation_version >= 3
     ]
     valid_scores = [
         s
