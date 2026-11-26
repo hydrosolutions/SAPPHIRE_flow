@@ -1,5 +1,18 @@
 # SAPPHIRE Flow — Touchpoint Maps
 
+### Operational threshold probabilities
+
+`api/routes/api_forecasts.py` enriches detail only after station, publication and
+provisional admission. `api/forecast_probabilities.py` uses the existing
+`services/threshold_probability.py` converter and current station thresholds.
+Keep strict exceedance, null unknown tails, canonical discharge units, parent
+QC/data-use identity and declared period support; never infer peak/window events
+from marginal quantiles or compare stage thresholds with discharge. A withdrawn
+or denied forecast must not fetch thresholds or expose the enrichment. Update
+both detail schemas, generated map contract and examples together. Verify
+`test_forecast_probabilities.py`, `test_api_forecasts.py`,
+`test_provisional_forecast_reads.py`, and `test_forecast_publication_api.py`.
+
 ### Forecast artifact and stored-skill discovery
 
 `api/network_overview.py` copies `model_artifact_id` only from the already admitted

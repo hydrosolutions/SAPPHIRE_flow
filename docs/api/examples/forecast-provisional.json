@@ -46,7 +46,7 @@
   "ensemble": {
     "representation": "members",
     "parameter": "discharge",
-    "units": "m³/s",
+    "units": "m\u00b3/s",
     "forecast_horizon_steps": 2,
     "time_step_seconds": 86400,
     "member_count": 2,
@@ -64,5 +64,56 @@
         13.0
       ]
     }
+  },
+  "threshold_probabilities": {
+    "kind": "operational",
+    "availability": "available",
+    "reason": null,
+    "temporal_support": "unknown",
+    "period_definition": null,
+    "thresholds": [
+      {
+        "key": "[\"discharge\",\"High\",\"authority\"]",
+        "danger_level": "High",
+        "value": 12.0,
+        "source": "authority",
+        "updated_at": "2026-11-15T00:00:00Z",
+        "parameter": "discharge",
+        "units": "m3/s"
+      }
+    ],
+    "points": [
+      {
+        "valid_time": "2026-11-16T00:00:00Z",
+        "support_start": null,
+        "support_end": null,
+        "threshold_probabilities": {
+          "[\"discharge\",\"High\",\"authority\"]": {
+            "probability": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "method": "empirical_members",
+            "reason": null
+          }
+        }
+      },
+      {
+        "valid_time": "2026-11-17T00:00:00Z",
+        "support_start": null,
+        "support_end": null,
+        "threshold_probabilities": {
+          "[\"discharge\",\"High\",\"authority\"]": {
+            "probability": 0.5,
+            "lower": 0.5,
+            "upper": 0.5,
+            "method": "empirical_members",
+            "reason": null
+          }
+        }
+      }
+    ],
+    "probability_definition": "P(stored forecast value > threshold), without tolerance or rounding. Per valid time; the forecast identity, issue time, QC and provisional status are those of the parent forecast. Quantile tails have bounds, not invented point probabilities. Members use empirical frequencies. Exceedance of an aggregated value is not the probability of a peak anywhere in its period. Unknown temporal support implies no aggregation.",
+    "threshold_basis": "Current stored discharge thresholds in m3/s; updated_at is snapshot metadata, not a historical effective date.",
+    "window_event_probability": "unsupported"
   }
 }

@@ -636,3 +636,50 @@ read-only rating configuration as its workers; GET still performs no conversion.
 The station-history projection accumulates scalar samples in a typed array and
 encodes JSON once, avoiding repeated copying of a growing JSON history. Ordering,
 response content, evidence validation and all resource limits are unchanged.
+
+
+## Operational per-time probabilities (forecast detail, contract 3.10)
+
+`GET /api/v1/forecasts/{id}` now includes `threshold_probabilities` for the exact
+forecast, model, artifact and issue time identified by the parent response. The
+same additive field is available on authorized `data_use=provisional_rating`
+detail, with all existing provisional labels. Publication and station scope are
+checked before reading thresholds or returning probabilities; withdrawn forecasts
+retain their tombstone without probability data. Overview remains compact; use
+its existing detail URL. No extra per-threshold or per-time requests are needed.
+
+The block contains current `thresholds` (stable keys matching event review, values,
+canonical units, authority/inferred source and update time) and `points` keyed by
+`valid_time`. Each point maps a threshold key to `probability`, `lower`, `upper`,
+`method` and `reason`, using the same converter as historical review. The comparison
+is strict exceedance, with no tolerance or rounding. Quantiles interpolate only
+inside their supplied range; unresolved tails have a null point probability and
+bounds. Empirical member frequencies are labelled; single-member deterministic
+forecasts return unavailable probabilities. Failed/suspect/missing forecast QC
+returns unavailable probabilities; raw/unchecked quality remains the parent's
+explicit status and applies equally to the probabilities.
+
+Only discharge in `m3/s` or its `m³/s` spelling is comparable in this MVP. Other
+parameters return `parameter_not_supported`; incompatible discharge units return
+`forecast_units_not_canonical_discharge`. Water-level thresholds are never used
+for discharge. This is shared behavior across deployments, not a regional switch.
+Missing matching thresholds yields `thresholds_not_configured`, not zero risk.
+Thresholds are the current snapshot, not necessarily those in effect at issue time;
+`updated_at` is not an inferred historical effective date.
+
+`temporal_support` is `declared_period` with `period_definition` and explicit
+half-open `support_start`/`support_end` per point, or `unknown` with null support
+for legacy forecasts. No interval is guessed from the timestamp or step. An
+exceedance of a daily mean is not the probability that an instantaneous flood peak
+crosses the danger level during that day. `window_event_probability` is explicitly
+`unsupported`: no joint event likelihood is fabricated from marginal quantiles.
+These values do not issue warnings or activate notification delivery.
+
+`availability` distinguishes `available` (including bounded tails), `partial`,
+`unavailable`, and `thresholds_not_configured`. Point-level reasons preserve
+unavailable data as null. The field is nullable for compatibility with detail
+serializers that do not provide this enrichment; it must not be interpreted as
+zero risk. This delivery does not compute stored model skill on reads.
+
+Invalid threshold snapshots (nonfinite values, duplicate keys or station mismatch)
+make the probability enrichment unavailable; the admitted forecast remains readable.

@@ -13,7 +13,7 @@ from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.provisional_forecasts import ProvisionalForecastReader
 from sapphire_flow.api.security import Principal, require_principal
-from sapphire_flow.db.metadata import forecasts, stations
+from sapphire_flow.db.metadata import forecasts, station_thresholds, stations
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.enums import (
@@ -107,6 +107,39 @@ def list_url(native: OperationalForecast) -> str:
 
 
 class TestProvisionalReadApiRole:
+    def test_probabilities_keep_provisional_purpose_and_consumer_denial(
+        self, native_read_case: tuple
+    ) -> None:
+        conn, client, native, _, principal = native_read_case
+        conn.execute(sa.text("RESET ROLE"))
+        conn.execute(
+            sa.insert(station_thresholds).values(
+                station_id=native.station_id,
+                danger_level="Warning",
+                parameter="discharge",
+                value=5.0,
+                source="authority",
+                created_at=native.issued_at,
+                updated_at=native.issued_at,
+            )
+        )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+        path = f"/api/v1/forecasts/{native.id}?data_use=provisional_rating"
+        result = client.get(path)
+        assert result.status_code == 200, result.text
+        payload = result.json()
+        assert payload["badge"] == "PROVISIONAL"
+        assert (
+            payload["threshold_probabilities"]["thresholds"][0]["source"] == "authority"
+        )
+        assert payload["threshold_probabilities"]["points"]
+        app.dependency_overrides[require_principal] = lambda: replace(
+            principal, role=AccessTokenRole.CONSUMER
+        )
+        denied = client.get(path)
+        assert denied.status_code == 403
+        assert "threshold_probabilities" not in denied.json()
+
     def test_summary_detail_flags_and_explicit_stage1_contract(
         self, native_read_case: tuple
     ) -> None:
@@ -189,7 +222,9 @@ class TestProvisionalReadApiRole:
                 403 if role is AccessTokenRole.CONSUMER else 404
             )
             assert not any(
-                "native_rating_lineage" in sql or "forecast_values" in sql
+                "native_rating_lineage" in sql
+                or "forecast_values" in sql
+                or "station_thresholds" in sql
                 for sql in statements
             )
         finally:

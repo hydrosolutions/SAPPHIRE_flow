@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.forecast_probabilities import forecast_probabilities
 from sapphire_flow.api.forecast_read import (
     require_standard_detail,
     require_standard_store,
@@ -42,9 +43,10 @@ from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from sapphire_flow.protocols.stores import ForecastStore
+    from sapphire_flow.types.domain import StationThreshold
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.ids import ModelId
@@ -156,6 +158,8 @@ def _detail_with_weather(
     forecast: OperationalForecast,
     store: ForecastStore,
     models: Mapping[ModelId, ModelRecord] | None = None,
+    *,
+    thresholds: Sequence[StationThreshold],
 ) -> ForecastDetail:
     from sapphire_flow.api.weather_evidence import read_weather_summary
 
@@ -169,7 +173,10 @@ def _detail_with_weather(
         store=store,
     )
     return to_forecast_detail(forecast, models).model_copy(
-        update={"weather_use": summary}
+        update={
+            "weather_use": summary,
+            "threshold_probabilities": forecast_probabilities(forecast, thresholds),
+        }
     )
 
 
@@ -209,6 +216,9 @@ def get_forecast(
             ),
             **metadata,
             weather_use=weather,
+            threshold_probabilities=forecast_probabilities(
+                forecast, stores["station_store"].fetch_thresholds(forecast.station_id)
+            ),
         )
         return JSONResponse(content=response.model_dump(mode="json"))
     fid = ForecastId(UUID(forecast_id))
@@ -227,6 +237,7 @@ def get_forecast(
             forecast,
             forecast_store,
             load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+            thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
         )
     tenant_id = station_tenant_id(stores, forecast.station_id)
     if not gate.active(tenant_id):
@@ -234,6 +245,7 @@ def get_forecast(
             forecast,
             forecast_store,
             load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+            thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
         )
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
@@ -255,4 +267,5 @@ def get_forecast(
         forecast,
         forecast_store,
         load_model_display_names(stores.get("model_store"), [forecast.model_id]),
+        thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
     ).model_copy(update=metadata)
