@@ -4,7 +4,7 @@ status: READY
 
 Owner: forecast-peak API agent, coordinated by the Nepal orchestrator.
 Branch: `feat/forecast-peak-water-level`.
-Base: `550d231e` at planning; rebased onto `e67b99e1` before PR (26 November).
+Base: `550d231e` at planning; latest main `cffe874a` merged before final CI (26 November).
 
 ## Outcome and scope
 

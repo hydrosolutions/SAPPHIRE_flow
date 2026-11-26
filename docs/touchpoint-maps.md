@@ -2685,8 +2685,11 @@ See `spec/api-v1-review.md` for the version 2.6 wire contract and disabled defau
 
 Retained result (#581, contract 3.11): `read_day` fills `DailyDaySnapshot.earlier`
 (older same-day attempts with outcomes, newest first; `read_days_bounded` leaves it
-empty). Only `select_current_daily_retained` uses it, so the network overview and
-evaluation selection keep their behaviour until a follow-up. Scope and
+empty). `select_current_daily_retained` and, since contract 3.12 (T2), the network
+overview use it; the network overview reads it with
+`PgDailyForecastStore.read_earlier_attempts` only for the keys whose authoritative
+member failed (a healthy day adds no query). Evaluation selection keeps its
+behaviour until a follow-up (T3). Scope and
 not-in-the-future validation of `earlier` lives in `daily_day_available`.
 
 Swiss overview review corrections: current candidate maps are keyed by the frozen
