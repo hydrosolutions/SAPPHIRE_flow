@@ -3147,3 +3147,5 @@ and native selected-weather tests all read detail directly with PostgreSQL store
   added curve reads. No overview, observation or protected-history scans.
 - Verify inverse numerics, statistical/period semantics, nonzero reference offset,
   real store snapshot mapping, all admission branches and generated map contract.
+  Update the standard-route byte fixture for the additive default-null comparison
+  field; all existing detail/list bytes must otherwise remain identical.
