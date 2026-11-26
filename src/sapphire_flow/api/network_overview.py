@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from contextlib import nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
@@ -27,6 +27,7 @@ from sapphire_flow.api.network_overview_schemas import (
 )
 from sapphire_flow.api.provisional_forecasts import ProvisionalHeader, rating_metadata
 from sapphire_flow.api.schemas import ThresholdResponse
+from sapphire_flow.api.swiss_overview_schemas import retained_result_out
 from sapphire_flow.db.metadata import (
     forecast_publication_selections,
     forecast_values,
@@ -41,6 +42,7 @@ from sapphire_flow.exceptions import DailyAuthorityIntegrityError
 from sapphire_flow.services.evaluation_forecasts import (
     daily_candidate_from_record,
     daily_day_available,
+    retained_source,
 )
 from sapphire_flow.services.network_overview import (
     compact_forecast_series,
@@ -55,7 +57,10 @@ from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.daily_forecast import ScheduledDailyForecast
 from sapphire_flow.types.daily_forecast_claim import DailyClaimKey
-from sapphire_flow.types.daily_forecast_outcome import DailyOutputSource
+from sapphire_flow.types.daily_forecast_outcome import (
+    DailyMemberState,
+    DailyOutputSource,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ForecastDataUse,
@@ -63,6 +68,7 @@ from sapphire_flow.types.enums import (
     ObservationSource,
     QcStatus,
 )
+from sapphire_flow.types.evaluation_forecast import RetainedResult
 from sapphire_flow.types.ids import ForecastId, ModelId, StationId, TenantId
 from sapphire_flow.types.network_overview import (
     OverviewAvailability,
@@ -218,7 +224,7 @@ class NetworkOverviewReader:
                     hours=self.config.publication_proof_window_hours
                 ),
             ).lock_read_snapshot()
-        daily_refs, daily_keys = self._daily_references(
+        daily_refs, daily_keys, retained = self._daily_references(
             ids, tenants, assignments, purposes, as_of
         )
         headers = self._headers(
@@ -255,11 +261,14 @@ class NetworkOverviewReader:
                 if candidate is None:
                     output[key[0]].append(self._absence(key, "withheld_or_ineligible"))
                     continue
-            output[key[0]].append(
-                self._forecast(
-                    record, network, tenants[key[0]], as_of, header["time_step_seconds"]
-                )
+            forecast = self._forecast(
+                record, network, tenants[key[0]], as_of, header["time_step_seconds"]
             )
+            if key in retained:
+                forecast = forecast.model_copy(
+                    update={"retained_result": retained_result_out(retained[key])}
+                )
+            output[key[0]].append(forecast)
         for sid, model, parameter, purpose in missing:
             output[sid].append(
                 OverviewForecastResponse(
@@ -428,10 +437,11 @@ class NetworkOverviewReader:
     ) -> tuple[
         dict[_OutputKey, tuple[DailyAttemptSnapshot, DailyOutputReference]],
         set[tuple[StationId, ModelId]],
+        dict[_OutputKey, RetainedResult],
     ]:
         config = self.config.evaluation_forecasts if self.config is not None else None
         if config is None or ForecastDataUse.STANDARD not in purposes:
-            return {}, set()
+            return {}, set(), {}
         settings = config.to_domain()
         daily_keys = {
             (sid, model)
@@ -439,7 +449,7 @@ class NetworkOverviewReader:
             if model == settings.daily_model_id and tenants[sid] == settings.tenant_id
         }
         if not daily_keys:
-            return {}, set()
+            return {}, set(), {}
         if len(settings.group_ids) > 16:
             raise ValueError("overview daily group admission exceeded")
         groups = self.conn.execute(
@@ -464,10 +474,41 @@ class NetworkOverviewReader:
             for day in range(7)
             for group in sorted(settings.group_ids, key=str)
         )
-        days = PgDailyForecastStore(lambda: nullcontext(self.conn)).read_days_bounded(
-            keys
-        )
+        store = PgDailyForecastStore(lambda: nullcontext(self.conn))
+        days = store.read_days_bounded(keys)
+        # A failed present member may be covered by an earlier same-day attempt.
+        # Mirror the walk below so a healthy day adds no query.
+        triggered: list[DailyClaimKey] = []
+        walked: set[StationId] = set()
+        for key in keys:
+            day = days[key]
+            if not daily_day_available(day, key, as_of) or day.authoritative is None:
+                continue
+            for member in day.authoritative.outcomes or ():
+                sid = member.station_id
+                if (
+                    sid not in ids
+                    or (sid, settings.daily_model_id) not in daily_keys
+                    or sid in walked
+                ):
+                    continue
+                walked.add(sid)
+                if member.state is not DailyMemberState.PRODUCED:
+                    triggered.append(key)
+        if triggered:
+            keys_to_read = tuple(dict.fromkeys(triggered))
+            earlier = store.read_earlier_attempts(
+                keys_to_read,
+                {k: a.claim.id for k in keys_to_read if (a := days[k].authoritative)},
+            )
+            days = {
+                key: replace(days[key], earlier=earlier[key])
+                if key in earlier
+                else days[key]
+                for key in keys
+            }
         result: dict[_OutputKey, tuple[DailyAttemptSnapshot, DailyOutputReference]] = {}
+        labels: dict[_OutputKey, RetainedResult] = {}
         seen_members: set[StationId] = set()
         for key in keys:
             day = days[key]
@@ -483,15 +524,30 @@ class NetworkOverviewReader:
                 ):
                     continue
                 seen_members.add(sid)
-                for ref in member.references:
+                supplier, supplied = summary, member
+                source = retained_source(day, sid)
+                if source is not None:
+                    supplier = source
+                    supplied = next(
+                        m for m in source.outcomes or () if m.station_id == sid
+                    )
+                for ref in supplied.references:
                     output_key = (
                         sid,
                         settings.daily_model_id,
                         ref.key.parameter,
                         ForecastDataUse.STANDARD,
                     )
-                    result[output_key] = (summary, ref)
-        return result, daily_keys
+                    result[output_key] = (supplier, ref)
+                    if source is not None:
+                        labels[output_key] = RetainedResult(
+                            earlier_attempt_id=source.claim.id,
+                            earlier_issued_at=source.claim.key.context.issue_time,
+                            superseding_attempt_id=summary.claim.id,
+                            superseding_state=member.state,
+                            superseding_reason=member.reason,
+                        )
+        return result, daily_keys, labels
 
     def _headers(
         self,
