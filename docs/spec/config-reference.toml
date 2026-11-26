@@ -782,6 +782,7 @@ max_cache_age_hours = 24
 # window_hours = 24
 # max_pages_per_station = 100          # total across all windows, including terminal pages
 # min_request_interval_s = 1.0         # positive; provider polling agreement still required
+# polling_lookback_days = 7            # routine polls never look further back than this; default 7
 # [[adapters.river_stations.bindings]]
 # network = "dhm"
 # station_code = "CONFIRMED-DHM-CODE"   # official code, not inferred from portal title

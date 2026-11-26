@@ -381,6 +381,38 @@ def _fetch_failure_category(
             return "other"
 
 
+def _lookback_capped_intervals(
+    config: DhmConfig,
+    stations: list[StationConfig],
+    since: dict[StationId, UtcDatetime],
+    now: UtcDatetime,
+    observations: list[RawObservation],
+) -> list[dict[str, object]]:
+    """Intervals the bounded DHM poll abandoned: `[old cursor, first new reading]`.
+
+    The adapter clamps each start to `now - lookback`; `end` is the first newly
+    fetched reading (polling drops a reading exactly at its start), or None
+    while the station stays silent.
+    """
+    clamp_start = now - timedelta(days=config.polling_lookback_days)
+    first_new: dict[StationId, UtcDatetime] = {}
+    for obs in observations:
+        known = first_new.get(obs.station_id)
+        if known is None or obs.timestamp < known:
+            first_new[obs.station_id] = obs.timestamp
+    return [
+        {
+            "station_id": str(s.id),
+            "start": since[s.id].isoformat(),
+            "end": first_new[s.id].isoformat() if s.id in first_new else None,
+        }
+        for s in stations
+        if s.network == "dhm"
+        and s.station_kind == StationKind.RIVER
+        and since[s.id] < clamp_start
+    ]
+
+
 def _fetch_health_detail(
     outcomes: tuple[StationFetchOutcome, ...],
 ) -> dict[str, object]:
@@ -613,6 +645,7 @@ def _append_fetch_health_record(
     checked_at: UtcDatetime,
     outcomes: tuple[StationFetchOutcome, ...],
     unit_dispatch: BafuDispatchResult | None = None,
+    lookback_capped: list[dict[str, object]] | None = None,
 ) -> None:
     # Best-effort (mirrors flows/collect_bafu_observations.py's identically
     # -shaped helper): a health-store outage must never fail the ingest run
@@ -626,6 +659,8 @@ def _append_fetch_health_record(
     from sapphire_flow.types.pipeline import PipelineHealthRecord
 
     detail = _fetch_health_detail(outcomes)
+    # Informational only: a capped station is not a failure.
+    detail["lookback_capped"] = lookback_capped or []
     failed_station_ids = {
         outcome.station_id
         for outcome in outcomes
@@ -1659,6 +1694,7 @@ def ingest_observations_flow(
 
     if not eligible:
         log.info("ingest.no_stations")
+        _append_fetch_health_record(pipeline_health_store, checked_at=now, outcomes=())
         return IngestResult(
             stations_polled=0,
             observations_fetched=0,
@@ -1732,10 +1768,16 @@ def ingest_observations_flow(
     # can never suppress this signal. This is the fix for T3's defect: a
     # mass-429 run used to report success because `raw_obs` being empty
     # short-circuited before any failure was ever recorded.
+    lookback_capped = (
+        _lookback_capped_intervals(dhm_config, eligible, since, now, raw_obs)
+        if dhm_config is not None
+        else []
+    )
     _append_fetch_health_record(
         pipeline_health_store,
         checked_at=now,
         outcomes=batch_result.outcomes,
+        lookback_capped=lookback_capped,
     )
     fetch_failed = batch_result.failed
     fetch_failed_station_ids = {o.station_id for o in fetch_failed}
@@ -1775,6 +1817,7 @@ def ingest_observations_flow(
             checked_at=now,
             outcomes=batch_result.outcomes,
             unit_dispatch=unit_dispatch,
+            lookback_capped=lookback_capped,
         )
     if (
         not raw_obs
