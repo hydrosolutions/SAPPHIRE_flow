@@ -56,7 +56,7 @@ def _install_command(run: str) -> str:
     """
     lines = [line for line in run.splitlines() if not line.lstrip().startswith("#")]
     joined = " ".join(line.rstrip(" \\") for line in lines)
-    _, _, after = joined.partition("apt-get")
+    _, _, after = joined.rpartition("apt-get")
     return after
 
 
@@ -129,4 +129,7 @@ def test_private_verification_script_uses_the_same_base_suite_only_options() -> 
     assert "Dir::Etc::sourceparts=/dev/null" in script
     assert "${VERSION_CODENAME} main universe" in script
     assert script.count('apt-get "${APT_OPTS[@]}"') == 2
-    assert "--no-upgrade" in script
+    command = _install_command(script)
+    assert "--no-upgrade" in command
+    for package in ("libeccodes0", "libexpat1", "libgeos-c1v5"):
+        assert package in command
