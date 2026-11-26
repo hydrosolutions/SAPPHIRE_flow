@@ -4,9 +4,9 @@ status: READY
 
 Owner: Nepal/model-onboarding session.
 Branch: `feat/declared-grid-hindcast`.
-Base: `11540abe` (remote main refreshed 26 November; includes #670 runoff inputs,
+Base: `cffe874a` (remote main refreshed 26 November; includes #670 runoff inputs,
 the latest skill API changes, #683 threshold probabilities, #688 retained forecasts
-and #689 qualification documentation).
+and #689 qualification documentation; #691 retained overview merged before CI).
 
 Review outcome, 26 November: **NOT READY** for the earlier full-feed proposal.
 The owner subsequently directed proceeding without the Aquacast optimization and

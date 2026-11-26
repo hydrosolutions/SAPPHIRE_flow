@@ -460,8 +460,11 @@ and reason, null when the station is absent from it. The field is null or absent
 otherwise. `output_id` and `issued_at` are those of the retained output. The
 earlier output passes the same eligibility, QC, superseded and withholding rules
 as any current output; if it is rejected, expired or not covering the time the
-headline is unavailable, never an older attempt. Only the Swiss overview applies
-this; the network overview and station evaluation selection are unchanged.
+headline is unavailable, never an older attempt. The Swiss overview and the
+network overview apply this (contract 3.12 for the latter, below); the station
+evaluation selection is unchanged (a follow-up, #581 T3), so until then the
+evaluation detail can show a fallback model or nothing while the overviews show
+the earlier CMAL forecast.
 
 Available CMAL includes `output_id`, `output_source` (`forecast` or `rejected`),
 `qc_status`, `model_id`, source `daily_cmal`, and input-quality labels. Eligible
@@ -623,6 +626,16 @@ entitlement, compact series and private conditional polling. Configured threshol
 are batched; datum metadata retains reviewer/admin-only disclosure. Threshold
 imports and alert activation remain separate deliveries.
 
+Retained result (contract 3.12, issue #581 T2). The daily CMAL forecast of a
+station whose authoritative same-day attempt did not produce it (the member is
+present but failed or integrity rejected) shows the newest earlier attempt of the
+same issue day that did produce it, as for the Swiss overview. That forecast item
+then carries `retained_result` (same object as the Swiss overview). The field is
+omitted otherwise. The retained forecast passes the same publication, QC,
+superseded and 168-hour rules as any forecast; if it fails them the item stays
+`withheld_or_ineligible`, never an older attempt. A station absent from an attempt
+is not substituted.
+
 ## Shared station discharge history (map contract 2.13)
 
 The [client guide](../api/README.md#shared-nativehourly-discharge-history)
@@ -701,7 +714,7 @@ Invalid threshold snapshots (nonfinite values, duplicate keys or station mismatc
 make the probability enrichment unavailable; the admitted forecast remains readable.
 
 
-### Declared hindcast periods and evaluation identity (contract 3.13)
+### Declared hindcast periods and evaluation identity (contract 3.14)
 
 Reviewer skill rows, skill-options evaluations and stored diagrams now expose
 nullable `evaluation_context`: `period_definition`, `reference_period_definition`,
