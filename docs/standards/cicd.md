@@ -567,8 +567,11 @@ are no-ops; divergent targets refuse. Initial bootstrap is limited to the exact 
 base/seed in Plan521. Recheck those facts before bootstrap publication/rebase.
 
 The PR lint check uses existing full-history checkout and requires HEAD=`github.sha`
-with exactly event base/head parents, then compares regular Git target blobs. Under the
-development-phase rule, with A the target at the unique merge-base, B at the tested base,
+with a merge commit of exactly two parents: the second equals the event head, and the
+first equals the event base or is a descendant of it (main may move before GitHub builds
+the merge). That first parent is the tested base. The check then compares regular Git
+target blobs. Under the development-phase rule, with A the target at the unique
+merge-base, B at the tested base,
 H at the PR head and M at the tested merge, a PR passes when H equals A and M equals B
 (untouched), or H equals B+1 and M equals H (one patch over the tested base); major/minor
 never change. A second PR that still carries a bump after another bump landed (H equals B,

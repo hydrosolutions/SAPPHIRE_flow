@@ -142,6 +142,120 @@ class TestCheckPr:
             target.check_pr(tmp_path, base, head, git(tmp_path, "rev-parse", "HEAD"))
 
 
+def moved_base_pr(
+    root: Path,
+    pr_changes: dict[str, str],
+    base2_changes: dict[str, str],
+    *,
+    merge_on: str = "base2",
+) -> tuple[str, str, str, str]:
+    """PR from base1; main moves to base2 before the merge is built on `merge_on`."""
+    base1 = repository(root)
+    git(root, "checkout", "-b", "pr")
+    for name, content in pr_changes.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(content)
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "pr")
+    head = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "main")
+    for name, content in base2_changes.items():
+        (root / name).write_text(content)
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "base moved")
+    base2 = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", base2 if merge_on == "base2" else base1)
+    git(root, "merge", "--no-ff", "pr", "-m", "tested merge")
+    return base1, base2, head, git(root, "rev-parse", "HEAD")
+
+
+class TestMovedBase:
+    BUMP = {"RELEASE_TARGET": "1.2.4\n"}
+    MOVED = {"other": "main moved\n"}
+
+    def test_moved_base_passes(self, tmp_path: Path) -> None:
+        base1, _, head, merge = moved_base_pr(tmp_path, self.BUMP, self.MOVED)
+        target.check_pr(tmp_path, base1, head, merge)
+
+    def test_stale_bump_after_moved_base_refuses(self, tmp_path: Path) -> None:
+        base1, _, head, merge = moved_base_pr(
+            tmp_path, self.BUMP, {"RELEASE_TARGET": "1.2.4\n"}
+        )
+        with pytest.raises(target.ReleaseIdentityError, match="exactly once"):
+            target.check_pr(tmp_path, base1, head, merge)
+
+    def test_docs_only_uses_moved_base(self, tmp_path: Path) -> None:
+        base1, _, head, merge = moved_base_pr(
+            tmp_path,
+            {"docs/guide.md": "prose\n"},
+            {"src.py": "code\n", "RELEASE_TARGET": "1.2.4\n"},
+        )
+        target.check_pr(tmp_path, base1, head, merge)
+
+    def test_docs_only_head_branched_after_event_base(self, tmp_path: Path) -> None:
+        base1 = repository(tmp_path)
+        (tmp_path / "src.py").write_text("code\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "code on main")
+        base2 = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-b", "prose")
+        (tmp_path / "README.md").write_text("prose\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "prose")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        (tmp_path / "other").write_text("moved\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "base3")
+        git(tmp_path, "merge", "--no-ff", "prose", "-m", "tested merge")
+        assert base1 != base2
+        target.check_pr(tmp_path, base1, head, git(tmp_path, "rev-parse", "HEAD"))
+
+    def test_event_base_newer_than_first_parent_refuses(self, tmp_path: Path) -> None:
+        _, base2, head, merge = moved_base_pr(
+            tmp_path, self.BUMP, self.MOVED, merge_on="base1"
+        )
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, base2, head, merge)
+
+    def test_sibling_event_base_refuses(self, tmp_path: Path) -> None:
+        _, _, head, merge = moved_base_pr(tmp_path, self.BUMP, self.MOVED)
+        git(tmp_path, "checkout", "-q", "main~1")
+        (tmp_path / "sibling").write_text("x\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "sibling")
+        sibling = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-q", merge)
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, sibling, head, merge)
+
+    def test_unrelated_event_base_refuses(self, tmp_path: Path) -> None:
+        _, _, head, merge = moved_base_pr(tmp_path, self.BUMP, self.MOVED)
+        git(tmp_path, "checkout", "-q", "--orphan", "unrelated")
+        git(tmp_path, "commit", "-m", "unrelated", "--allow-empty")
+        unrelated = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-q", merge)
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, unrelated, head, merge)
+
+    def test_second_parent_must_be_event_head(self, tmp_path: Path) -> None:
+        base1, base2, _, merge = moved_base_pr(tmp_path, self.BUMP, self.MOVED)
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, base1, base2, merge)
+
+    def test_octopus_merge_refuses(self, tmp_path: Path) -> None:
+        base1, base2, head, _ = moved_base_pr(tmp_path, self.BUMP, self.MOVED)
+        git(tmp_path, "checkout", "-q", base2)
+        git(tmp_path, "checkout", "-b", "third")
+        (tmp_path / "third").write_text("t\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "third")
+        git(tmp_path, "checkout", "-q", base2)
+        git(tmp_path, "merge", "--no-ff", "pr", "third", "-m", "octopus")
+        with pytest.raises(target.ReleaseIdentityError, match="parents"):
+            target.check_pr(tmp_path, base1, head, git(tmp_path, "rev-parse", "HEAD"))
+
+
 class TestWorkingFiles:
     @pytest.mark.parametrize(
         "addition",
@@ -672,6 +786,38 @@ class TestDevPhase:
         pair = scenario(tmp_path, a, b, h)
         with pytest.raises(target.ReleaseIdentityError, match=message):
             target.check_pr(tmp_path, *pair)
+
+    def test_moved_base_passes(self, tmp_path: Path) -> None:
+        base1, _, head, merge = moved_base_pr(
+            tmp_path, {"RELEASE_TARGET": "1.2.4\n"}, {"src.py": "code\n"}
+        )
+        target.check_pr(tmp_path, base1, head, merge)
+
+    def test_moved_base_stale_bump_refuses(self, tmp_path: Path) -> None:
+        base1, _, head, merge = moved_base_pr(
+            tmp_path, {"RELEASE_TARGET": "1.2.4\n"}, {"RELEASE_TARGET": "1.2.4\n"}
+        )
+        with pytest.raises(target.ReleaseIdentityError, match="drop the bump"):
+            target.check_pr(tmp_path, base1, head, merge)
+
+    def test_moved_base_gate_uses_tested_base(self, tmp_path: Path) -> None:
+        repository(tmp_path)
+        git(tmp_path, "rm", "RELEASE_TARGET")
+        git(tmp_path, "commit", "-m", "no target")
+        base1 = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "-b", "pr")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "pr")
+        head = git(tmp_path, "rev-parse", "HEAD")
+        git(tmp_path, "checkout", "main")
+        (tmp_path / "RELEASE_TARGET").write_bytes(b"1.2.4\n")
+        git(tmp_path, "add", "-A")
+        git(tmp_path, "commit", "-m", "target on main")
+        git(tmp_path, "merge", "--no-ff", "pr", "-m", "tested merge")
+        merge = git(tmp_path, "rev-parse", "HEAD")
+        with pytest.raises(target.ReleaseIdentityError, match="missing at merge-base"):
+            target.check_pr(tmp_path, base1, head, merge)
 
     def test_malformed_head_refuses(self, tmp_path: Path) -> None:
         base, _, _ = scenario(tmp_path, "1.2.3", "1.2.3", "1.2.3")

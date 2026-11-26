@@ -262,33 +262,46 @@ def check_pr(root: Path, base_sha: str, head_sha: str, merge_sha: str) -> None:
     parents = git(
         ["rev-list", "--parents", "-n", "1", merge_sha], cwd=root, harden=True
     ).split()
-    if parents != [merge_sha, base_sha, head_sha]:
+    if len(parents) != 3 or parents[0] != merge_sha or parents[2] != head_sha:
         raise ReleaseIdentityError(
-            "event merge must have exactly base/head parents in order"
+            "event merge must have two parents, the second the event head"
+        )
+    # The event base may have moved before GitHub built the merge: the first
+    # parent is the tested base and must be the event base or its descendant.
+    tested = parents[1]
+    try:
+        related = git(
+            ["merge-base", "--all", base_sha, tested], cwd=root, harden=True
+        ).split() == [base_sha]
+    except ReleaseIdentityError:
+        related = False
+    if not related:
+        raise ReleaseIdentityError(
+            "event merge parents: the first must be the event base or its descendant"
         )
     head = read_release_target(head_sha, cwd=root)
     if (
         DEV_PHASE_ALLOW_UNCHANGED_TARGET
-        and release_target_blob(base_sha, cwd=root) is not None
+        and release_target_blob(tested, cwd=root) is not None
     ):
-        check_dev_phase_target(root, base_sha, head_sha, merge_sha, head)
+        check_dev_phase_target(root, tested, head_sha, merge_sha, head)
         return
     ancestors = git(
-        ["merge-base", "--all", base_sha, head_sha], cwd=root, harden=True
+        ["merge-base", "--all", tested, head_sha], cwd=root, harden=True
     ).split()
     # Both diffs exclude RELEASE_TARGET, including mode/type changes. A stale
     # prose branch may inherit a newer base target only in the tested merge.
     if (
         len(ancestors) == 1
         and prose_diff(root, ancestors[0], head_sha)
-        and prose_diff(root, base_sha, merge_sha)
+        and prose_diff(root, tested, merge_sha)
         and read_release_target(merge_sha, cwd=root)
-        == read_release_target(base_sha, cwd=root)
+        == read_release_target(tested, cwd=root)
     ):
         return
     if read_release_target(merge_sha, cwd=root) != head:
         raise ReleaseIdentityError("merge target differs from PR head target")
-    if head != next_target(root, base_sha):
+    if head != next_target(root, tested):
         raise ReleaseIdentityError(
             "PR target must advance tested base patch exactly once"
         )
