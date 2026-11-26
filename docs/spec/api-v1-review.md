@@ -153,6 +153,33 @@ identical to the deployment one).
 that section, `"builtin_default"` when the variable was unset OR the merged
 file simply lacks the section — never a path or overlay name.
 
+## Scored artifacts (`GET /api/v1/stations/{id}/skill-options`)
+
+Contract 3.8 adds reviewer/admin discovery for one scoped station, with optional
+exact `model_id`. The response is discharge-only and lists artifacts with readable
+stored scalar scores, including inactive candidates. Active station or group model
+assignments are required, just as for explicit-artifact scalar reads. It uses the
+same latest-generation predicate and excludes future evaluation end dates.
+`availability: no_stored_skill` with an empty list means nothing readable matches;
+it reveals nothing about unassigned models or out-of-scope stations (404).
+
+Each artifact has recorded training dates, evaluation scopes (generation, source,
+forcing, computation version, cadence/phase, dates and `evaluated_on`) and
+`forecasting_status: active_at_station | not_active_at_station`. Current active
+status does not identify the artifact behind an older displayed forecast. Use the
+network overview's nullable `model_artifact_id`, copied from the visible forecast,
+for `/skill?model_id=...&artifact_id=...`. Absent/withheld overview entries expose
+no artifact. A null artifact must not silently fall back to the current artifact.
+
+The catalogue projects metadata only, not score rows, artifact bytes or diagrams.
+At most 256 evaluation scopes are returned; overflow is 503 (narrow by model),
+never truncation. All responses/preflights are no-store. No computation, activation,
+model ranking or claim of complete/out-of-sample evaluation occurs on this read.
+Unknown training dates remain null; outside-training labels do not rule out donor
+pretraining leakage. Scalar sample/excluded counts remain in `/skill`.
+The synthetic [catalogue example](../api/examples/skill-options.json) is a contract
+fixture, not evidence of deployed model coverage.
+
 ## Skill (`GET /api/v1/stations/{id}/skill`)
 
 Optional `artifact_id=<UUID>` selects stored skill for that artifact, including
