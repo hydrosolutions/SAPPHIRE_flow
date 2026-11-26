@@ -229,6 +229,13 @@ def _snapshot(row: RowMapping) -> DailyAttemptSnapshot:
     )
 
 
+# Frozen-body budget per attempt: roster entries, summary entries and the output
+# references nested in them (one definition for every bounded daily read).
+_MEMBER_BUDGET_SQL = """jsonb_array_length(roster)
+    + jsonb_array_length(coalesce(summary,'[]'::jsonb))
+    + (SELECT coalesce(sum(jsonb_array_length(
+        coalesce(member->'references','[]'::jsonb))),0)
+        FROM jsonb_array_elements(coalesce(summary,'[]'::jsonb)) member)"""
 MAX_EARLIER_ATTEMPTS = 224
 MAX_EARLIER_BYTES = 8 * 1024 * 1024
 MAX_EARLIER_MEMBERS = 25000
@@ -1114,7 +1121,8 @@ class PgDailyForecastStore:
                     )
                 rows = (
                     txn.execute(
-                        sa.text("""
+                        sa.text(
+                            """
                     WITH selected AS MATERIALIZED (
                         SELECT * FROM daily_forecast_attempts WHERE id = ANY(:ids)
                     ), budget AS MATERIALIZED (
@@ -1124,17 +1132,15 @@ class PgDailyForecastStore:
                             + coalesce(octet_length(recovery::text),0)
                             + coalesce(octet_length(operator_metadata::text),0))
                             AS bytes,
-                            sum(jsonb_array_length(roster)
-                                + jsonb_array_length(coalesce(summary,'[]'::jsonb))
-                                + (SELECT coalesce(sum(jsonb_array_length(
-                                    coalesce(member->'references','[]'::jsonb))),0)
-                                    FROM jsonb_array_elements(
-                                        coalesce(summary,'[]'::jsonb)) member))
+                            sum("""
+                            + _MEMBER_BUDGET_SQL
+                            + """)
                                 AS members
                         FROM selected
                     ) SELECT selected.* FROM selected CROSS JOIN budget
                       WHERE budget.bytes <= 8388608 AND budget.members <= 25000
-                """),
+                """
+                        ),
                         {"ids": list(ids)},
                     )
                     .mappings()
@@ -1192,49 +1198,58 @@ class PgDailyForecastStore:
             attempts.c.data_use == ForecastDataUse.STANDARD.value,
             attempts.c.trigger_kind.in_(("scheduled", "operator_retry")),
         )
+        # One materialized snapshot: the budgets filter the very rows returned,
+        # as in `read_days_bounded`, so a concurrent write cannot exceed them.
+        selected = (
+            sa.select(attempts, requested.c.key_index)
+            .select_from(attempts.join(requested, on))
+            .where(scope)
+            .cte("selected")
+            .prefix_with("MATERIALIZED")
+        )
         size = (
-            sa.func.octet_length(sa.cast(attempts.c.roster, sa.Text()))
-            + sa.func.octet_length(sa.cast(attempts.c.output_contracts, sa.Text()))
+            sa.func.octet_length(sa.cast(selected.c.roster, sa.Text()))
+            + sa.func.octet_length(sa.cast(selected.c.output_contracts, sa.Text()))
             + sa.func.coalesce(
-                sa.func.octet_length(sa.cast(attempts.c.summary, sa.Text())), 0
+                sa.func.octet_length(sa.cast(selected.c.summary, sa.Text())), 0
             )
             + sa.func.coalesce(
-                sa.func.octet_length(sa.cast(attempts.c.recovery, sa.Text())), 0
+                sa.func.octet_length(sa.cast(selected.c.recovery, sa.Text())), 0
             )
             + sa.func.coalesce(
-                sa.func.octet_length(sa.cast(attempts.c.operator_metadata, sa.Text())),
+                sa.func.octet_length(sa.cast(selected.c.operator_metadata, sa.Text())),
                 0,
             )
         )
-        members = sa.func.jsonb_array_length(attempts.c.roster) + sa.func.coalesce(
-            sa.func.jsonb_array_length(attempts.c.summary), 0
+        budget = (
+            sa.select(
+                sa.func.count().label("attempts"),
+                sa.func.sum(size).label("bytes"),
+                sa.func.sum(sa.literal_column(_MEMBER_BUDGET_SQL)).label("members"),
+            )
+            .select_from(selected)
+            .cte("budget")
+            .prefix_with("MATERIALIZED")
         )
         with self._begin() as txn:
             txn.execute(sa.text("SET LOCAL statement_timeout = '2s'"))
-            count, byte_count, member_count = txn.execute(
-                sa.select(
-                    sa.func.count(),
-                    sa.func.coalesce(sa.func.sum(size), 0),
-                    sa.func.coalesce(sa.func.sum(members), 0),
-                )
-                .select_from(attempts.join(requested, on))
-                .where(scope)
-            ).one()
-            if (
-                count > MAX_EARLIER_ATTEMPTS
-                or byte_count > MAX_EARLIER_BYTES
-                or member_count > MAX_EARLIER_MEMBERS
-            ):
-                raise DailyAuthorityIntegrityError("daily earlier-attempt admission")
             rows = (
                 txn.execute(
-                    sa.select(attempts, requested.c.key_index)
-                    .select_from(attempts.join(requested, on))
-                    .where(scope)
+                    sa.select(*selected.c)
+                    .select_from(selected.join(budget, sa.true()))
+                    .where(
+                        budget.c.attempts <= MAX_EARLIER_ATTEMPTS,
+                        budget.c.bytes <= MAX_EARLIER_BYTES,
+                        budget.c.members <= MAX_EARLIER_MEMBERS,
+                    )
                 )
                 .mappings()
                 .all()
             )
+        if not rows:
+            # Every requested key has an authoritative attempt, so none means the
+            # budgets rejected the snapshot.
+            raise DailyAuthorityIntegrityError("daily earlier-attempt admission")
         try:
             by_key: dict[int, dict[UUID, DailyAttemptSnapshot]] = {}
             for row in rows:

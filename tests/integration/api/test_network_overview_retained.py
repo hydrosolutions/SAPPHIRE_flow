@@ -437,3 +437,36 @@ class TestReadEarlierAttempts:
         monkeypatch.setattr(store_module, "MAX_EARLIER_BYTES", 10)
         with pytest.raises(DailyAuthorityIntegrityError):
             day.store.read_earlier_attempts((day.key,), {day.key: retry.id})
+
+    def test_member_budget_counts_nested_references(
+        self, day: Day, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = day.claim()
+        day.finalize(first, produce=(day.a,), fail=(day.b,))
+        retry = day.claim(_later(day.key))
+        day.finalize(retry, fail=(day.a, day.b))
+        # roster 2+2 and summary 2+2 = 8; the one nested reference makes 9.
+        ids = {day.key: retry.id}
+        monkeypatch.setattr(store_module, "MAX_EARLIER_MEMBERS", 9)
+        assert day.store.read_earlier_attempts((day.key,), ids)[day.key]
+        monkeypatch.setattr(store_module, "MAX_EARLIER_MEMBERS", 8)
+        with pytest.raises(DailyAuthorityIntegrityError):
+            day.store.read_earlier_attempts((day.key,), ids)
+
+    def test_budget_and_rows_come_from_one_statement(self, day: Day) -> None:
+        first = day.claim()
+        day.finalize(first, produce=(day.a,), fail=(day.b,))
+        retry = day.claim(_later(day.key))
+        day.finalize(retry, fail=(day.a, day.b))
+        seen: list[str] = []
+
+        def record(conn: Any, cursor: Any, statement: str, *rest: Any) -> None:
+            if "daily_forecast_attempts" in statement:
+                seen.append(statement)
+
+        sa.event.listen(day.engine, "before_cursor_execute", record)
+        try:
+            day.store.read_earlier_attempts((day.key,), {day.key: retry.id})
+        finally:
+            sa.event.remove(day.engine, "before_cursor_execute", record)
+        assert len(seen) == 1
