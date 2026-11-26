@@ -1,5 +1,5 @@
 ---
-status: S1–S2 COMPLETE_LOCAL; S3–S4 DRAFT
+status: S1–S2 COMPLETE_LOCAL; S3 preparation IN_PROGRESS; S3 runtime–S4 DRAFT
 owner: deployment orchestrator
 parent: 2026-11-22-operational-deployment-recipe.md
 ---
@@ -42,7 +42,7 @@ deployment activation, provider acquisition or source write is part of this plan
 | --- | --- | --- |
 | S1 — private metadata collector | New private `source_identity.py`, `source_controller.py` and focused tests; reuse packet types and the maintained forecast-configuration checker. | Independently observed container/image/process/job/config facts; no application DB, model constructor, artifact bytes or provider access. Local implementation and isolated real Prefect/process qualification after plan/patch review. No source execution yet. |
 | S2 — current read contract | [Retained-input amendment](2026-11-26-retained-input-inventory.md) to the private planner, roots, census and report. | COMPLETE_LOCAL: reviewed implementation and synthetic reader parity at schema 0095. Recording-time bounds and physical periods are explicit; whole-cohort caps and existing exclusions remain. S3 must qualify the matching image. |
-| S3 — matching-runtime qualification | Reuse the maintained-image qualification adapter and frozen helper suite against the exact admitted current image. | Independent release custody; S1/S2 patch reviews; positive current-route synthetic cases, expected refusals, worker-role SQL/supervisor evidence and cleanup. No source/target mutation. Reuse unchanged evidence; do not repeat every historical benchmark. |
+| S3 — matching-runtime qualification | [Image-qualification plan](2026-11-26-current-image-inventory-qualification.md): custody complete; local adapter prepared with review corrections awaiting owner disposition. | Runtime remains gated on actual-cohort output preflight, adapter review disposition and the resource packet. Then qualify current-route synthetic cases, expected refusals, worker-role SQL/supervisor evidence and cleanup. No source/target mutation. Reuse unchanged evidence; do not repeat every historical benchmark. |
 | S4 — source admission and inventory | Private expected packet, collected facts, exact invocation and aggregate report. | S1–S3, source-owner handoff and explicit orchestrator admission. Observe preflight, run one bounded read-only snapshot, then recheck identity and cleanup. Drift or missing evidence produces HOLD; no automatic retry or reduced scope. |
 
 S1 and S2 have completed their recorded local qualifications while the source owner
@@ -187,7 +187,7 @@ record only concise generic outcomes in this plan and its parent. A code PR requ
 affected tests, lint, changed-module types and the full final suite locally or in CI.
 
 ```json
-{"phases":[{"id":"S1","status":"COMPLETE_LOCAL","depends_on":["independent_plan_review"]},{"id":"S2","status":"COMPLETE_LOCAL","depends_on":["current_route_design_review"]},{"id":"S3","status":"DRAFT","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
+{"phases":[{"id":"S1","status":"COMPLETE_LOCAL","depends_on":["independent_plan_review"]},{"id":"S2","status":"COMPLETE_LOCAL","depends_on":["current_route_design_review"]},{"id":"S3","status":"IN_PROGRESS","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
 ```
 
 ## Independent review disposition
