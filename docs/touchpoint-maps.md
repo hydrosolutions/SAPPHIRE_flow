@@ -2786,10 +2786,11 @@ see `plans/2026-11-14-nepal-weather-gap-filling.md` and the config reference.
 
 ### Network overview read projection
 
-Admission counts forecast and absence entries per (station, purpose): four per
-purpose, up to eight for combined requests. Keep projected/final/header counts
-and the purpose-scaled header sentinel aligned. Assignment limits stay four per
-station; the 250000-value cap stays shared across purposes.
+Admission permits all models within request-wide budgets: 3,200 assignments and
+3,200 forecast/absence entries per purpose. There is no four-model station cap.
+Keep projected/final/header counts and the purpose-scaled header sentinel aligned.
+The 200-station and shared 250000-value caps remain. Never silently truncate or
+interpret assignment priority as a skill ranking. See the 2026-11-26 model-admission plan.
 
 Route/schema: `api/routes/api_network_overview.py`, `api/network_overview_schemas.py`;
 scoped assembly: `api/network_overview.py`; semantic conditional headers:

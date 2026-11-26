@@ -159,7 +159,7 @@ def overview_case(
 
 
 class TestCombinedPurposeAdmission:
-    @pytest.mark.parametrize("model_count", [3, 4])
+    @pytest.mark.parametrize("model_count", [3, 4, 7])
     @pytest.mark.parametrize(
         "purposes",
         [
@@ -202,9 +202,17 @@ class TestCombinedPurposeAdmission:
                 == model_count - 1
             )
 
-    def test_combined_request_still_refuses_five_outputs_in_one_purpose(
-        self, overview_case: tuple
+    @pytest.mark.parametrize("budget, expected_status", [(4, 503), (3200, 200)])
+    def test_combined_request_obeys_request_output_budget(
+        self,
+        overview_case: tuple,
+        monkeypatch: pytest.MonkeyPatch,
+        budget: int,
+        expected_status: int,
     ) -> None:
+        monkeypatch.setattr(
+            "sapphire_flow.api.network_overview.MAX_OUTPUTS_PER_PURPOSE", budget
+        )
         from sapphire_flow.types.ids import ForecastId
 
         conn, client, native, ordinary, network, _ = overview_case
@@ -252,7 +260,19 @@ class TestCombinedPurposeAdmission:
             f"/api/v1/networks/{network}/overview",
             params=[("data_use", "standard"), ("data_use", "provisional_rating")],
         )
+        assert response.status_code == expected_status, response.text
+        if expected_status == 200:
+            entries = response.json()["items"][0]["forecasts"]
+            assert sum(e["data_use"] == "standard" for e in entries) == 5
+
+    def test_request_assignment_budget_is_enforced(
+        self, overview_case: tuple, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, client, _, _, network, _ = overview_case
+        monkeypatch.setattr("sapphire_flow.api.network_overview.MAX_ASSIGNMENTS", 0)
+        response = client.get(f"/api/v1/networks/{network}/overview")
         assert response.status_code == 503
+        assert response.json()["error"] == "Network overview is unavailable"
 
 
 class TestOverviewMetadata:
