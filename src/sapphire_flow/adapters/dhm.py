@@ -205,7 +205,7 @@ class DhmAdapter:
             for s in station_configs
             if s.network == "dhm" and s.station_kind == StationKind.RIVER
         ]
-        work, failures = self._preflight(supported, since, end, budget)
+        work, failures = self._preflight(supported, since, end, budget, bounds_mode)
         work = [replace(item, bounds_mode=bounds_mode) for item in work]
         if failures:
             return HydroScraperBatchResult(
@@ -281,6 +281,7 @@ class DhmAdapter:
         since: dict[StationId, UtcDatetime],
         end: UtcDatetime,
         budget: _BatchBudget,
+        bounds_mode: DhmBoundsMode,
     ) -> tuple[list[_StationWork], dict[StationId, StationFetchOutcome]]:
         work: list[_StationWork] = []
         failures: dict[StationId, StationFetchOutcome] = {}
@@ -291,6 +292,12 @@ class DhmAdapter:
                 if start is None:
                     raise ConfigurationError("DHM station requires a fetch watermark")
                 start = ensure_utc(start)
+                if bounds_mode is DhmBoundsMode.POLLING:
+                    # Bounded lookback: a stale cursor must not re-request the gap.
+                    start = max(
+                        start,
+                        end - timedelta(days=self._config.polling_lookback_days),
+                    )
             except (ConfigurationError, ValueError, OverflowError):
                 failures[station.id] = _failure(
                     station,

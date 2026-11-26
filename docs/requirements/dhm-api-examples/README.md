@@ -166,6 +166,7 @@ page_size = 100
 window_hours = 24
 max_pages_per_station = 100
 min_request_interval_s = 5.0
+polling_lookback_days = 7   # optional; routine polls never look back further
 # REQUIRED: add operator-approved max_requests_per_batch, max_bytes_per_batch,
 # and max_batch_seconds. There are no defaults or implied provider grants.
 
