@@ -261,6 +261,20 @@ child remains unverified; do not start a live forecast merely to satisfy this ch
 The source image, current input-read behavior and scientific readiness still need
 their separate checks before an operational comparison.
 
+For rating-derived inputs, request separate counts for candidates whose database
+recording-time bound is at/before the forecast issue and those whose bound is later.
+An older record may carry a database-upgrade time as its bound, so the latter does
+not prove that the original measurement arrived late. Current revalidation also
+does not reconstruct what a historical forecast consumed. Keep deliberately omitted
+stored discharge visible even when the rating-input read succeeds.
+
+This reporting extension is [planned](../plans/2026-11-26-retained-input-inventory.md)
+and still needs qualification against the admitted release. Its completed status
+will describe a bounded, partial inventory; it will not establish weather
+availability, whether the data can form model inputs, or restoration readiness.
+The whole intended report must fit the existing
+size limit; an output-limit stop is unresolved work, not permission to drop members.
+
 Include database-generated ordering in the transfer inventory. An ordinary column-
 default check can miss identity columns, and some history readers select the latest
 record by that order. Preserve the required selection semantics and qualify subsequent
