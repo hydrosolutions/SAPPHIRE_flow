@@ -220,8 +220,12 @@ def read_skill_diagrams(
         else "partial"
         if missing
         else "available",
-        training_period_start=artifact.training_period_start if artifact else None,
-        training_period_end=artifact.training_period_end if artifact else None,
+        training_period_start=artifact.training_period_start
+        if artifact is not None and results
+        else None,
+        training_period_end=artifact.training_period_end
+        if artifact is not None and results
+        else None,
         diagrams=results,
         missing=missing,
     )

@@ -211,6 +211,8 @@ requested lead/threshold/kind combinations without any matching readable current
 diagram. This does not claim that the historical run itself is complete. An unknown,
 unassigned or mismatched artifact returns no diagrams, without exposing metadata
 from another artifact. Out-of-scope stations return 404.
+Empty results always have null training dates, including an existing artifact of
+the same model that has no readable diagrams at this station.
 
 The uncompressed response ceiling is 4 MiB, with a maximum of 1024 diagram rows.
 The database also bounds stored JSON text before transfer; whitespace can make

@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_observation_clock
-from sapphire_flow.db.metadata import access_tokens, model_assignments
+from sapphire_flow.db.metadata import access_tokens, model_artifacts, model_assignments
 from sapphire_flow.db.metadata import skill_diagrams as diagrams
 from sapphire_flow.db.metadata import skill_generations as generations
 from sapphire_flow.db.metadata import skill_scores as scores
@@ -158,6 +158,7 @@ def test_maximum_bulk_selection_preserves_every_combination(
         "unassigned",
         "future",
         "wrong_artifact",
+        "other_station_artifact",
         "new_scalar_generation",
         "different_scalar_period",
     ],
@@ -180,6 +181,32 @@ def test_unavailable_never_falls_back_to_stale_or_other_artifact(
         )
     elif reason == "wrong_artifact":
         candidate = str(uuid4())
+    elif reason == "other_station_artifact":
+        from tests.integration.api.test_skill_readers_generation_aware import (
+            _seed_station,
+        )
+
+        other_station = _seed_station(conn)
+        original = (
+            conn.execute(
+                sa.select(model_artifacts).where(
+                    model_artifacts.c.id == UUID(candidate),
+                )
+            )
+            .mappings()
+            .one()
+        )
+        new_id = uuid4()
+        conn.execute(
+            sa.insert(model_artifacts).values(
+                {
+                    **dict(original),
+                    "id": new_id,
+                    "station_id": other_station,
+                }
+            )
+        )
+        candidate = str(new_id)
     elif reason == "different_scalar_period":
         conn.execute(
             sa.update(scores)
@@ -221,6 +248,8 @@ def test_unavailable_never_falls_back_to_stale_or_other_artifact(
     assert response.status_code == 200, response.text
     assert response.json()["availability"] == "no_stored_diagrams"
     assert response.json()["diagrams"] == []
+    assert response.json()["training_period_start"] is None
+    assert response.json()["training_period_end"] is None
 
 
 @pytest.mark.parametrize(
