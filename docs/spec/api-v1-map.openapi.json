@@ -1044,6 +1044,118 @@
         "title": "CombinedForecastUnavailableSchema",
         "type": "object"
       },
+      "ComparisonCurveResponse": {
+        "properties": {
+          "curve_level_range": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Curve Level Range"
+          },
+          "curve_level_unit": {
+            "const": "m",
+            "default": "m",
+            "title": "Curve Level Unit",
+            "type": "string"
+          },
+          "discharge_range": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge Range"
+          },
+          "discharge_unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Discharge Unit",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "interpolation": {
+            "enum": [
+              "linear",
+              "log_linear"
+            ],
+            "title": "Interpolation",
+            "type": "string"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "title": "Valid From",
+            "type": "string"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "validity": {
+            "enum": [
+              "valid",
+              "expired",
+              "not_yet_valid"
+            ],
+            "title": "Validity",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "valid_from",
+          "valid_to",
+          "validity",
+          "interpolation",
+          "curve_level_range",
+          "discharge_range"
+        ],
+        "title": "ComparisonCurveResponse",
+        "type": "object"
+      },
       "ComparisonSemanticsSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2336,6 +2448,17 @@
           "parameter": {
             "title": "Parameter",
             "type": "string"
+          },
+          "peak_water_level_comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeakWaterLevelComparisonResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit reviewer-only provisional comparison of remaining pointwise P50/P90 discharge maxima to equivalent levels; not forecast input provenance."
           },
           "period_definition": {
             "anyOf": [
@@ -5386,6 +5509,354 @@
         "title": "PaginatedResponse[StationSummary]",
         "type": "object"
       },
+      "PeakWaterLevelComparisonResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "comparison_basis": {
+            "default": "Read-time equivalent using the exact configured provisional reference; not the model's output curve at issuance. Match threshold unit and reference before comparing. An assumed zero is not an explicit datum. Parent QC, input quality and period aggregation still apply.",
+            "title": "Comparison Basis",
+            "type": "string"
+          },
+          "comparison_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "reference_not_configured",
+                  "reference_ambiguous",
+                  "reference_scope_mismatch",
+                  "reference_from_future",
+                  "curve_missing",
+                  "curve_changed",
+                  "invalid_curve",
+                  "unsupported_interpolation",
+                  "curve_not_yet_valid"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Unavailable Reason"
+          },
+          "curve": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComparisonCurveResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_use": {
+            "const": "provisional_rating",
+            "default": "provisional_rating",
+            "title": "Data Use",
+            "type": "string"
+          },
+          "period_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastPeriodPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reference_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "verified",
+                  "owner_assumed_same_zero"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Basis"
+          },
+          "remaining_peaks": {
+            "items": {
+              "$ref": "#/components/schemas/PeakWaterLevelResponse"
+            },
+            "title": "Remaining Peaks",
+            "type": "array"
+          },
+          "statistic_definition": {
+            "default": "Independent maxima of pointwise P50 and P90 discharge over remaining stored timesteps, not quantiles of trajectory maxima or event probabilities. P90 is an upper envelope. Member type-7 quantiles are evaluated in discharge space.",
+            "title": "Statistic Definition",
+            "type": "string"
+          },
+          "temporal_support": {
+            "enum": [
+              "declared_period",
+              "unknown"
+            ],
+            "title": "Temporal Support",
+            "type": "string"
+          },
+          "window_definition": {
+            "default": "Declared periods whose end is after as_of, including partly elapsed periods; otherwise labels at or after as_of with unknown physical support.",
+            "title": "Window Definition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "comparison_unavailable_reason",
+          "curve",
+          "reference_basis",
+          "remaining_peaks",
+          "period_definition",
+          "temporal_support"
+        ],
+        "title": "PeakWaterLevelComparisonResponse",
+        "type": "object"
+      },
+      "PeakWaterLevelResponse": {
+        "properties": {
+          "conversion_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "reference_not_configured",
+                  "reference_ambiguous",
+                  "reference_scope_mismatch",
+                  "reference_from_future",
+                  "curve_missing",
+                  "curve_changed",
+                  "invalid_curve",
+                  "unsupported_interpolation",
+                  "curve_not_yet_valid"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "parameter_not_supported",
+                  "units_not_supported",
+                  "forecast_qc_rejected",
+                  "invalid_series",
+                  "no_remaining_support",
+                  "percentile_missing",
+                  "insufficient_members"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "available",
+                  "begins_before_validity",
+                  "below",
+                  "above",
+                  "ambiguous",
+                  "invalid_conversion"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Conversion Status"
+          },
+          "curve_validity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "valid",
+                  "expired",
+                  "crosses_expiry",
+                  "begins_before_validity"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Curve Validity"
+          },
+          "discharge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge"
+          },
+          "discharge_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "parameter_not_supported",
+                  "units_not_supported",
+                  "forecast_qc_rejected",
+                  "invalid_series",
+                  "no_remaining_support",
+                  "percentile_missing",
+                  "insufficient_members"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge Unavailable Reason"
+          },
+          "discharge_unit": {
+            "const": "m3/s",
+            "default": "m3/s",
+            "title": "Discharge Unit",
+            "type": "string"
+          },
+          "member_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Member Count"
+          },
+          "method": {
+            "enum": [
+              "stored_quantile",
+              "member_median",
+              "member_type7"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "quantile": {
+            "title": "Quantile",
+            "type": "number"
+          },
+          "range_flag": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_range",
+                  "below",
+                  "above",
+                  "ambiguous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range Flag"
+          },
+          "support_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support End"
+          },
+          "support_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support Start"
+          },
+          "valid_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Time"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "water_level_equivalent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Equivalent level of the discharge statistic; not mean water level or an instantaneous flood maximum.",
+            "title": "Water Level Equivalent"
+          },
+          "water_level_reference": {
+            "anyOf": [
+              {
+                "enum": [
+                  "gauge_zero",
+                  "masl"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Water Level Reference"
+          },
+          "water_level_unit": {
+            "const": "m",
+            "default": "m",
+            "title": "Water Level Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "quantile",
+          "discharge",
+          "valid_time",
+          "support_start",
+          "support_end",
+          "method",
+          "member_count",
+          "discharge_unavailable_reason",
+          "water_level_equivalent",
+          "water_level_reference",
+          "conversion_status",
+          "range_flag",
+          "curve_validity",
+          "warnings"
+        ],
+        "title": "PeakWaterLevelResponse",
+        "type": "object"
+      },
       "ProbabilityMethod": {
         "enum": [
           "empirical_members",
@@ -5555,6 +6026,17 @@
           "parameter": {
             "title": "Parameter",
             "type": "string"
+          },
+          "peak_water_level_comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeakWaterLevelComparisonResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit reviewer-only provisional comparison of remaining pointwise P50/P90 discharge maxima to equivalent levels; not forecast input provenance."
           },
           "period_definition": {
             "anyOf": [
@@ -9639,7 +10121,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.11"
+    "version": "3.12"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9789,6 +10271,23 @@
               ],
               "title": "Data Use",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rating_comparison",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "provisional_rating",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rating Comparison"
             }
           }
         ],

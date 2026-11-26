@@ -51,6 +51,21 @@ class PgRatingCurveStore:
         )
         return [_row_to_curve(row) for row in rows]
 
+    def fetch_curve_by_id(
+        self, station_id: StationId, curve_id: RatingCurveId
+    ) -> RatingCurve | None:
+        row = (
+            self._conn.execute(
+                sa.select(rating_curves).where(
+                    rating_curves.c.station_id == station_id,
+                    rating_curves.c.id == curve_id,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return _row_to_curve(row) if row is not None else None
+
     def fetch_active_curve(self, station_id: StationId) -> RatingCurve | None:
         row = (
             self._conn.execute(

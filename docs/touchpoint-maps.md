@@ -3128,3 +3128,22 @@ used to read threshold snapshots.
 Include the API integration callers when checking forecast-detail dependencies:
 consumer isolation, selected-weather corruption, large legacy weather isolation,
 and native selected-weather tests all read detail directly with PostgreSQL stores.
+
+### Provisional forecast peak equivalents
+
+- `services/forecast_peaks.py` reduces remaining stored support to independent
+  pointwise P50/P90 discharge maxima. Preserve period labels/bounds, exact stored
+  percentile identity and member type-7 meaning; this is not trajectory-max P90.
+  Reuse the weighted `network_overview.empirical_quantile_type7` helper; never
+  serialize a nonfinite peak from finite-member interpolation.
+- `services/rating_conversion.py::inverse` never changes the existing forward
+  clamp/extrapolation policies. Plateaus refuse only the ambiguous discharge;
+  outside-domain outputs have no invented level.
+- `api/forecast_peak_comparison.py` uses the exact configured provisional binding
+  and one station-scoped ordinary curve lookup. Snapshot/time/reference checks,
+  explicit expiry/assumption labels and private-field allowlisting are mandatory.
+- `api_forecasts` enriches only admitted reviewer opt-in detail responses. Preserve
+  all standard/provisional publication/scope branches; default, 404 and 410 do no
+  added curve reads. No overview, observation or protected-history scans.
+- Verify inverse numerics, statistical/period semantics, nonzero reference offset,
+  real store snapshot mapping, all admission branches and generated map contract.

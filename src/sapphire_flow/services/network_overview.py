@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.network_overview import OverviewFreshnessPolicy
 
 
-def _type7(values: Sequence[float], probability: float) -> float:
+def empirical_quantile_type7(values: Sequence[float], probability: float) -> float:
     ordered = sorted(values)
     position = (len(ordered) - 1) * probability
     lower = math.floor(position)
@@ -57,8 +57,8 @@ def reduce_forecast_point(
         middle, lower, upper = levels[0.5], levels.get(0.25), levels.get(0.75)
     else:
         middle = median(values)
-        lower = _type7(values, 0.25) if len(values) >= 5 else None
-        upper = _type7(values, 0.75) if len(values) >= 5 else None
+        lower = empirical_quantile_type7(values, 0.25) if len(values) >= 5 else None
+        upper = empirical_quantile_type7(values, 0.75) if len(values) >= 5 else None
     if (
         any(
             not math.isfinite(value)
