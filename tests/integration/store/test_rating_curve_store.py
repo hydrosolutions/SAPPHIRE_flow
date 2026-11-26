@@ -12,6 +12,7 @@ from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.enums import InterpolationMethod
 from sapphire_flow.types.ids import RatingCurveId, StationId
 from sapphire_flow.types.rating_curve import RatingCurve
+from sapphire_flow.types.rating_reference import curve_snapshot
 from tests.conftest import make_station_config
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -53,6 +54,25 @@ def _make_curve(
 
 
 class TestStoreAndFetchActiveCurve:
+    def test_bound_id_preserves_complete_snapshot_and_station_scope(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        store = PgRatingCurveStore(db_connection)
+        curve = replace(
+            _make_curve(station_id=station_id),
+            delivery_id="fixture-delivery",
+            rating_type_label="fixture-type",
+            created_at=_NOW + timedelta(hours=1),
+            valid_to=_NOW + timedelta(days=1),
+        )
+        store.store_rating_curve(curve)
+        fetched = store.fetch_curve_by_id(station_id, curve.id)
+        assert fetched is not None
+        assert curve_snapshot(fetched) == curve_snapshot(curve)
+        assert store.fetch_curve_by_id(StationId(uuid.uuid4()), curve.id) is None
+        assert store.fetch_curve_by_id(station_id, RatingCurveId(uuid.uuid4())) is None
+
     def test_round_trip_preserves_interpolation_enum(
         self, db_connection: sa.Connection
     ) -> None:

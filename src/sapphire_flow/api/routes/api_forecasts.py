@@ -8,6 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.forecast_peak_comparison import (
+    ForecastPeakReader,
+    get_forecast_peak_reader,
+)
 from sapphire_flow.api.forecast_probabilities import forecast_probabilities
 from sapphire_flow.api.forecast_read import (
     require_standard_detail,
@@ -160,6 +164,7 @@ def _detail_with_weather(
     models: Mapping[ModelId, ModelRecord] | None = None,
     *,
     thresholds: Sequence[StationThreshold],
+    comparison: ForecastPeakReader | None = None,
 ) -> ForecastDetail:
     from sapphire_flow.api.weather_evidence import read_weather_summary
 
@@ -176,6 +181,9 @@ def _detail_with_weather(
         update={
             "weather_use": summary,
             "threshold_probabilities": forecast_probabilities(forecast, thresholds),
+            "peak_water_level_comparison": comparison.read(forecast)
+            if comparison
+            else None,
         }
     )
 
@@ -192,7 +200,13 @@ def get_forecast(
     *,
     data_use: Literal["standard", "provisional_rating"] = Query("standard"),
     provisional: ProvisionalForecastReader = Depends(get_provisional_reader),
+    rating_comparison: Literal["provisional_rating"] | None = Query(None),
+    peak_reader: ForecastPeakReader = Depends(get_forecast_peak_reader),
 ) -> ForecastDetail | JSONResponse:
+    comparison = None
+    if rating_comparison == "provisional_rating":
+        require_provisional_role(principal)
+        comparison = peak_reader
     if data_use == "provisional_rating":
         require_provisional_role(principal)
         forecast, metadata = provisional.detail(ForecastId(UUID(forecast_id)))
@@ -219,6 +233,9 @@ def get_forecast(
             threshold_probabilities=forecast_probabilities(
                 forecast, stores["station_store"].fetch_thresholds(forecast.station_id)
             ),
+            peak_water_level_comparison=comparison.read(forecast)
+            if comparison
+            else None,
         )
         return JSONResponse(content=response.model_dump(mode="json"))
     fid = ForecastId(UUID(forecast_id))
@@ -238,6 +255,7 @@ def get_forecast(
             forecast_store,
             load_model_display_names(stores.get("model_store"), [forecast.model_id]),
             thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
+            comparison=comparison,
         )
     tenant_id = station_tenant_id(stores, forecast.station_id)
     if not gate.active(tenant_id):
@@ -246,6 +264,7 @@ def get_forecast(
             forecast_store,
             load_model_display_names(stores.get("model_store"), [forecast.model_id]),
             thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
+            comparison=comparison,
         )
     pub = require_publication_store(stores)
     pub.lock_read_snapshot()
@@ -268,4 +287,5 @@ def get_forecast(
         forecast_store,
         load_model_display_names(stores.get("model_store"), [forecast.model_id]),
         thresholds=stores["station_store"].fetch_thresholds(forecast.station_id),
+        comparison=comparison,
     ).model_copy(update=metadata)

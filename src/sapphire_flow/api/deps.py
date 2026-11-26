@@ -95,6 +95,7 @@ def get_stores(
     from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
     from sapphire_flow.store.pipeline_health_store import PgPipelineHealthStore
+    from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
     from sapphire_flow.store.rejected_forecast_store import PgRejectedForecastStore
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
@@ -105,6 +106,7 @@ def get_stores(
 
     return {
         "station_store": PgStationStore(conn),
+        "rating_curve_store": PgRatingCurveStore(conn),
         "obs_store": PgObservationStore(conn),
         "forcing_store": PgHistoricalForcingStore(conn),
         "baseline_store": PgClimBaselineStore(conn),

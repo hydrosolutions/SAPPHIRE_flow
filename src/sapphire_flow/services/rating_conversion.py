@@ -32,6 +32,26 @@ class ConversionResult:
     range_flag: RatingRange
 
 
+class InverseRatingStatus(Enum):
+    IN_RANGE = "in_range"
+    BELOW = "below"
+    ABOVE = "above"
+    AMBIGUOUS = "ambiguous"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class InverseRatingResult:
+    status: InverseRatingStatus
+    water_level: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is InverseRatingStatus.IN_RANGE:
+            if self.water_level is None or not math.isfinite(self.water_level):
+                raise RatingConversionError("in-range inverse requires a finite level")
+        elif self.water_level is not None:
+            raise RatingConversionError("unavailable inverse cannot carry a level")
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RatingConverter:
     """Pure level→discharge converter for a single rating curve.
@@ -127,6 +147,49 @@ class RatingConverter:
             discharge = math.exp(math.log(q0) + frac * (math.log(q1) - math.log(q0)))
 
         return ConversionResult(discharge=discharge, range_flag=RatingRange.IN_RANGE)
+
+    def inverse(self, discharge: float) -> InverseRatingResult:
+        """Invert the table without extrapolation or choosing a plateau endpoint."""
+        if not math.isfinite(discharge):
+            raise RatingConversionError("discharge must be finite")
+        flows = self.discharges
+        if discharge < flows[0]:
+            return InverseRatingResult(status=InverseRatingStatus.BELOW)
+        if discharge > flows[-1]:
+            return InverseRatingResult(status=InverseRatingStatus.ABOVE)
+        index = bisect.bisect_left(flows, discharge)
+        if flows[index] == discharge:
+            if bisect.bisect_right(flows, discharge) - index > 1:
+                return InverseRatingResult(status=InverseRatingStatus.AMBIGUOUS)
+            return InverseRatingResult(
+                status=InverseRatingStatus.IN_RANGE, water_level=self.stages[index]
+            )
+        q0, q1 = flows[index - 1], flows[index]
+        h0, h1 = self.stages[index - 1], self.stages[index]
+        if self.interpolation is InterpolationMethod.LINEAR:
+            if not math.isfinite(q1 - q0):
+                raise RatingConversionError("nonfinite inverse discharge span")
+            fraction = (discharge - q0) / (q1 - q0)
+        else:
+            fraction = _log_ratio(discharge, q0) / _log_ratio(q1, q0)
+        if not math.isfinite(fraction) or not 0 <= fraction <= 1:
+            raise RatingConversionError("invalid inverse interpolation fraction")
+        level = (1 - fraction) * h0 + fraction * h1
+        if not math.isfinite(level):
+            raise RatingConversionError("nonfinite inverse interpolation")
+        return InverseRatingResult(
+            status=InverseRatingStatus.IN_RANGE, water_level=level
+        )
+
+
+def _log_ratio(upper: float, lower: float) -> float:
+    # log1p retains close positive values; separate logs avoid ratio overflow.
+    relative = (upper - lower) / lower
+    return (
+        math.log1p(relative)
+        if math.isfinite(relative)
+        else math.log(upper) - math.log(lower)
+    )
 
 
 def convert_level_to_discharge(level: float, curve: RatingCurve) -> ConversionResult:
