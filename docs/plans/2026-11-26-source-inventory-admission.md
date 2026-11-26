@@ -201,7 +201,7 @@ The owner accepted proceeding with the isolated read-only checker on 2026-11-26,
 after the review requirements and scope were explained. The orchestrator admits
 S1 local implementation and isolated qualification only. Patch review must complete
 before runtime qualification. S2–S4, source execution and reconstruction retain
-their separate gates. The PR remains draft at the owner's explicit request.
+their separate gates.
 The full review and detailed evidence remain private.
 
 ## S1 local qualification — 2026-11-26
@@ -224,4 +224,4 @@ unchanged-baseline assertion or native current-source qualification.
 No source inventory, live forecast, deployment change or reconstruction occurred.
 S2–S4 retain their separate gates. The administrator consequence is documented in
 the [comparison guide](../deployment/operational-comparison.md); this private helper
-is not a new public operator command. The PR remains draft.
+is not a new public operator command.
