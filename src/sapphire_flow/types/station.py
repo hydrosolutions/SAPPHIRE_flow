@@ -55,6 +55,9 @@ class StationConfig:
     water_level_unit: str | None = None
     water_level_gauge_type: WaterLevelGaugeType | None = None
     water_level_sensor_masl: float | None = None
+    # Admin switch (#501): stop POLLING observations only; forecasting, QC and
+    # station_status are unaffected.
+    ingest_paused: bool = False
     # Plan 147 Slice A: canonical tenant ownership (R4 LOCKED). REQUIRED — no
     # default (parse-don't-validate): every constructor, production or test,
     # must resolve and name a tenant explicitly. Onboarding resolves the config

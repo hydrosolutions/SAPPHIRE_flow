@@ -933,6 +933,10 @@ class StationStore(Protocol):
         self, station_id: StationId, new_status: StationStatus
     ) -> None: ...
 
+    def update_station_ingest_paused(
+        self, station_id: StationId, ingest_paused: bool
+    ) -> None: ...
+
     def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
         raise NotImplementedError
 

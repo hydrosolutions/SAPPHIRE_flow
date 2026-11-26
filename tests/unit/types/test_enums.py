@@ -87,7 +87,7 @@ class TestAuditEventType:
     def test_exists_as_runtime_enum(self) -> None:
         _require_audit_event_type()
 
-    def test_has_exactly_thirty_values(self) -> None:
+    def test_has_exactly_thirty_one_values(self) -> None:
         """The count is a deliberate lock: a new member must be a conscious edit
         HERE, in the expected set below, and in the authoritative spec
         (`docs/spec/types-and-protocols.md`) — three places, like the Dockerfile's
@@ -98,9 +98,10 @@ class TestAuditEventType:
         Plan 540 M3c adds rating_curve_stored.
         Issue 538 adds fine-tuning start, receipt and admin-decision events.
         Issue 630 adds thresholds_imported.
+        Issue 501 adds station_ingest_pause_changed.
         """
         audit_event_type = _require_audit_event_type()
-        assert len(audit_event_type) == 30
+        assert len(audit_event_type) == 31
 
     def test_values_match_spec_plus_additive_members(self) -> None:
         audit_event_type = _require_audit_event_type()
@@ -132,6 +133,7 @@ class TestAuditEventType:
             "rating_curve_stored",
             "thresholds_imported",
             "operational_weather_refresh",
+            "station_ingest_pause_changed",
             "fine_tuning_started",
             "fine_tuning_receipt",
             "fine_tuning_decision",
