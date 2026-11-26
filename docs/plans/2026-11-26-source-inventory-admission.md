@@ -1,5 +1,5 @@
 ---
-status: READY — S1 locally qualified; S2–S4 DRAFT
+status: S1–S2 COMPLETE_LOCAL; S3–S4 DRAFT
 owner: deployment orchestrator
 parent: 2026-11-22-operational-deployment-recipe.md
 ---
@@ -10,7 +10,7 @@ parent: 2026-11-22-operational-deployment-recipe.md
 
 Prepare one private, reviewable execution packet for the existing bounded inventory.
 The maintained release 0.1.1197 passed the constructor/runtime qualification, but
-the observed source now runs 0.1.1199. Its declared-grid runoff behavior and schema
+the source observed when this plan was prepared ran 0.1.1199. Its runoff behavior and schema
 have changed. Preserve the completed test; do not refresh code hashes and call its
 old omission policy qualified for the newer source.
 
@@ -25,12 +25,13 @@ deployment activation, provider acquisition or source write is part of this plan
   declaration guards, typed packet/report, bounded SQL accounting, worker-role
   read-only snapshot, cancellation and cleanup. The maintained-image test covers
   three synthetic scenarios and ten expected outcomes; 183 helper checks pass.
-- Missing: the production source collector. The tested collector explicitly uses
-  synthetic job/controller records. Relabelling those records is not source proof.
+- Locally qualified: the separate source metadata collector and retained-input
+  read mapping, within S1/S2's recorded boundaries. Their synthetic qualification
+  records are not source proof; source execution still requires S3/S4 admission.
 - Changed: the [declared-runoff implementation](2026-11-25-model-declared-runoff-inputs.md)
   admits period-aware rating input and recording-time availability. The old private
-  planner admits declared targets only as deliberately omitted. It must refuse the
-  newer route until a separately reviewed read mapping is qualified.
+  planner admitted declared targets only as deliberately omitted. S2 adds a locally
+  tested native-input read while preserving that omission; S3 must qualify its runtime.
 - Pending externally: successful current-route qualification and the exact intended
   cohort/artifact/job handoff from the source-deployment owner. A running worker,
   completed flow state or old forecast is insufficient evidence of input consumption.
@@ -40,12 +41,12 @@ deployment activation, provider acquisition or source write is part of this plan
 | Milestone | Concrete work | Acceptance and dependencies |
 | --- | --- | --- |
 | S1 — private metadata collector | New private `source_identity.py`, `source_controller.py` and focused tests; reuse packet types and the maintained forecast-configuration checker. | Independently observed container/image/process/job/config facts; no application DB, model constructor, artifact bytes or provider access. Local implementation and isolated real Prefect/process qualification after plan/patch review. No source execution yet. |
-| S2 — current read contract | [Retained-input amendment](2026-11-26-retained-input-inventory.md) to the private planner, roots, census and report; shared guards change only for a demonstrated, reviewed need. | Distinguish measured roots, retained rating inputs, recording-time availability and physical periods. Independent design review complete; amendment remains DRAFT for admission. Retain whole-cohort caps and existing exclusions. |
+| S2 — current read contract | [Retained-input amendment](2026-11-26-retained-input-inventory.md) to the private planner, roots, census and report. | COMPLETE_LOCAL: reviewed implementation and synthetic reader parity at schema 0095. Recording-time bounds and physical periods are explicit; whole-cohort caps and existing exclusions remain. S3 must qualify the matching image. |
 | S3 — matching-runtime qualification | Reuse the maintained-image qualification adapter and frozen helper suite against the exact admitted current image. | Independent release custody; S1/S2 patch reviews; positive current-route synthetic cases, expected refusals, worker-role SQL/supervisor evidence and cleanup. No source/target mutation. Reuse unchanged evidence; do not repeat every historical benchmark. |
 | S4 — source admission and inventory | Private expected packet, collected facts, exact invocation and aggregate report. | S1–S3, source-owner handoff and explicit orchestrator admission. Observe preflight, run one bounded read-only snapshot, then recheck identity and cleanup. Drift or missing evidence produces HOLD; no automatic retry or reduced scope. |
 
-S1 can proceed while the source owner completes operational validation. S2 starts
-as a design amendment, not permission to implement unreviewed scientific mappings.
+S1 and S2 have completed their recorded local qualifications while the source owner
+retains responsibility for operational validation. No scientific mapping changed.
 This plan admits no B1/B2 source execution, reconstruction or commissioning by itself.
 
 ## S1 collector contract
@@ -186,7 +187,7 @@ record only concise generic outcomes in this plan and its parent. A code PR requ
 affected tests, lint, changed-module types and the full final suite locally or in CI.
 
 ```json
-{"phases":[{"id":"S1","status":"COMPLETE_LOCAL","depends_on":["independent_plan_review"]},{"id":"S2","status":"DRAFT","depends_on":["current_route_design_review"]},{"id":"S3","status":"DRAFT","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
+{"phases":[{"id":"S1","status":"COMPLETE_LOCAL","depends_on":["independent_plan_review"]},{"id":"S2","status":"COMPLETE_LOCAL","depends_on":["current_route_design_review"]},{"id":"S3","status":"DRAFT","depends_on":["S1","S2","independent_patch_reviews","verified_current_image"]},{"id":"S4","status":"DRAFT","depends_on":["S3","source_owner_handoff","execution_packet_admission"]}],"source_execution":"DRAFT","reconstruction":"DRAFT"}
 ```
 
 ## Independent review disposition
@@ -199,9 +200,9 @@ explicit nonsecret selector/file admission. No repeat review was requested.
 
 The owner accepted proceeding with the isolated read-only checker on 2026-11-26,
 after the review requirements and scope were explained. The orchestrator admits
-S1 local implementation and isolated qualification only. Patch review must complete
-before runtime qualification. S2–S4, source execution and reconstruction retain
-their separate gates.
+S1 local implementation and isolated qualification only. Patch review preceded
+runtime qualification. S2 was subsequently admitted through its separately reviewed
+amendment; S3–S4, source execution and reconstruction retain their separate gates.
 The full review and detailed evidence remain private.
 
 ## S1 local qualification — 2026-11-26
@@ -222,6 +223,8 @@ activity changed the shared host baseline, so this is not a whole-host
 unchanged-baseline assertion or native current-source qualification.
 
 No source inventory, live forecast, deployment change or reconstruction occurred.
-S2–S4 retain their separate gates. The administrator consequence is documented in
+S2's later local result is recorded in the
+[retained-input amendment](2026-11-26-retained-input-inventory.md#s2-local-result--2026-11-26).
+S3–S4 retain their separate gates. The administrator consequence is documented in
 the [comparison guide](../deployment/operational-comparison.md); this private helper
 is not a new public operator command.

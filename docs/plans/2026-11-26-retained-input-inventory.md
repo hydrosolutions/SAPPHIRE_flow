@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE_LOCAL — S3 matching-image qualification pending
 owner: deployment orchestrator
 parent: 2026-11-26-source-inventory-admission.md
 ---
@@ -14,10 +14,10 @@ as an omission. A completed inventory establishes its stated read coverage; it d
 not establish usable model inputs, historical consumption or readiness to restore.
 
 This is the S2 design amendment to the [source-admission plan](2026-11-26-source-inventory-admission.md).
-S1 is locally qualified. S2 implementation, S3 matching-image qualification and S4
-source execution remain separately gated. No application change, migration, public
-command, provider acquisition, source write, forecast run or reconstruction is
-proposed. Deployment profiles, helper code, full reviews and execution evidence
+S1 and S2 are locally qualified within their recorded boundaries. S3 matching-image
+qualification and S4 source execution remain separately gated. No application
+change, migration, public command, provider acquisition, source write, forecast run
+or reconstruction is proposed. Deployment profiles, helper code, full reviews and execution evidence
 remain private.
 
 The repository trace uses release 0.1.1199's source commit `3f8a8b2f`; the relevant
@@ -196,9 +196,45 @@ patch review must verify the implementation. Full review reports remain private.
 The suggested compact format to guarantee reports for every 128-member case is
 deferred. The unchanged encoder already returns an output-limit HOLD for such a
 synthetic case. Retain that boundary and require the actual admitted cohort to fit;
-do not add a new capacity promise to this increment. This disposition is presented
-for owner review. S2 remains DRAFT until the orchestrator records its admission.
+do not add a new capacity promise to this increment. The owner merged this reviewed
+plan in #680 on 2026-11-26. The orchestrator admits S2 local implementation with
+that disposition; independent patch review remains required before runtime
+qualification. S3, source execution and reconstruction retain their separate gates.
 
 ```json
-{"phases":[{"id":"S2-design","status":"DRAFT","depends_on":["independent_plan_review_complete","owner_review_disposition"]},{"id":"S2-A","status":"DRAFT","depends_on":["S2-design_READY"]},{"id":"S2-B","status":"DRAFT","depends_on":["S2-A"]},{"id":"S2-C","status":"DRAFT","depends_on":["S2-B"]},{"id":"S3","status":"DRAFT","depends_on":["S2-C","independent_patch_review","verified_current_image"]}],"source_execution":"NOT_ADMITTED","reconstruction":"NOT_ADMITTED"}
+{"phases":[{"id":"S2-design","status":"COMPLETE","depends_on":["independent_plan_review_complete","owner_review_disposition"]},{"id":"S2-A","status":"COMPLETE_LOCAL","depends_on":["S2-design"]},{"id":"S2-B","status":"COMPLETE_LOCAL","depends_on":["S2-A"]},{"id":"S2-C","status":"COMPLETE_LOCAL","depends_on":["S2-B"]},{"id":"S3","status":"DRAFT","depends_on":["S2-C","independent_patch_review","verified_current_image"]}],"source_execution":"NOT_ADMITTED","reconstruction":"NOT_ADMITTED"}
 ```
+
+## S2 local result — 2026-11-26
+
+The private implementation preserves the declared-grid stored-discharge omission
+and separately inventories the selected native-rating window. It retains persisted
+recording times, shares the existing whole-cohort accounting and capture closure,
+and emits a strict version-3 report with explicit pending, empty and queried
+dispositions. The SQL guard, reader allowlist and resource limits were unchanged.
+The composed helper manifest records final paths/hashes separately from history;
+the existing launch boundary verifies the complete bundle before loading it.
+
+All 187 helper checks passed, including an isolated synthetic Postgres comparison
+against the production current reader from pinned application source `3f8a8b2f`
+at schema 0095. The diagnostic used the worker role in read-only repeatable read.
+Tests covered recording bounds before/equal/after issue, explicit 05:45 period
+labels and support, three six-hour chunks, an unreconciled source and the 1000-row
+chunk refusal. Ruff and strict changed-module types passed.
+
+One independent patch review found two fixture defects: the reference adapter's
+wrapped exception needed its public assertion, and reducer parity needed explicit
+expected outputs. Both were corrected before the passing database run. Fixed
+implementation pins also now refuse drift before configuration parsing. Full
+reviews, manifests and evidence remain private.
+
+The database ran in an amd64 container on a local arm64 Docker host, using synthetic
+data, temporary memory-backed storage and a loopback-only port. Its owned container
+and network were removed and independently checked absent. No provider or live
+source was accessed. This is local source/reader parity, not qualification of a
+current Linux application image, a complete deployment or historical consumption.
+
+S3 must still admit and verify the exact image, qualify the affected runtime paths
+and prove the actual whole-cohort report fits. Main has since advanced to schema
+0096; these results do not silently extend to that schema. S4 source execution and
+reconstruction remain unadmitted.
