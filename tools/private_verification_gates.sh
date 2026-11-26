@@ -45,7 +45,9 @@ echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt
 # options go to `install`, so apt never needs the unfetched lists.
 # Trade-off: a package missing from the image installs at its
 # release-pocket version, not the latest security build.
-. /etc/os-release
+OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
+# shellcheck source=/dev/null
+. "$OS_RELEASE_FILE"
 SRC_LIST="$(mktemp)"
 echo "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu/ ${VERSION_CODENAME} main universe" > "$SRC_LIST"
 APT_OPTS=(-o Acquire::Retries=3
