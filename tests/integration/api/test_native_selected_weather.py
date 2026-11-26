@@ -109,7 +109,10 @@ def test_native_21_station_group_persists_and_reads_authorized_weather(
         station_ids=frozenset({first.station_id}),
     )
     response = get_forecast(
-        str(first.id), {"forecast_store": store}, principal, PublicationGate()
+        str(first.id),
+        {"forecast_store": store, "station_store": PgStationStore(db_connection)},
+        principal,
+        PublicationGate(),
     )
     assert response.weather_use is not None
     assert response.weather_use.station_id == str(first.station_id)

@@ -19,6 +19,7 @@ from sapphire_flow.services.forecast_evidence import (
     capture_station_evidence,
 )
 from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.domain import ForecastQcRuleSet
 from sapphire_flow.types.enums import AccessTokenRole
 from sapphire_flow.types.ids import AccessTokenId, StationGroupId
@@ -135,7 +136,10 @@ def test_new_legacy_capture_over_selected_ceiling_retains_existing_reads(
             station_ids=frozenset(),
         )
         detail = get_forecast(
-            str(forecast.id), {"forecast_store": store}, principal, PublicationGate()
+            str(forecast.id),
+            {"forecast_store": store, "station_store": PgStationStore(db_connection)},
+            principal,
+            PublicationGate(),
         )
         assert detail.weather_use is None
     client = _client(db_connection)

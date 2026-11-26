@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.enums import EnsembleRepresentation
 from tests.conftest import make_forecast_ensemble
 from tests.integration.api.test_dashboard_forecasts import (
@@ -186,7 +187,7 @@ def test_standard_selected_corruption_is_unavailable(
     ) as caught:
         get_forecast(
             str(forecast.id),
-            {"forecast_store": store},
+            {"forecast_store": store, "station_store": PgStationStore(db_connection)},
             principal,
             PublicationGate(),
         )
@@ -228,7 +229,7 @@ def test_standard_selected_scope_denial_precedes_weather_read(
     with pytest.raises(HTTPException, match="Forecast not found") as caught:
         get_forecast(
             str(forecast.id),
-            {"forecast_store": store},
+            {"forecast_store": store, "station_store": PgStationStore(db_connection)},
             principal,
             PublicationGate(),
         )

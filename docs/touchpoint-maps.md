@@ -3118,3 +3118,7 @@ Forecast-detail contract changes also require the standard-route byte fixtures
 (`test_standard_route_bytes.py`) and direct dependency-call tests
 (`test_provisional_forecasts.py`); these fixtures must supply the station store
 used to read threshold snapshots.
+
+Include the API integration callers when checking forecast-detail dependencies:
+consumer isolation, selected-weather corruption, large legacy weather isolation,
+and native selected-weather tests all read detail directly with PostgreSQL stores.
