@@ -152,6 +152,17 @@ class ArtifactReceipt:
     images: list[ReceiptImage]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReleaseSelection:
+    package_version: str
+    source_revision: str
+    git_tree: str
+    remote_tag: str
+    remote_tag_object: str
+    observed_release_state: str
+    kind: Literal["release-selection"] = "release-selection"
+
+
 class DockerImageBuilder(Protocol):
     def build(self, context: Path, version: str, source: str) -> list[ReceiptImage]: ...
 
@@ -1086,6 +1097,37 @@ def atomic_write_receipt(path: Path, payload: str) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def resolve_release(args: argparse.Namespace) -> int:
+    requested = Version.parse(args.version) if args.version is not None else None
+    output = Path(args.output)
+    if output.exists() or output.is_symlink():
+        raise ReleaseIdentityError("selection path already exists")
+    validate_destination()
+    main, state, tags = fetch_remote_state()
+    if state is None:
+        raise ReleaseIdentityError("release-state is required to select a release")
+    latest = validate_state(state, tags, main)
+    name = requested.tag if requested is not None else latest.tag
+    tag = next((item for item in tags if item.name == name), None)
+    if tag is None:
+        raise ReleaseIdentityError(f"{name} is not a published release")
+    validate_helper_tag_binding(tag)
+    selection = ReleaseSelection(
+        package_version=tag.version.text,
+        source_revision=tag.peeled_oid,
+        git_tree=git(["rev-parse", f"{tag.peeled_oid}^{{tree}}"]),
+        remote_tag=tag.name,
+        remote_tag_object=tag.object_oid,
+        observed_release_state=state,
+    )
+    try:
+        atomic_write_receipt(output, json.dumps(asdict(selection), indent=2) + "\n")
+    except OSError as exc:
+        raise ReleaseIdentityError("could not write release selection") from exc
+    print(str(output))
+    return 0
+
+
 def build_receipt(
     args: argparse.Namespace,
     *,
@@ -1199,7 +1241,7 @@ def build_receipt(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Publish and verify SAPPHIRE Flow release identity."
+        description="Select, publish and verify SAPPHIRE Flow release identity."
     )
     sub = parser.add_subparsers(dest="command", required=True)
     pub = sub.add_parser("publish")
@@ -1208,6 +1250,12 @@ def main(argv: list[str] | None = None) -> int:
     pub.add_argument("--bootstrap", action="store_true")
     pub.add_argument("--yes", action="store_true")
     pub.set_defaults(func=publish)
+    resolve = sub.add_parser("resolve", help="Save a published release selection.")
+    resolve.add_argument(
+        "--version", help="Published X.Y.Z version; defaults to the latest release."
+    )
+    resolve.add_argument("--output", required=True, help="New selection JSON path.")
+    resolve.set_defaults(func=resolve_release)
     receipt = sub.add_parser("build-receipt")
     receipt.add_argument("--version", required=True)
     receipt.add_argument("--source", required=True)

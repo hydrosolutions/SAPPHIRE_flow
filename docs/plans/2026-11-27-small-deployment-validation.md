@@ -1,5 +1,5 @@
 ---
-status: READY (V1 implementation and V2 preparation; V3 execution remains gated)
+status: V1 COMPLETE_LOCAL; V2 preparation READY; V3 execution remains gated
 created: 2026-11-27
 owner: deployment orchestrator
 parent: 2026-11-22-fresh-deployment-comparison.md
@@ -178,3 +178,20 @@ states that automatic selection is not implemented yet. Existing host requiremen
 and job-exclusion reasons remain explicit. Full report and finding dispositions
 stay private. The orchestrator marks V1 implementation and V2 preparation READY;
 V3 remains gated on the successful walkthrough and concrete execution record.
+
+## V1 local implementation — 27 November
+
+`tools/release_identity.py resolve --output PATH` now saves the latest validated
+published identity, with `--version X.Y.Z` for an explicit canonical release.
+Existing files and concurrent writers are refused. A later publication neither
+rewrites the selection nor prevents explicitly selecting an older canonical release.
+The command reuses the existing remote snapshot/state/tag checks and does not
+publish, build, check out source or start services. The CI/CD reference owns the
+selection-to-installation mapping and distinguishes selection from delivery proof.
+
+All 115 focused release-identity unit/Git integration checks passed, including the
+new selection cases. Ruff and changed-module Pyright passed. One independent Claude
+patch review returned READY with no blockers; its two context questions were
+confirmed by the existing parser/CLI and the passing tests. Full reports remain
+private. V1 is locally complete; final CI and owner merge remain required. No
+release was selected for a live installation and no deployment occurred in this pass.

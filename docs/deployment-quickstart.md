@@ -24,8 +24,9 @@ explicit install and retained verify/stop/start commands. Jobs stay paused and H
 stays server-local. Select the latest canonical published release by default and
 keep that exact version for the installation. Reuse its source CI and normal
 delivery checks; the [installer guide](deployment/profile-installation.md) explains
-the current explicit inputs and supported host assumptions. Automatic latest
-selection is planned; today deployment support supplies those exact inputs.
+the current explicit inputs and supported host assumptions. Use the
+[release selector](standards/cicd.md#select-a-published-release-for-installation)
+to save the exact version/source and map them to your private installation file.
 A later release does not restart your installation or require a new manual
 qualification project.
 Existing deployments keep their current runbooks.

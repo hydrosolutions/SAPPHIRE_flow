@@ -631,6 +631,52 @@ path. The receipt records the version, source SHA, Git tree, remote tag object,
 release-state, local image IDs, labels, and runtime import results. Local image
 IDs are not registry digests.
 
+#### Select a published release for installation
+
+From a clone with the canonical `origin`, select the latest published release once
+and save the result outside the checkout:
+
+```bash
+uv run --no-project python tools/release_identity.py resolve --output /private/deployment/release-selection.json
+```
+
+For reproduction, add `--version X.Y.Z` with an explicitly chosen published version.
+Omitting it means the current validated `release-state`, not the target on main or
+a Docker `latest` tag. Legacy tags from before the canonical publisher are not
+accepted. Missing or inconsistent release state, an unpublished/noncanonical
+version, or an occupied output path returns exit 2 without replacing a selection.
+Success returns 0 and prints the saved JSON path.
+
+The command fetches metadata into local private Git refs and may reconstruct local
+validation objects. It never pushes, checks out a revision, builds/pulls images,
+starts services or accesses secrets. Keep the saved selection for the entire
+installation; later publication does not change it. A new output path deliberately
+makes a new selection. Source-CI reuse and ordinary delivery checks still apply.
+
+Use the fields directly with the existing installation and delivery interfaces:
+
+| Selection field | Existing consumer |
+| --- | --- |
+| `package_version` | Installation TOML `[environment].VERSION` and `SAPPHIRE_RELEASE_VERSION`; delivery/build `version` |
+| `source_revision` | Installation `[environment].SAPPHIRE_SOURCE_REVISION`; clean application checkout at this commit; delivery `source` |
+| `remote_tag` | Published tag to select for the existing Actions delivery workflow |
+| `remote_tag_object`, `git_tree` | Compare with the delivery record's `tag_object` and `tree` (artifact receipt: `remote_tag_object`, `git_tree`) |
+| `observed_release_state` | Authority snapshot at selection time; a new delivery's admission must independently match its current release state |
+
+This JSON has `kind: "release-selection"`; it is **not** an image or delivery
+receipt. Obtain the matching image IDs/archive/checksums from the existing
+[delivery procedure](../deployment/actions-staging-release.md). Check its
+version/source/tag/tree binding against the selection and retain its own original
+receipts. An older delivered release can have a different recorded release-state
+from today's selection snapshot; do not rewrite that receipt or substitute this
+snapshot for delivery evidence. Existing delivery race checks remain unchanged.
+If images are unavailable, complete that delivery; do not silently switch versions.
+
+Copy the selected version/source into the private installation file, use its clean
+matching application checkout and already loaded images, then follow the
+[installer's preview/install steps](../deployment/profile-installation.md). The
+selector does not change an installation file or make an unsupported recipe valid.
+
 Docker deployment image tags still use the operator-provided `${VERSION}` value.
 Builds also require `SAPPHIRE_RELEASE_VERSION` and `SAPPHIRE_SOURCE_REVISION` so
 the image labels and runtime import can be tied to the verified release tag.
