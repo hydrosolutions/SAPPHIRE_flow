@@ -10,9 +10,11 @@ compose_files = [
 ]
 
 [environment]
-# Obtain the intended release version and full source revision from the reviewed
-# release/build record; VERSION is its matching image tag. These are placeholders,
-# not working defaults. See docs/deployment/actions-staging-release.md.
+# Resolve the latest published release once with tools/release_identity.py resolve.
+# Set VERSION and SAPPHIRE_RELEASE_VERSION from selection.package_version;
+# set SAPPHIRE_SOURCE_REVISION from selection.source_revision. These are placeholders,
+# not working defaults. Images still require the matching delivery record; see
+# docs/standards/cicd.md#select-a-published-release-for-installation.
 # VERSION = "<reviewed image tag>"
 # SAPPHIRE_RELEASE_VERSION = "<reviewed release version>"
 # SAPPHIRE_SOURCE_REVISION = "<full 40-character lowercase source SHA>"

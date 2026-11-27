@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import os
 import sys
@@ -16,6 +17,73 @@ assert spec is not None and spec.loader is not None
 release_identity = importlib.util.module_from_spec(spec)
 sys.modules["release_identity"] = release_identity
 spec.loader.exec_module(release_identity)
+
+
+class TestResolveRelease:
+    @pytest.mark.parametrize("version", ["latest", "v1.2.3", "01.2.3", "1.2"])
+    def test_invalid_explicit_version_refuses_before_network(
+        self,
+        version: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def unexpected_network() -> None:
+            pytest.fail("invalid input must not access the remote")
+
+        monkeypatch.setattr(release_identity, "fetch_remote_state", unexpected_network)
+        output = tmp_path / "selection.json"
+        assert (
+            release_identity.main(
+                ["resolve", "--version", version, "--output", str(output)]
+            )
+            == 2
+        )
+        assert "canonical X.Y.Z" in capsys.readouterr().err
+        assert not output.exists()
+
+    @pytest.mark.parametrize("existing", ["file", "dangling-symlink"])
+    def test_existing_selection_refuses_before_network(
+        self,
+        existing: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        output = tmp_path / "selection.json"
+        if existing == "file":
+            output.write_text("retained selection\n")
+        else:
+            output.symlink_to(tmp_path / "absent")
+
+        def unexpected_network() -> None:
+            pytest.fail("existing selection must not access the remote")
+
+        monkeypatch.setattr(release_identity, "fetch_remote_state", unexpected_network)
+        assert release_identity.main(["resolve", "--output", str(output)]) == 2
+        assert "selection path already exists" in capsys.readouterr().err
+        if existing == "file":
+            assert output.read_text() == "retained selection\n"
+        else:
+            assert output.is_symlink()
+
+    def test_missing_state_does_not_guess_from_tags(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(release_identity, "validate_destination", lambda: None)
+        monkeypatch.setattr(
+            release_identity, "fetch_remote_state", lambda: ("a" * 40, None, [])
+        )
+        output = tmp_path / "selection.json"
+        with pytest.raises(
+            release_identity.ReleaseIdentityError, match="release-state is required"
+        ):
+            release_identity.resolve_release(
+                argparse.Namespace(version=None, output=output)
+            )
+        assert not output.exists()
 
 
 class TestCanonicalVersionParsing:

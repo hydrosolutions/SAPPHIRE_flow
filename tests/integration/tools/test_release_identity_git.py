@@ -1209,6 +1209,151 @@ class TestReleaseTargetPublication:
         assert "refs/tags/v0.1.1" in _git(work, "ls-remote", "origin")
 
 
+@pytest.fixture
+def published_release_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, str]:
+    bare, work, _, source = _make_canonical_publication_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        release_identity, "query_old_workflow_runs", lambda: [{"status": "completed"}]
+    )
+    assert _publish("0.1.1", source, bootstrap=True) == 0
+    return bare, work, source
+
+
+class TestResolveReleaseGit:
+    def test_default_uses_published_identity_not_unreleased_main(
+        self,
+        published_release_repo: tuple[Path, Path, str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        bare, work, source = published_release_repo
+        _commit_next(work, "unreleased\n")
+        _git(work, "push", str(bare), "main")
+        before = _git(bare, "show-ref")
+        local_head = _git(work, "rev-parse", "HEAD")
+        original_git = release_identity.git
+
+        def read_only_git(args: list[str], **kwargs: object) -> str:
+            assert args[0] not in {"push", "checkout", "reset", "commit"}
+            return original_git(args, **kwargs)
+
+        def no_docker(*args: object, **kwargs: object) -> str:
+            pytest.fail("selection must not access Docker")
+
+        monkeypatch.setattr(release_identity, "git", read_only_git)
+        monkeypatch.setattr(release_identity, "run_docker", no_docker)
+        output = tmp_path / "selection.json"
+        assert release_identity.main(["resolve", "--output", str(output)]) == 0
+        assert json.loads(output.read_text()) == {
+            "kind": "release-selection",
+            "package_version": "0.1.1",
+            "source_revision": source,
+            "git_tree": _git(work, "rev-parse", f"{source}^{{tree}}"),
+            "remote_tag": "v0.1.1",
+            "remote_tag_object": _git(bare, "rev-parse", "refs/tags/v0.1.1"),
+            "observed_release_state": _git(
+                bare, "rev-parse", "refs/heads/release-state"
+            ),
+        }
+        assert _git(bare, "show-ref") == before
+        assert _git(work, "rev-parse", "HEAD") == local_head
+        assert _git(work, "status", "--porcelain") == ""
+
+    def test_new_publication_preserves_saved_and_explicit_older_selection(
+        self,
+        published_release_repo: tuple[Path, Path, str],
+        tmp_path: Path,
+    ) -> None:
+        bare, work, source = published_release_repo
+        output = tmp_path / "selection.json"
+        assert release_identity.main(["resolve", "--output", str(output)]) == 0
+        saved = output.read_bytes()
+        next_source = _commit_next(work, "next release\n")
+        _git(work, "push", str(bare), "main")
+        assert _publish("0.1.2", next_source) == 0
+
+        assert release_identity.main(["resolve", "--output", str(output)]) == 2
+        assert output.read_bytes() == saved
+        explicit = tmp_path / "explicit.json"
+        assert (
+            release_identity.main(
+                ["resolve", "--version", "0.1.1", "--output", str(explicit)]
+            )
+            == 0
+        )
+        old = json.loads(explicit.read_text())
+        assert old["source_revision"] == source
+        assert old["remote_tag_object"] == json.loads(saved)["remote_tag_object"]
+        assert (
+            old["observed_release_state"] != json.loads(saved)["observed_release_state"]
+        )
+
+        latest = tmp_path / "latest.json"
+        assert release_identity.main(["resolve", "--output", str(latest)]) == 0
+        assert json.loads(latest.read_text())["source_revision"] == next_source
+        assert output.read_bytes() == saved
+
+    @pytest.mark.parametrize(
+        ("version", "message"),
+        [
+            ("0.1.0", "lacks helper-era annotated metadata"),
+            ("0.1.2", "not a published release"),
+        ],
+    )
+    def test_unpublished_or_legacy_version_refuses_without_output(
+        self,
+        published_release_repo: tuple[Path, Path, str],
+        tmp_path: Path,
+        version: str,
+        message: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        output = tmp_path / "selection.json"
+        assert (
+            release_identity.main(
+                ["resolve", "--version", version, "--output", str(output)]
+            )
+            == 2
+        )
+        assert message in capsys.readouterr().err
+        assert not output.exists()
+
+    def test_invalid_authority_cannot_produce_selection(
+        self,
+        published_release_repo: tuple[Path, Path, str],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        bare, _, source = published_release_repo
+        _git(bare, "update-ref", "refs/tags/v0.1.999", source)
+        output = tmp_path / "selection.json"
+        assert release_identity.main(["resolve", "--output", str(output)]) == 2
+        assert "not the greatest canonical tag" in capsys.readouterr().err
+        assert not output.exists()
+
+    def test_concurrent_output_writer_keeps_existing_record(
+        self,
+        published_release_repo: tuple[Path, Path, str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        output = tmp_path / "selection.json"
+        original_writer = release_identity.atomic_write_receipt
+
+        def raced_writer(path: Path, payload: str) -> None:
+            path.write_text("other selection\n")
+            original_writer(path, payload)
+
+        monkeypatch.setattr(release_identity, "atomic_write_receipt", raced_writer)
+        assert release_identity.main(["resolve", "--output", str(output)]) == 2
+        assert "already exists" in capsys.readouterr().err
+        assert output.read_text() == "other selection\n"
+        assert not list(tmp_path.glob(".selection.json.tmp.*"))
+
+
 class TestFreshBatchedSnapshot:
     def test_fetches_in_bounded_chunks_with_two_complete_listings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -11,8 +11,9 @@ an explicitly selected published version for reproduction. Resolve it once and
 retain its exact source and delivered image identities for the whole installation.
 Use the existing [release authority and delivery checks](../standards/cicd.md#release-identity-tags-and-receipts);
 do not use an unreleased target on main or a floating Docker `latest` tag. An
-automated read-only selector is [planned](../plans/2026-11-27-small-deployment-validation.md#release-policy);
-the installer currently takes explicit release inputs and does not resolve them.
+automated read-only [selector](../standards/cicd.md#select-a-published-release-for-installation)
+saves the version/source and explains their direct mapping to the installation
+file. The installer uses those explicit inputs; it does not reselect a release.
 
 [Hosted CI](../../tests/fixtures/deployment_installation/README.md) runs the
 real-container install, retained lifecycle, failure and cleanup checks. Reuse the
