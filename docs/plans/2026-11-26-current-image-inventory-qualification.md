@@ -6,6 +6,11 @@ parent: 2026-11-26-source-inventory-admission.md
 
 # S3 — qualify the retained-input inventory in the delivered image
 
+**Deferred, 27 November:** the owner selected the
+[small-deployment path](2026-11-27-small-deployment-validation.md). This broader
+inventory qualification is no longer a prerequisite for it. Do not repeat this
+project for each release; preserve its existing evidence and incomplete results.
+
 ## Outcome and boundary
 
 Prove that the reviewed S1 metadata collector and S2 retained-input inventory work

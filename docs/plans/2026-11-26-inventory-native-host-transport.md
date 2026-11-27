@@ -6,6 +6,11 @@ parent: 2026-11-26-current-image-inventory-qualification.md
 
 # Native-host transport for the private inventory rehearsal
 
+**Deferred, 27 November:** retain the completed local transport work, but do not
+continue its cloud rehearsal as a prerequisite for the
+[small-deployment test](2026-11-27-small-deployment-validation.md). The owner has
+deferred the larger inventory/reconstruction route; prior results remain unchanged.
+
 ## Outcome and boundary
 
 Finish the host connection and filesystem preparation for S3 without changing its

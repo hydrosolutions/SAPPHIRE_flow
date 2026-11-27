@@ -6,6 +6,11 @@ parent: 2026-11-22-operational-deployment-recipe.md
 
 # Admit the current source to the private inventory
 
+**Deferred, 27 November:** the owner selected the
+[small-deployment plan](2026-11-27-small-deployment-validation.md). Further S3/S4
+work is not a prerequisite for that test. Retain the received source inventory as
+reference evidence and preserve all recorded limits and incomplete results here.
+
 ## Outcome and boundary
 
 Prepare one private, reviewable execution packet for the existing bounded inventory.

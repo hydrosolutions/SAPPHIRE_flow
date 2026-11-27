@@ -8,6 +8,13 @@ parent: 2026-11-22-fresh-deployment-comparison.md
 
 # Reproducible operational deployment recipe
 
+**Scope update, 27 November:** use the
+[small-deployment plan](2026-11-27-small-deployment-validation.md) for the next test.
+The owner deferred full-cohort inventory, historical reconstruction and the
+separate climatology-job question. Reuse the completed paused-startup work below;
+its remaining reconstruction gates are not prerequisites for the smaller scenario.
+Historical results and their limitations are unchanged.
+
 ## Decision and scope
 
 Deliver a supported, operator-assisted recipe for the first real-data comparison,

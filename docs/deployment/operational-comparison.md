@@ -1,13 +1,20 @@
 # Prepare a fresh operational comparison
 
-Use this guide with deployment support to prepare a separate temporary system
-from an existing deployment. Keep the existing system running unchanged. The
-public procedure remains **preparation-only**: execution requires a reviewed
-private runbook for the selected runtime. A disposable paused startup has now been
-qualified for one recorded release; the
-[implementation history](../plans/2026-11-22-operational-deployment-recipe.md#disposable-paused-startup-qualification)
-records its evidence and limits. Input reconstruction and forecasting remain
-separate qualifications.
+Use this guide with deployment support to prepare a separate temporary system.
+Keep the existing system running unchanged. The immediate scope is
+[one station and a small regression model](../plans/2026-11-27-small-deployment-validation.md),
+with separate proof that required ingestion is scheduled and runs. Full historical
+reconstruction and multi-model parity are deferred. The public procedure remains
+**preparation-only** until that walkthrough is complete; execution needs a reviewed
+private runbook. The [implementation history](../plans/2026-11-22-operational-deployment-recipe.md#disposable-paused-startup-qualification)
+records the already completed disposable paused startup and its limits.
+
+Select the latest canonical published release once at the start, retaining the
+exact source and delivered images. Reuse source CI and ordinary delivery checks;
+do not start a manual qualification project for every new version. The
+[installation guide](profile-installation.md) explains current release inputs.
+Existing source inventories help identify omitted jobs; they do not require every
+station/model combination to be forecast before this small deployment can run.
 
 The [persistent installer](profile-installation.md) supports a narrower paused,
 two-job installation. It does not yet install or commission this broader
@@ -154,6 +161,11 @@ verify deletion of every owned server, disk, address, network resource and tempo
 key when the disposable test ends, including failed provisioning attempts.
 
 ## Reconstruct inputs, then commission
+
+The full reconstruction procedure below is retained for the deferred historical
+comparison. The smaller test uses a bounded fresh discharge import and checks
+against that export; it does not require reconstructing the old database. Its
+supported command walkthrough is still pending in the current plan.
 
 Prepare a bounded input manifest before transferring data. Use existing
 [station onboarding](../operations/new-station-by-hand.md) and

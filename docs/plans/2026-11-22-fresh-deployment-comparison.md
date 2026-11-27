@@ -7,6 +7,13 @@ baseline: 5dd6232ec
 
 # Fresh deployment comparison, then a second agency
 
+**Scope update, 27 November:** the owner selected the
+[small-deployment path](2026-11-27-small-deployment-validation.md): latest published
+release by default, one station and a simple model, with separate ingestion
+scheduling checks. Full historical reconstruction and current-model parity below
+are deferred. Their earlier prerequisites do not block the smaller test; recorded
+evidence and limitations remain unchanged.
+
 ## Outcome and decisions
 
 Reconstruct the existing Nepal MVP on a **separate temporary Infomaniak server**,
