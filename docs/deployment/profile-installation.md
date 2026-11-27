@@ -6,27 +6,31 @@ access limited to the server. Preview first, then explicitly install. Retained
 A `PLAN_READY` result means nothing has been installed; `INSTALLED_PAUSED` means
 service wiring passed, not that forecasting or backups are operational.
 
-**Qualification status:** [Hosted CI](../../tests/fixtures/deployment_installation/README.md)
-runs the real-container install, retained lifecycle, failure and cleanup checks.
-Require a successful qualification summary for the exact source being used;
-a failed or skipped run is not qualification. Release **0.1.1170** passed the
-release-target installation, Docker restart and host reboot checks on a disposable
-Ubuntu 24.04 amd64 host with Docker 29.1.3 (containerd image store) and Compose 2.40.3. Running services
-recovered with jobs paused, retained data and unchanged init; a deliberately stopped
-stack stayed stopped through both restart types. An explicit start then preserved
-the same data and paused state. After a restart, allow services to recover and rerun
-`verify`; the observed Docker recovery took about 93 seconds. If verification keeps
-failing, follow [failure and recovery](#failure-and-recovery). See the [acceptance record](../plans/2026-11-20-persistent-profile-installation.md#pi4-releasehost-acceptance-complete).
+**Release selection:** use the latest canonical published release by default, or
+an explicitly selected published version for reproduction. Resolve it once and
+retain its exact source and delivered image identities for the whole installation.
+Use the existing [release authority and delivery checks](../standards/cicd.md#release-identity-tags-and-receipts);
+do not use an unreleased target on main or a floating Docker `latest` tag. An
+automated read-only selector is [planned](../plans/2026-11-27-small-deployment-validation.md#release-policy);
+the installer currently takes explicit release inputs and does not resolve them.
 
-The acceptance record identifies the exact source; any other release or source
-needs its own hosted qualification. This single-host result supports a dedicated
-new-install host and is not a production recommendation.
+[Hosted CI](../../tests/fixtures/deployment_installation/README.md) runs the
+real-container install, retained lifecycle, failure and cleanup checks. Reuse the
+successful source-CI evidence and normal delivery checks for the selected release;
+a failed or skipped required check is not a pass. There is no separate manual
+host-qualification project for every release. Repeat relevant deployment tests
+when behavior, dependencies, host assumptions or a failure warrants it.
 
-This evidence covers durable local credential files and the bounded new-install
-profile described below. It does not qualify later releases, other host setups,
-ephemeral secret-manager boot ordering, backups, public access or scientific
-readiness. Existing deployments keep their current runbooks; no adoption or upgrade
-of an existing stack was tested.
+The [acceptance history](../plans/2026-11-20-persistent-profile-installation.md#pi4-releasehost-acceptance-complete)
+records the exact release and host on which restart/reboot recovery was exercised.
+It is evidence for that run, not a claim that later versions or other hosts were
+tested. After a restart, allow services to recover and rerun `verify`; follow
+[failure and recovery](#failure-and-recovery) if it keeps failing.
+
+The supported scope remains the bounded new-install profile with durable local
+credential files. Ephemeral secret-manager boot ordering, backups, public access,
+scientific readiness and adoption or upgrade of an existing stack remain outside
+its acceptance. Existing deployments keep their current runbooks.
 
 ## Select and check your inputs
 

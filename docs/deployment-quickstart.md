@@ -21,17 +21,21 @@ dedicated daemon after `PASS_OFFLINE`. It does not activate a persistent deploym
 For a new stack intended to remain running, the
 [persistent installer](deployment/profile-installation.md) provides preview,
 explicit install and retained verify/stop/start commands. Jobs stay paused and HTTP
-stays server-local. Require matching hosted lifecycle qualification and check the
-installer's documented release/host acceptance. Release 0.1.1170 passed daemon
-restart and host reboot checks with durable credential files on a disposable
-Ubuntu 24.04 amd64 host. This is single-host, single-release evidence for a dedicated
-new-install host, not a production recommendation. Existing deployments keep their
-current runbooks.
+stays server-local. Select the latest canonical published release by default and
+keep that exact version for the installation. Reuse its source CI and normal
+delivery checks; the [installer guide](deployment/profile-installation.md) explains
+the current explicit inputs and supported host assumptions. Automatic latest
+selection is planned; today deployment support supplies those exact inputs.
+A later release does not restart your installation or require a new manual
+qualification project.
+Existing deployments keep their current runbooks.
 
 For a separate system with operational ingestion and local forecast variants,
 use the [operational comparison preparation guide](deployment/operational-comparison.md)
-with deployment support. Its broader execution recipe is still being qualified.
-That guide is a preparation checklist, not an available installation path.
+with deployment support. The [current plan](plans/2026-11-27-small-deployment-validation.md)
+targets one station, a small regression model and separate ingestion-scheduling
+checks. Its executable walkthrough is still pending; the guide remains a
+preparation checklist, not an available operational installer.
 
 ## 1. Copy the generic examples into private storage
 
