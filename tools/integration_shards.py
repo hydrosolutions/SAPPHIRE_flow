@@ -46,7 +46,8 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/store/test_daily_forecast_one_shot_runner.py",
             "tests/integration/store/test_swiss_overview.py",
             # Rebalance 2026-11-12 (CI run 43242338889): heavy carries ~190 s of
-            # fixed job overhead, rest ~90 s; these two (~113 s) even the legs out.
+            # fixed job overhead, rest ~90 s; the pair added then (~113 s) evened
+            # the legs out. test_native_selected_weather.py moved to mid 2026-11-27.
             "tests/integration/db/test_bounded_qc_serialization.py",
         ),
     ),
