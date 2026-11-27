@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import sqlalchemy as sa
@@ -9,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.store.skill_period_codec import SKILL_PERIOD_FIELDS
 from sapphire_flow.store.skill_store import latest_generation_predicate
 
 router = APIRouter(tags=["models"])
@@ -217,6 +219,7 @@ def model_skill_chart_json(
                 skill_table.c.station_id,
                 skill_table.c.lead_time_hours,
                 skill_table.c.score,
+                *(skill_table.c[name] for name in SKILL_PERIOD_FIELDS),
             )
             .where(
                 sa.and_(
@@ -239,16 +242,26 @@ def model_skill_chart_json(
         .all()
     )
 
-    # Group by (metric, parameter, station_id)
-    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    # Incompatible period/reference/availability contexts stay separate.
+    groups: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
     for r in rows:
-        key = (r["metric"], r["parameter"], str(r["station_id"]))
+        context = (
+            {name: r[name] for name in SKILL_PERIOD_FIELDS}
+            if r["period_definition"] is not None
+            else None
+        )
+        key = (
+            r["metric"],
+            r["parameter"],
+            str(r["station_id"]),
+            json.dumps(context, sort_keys=True),
+        )
         if key not in groups:
             groups[key] = []
         groups[key].append({"lead_time": r["lead_time_hours"], "score": r["score"]})
 
     series = []
-    for (metric, parameter, station_id), points in groups.items():
+    for (metric, parameter, station_id, context), points in groups.items():
         series.append(
             {
                 "metric": metric,
@@ -256,6 +269,7 @@ def model_skill_chart_json(
                 "station_id": station_id,
                 "lead_times": [p["lead_time"] for p in points],
                 "scores": [p["score"] for p in points],
+                "evaluation_context": json.loads(context),
             }
         )
 

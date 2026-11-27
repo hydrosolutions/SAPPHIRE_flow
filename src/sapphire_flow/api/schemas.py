@@ -15,6 +15,7 @@ from sapphire_flow.api.weather_evidence import WeatherUseResponse  # noqa: TC001
 from sapphire_flow.store.forecast_period_codec import (
     ForecastPeriodPayload,  # noqa: TC001
 )
+from sapphire_flow.store.skill_period_codec import SkillPeriodPayload  # noqa: TC001
 from sapphire_flow.store.threshold_skill_codec import (
     ThresholdContextPayload,  # noqa: TC001
 )
@@ -635,6 +636,7 @@ class SkillRowResponse(BaseModel):
     score: float | None
     sample_size: int
     threshold_context: ThresholdContextPayload | None = None
+    evaluation_context: SkillPeriodPayload | None = None
 
 
 class StationSkillResponse(BaseModel):

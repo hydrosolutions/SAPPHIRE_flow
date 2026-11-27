@@ -13,10 +13,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sapphire_flow.db.metadata import hindcast_forecasts, hindcast_values
 from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store.forecast_period_codec import parse_forecast_period
+from sapphire_flow.store.hindcast_period_codec import (
+    parse_source_periods,
+    source_periods_content,
+)
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
+from sapphire_flow.types.hindcast_inputs import HistoricalAvailabilityPolicy
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 
 if TYPE_CHECKING:
@@ -47,6 +53,31 @@ class PgHindcastStore:
         df = ens.values
         if df.is_empty():
             raise ValueError("cannot store hindcast with empty ensemble")
+        period = (
+            ens.period_definition.content if ens.period_definition is not None else None
+        )
+        sources = (
+            source_periods_content(hindcast.source_periods)
+            if hindcast.source_periods
+            else None
+        )
+        policy = (
+            hindcast.input_availability_policy.value
+            if hindcast.input_availability_policy is not None
+            else None
+        )
+        supplied = (period is not None, sources is not None, policy is not None)
+        if any(supplied) and not all(supplied):
+            raise StoreError(
+                "declared hindcasts require source periods and availability policy"
+            )
+        if period is not None and any(
+            (value - hindcast.hindcast_step) % timedelta(hours=1)
+            for value in df["valid_time"].unique().to_list()
+        ):
+            raise StoreError(
+                "declared hindcast lead must be an integral number of hours"
+            )
 
         is_members = ens.representation == EnsembleRepresentation.MEMBERS
         hindcast_step_dt = hindcast.hindcast_step
@@ -83,6 +114,9 @@ class PgHindcastStore:
                     # a horizon-1 hindcast — silently wrong for a horizon-1
                     # DAILY model).
                     time_step_seconds=int(ens.time_step.total_seconds()),
+                    period_definition=period,
+                    source_periods=sources,
+                    input_availability_policy=policy,
                 )
                 .on_conflict_do_update(
                     index_elements=[
@@ -103,9 +137,33 @@ class PgHindcastStore:
                         "qc_flags": qc_flags_json,
                         "time_step_seconds": int(ens.time_step.total_seconds()),
                     },
+                    where=sa.and_(
+                        hindcast_forecasts.c.period_definition.is_not_distinct_from(
+                            sa.bindparam(
+                                "expected_period",
+                                period,
+                                type_=hindcast_forecasts.c.period_definition.type,
+                            )
+                        ),
+                        hindcast_forecasts.c.source_periods.is_not_distinct_from(
+                            sa.bindparam(
+                                "expected_sources",
+                                sources,
+                                type_=hindcast_forecasts.c.source_periods.type,
+                            )
+                        ),
+                        hindcast_forecasts.c.input_availability_policy.is_not_distinct_from(
+                            policy
+                        ),
+                    ),
                 )
                 .returning(hindcast_forecasts.c.id)
-            ).scalar_one()
+            ).scalar_one_or_none()
+            if header_id is None:
+                raise StoreError(
+                    "hindcast run identity cannot change period "
+                    "or availability contract"
+                )
 
             # Full-replace the value payload keyed to the row actually in the DB.
             # On a clean insert the DELETE is a harmless no-op.
@@ -219,6 +277,12 @@ class PgHindcastStore:
                     representation=EnsembleRepresentation(header["representation"]),
                     hindcast_run_id=UUID(str(header["hindcast_run_id"])),
                     ensemble=ensemble,
+                    source_periods=parse_source_periods(header.get("source_periods")),
+                    input_availability_policy=HistoricalAvailabilityPolicy(
+                        header["input_availability_policy"]
+                    )
+                    if header.get("input_availability_policy") is not None
+                    else None,
                     created_at=utc_from_row(header["created_at"]),
                     qc_status=QcStatus(header["qc_status"]),
                     qc_flags=tuple(
@@ -334,6 +398,12 @@ class PgHindcastStore:
                 representation=EnsembleRepresentation(header["representation"]),
                 hindcast_run_id=UUID(str(header["hindcast_run_id"])),
                 ensemble=ensemble,
+                source_periods=parse_source_periods(header.get("source_periods")),
+                input_availability_policy=HistoricalAvailabilityPolicy(
+                    header["input_availability_policy"]
+                )
+                if header.get("input_availability_policy") is not None
+                else None,
                 created_at=utc_from_row(header["created_at"]),
                 qc_status=QcStatus(header["qc_status"]),
                 qc_flags=tuple(
@@ -405,6 +475,7 @@ def _reconstruct_ensemble(
             units=units,
             time_step=time_step,
             values=df,
+            period_definition=parse_forecast_period(header.get("period_definition")),
         )
     return ForecastEnsemble.from_quantiles(
         station_id=station_id,
@@ -413,4 +484,5 @@ def _reconstruct_ensemble(
         units=units,
         time_step=time_step,
         values=df,
+        period_definition=parse_forecast_period(header.get("period_definition")),
     )

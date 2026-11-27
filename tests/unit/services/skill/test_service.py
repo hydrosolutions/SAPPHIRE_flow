@@ -2247,6 +2247,54 @@ class TestComputeGenerationFingerprint:
     ``ON CONFLICT DO NOTHING`` instead of its own, distinct one.
     """
 
+    def test_native_source_evidence_changes_identity_with_equal_scores(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.services.hindcast_verification import evaluation_context
+        from tests.unit.services.test_hindcast_verification import _hindcast
+
+        context = evaluation_context([_hindcast()])
+        assert context is not None
+        revised = replace(
+            context,
+            source_periods=(
+                replace(
+                    context.source_periods[0], evidence="corrected source convention"
+                ),
+            ),
+        )
+        score = _fingerprint_score(
+            station_id=station_id, model_id=model_id, artifact_id=artifact_id
+        )
+        assert compute_generation_fingerprint(
+            [replace(score, evaluation_context=context)], []
+        ) != compute_generation_fingerprint(
+            [replace(score, evaluation_context=revised)], []
+        )
+
+    def test_period_context_changes_fingerprint(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.services.hindcast_verification import evaluation_context
+        from tests.unit.services.test_hindcast_verification import _hindcast
+
+        score = _fingerprint_score(
+            station_id=station_id, model_id=model_id, artifact_id=artifact_id
+        )
+        exact = evaluation_context([_hindcast()])
+        approximate = evaluation_context([_hindcast()], timedelta(minutes=15))
+        fingerprints = {
+            compute_generation_fingerprint(
+                [replace(score, evaluation_context=context)], []
+            )
+            for context in (None, exact, approximate)
+        }
+        assert len(fingerprints) == 3
+
     def test_identical_inputs_hash_identically(
         self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
     ) -> None:

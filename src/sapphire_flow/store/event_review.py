@@ -19,6 +19,10 @@ from sapphire_flow.db.metadata import (
     models,
     stations,
 )
+from sapphire_flow.store.forecast_period_codec import (
+    ForecastPeriodPayload,
+    parse_forecast_period,
+)
 from sapphire_flow.store.forecast_publication_store import PgForecastPublicationStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
@@ -40,6 +44,7 @@ from sapphire_flow.types.event_review import (
     ReviewSource,
     ReviewSourceMode,
 )
+from sapphire_flow.types.hindcast_inputs import HistoricalAvailabilityPolicy
 from sapphire_flow.types.ids import ArtifactId, ModelId
 
 if TYPE_CHECKING:
@@ -64,6 +69,8 @@ class _SourceRow(BaseModel):
     last_valid_time: datetime | None
     orphan_headers: int = Field(ge=0)
     invalid_leads: int = Field(ge=0)
+    period_definition: ForecastPeriodPayload | None = None
+    input_availability_policy: HistoricalAvailabilityPolicy | None = None
 
 
 _ROWS = TypeAdapter(tuple[_SourceRow, ...])
@@ -85,12 +92,19 @@ class _PointRow(BaseModel):
     created_at: datetime
     valid_time: datetime
     values: tuple[tuple[float | None, float], ...] | None
+    period_definition: ForecastPeriodPayload | None = None
+    input_availability_policy: HistoricalAvailabilityPolicy | None = None
 
 
 _POINT_ROWS = TypeAdapter(tuple[_PointRow, ...])
 
 
 def _identity(source: ReviewSource | _PointRow) -> tuple[object, ...]:
+    period = (
+        parse_forecast_period(source.period_definition.model_dump())
+        if isinstance(source.period_definition, ForecastPeriodPayload)
+        else source.period_definition
+    )
     return (
         source.kind,
         source.model_id,
@@ -99,6 +113,23 @@ def _identity(source: ReviewSource | _PointRow) -> tuple[object, ...]:
         source.forcing_type,
         source.time_step_seconds,
         source.units,
+        period,
+        source.input_availability_policy,
+    )
+
+
+def _within_review_window(
+    label: sa.ColumnElement[Any],
+    period: sa.ColumnElement[Any],
+    query: ReviewSeriesQuery,
+) -> sa.ColumnElement[bool]:
+    step = sa.literal_column("INTERVAL '1 second'", type_=sa.Interval()) * sa.cast(
+        period["step_seconds"].astext, sa.Integer
+    )
+    start = sa.case((period["label"].astext == "end", label - step), else_=label)
+    return sa.or_(
+        sa.and_(period.is_(None), label >= query.start, label < query.end),
+        sa.and_(period.is_not(None), start >= query.start, start + step <= query.end),
     )
 
 
@@ -148,6 +179,8 @@ def _catalog_statement(
             sa.cast(sa.null(), sa.Text).label("forcing_type"),
             f.time_step_seconds,
             f.units,
+            f.period_definition,
+            sa.cast(sa.null(), sa.Text).label("input_availability_policy"),
             *_series_header_columns(
                 forecasts,
                 forecast_values,
@@ -194,6 +227,8 @@ def _catalog_statement(
                 h.forcing_type,
                 h.time_step_seconds,
                 h.units,
+                h.period_definition,
+                h.input_availability_policy,
                 *_series_header_columns(
                     hindcast_forecasts,
                     hindcast_values,
@@ -271,8 +306,9 @@ def _catalog_statement(
                 header_count <= MAX_REVIEW_HEADERS,
                 *(
                     [
-                        table.c.valid_time >= series.start,
-                        table.c.valid_time < series.end,
+                        _within_review_window(
+                            table.c.valid_time, headers.c.period_definition, series
+                        ),
                         table.c.lead_time_hours == series.lead_hours,
                         table.c.valid_time
                         == headers.c.issue_time
@@ -292,7 +328,10 @@ def _catalog_statement(
         .prefix_with("MATERIALIZED")
     )
     value_count = sa.select(sa.func.count()).select_from(values).scalar_subquery()
-    valid_lead = sa.and_(values.c.exact_lead, values.c.lead_time_hours >= 0)
+    valid_lead = sa.and_(
+        values.c.exact_lead,
+        sa.or_(values.c.lead_time_hours >= 0, headers.c.period_definition.is_not(None)),
+    )
     identity = [
         headers.c.kind,
         headers.c.model_id,
@@ -301,6 +340,8 @@ def _catalog_statement(
         headers.c.forcing_type,
         headers.c.time_step_seconds,
         headers.c.units,
+        headers.c.period_definition,
+        headers.c.input_availability_policy,
     ]
     grouped = (
         sa.select(
@@ -375,8 +416,7 @@ def _catalog_statement(
     selected = (
         sa.select(*headers.c, valid_time.label("valid_time"))
         .where(
-            valid_time >= series.start,
-            valid_time < series.end,
+            _within_review_window(valid_time, headers.c.period_definition, series),
             header_count <= MAX_REVIEW_HEADERS,
             value_count <= MAX_REVIEW_VALUES,
         )
@@ -466,6 +506,10 @@ def _source(row: _SourceRow) -> ReviewSource:
         if reasons
         else ReviewCompleteness.UNKNOWN,
         reasons=reasons or ("expected_coverage_unknown",),
+        period_definition=parse_forecast_period(row.period_definition.model_dump())
+        if row.period_definition is not None
+        else None,
+        input_availability_policy=row.input_availability_policy,
     )
 
 

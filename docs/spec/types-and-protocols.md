@@ -7245,3 +7245,32 @@ filter the store's exact `data_use`; absent projections return None. Present
 invalid rows raise rather than silently replaying. The API retains canonical
 blob hash and parent checks before using a summary. Public response fields do not
 change. See [backfill and rollout](../operations/forecast-weather-summary-backfill.md).
+
+
+## Declared-period hindcast and skill additions (2026-11-26)
+
+`HindcastForecast` retains nullable `input_availability_policy` and an immutable
+`source_periods` tuple alongside the ensemble's existing `period_definition`.
+`HistoricalSourcePeriod` identifies station/source/parameter, native
+`ForecastPeriodDefinition`, evidence, stored-label correction, explicit equal-day
+input displacement and interval/snapshot sampling. `PreparedHindcastInputs`
+holds once-aggregated full-span frames and supplies bounded issue views; known
+arrival times remain per-target eligibility metadata through FI batch projection.
+
+`ForecastPeriodDefinition.bounds(timestamp)` returns physical [start,end), refusing
+labels outside its grid. `SkillEvaluationContext` binds forecast and reference
+periods, their signed displacement and input availability policy. SkillScore and
+SkillDiagram retain it as nullable `evaluation_context`; legacy rows stay null.
+The SkillStore publication method accepts `evaluation_contexts=()` for legacy or
+the complete tuple of declared contexts for a generation. Natural keys,
+fingerprints, version selection and latest-generation reads retain this identity.
+Declared computations use version 5; the legacy algorithm stays version 4.
+
+`ReviewSource` adds nullable period/availability metadata. `ReviewPoint` adds
+nullable physical interval bounds. Declared hindcast leads may be negative exact
+integer elapsed hours; fractional elapsed hours are refused rather than rounded.
+Mixed legacy/declared scoring runs and declared combined-model scores remain
+explicitly unsupported. No FI protocol change or model-specific execution bypass
+is introduced.
+
+Declared `SkillEvaluationContext.source_periods` is nonempty and unique by station/source/parameter, canonically ordered. Boundary storage derives and verifies `source_periods_sha256`; natural indexes use the fixed-size digest, while rows and generation contexts retain the full catalogue. FI requirement admission refuses unsupported effective variable labels. Declared eligibility uses each variable window, and declared skill writes require generation publication enabled.

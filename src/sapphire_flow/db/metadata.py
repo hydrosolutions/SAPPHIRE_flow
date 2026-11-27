@@ -1889,6 +1889,9 @@ sa.Index(
 hindcast_forecasts = sa.Table(
     "hindcast_forecasts",
     metadata,
+    sa.Column("period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.Column("source_periods", JSONB(none_as_null=True), nullable=True),
+    sa.Column("input_availability_policy", sa.Text, nullable=True),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
@@ -2083,6 +2086,7 @@ flow_regime_configs = sa.Table(
 skill_generations = sa.Table(
     "skill_generations",
     metadata,
+    sa.Column("evaluation_contexts", JSONB(none_as_null=True), nullable=True),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
@@ -2135,6 +2139,12 @@ sa.Index(
 skill_scores = sa.Table(
     "skill_scores",
     metadata,
+    sa.Column("period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.Column("reference_period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.Column("reference_displacement_seconds", sa.Integer, nullable=True),
+    sa.Column("input_availability_policy", sa.Text, nullable=True),
+    sa.Column("source_periods", JSONB(none_as_null=True), nullable=True),
+    sa.Column("source_periods_sha256", sa.Text, nullable=True),
     sa.CheckConstraint(
         "threshold_context IS NULL OR jsonb_typeof(threshold_context) = 'object'",
         name="ck_skill_scores_threshold_context",
@@ -2217,6 +2227,12 @@ skill_scores = sa.Table(
 skill_diagrams = sa.Table(
     "skill_diagrams",
     metadata,
+    sa.Column("period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.Column("reference_period_definition", JSONB(none_as_null=True), nullable=True),
+    sa.Column("reference_displacement_seconds", sa.Integer, nullable=True),
+    sa.Column("input_availability_policy", sa.Text, nullable=True),
+    sa.Column("source_periods", JSONB(none_as_null=True), nullable=True),
+    sa.Column("source_periods_sha256", sa.Text, nullable=True),
     sa.CheckConstraint(
         "threshold_context IS NULL OR jsonb_typeof(threshold_context) = 'object'",
         name="ck_skill_diagrams_threshold_context",
@@ -2327,6 +2343,11 @@ sa.Index(
     # above — NULL never equals NULL in a unique index.
     skill_scores.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     # Plan 235 T1 (blocker avoided): `generation_id IS NULL` added to this
     # predicate. Without it, a raw nullable `generation_id` NOT in the key
@@ -2363,6 +2384,11 @@ sa.Index(
     # NULL here (see `uq_skill_scores_natural_key` above for the NULL
     # case).
     skill_scores.c.generation_id,
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NOT NULL"),
 )
@@ -2378,6 +2404,11 @@ sa.Index(
     sa.text("COALESCE(season, '')"),
     sa.text("COALESCE(flow_regime, '')"),
     skill_scores.c.metric,
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     postgresql_where=sa.text("computation_version < 2"),
 )
@@ -2419,6 +2450,11 @@ sa.Index(
     # `uq_skill_scores_natural_key` above.
     skill_diagrams.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     # Plan 235 T1: see `uq_skill_scores_natural_key` above — same
     # NULL/generation partial-index split, same rationale.
@@ -2440,6 +2476,11 @@ sa.Index(
     skill_diagrams.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
     skill_diagrams.c.generation_id,
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NOT NULL"),
 )
@@ -2455,6 +2496,11 @@ sa.Index(
     sa.text("COALESCE(flow_regime, '')"),
     skill_diagrams.c.diagram_type,
     sa.text("COALESCE(threshold_level, '')"),
+    sa.text("COALESCE(period_definition::text, '')"),
+    sa.text("COALESCE(reference_period_definition::text, '')"),
+    sa.text("COALESCE(reference_displacement_seconds, 0)"),
+    sa.text("COALESCE(input_availability_policy, '')"),
+    sa.text("COALESCE(source_periods_sha256, '')"),
     unique=True,
     postgresql_where=sa.text("computation_version < 2"),
 )

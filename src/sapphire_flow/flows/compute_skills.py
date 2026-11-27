@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import structlog
 from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
+from pydantic import StrictInt  # noqa: TC002 — Prefect resolves boundary annotations
 
 from sapphire_flow.exceptions import ConfigurationError
 
@@ -42,6 +44,7 @@ from sapphire_flow.services.skill.combined_skill import (
     compute_combined_skill,
 )
 from sapphire_flow.services.skill.service import (
+    HindcastCohortKey,
     compute_skill_for_station,
     observation_fetch_bounds,
     partition_by_time_step_and_phase,
@@ -49,7 +52,9 @@ from sapphire_flow.services.skill.service import (
     resolve_generation_id,
     store_skill_results_or_raise,
 )
+from sapphire_flow.store.hindcast_period_codec import parse_source_periods
 from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, SkillSource
+from sapphire_flow.types.hindcast_inputs import HistoricalSourcePeriod  # noqa: TC001
 from sapphire_flow.types.ids import (  # noqa: TC001
     BMA_MODEL_ID,
     POOLED_MODEL_ID,
@@ -128,6 +133,8 @@ def compute_skills_task(
     deployment_config: object = None,
     clock: object = None,
     generation_id: UUID | None = None,
+    reference_displacement: timedelta = timedelta(0),
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     from datetime import UTC, datetime
 
@@ -202,6 +209,19 @@ def compute_skills_task(
 
     if not hindcasts:
         return [], []
+    if not generations_enabled and any(
+        hc.ensemble.period_definition is not None for hc in hindcasts
+    ):
+        raise ConfigurationError(
+            "declared-period skill requires enable_skill_generations "
+            "for complete publication"
+        )
+    if any(hc.ensemble.period_definition is None for hc in hindcasts) and any(
+        hc.ensemble.period_definition is not None for hc in hindcasts
+    ):
+        raise ConfigurationError(
+            "one skill generation cannot mix legacy and declared-period hindcasts"
+        )
 
     thresholds = station_store.fetch_thresholds(station_id) if station_store else []
     flow_regime_config = (
@@ -243,7 +263,11 @@ def compute_skills_task(
     # previously COMPLETE generation for this scope with a partial one.
     cohorts_missing = 0
     for partition in cohorts.values():
-        period_start, period_end = observation_fetch_bounds(partition)
+        period_start, period_end = observation_fetch_bounds(
+            partition,
+            reference_displacement=reference_displacement,
+            source_periods=source_periods,
+        )
         observations = _fetch_observations(
             obs_store, station_id, period_start, period_end, parameter=parameter
         )
@@ -264,6 +288,8 @@ def compute_skills_task(
             uuid_factory=uuid4,
             parameter=parameter,
             generation_id=invocation_id if generations_enabled else None,
+            reference_displacement=reference_displacement,
+            source_periods=source_periods,
         )
         if not scores and not diagrams:
             cohorts_missing += 1
@@ -353,6 +379,13 @@ def compute_skills_task(
             published_at=published_at,
             score_count=len(all_scores),
             diagram_count=len(all_diagrams),
+            evaluation_contexts=tuple(
+                {
+                    item.evaluation_context
+                    for item in (*all_scores, *all_diagrams)
+                    if item.evaluation_context is not None
+                }
+            ),
         )
 
     # Plan 228 fixer round (major): a task-level summary so a silent
@@ -497,9 +530,7 @@ def compute_combined_skills_task(
     # hindcasts dropped DURING partitioning (an internally mixed-phase
     # hindcast) across every combined model — folded into `cohorts_complete`
     # below, same as `compute_skills_task`.
-    partitioned_by_key: dict[tuple[object, object], dict[ModelId, list]] = defaultdict(
-        dict
-    )
+    partitioned_by_key: dict[HindcastCohortKey, dict[ModelId, list]] = defaultdict(dict)
     rejected_hindcasts = 0
     for model_id, hcs in hindcasts_by_model.items():
         model_cohorts, rejected = partition_by_time_step_and_phase(hcs)
@@ -779,7 +810,10 @@ def compute_skills_flow(
     deployment_config: object = None,
     clock: object = None,
     generation_id: UUID | None = None,
+    reference_displacement_seconds: StrictInt = 0,
+    source_periods: list[dict[str, object]] | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    parsed_sources = parse_source_periods(source_periods)
     # --- Production setup ---
     _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
     if station_store is None:
@@ -833,4 +867,6 @@ def compute_skills_flow(
         deployment_config=deployment_config,
         clock=clock,
         generation_id=generation_id,
+        reference_displacement=timedelta(seconds=reference_displacement_seconds),
+        source_periods=parsed_sources,
     )

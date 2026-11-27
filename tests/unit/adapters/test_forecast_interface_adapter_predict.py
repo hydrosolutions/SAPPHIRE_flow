@@ -925,3 +925,200 @@ class TestDeclaredOutputPeriods:
                 "label": "start",
                 "aggregation": "mean",
             }
+
+
+class TestDeclaredPeriodBatchHindcast:
+    @pytest.mark.parametrize("label_text", ["start", "end"])
+    def test_shared_targets_keep_per_issue_availability_and_periods(
+        self, label_text: str
+    ) -> None:
+        from types import SimpleNamespace
+
+        import forecast_interface as fi
+
+        from sapphire_flow.services.hindcast import _stack_hindcast_inputs
+        from sapphire_flow.services.hindcast_inputs import prepare_hindcast_inputs
+        from sapphire_flow.types.enums import AggregationMethod
+        from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+        from sapphire_flow.types.hindcast_inputs import (
+            HistoricalAvailabilityPolicy,
+            HistoricalSourcePeriod,
+        )
+        from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
+        from tests.conftest import make_observation, make_raw_historical_forcing
+
+        day = timedelta(days=1)
+        phase = timedelta(hours=18)
+        label = PeriodLabel(label_text)
+        fi_label = fi.PeriodLabel(label_text)
+        first_issue = ensure_utc(datetime(2026, 11, 4, 18, 5, tzinfo=UTC))
+        second_issue = ensure_utc(datetime(2026, 11, 5, 18, 5, tzinfo=UTC))
+        start = ensure_utc(datetime(2026, 11, 2, 18, tzinfo=UTC))
+        offset = day if label is PeriodLabel.END else timedelta(0)
+        observed: list[pl.DataFrame] = []
+
+        class Model(FakeFIBatchModel):
+            def __init__(self) -> None:
+                super().__init__()
+                self._input_requirement = fi.InputRequirement(
+                    targets={"discharge": _target(fi.Unit.M3_PER_S)},
+                    dynamic={
+                        day: fi.SpatialInputSpec(
+                            anchor=fi.TimeAnchor(origin=phase, label=fi_label),
+                            data={
+                                fi.SpatialRepresentation.POINT: fi.DynamicInputSpec(
+                                    past_known={
+                                        "obs": {
+                                            "discharge": fi.PastKnownVariable(
+                                                lookback=2,
+                                                max_nan=1,
+                                                unit=fi.Unit.M3_PER_S,
+                                                aggregation=fi.AggregationMethod.MEAN,
+                                            )
+                                        }
+                                    },
+                                    future_known={
+                                        "nwp": {
+                                            "precipitation": fi.FutureKnownVariable(
+                                                future_steps=1,
+                                                max_nan=0,
+                                                unit=fi.Unit.MM,
+                                                aggregation=fi.AggregationMethod.SUM,
+                                            )
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+
+            def hindcast(
+                self,
+                artifact: object,
+                *,
+                inputs: fi.ModelInputs,
+                issue_datetimes: list[datetime],
+                rng: random.Random,
+            ) -> fi.ModelResult:
+                series = (
+                    inputs.stations["gauge-a"]
+                    .dynamic[day]
+                    .data[fi.SpatialRepresentation.POINT]
+                    .past_known["obs"]["discharge"]
+                    .data
+                )
+                observed.append(series)
+                rows: list[dict[str, object]] = []
+                for issue in issue_datetimes:
+                    boundary = issue.replace(hour=18, minute=0)
+                    eligible = series.filter(
+                        (pl.col("datetime") >= boundary - 2 * day + offset)
+                        & (pl.col("datetime") < boundary + offset)
+                        & (
+                            pl.col("available_at_us")
+                            <= int(issue.timestamp() * 1_000_000)
+                        )
+                    ).sort("datetime")
+                    rows.append(
+                        {
+                            "issue_datetime": issue,
+                            "datetime": boundary + offset,
+                            "value": eligible["discharge"][-1],
+                        }
+                    )
+                variable = fi.VariableOutput(
+                    metadata=fi.VariableMetadata(
+                        unit=fi.Unit.M3_PER_S,
+                        timedelta=day,
+                        forecast_horizon=1,
+                        origin=phase,
+                        label=fi_label,
+                        aggregation=fi.AggregationMethod.MEAN,
+                        offset=1,
+                    ),
+                    status=fi.VariableStatus.SUCCESS,
+                    deterministic=fi.DeterministicData(data=pl.DataFrame(rows)),
+                )
+                return fi.ModelSuccess(
+                    output=fi.ModelOutput(
+                        model_name="future-sensitive",
+                        issue_datetime=issue_datetimes[0],
+                        variables={"gauge-a": {"discharge": variable}},
+                    )
+                )
+
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            Model(), station_code_resolver=_CODES.__getitem__
+        )
+        source = HistoricalSourcePeriod(
+            station_id=_SID_A,
+            source="measured",
+            parameter="discharge",
+            period=ForecastPeriodDefinition(
+                grid=TimeGrid(step=day, phase=phase + timedelta(minutes=15)),
+                label=PeriodLabel.START,
+                aggregation=AggregationMethod.MEAN,
+            ),
+            evidence="accepted daily comparison",
+            input_support_displacement=timedelta(minutes=15),
+        )
+        forcing_source = HistoricalSourcePeriod(
+            station_id=_SID_A,
+            source="archive",
+            parameter="precipitation",
+            period=ForecastPeriodDefinition(
+                grid=TimeGrid(step=day, phase=phase),
+                label=PeriodLabel.START,
+                aggregation=AggregationMethod.SUM,
+            ),
+            evidence="daily forcing contract",
+        )
+        prepared = prepare_hindcast_inputs(
+            station_id=_SID_A,
+            requirements=adapter.data_requirements,
+            source_periods=(source, forcing_source),
+            availability_policy=HistoricalAvailabilityPolicy.RETROSPECTIVE_CLOSURE,
+            observations=[
+                make_observation(
+                    station_id=_SID_A,
+                    timestamp=ensure_utc(start + i * day + timedelta(minutes=15)),
+                    value=value,
+                )
+                for i, value in enumerate([10.0, 100.0, 1000.0])
+            ],
+            forcing=[
+                make_raw_historical_forcing(
+                    station_id=_SID_A,
+                    source="archive",
+                    valid_time=start + i * day,
+                    value=1.0,
+                )
+                for i in range(5)
+            ],
+            start=start,
+            end=ensure_utc(start + 5 * day),
+            static=None,
+        )
+        inputs = tuple(
+            _stack_hindcast_inputs(_GROUP_ID, {_SID_A: prepared.for_issue(issue, 1)})
+            for issue in (first_issue, second_issue)
+        )
+        artifact = SimpleNamespace(
+            training_grid=fi.TrainingGridDeclaration(
+                grid=fi.TimeGrid(step=day, origin=phase, label=fi_label)
+            )
+        )
+        result = adapter.hindcast_batch(artifact, inputs, random.Random(7))
+        assert len(observed) == 1
+        assert observed[0]["discharge"].to_list() == [10.0, 100.0, 1000.0]
+        first = result[first_issue][_SID_A][0]["discharge"]
+        second = result[second_issue][_SID_A][0]["discharge"]
+        assert first.values["value"].to_list() == [10.0]
+        assert second.values["value"].to_list() == [100.0]
+        assert first.period_definition is not None
+        assert first.period_definition.label is label
+        assert first.period_definition.grid.phase == phase
+        assert first.values["valid_time"].to_list() == [
+            first_issue.replace(minute=0) + offset
+        ]

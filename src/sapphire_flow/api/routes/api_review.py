@@ -53,6 +53,7 @@ from sapphire_flow.services.station_qc_overrides import (
     is_ingest_station_judged,
     resolve_configured_station_qc,
 )
+from sapphire_flow.store.skill_period_codec import SkillPeriodPayload
 from sapphire_flow.store.threshold_skill_codec import (
     ThresholdContextPayload,
     encode_threshold_context,
@@ -80,7 +81,7 @@ def get_station_skill_diagrams(
     station_id: str,
     model_id: str = Query(min_length=1),
     artifact_id: UUID = Query(),
-    lead_hours: list[Annotated[int, Field(ge=0, le=2147483647)]] = Query(
+    lead_hours: list[Annotated[int, Field(ge=-24, le=2147483647)]] = Query(
         min_length=1, max_length=16
     ),
     threshold_level: list[Annotated[str, Field(min_length=1, max_length=64)]] = Query(
@@ -363,6 +364,7 @@ def get_station_skill(
                 metric=r.metric,
                 score=r.score if math.isfinite(r.score) else None,
                 sample_size=r.sample_size,
+                evaluation_context=SkillPeriodPayload.from_domain(r.evaluation_context),
                 threshold_context=ThresholdContextPayload.model_validate(
                     encode_threshold_context(r.threshold_context)
                 )

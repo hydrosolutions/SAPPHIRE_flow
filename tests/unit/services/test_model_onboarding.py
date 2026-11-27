@@ -489,6 +489,43 @@ class TestAssertModelConformsFutureForcing:
 
 
 class TestEvaluateSkillGate:
+    def test_newer_context_does_not_hide_failing_legacy_context(self) -> None:
+        from dataclasses import replace
+
+        from sapphire_flow.services.hindcast_verification import evaluation_context
+        from sapphire_flow.types.model_onboarding import SkillGateMetric
+        from tests.unit.services.test_hindcast_verification import _hindcast
+
+        store = FakeSkillStore()
+        model_id, artifact_id = ModelId("contexts"), ArtifactId(uuid4())
+        legacy = _make_skill_score(
+            model_id=model_id,
+            artifact_id=artifact_id,
+            metric="nse",
+            score=0.1,
+            computation_version=4,
+        )
+        declared = replace(
+            legacy,
+            id=uuid4(),
+            score=0.9,
+            computation_version=5,
+            evaluation_context=evaluation_context([_hindcast()]),
+        )
+        store.store_skill_scores([legacy, declared])
+        result = evaluate_skill_gate(
+            model_id,
+            artifact_id,
+            store,
+            make_deployment_config(
+                skill_gate_thresholds={
+                    "nse": SkillGateMetric(threshold=0.5, higher_is_better=True),
+                },
+                min_skill_samples=100,
+            ),
+        )
+        assert result.failing_metrics == frozenset({"nse"})
+
     def test_empty_thresholds_passes(self) -> None:
         skill_store = FakeSkillStore()
         model_id = ModelId("m1")

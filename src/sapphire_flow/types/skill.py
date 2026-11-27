@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -13,8 +14,58 @@ if TYPE_CHECKING:
         SkillFreshness,
         SkillSource,
     )
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.hindcast_inputs import (
+        HistoricalAvailabilityPolicy,
+        HistoricalSourcePeriod,
+    )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.threshold_skill import ThresholdSkillContext
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillEvaluationContext:
+    forecast_period: ForecastPeriodDefinition
+    reference_period: ForecastPeriodDefinition
+    reference_displacement: timedelta
+    input_availability_policy: HistoricalAvailabilityPolicy
+    source_periods: tuple[HistoricalSourcePeriod, ...]
+
+    def __post_init__(self) -> None:
+        if not self.source_periods or len(
+            {item.key for item in self.source_periods}
+        ) != len(self.source_periods):
+            raise ValueError(
+                "evaluation requires a nonempty unique native source catalogue"
+            )
+        object.__setattr__(
+            self,
+            "source_periods",
+            tuple(
+                sorted(
+                    self.source_periods,
+                    key=lambda item: (
+                        str(item.station_id),
+                        item.source,
+                        item.parameter,
+                    ),
+                )
+            ),
+        )
+        forecast = self.forecast_period
+        reference = self.reference_period
+        displacement = self.reference_displacement
+        if displacement % timedelta(seconds=1):
+            raise ValueError("reference displacement requires whole seconds")
+        if abs(displacement) >= forecast.grid.step:
+            raise ValueError("reference displacement must be smaller than a period")
+        if (
+            forecast.grid.step != reference.grid.step
+            or forecast.aggregation != reference.aggregation
+            or reference.grid.phase
+            != (forecast.grid.phase + displacement) % forecast.grid.step
+        ):
+            raise ValueError("forecast and reference physical periods are incompatible")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -58,6 +109,7 @@ class SkillScore:
     # site/test that predates generations still constructs a valid row.
     generation_id: UUID | None = None
     threshold_context: ThresholdSkillContext | None = None
+    evaluation_context: SkillEvaluationContext | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -85,6 +137,7 @@ class SkillDiagram:
     # Plan 235 D1: see `SkillScore.generation_id`.
     generation_id: UUID | None = None
     threshold_context: ThresholdSkillContext | None = None
+    evaluation_context: SkillEvaluationContext | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

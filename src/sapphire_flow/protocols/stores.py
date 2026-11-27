@@ -125,7 +125,12 @@ if TYPE_CHECKING:
         PersistedRejectedForecast,
         RejectedForecastEntry,
     )
-    from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
+    from sapphire_flow.types.skill import (
+        FlowRegimeConfig,
+        SkillDiagram,
+        SkillEvaluationContext,
+        SkillScore,
+    )
     from sapphire_flow.types.station import (
         GatewayPolygonBindingRow,
         GroupModelAssignment,
@@ -720,6 +725,7 @@ class SkillStore(Protocol):
         published_at: UtcDatetime,
         score_count: int,
         diagram_count: int,
+        evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
     ) -> None:
         """Plan 235 D3/D2c — the atomic, INSERT-only publication that makes
         a generation's scores/diagrams current. See

@@ -107,6 +107,7 @@ def assert_metadata(
         "time_step_seconds": 3600,
         "phase_offset_seconds": 0,
         "generation_id": generation,
+        "evaluation_context": None,
     }
     context = row.threshold_context
     threshold_row = (
@@ -390,6 +391,7 @@ def assert_clean_task_roundtrip(
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
             "computation_version": 4,
+            "evaluation_contexts": None,
             "published_at": C,
             "created_at": database_transaction_time,
             "score_count": len(scores),
@@ -776,6 +778,15 @@ def replay_sql_fields(row: SkillScore | SkillDiagram) -> dict[str, object]:
     }
     assert row.skill_source is SkillSource.HINDCAST_REANALYSIS
     fields: dict[str, object] = asdict(row)
+    assert fields.pop("evaluation_context") is None
+    fields.update(
+        period_definition=None,
+        reference_period_definition=None,
+        reference_displacement_seconds=None,
+        input_availability_policy=None,
+        source_periods=None,
+        source_periods_sha256=None,
+    )
     if row.threshold_context is not None:
         context = row.threshold_context
         fields["threshold_context"] = asdict(context) | {
@@ -982,6 +993,7 @@ class TestSkillReplayPublication:
                         "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
                         "forcing_type": ForcingType.REANALYSIS.value,
                         "computation_version": 4,
+                        "evaluation_contexts": None,
                         "published_at": C + timedelta(seconds=step),
                         "score_count": count,
                         "diagram_count": 8 if strategy == "BMA" else 24,
@@ -1455,6 +1467,7 @@ def assert_first_bucket_roundtrip(
                 "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
                 "forcing_type": ForcingType.REANALYSIS.value,
                 "computation_version": 4,
+                "evaluation_contexts": None,
                 "published_at": FIRST_BUCKET_END,
                 "created_at": case.connection.scalar(
                     sa.select(sa.func.transaction_timestamp())
@@ -2066,6 +2079,7 @@ def assert_trailing_task_roundtrip(
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
             "computation_version": 4,
+            "evaluation_contexts": None,
             "published_at": TRAILING_CLOCK,
             "created_at": transaction_time,
             "score_count": 108,
@@ -2288,6 +2302,7 @@ def assert_surviving_persistence(
             "skill_source": SkillSource.HINDCAST_REANALYSIS.value,
             "forcing_type": ForcingType.REANALYSIS.value,
             "computation_version": 4,
+            "evaluation_contexts": None,
             "published_at": C + timedelta(seconds=1),
             "created_at": conn.scalar(sa.select(sa.func.transaction_timestamp())),
             "score_count": 112,

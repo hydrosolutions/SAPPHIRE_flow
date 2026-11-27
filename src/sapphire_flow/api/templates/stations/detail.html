@@ -121,13 +121,14 @@
   <div class="card">
     <h3>Skill Summary (current)</h3>
     <table>
-      <thead><tr><th>Metric</th><th>Avg Score</th><th>N</th></tr></thead>
+      <thead><tr><th>Metric</th><th>Avg Score</th><th>N</th><th>Evaluation periods</th></tr></thead>
       <tbody>
         {% for s in skill_summary %}
         <tr>
           <td>{{ s.metric }}</td>
           <td>{{ s.avg_score }}</td>
           <td>{{ s.count }}</td>
+          <td>{{ s.evaluation_context | tojson if s.evaluation_context else 'Legacy (support unknown)' }}</td>
         </tr>
         {% endfor %}
       </tbody>

@@ -26,6 +26,10 @@ from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
 )
+from sapphire_flow.services.hindcast_inputs import (
+    prepare_hindcast_inputs,
+    source_fetch_bounds,
+)
 from sapphire_flow.services.static_frames import (
     align_null_static_types as _align_null_static_types,
 )
@@ -45,10 +49,16 @@ from sapphire_flow.types.enums import (
     StaticNaming,
 )
 from sapphire_flow.types.forecast import HindcastForecast
+from sapphire_flow.types.hindcast_inputs import (
+    HistoricalAvailabilityPolicy,
+    HistoricalSourcePeriod,
+    PreparedHindcastInputs,
+)
 from sapphire_flow.types.ids import (
     ArtifactId,
     HindcastForecastId,
     ModelId,
+    ObservationId,
     StationGroupId,
     StationId,
 )
@@ -61,7 +71,7 @@ from sapphire_flow.types.training import HindcastStepResult
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
     from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -75,8 +85,9 @@ if TYPE_CHECKING:
         ObservationStore,
         StationStore,
     )
+    from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.model import ModelArtifact
+    from sapphire_flow.types.model import ModelArtifact, ModelDataRequirements
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import (
         StationConfig,
@@ -87,6 +98,29 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 DEFAULT_HINDCAST_ISSUE_BATCH_SIZE = 7
+
+
+def _validate_declared_output(
+    ensemble: ForecastEnsemble,
+    *,
+    station_id: StationId,
+    issue_time: UtcDatetime,
+    requirements: ModelDataRequirements,
+    forecast_horizon_steps: int,
+) -> None:
+    declared = requirements.time_grid
+    if declared is None:
+        return
+    period = ensemble.period_definition
+    if (
+        period is None
+        or period.grid != declared.grid
+        or period.label != declared.label
+        or ensemble.station_id != station_id
+        or ensemble.issued_at != issue_time
+        or ensemble.forecast_horizon_steps != forecast_horizon_steps
+    ):
+        raise ValueError("hindcast output differs from the requested period contract")
 
 
 def resolve_hindcast_issue_batch_size(
@@ -430,6 +464,8 @@ def _stack_hindcast_inputs(
                 f"Inconsistent time_step: station {sid} has {inp.time_step}, "
                 f"expected {first.time_step}"
             )
+        if inp.time_grid != first.time_grid:
+            raise ConfigurationError("hindcast group members have different time grids")
 
     def stack(frames: list[tuple[StationId, pl.DataFrame]]) -> pl.DataFrame:
         return pl.concat(
@@ -462,6 +498,7 @@ def _stack_hindcast_inputs(
         issue_time=first.issue_time,
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
+        time_grid=first.time_grid,
         source_evidence=tuple(
             (sid, inp.source_evidence)
             for sid, inp in inputs.items()
@@ -489,10 +526,31 @@ def run_station_hindcast(
     hindcast_run_id: UUID,
     forecast_horizon_steps: int | None = None,
     lookback_steps: int | None = None,
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    availability_policy: HistoricalAvailabilityPolicy = (
+        HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ),
+    observed_availability: Mapping[ObservationId, UtcDatetime] | None = None,
 ) -> list[HindcastStepResult]:
     if lookback_steps is None:
         lookback_steps = model.data_requirements.lookback_steps
-    if model.data_requirements.time_grid is not None:
+    declared = model.data_requirements.time_grid
+    if declared is None and (
+        source_periods
+        or observed_availability
+        or availability_policy is not HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ):
+        raise ConfigurationError(
+            "legacy hindcasts do not accept declared input contracts"
+        )
+    if (
+        declared is not None
+        and lookback_steps != model.data_requirements.lookback_steps
+    ):
+        raise ConfigurationError(
+            "declared hindcasts require the model's declared lookback"
+        )
+    if declared is not None and not source_periods:
         raise ConfigurationError(
             "declared-grid hindcasts require period-aware observation qualification"
         )
@@ -533,13 +591,29 @@ def run_station_hindcast(
     # lookback fully covered by this prefetch.
     full_start, _ = aligned_lookback_bounds(period_start, lookback_steps, time_step)
     full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
+    if declared is not None:
+        if (
+            time_step != declared.grid.step
+            or lookback_steps < model.data_requirements.lookback_steps
+        ):
+            raise ConfigurationError(
+                "hindcast cadence/lookback does not satisfy model declaration"
+            )
+        full_start, _ = declared.grid.lookback_bounds(period_start, lookback_steps)
+        full_end = ensure_utc(
+            declared.grid.floor(period_end) + forecast_horizon_steps * time_step
+        )
+    station_periods = tuple(
+        item for item in source_periods if item.station_id == station_id
+    )
+    read_start, read_end = source_fetch_bounds(full_start, full_end, station_periods)
 
     t0 = time.perf_counter()
     if required_features:
         all_forcing = forcing_source.fetch_reanalysis(
             station_configs=weather_sources,
-            start=full_start,
-            end=full_end,
+            start=read_start,
+            end=read_end,
             parameters=required_features,
         )
     else:
@@ -547,8 +621,8 @@ def run_station_hindcast(
     all_observations = obs_store.fetch_observations(
         station_id=station_id,
         parameter=parameter,
-        start=full_start,
-        end=period_end,
+        start=read_start,
+        end=read_end if declared is not None else period_end,
         qc_status=QcStatus.QC_PASSED,
     )
     log.info(
@@ -559,25 +633,45 @@ def run_station_hindcast(
         duration_ms=round((time.perf_counter() - t0) * 1000, 1),
     )
 
+    prepared = (
+        prepare_hindcast_inputs(
+            station_id=station_id,
+            requirements=model.data_requirements,
+            source_periods=station_periods,
+            availability_policy=availability_policy,
+            observations=all_observations,
+            forcing=all_forcing,
+            start=full_start,
+            end=full_end,
+            static=static_df,
+            observed_availability=observed_availability,
+        )
+        if declared is not None
+        else None
+    )
     results: list[HindcastStepResult] = []
     for issue_time in _issue_times(period_start, period_end, time_step):
         try:
-            inputs = _assemble_hindcast_inputs(
-                station_id=station_id,
-                issue_time=issue_time,
-                lookback_steps=lookback_steps,
-                time_step=time_step,
-                forecast_horizon_steps=forecast_horizon_steps,
-                required_features=required_features,
-                all_forcing=all_forcing,
-                all_observations=all_observations,
-                weather_sources=weather_sources,
-                static_attributes=static_df,
-                parameter=parameter,
-                declared_lookback_steps=model.data_requirements.lookback_steps,
-                aggregation_methods=resolved_aggregation_methods(
-                    model.data_requirements
-                ),
+            inputs = (
+                prepared.for_issue(issue_time, forecast_horizon_steps)
+                if prepared is not None
+                else _assemble_hindcast_inputs(
+                    station_id=station_id,
+                    issue_time=issue_time,
+                    lookback_steps=lookback_steps,
+                    time_step=time_step,
+                    forecast_horizon_steps=forecast_horizon_steps,
+                    required_features=required_features,
+                    all_forcing=all_forcing,
+                    all_observations=all_observations,
+                    weather_sources=weather_sources,
+                    static_attributes=static_df,
+                    parameter=parameter,
+                    declared_lookback_steps=model.data_requirements.lookback_steps,
+                    aggregation_methods=resolved_aggregation_methods(
+                        model.data_requirements
+                    ),
+                )
             )
             if inputs is None:
                 results.append(
@@ -601,11 +695,22 @@ def run_station_hindcast(
                         f"Dict key '{param_name}' != ensemble.parameter "
                         f"'{ensemble.parameter}'"
                     )
+                _validate_declared_output(
+                    ensemble,
+                    station_id=station_id,
+                    issue_time=issue_time,
+                    requirements=model.data_requirements,
+                    forecast_horizon_steps=forecast_horizon_steps,
+                )
                 hindcast = HindcastForecast(
                     id=HindcastForecastId(uuid4()),
                     station_id=station_id,
                     model_id=model_id,
                     model_artifact_id=artifact_id,
+                    source_periods=station_periods if declared is not None else (),
+                    input_availability_policy=availability_policy
+                    if declared is not None
+                    else None,
                     hindcast_step=issue_time,
                     forcing_type=ForcingType.REANALYSIS,
                     representation=ensemble.representation,
@@ -686,10 +791,31 @@ def run_group_hindcast(
     forecast_horizon_steps: int | None = None,
     lookback_steps: int | None = None,
     issue_batch_size: int = DEFAULT_HINDCAST_ISSUE_BATCH_SIZE,
+    source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    availability_policy: HistoricalAvailabilityPolicy = (
+        HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ),
+    observed_availability: Mapping[ObservationId, UtcDatetime] | None = None,
 ) -> dict[StationId, list[HindcastStepResult]]:
     if lookback_steps is None:
         lookback_steps = model.data_requirements.lookback_steps
-    if model.data_requirements.time_grid is not None:
+    declared = model.data_requirements.time_grid
+    if declared is None and (
+        source_periods
+        or observed_availability
+        or availability_policy is not HistoricalAvailabilityPolicy.RECORDED_ONLY
+    ):
+        raise ConfigurationError(
+            "legacy hindcasts do not accept declared input contracts"
+        )
+    if (
+        declared is not None
+        and lookback_steps != model.data_requirements.lookback_steps
+    ):
+        raise ConfigurationError(
+            "declared hindcasts require the model's declared lookback"
+        )
+    if declared is not None and not source_periods:
         raise ConfigurationError(
             "declared-grid hindcasts require period-aware observation qualification"
         )
@@ -738,6 +864,19 @@ def run_group_hindcast(
     # Plan 228 D4: see `run_station_hindcast` — aligned to complete buckets.
     full_start, _ = aligned_lookback_bounds(period_start, lookback_steps, time_step)
     full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
+    if declared is not None:
+        if (
+            time_step != declared.grid.step
+            or lookback_steps < model.data_requirements.lookback_steps
+        ):
+            raise ConfigurationError(
+                "hindcast cadence/lookback does not satisfy model declaration"
+            )
+        full_start, _ = declared.grid.lookback_bounds(period_start, lookback_steps)
+        full_end = ensure_utc(
+            declared.grid.floor(period_end) + forecast_horizon_steps * time_step
+        )
+    read_start, read_end = source_fetch_bounds(full_start, full_end, source_periods)
 
     fetchable_sids = [
         sid for sid in group.station_ids if station_configs[sid] is not None
@@ -750,8 +889,8 @@ def run_group_hindcast(
     if required_features:
         all_forcing_flat = forcing_source.fetch_reanalysis(
             station_configs=all_weather_sources,
-            start=full_start,
-            end=full_end,
+            start=read_start,
+            end=read_end,
             parameters=required_features,
         )
     else:
@@ -770,11 +909,37 @@ def run_group_hindcast(
         all_obs_map[sid] = obs_store.fetch_observations(
             station_id=sid,
             parameter=parameter_map.get(sid, "discharge"),
-            start=full_start,
-            end=period_end,
+            start=read_start,
+            end=read_end if declared is not None else period_end,
             qc_status=QcStatus.QC_PASSED,
         )
 
+    prepared_map: dict[StationId, PreparedHindcastInputs] = {}
+    preparation_errors: dict[StationId, str] = {}
+    if declared is not None:
+        for sid in fetchable_sids:
+            try:
+                prepared_map[sid] = prepare_hindcast_inputs(
+                    station_id=sid,
+                    requirements=model.data_requirements,
+                    source_periods=tuple(
+                        item for item in source_periods if item.station_id == sid
+                    ),
+                    availability_policy=availability_policy,
+                    observations=all_obs_map[sid],
+                    forcing=all_forcing_map[sid],
+                    start=full_start,
+                    end=full_end,
+                    static=static_map.get(sid),
+                    observed_availability=observed_availability,
+                )
+            except (ConfigurationError, ValueError, pl.exceptions.PolarsError) as exc:
+                preparation_errors[sid] = str(exc)
+                log.warning(
+                    "hindcast.input_preparation_failed",
+                    station_id=str(sid),
+                    error=str(exc),
+                )
     per_station: dict[StationId, list[HindcastStepResult]] = {
         sid: [] for sid in group.station_ids
     }
@@ -789,23 +954,30 @@ def run_group_hindcast(
                 if cfg is None:
                     skipped[sid] = f"station {sid} not found"
                     continue
+                if sid in preparation_errors:
+                    skipped[sid] = preparation_errors[sid]
+                    continue
                 try:
-                    inputs = _assemble_hindcast_inputs(
-                        station_id=sid,
-                        issue_time=issue_time,
-                        lookback_steps=lookback_steps,
-                        time_step=time_step,
-                        forecast_horizon_steps=forecast_horizon_steps,
-                        required_features=required_features,
-                        all_forcing=all_forcing_map.get(sid, []),
-                        all_observations=all_obs_map.get(sid, []),
-                        weather_sources=weather_sources_map[sid],
-                        static_attributes=static_map.get(sid),
-                        parameter=parameter_map.get(sid, "discharge"),
-                        declared_lookback_steps=model.data_requirements.lookback_steps,
-                        aggregation_methods=resolved_aggregation_methods(
-                            model.data_requirements
-                        ),
+                    inputs = (
+                        prepared_map[sid].for_issue(issue_time, forecast_horizon_steps)
+                        if declared is not None
+                        else _assemble_hindcast_inputs(
+                            station_id=sid,
+                            issue_time=issue_time,
+                            lookback_steps=lookback_steps,
+                            time_step=time_step,
+                            forecast_horizon_steps=forecast_horizon_steps,
+                            required_features=required_features,
+                            all_forcing=all_forcing_map.get(sid, []),
+                            all_observations=all_obs_map.get(sid, []),
+                            weather_sources=weather_sources_map[sid],
+                            static_attributes=static_map.get(sid),
+                            parameter=parameter_map.get(sid, "discharge"),
+                            declared_lookback_steps=model.data_requirements.lookback_steps,
+                            aggregation_methods=resolved_aggregation_methods(
+                                model.data_requirements
+                            ),
+                        )
                     )
                     if inputs is None:
                         skipped[sid] = "insufficient data"
@@ -940,11 +1112,24 @@ def run_group_hindcast(
                                 f"Dict key '{param_name}' != ensemble.parameter "
                                 f"'{ensemble.parameter}'"
                             )
+                        _validate_declared_output(
+                            ensemble,
+                            station_id=sid,
+                            issue_time=issue_time,
+                            requirements=model.data_requirements,
+                            forecast_horizon_steps=forecast_horizon_steps,
+                        )
                         hindcast = HindcastForecast(
                             id=HindcastForecastId(uuid4()),
                             station_id=sid,
                             model_id=model_id,
                             model_artifact_id=artifact_id,
+                            source_periods=prepared_map[sid].source_periods
+                            if declared is not None
+                            else (),
+                            input_availability_policy=availability_policy
+                            if declared is not None
+                            else None,
                             hindcast_step=issue_time,
                             forcing_type=ForcingType.REANALYSIS,
                             representation=ensemble.representation,

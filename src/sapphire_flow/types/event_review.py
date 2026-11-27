@@ -17,6 +17,8 @@ if TYPE_CHECKING:
         QcStatus,
         ThresholdSource,
     )
+    from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+    from sapphire_flow.types.hindcast_inputs import HistoricalAvailabilityPolicy
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId, TenantId
 
 MAX_REVIEW_HEADERS = 100_000
@@ -72,14 +74,19 @@ class ReviewSource:
     last_valid_time: UtcDatetime | None
     completeness: ReviewCompleteness
     reasons: tuple[str, ...]
+    period_definition: ForecastPeriodDefinition | None = None
+    input_availability_policy: HistoricalAvailabilityPolicy | None = None
 
     def __post_init__(self) -> None:
         if self.time_step_seconds is not None and self.time_step_seconds <= 0:
             raise ValueError("review source cadence must be positive")
         if tuple(sorted(set(self.lead_hours))) != self.lead_hours or any(
-            lead < 0 for lead in self.lead_hours
+            lead < 0 and self.period_definition is None for lead in self.lead_hours
         ):
-            raise ValueError("review leads must be sorted unique nonnegative hours")
+            raise ValueError(
+                "review leads must be sorted unique; "
+                "negative leads require declared periods"
+            )
         if self.kind is ReviewKind.HINDCAST and (
             self.hindcast_run_id is None
             or self.artifact_id is None
@@ -136,7 +143,7 @@ class ReviewSeriesQuery:
     time_step_seconds: int | None = None
 
     def __post_init__(self) -> None:
-        if not self.model_id or not 0 <= self.lead_hours <= 24 * 366:
+        if not self.model_id or not -24 <= self.lead_hours <= 24 * 366:
             raise ValueError("Invalid model or lead")
         if not self.start < self.end <= self.requested_at:
             raise ValueError("Expected start < end <= current time")
@@ -149,6 +156,8 @@ class ReviewSeriesQuery:
             self.time_step_seconds,
         )
         if self.source_mode is ReviewSourceMode.OPERATIONAL:
+            if self.lead_hours < 0:
+                raise ValueError("Negative leads require a declared hindcast period")
             if any(value is not None for value in identity):
                 raise ValueError("Operational mode accepts no hindcast identity")
         elif any(value is None for value in identity):
@@ -201,6 +210,8 @@ class ReviewPoint:
     state: ReviewPointState
     reason: str | None
     qc_status: QcStatus | None
+    valid_interval_start: UtcDatetime | None = None
+    valid_interval_end: UtcDatetime | None = None
     median: float | None = None
     p25: float | None = None
     p75: float | None = None

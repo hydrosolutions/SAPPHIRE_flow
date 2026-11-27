@@ -21,6 +21,10 @@ if TYPE_CHECKING:
         WarmUpSource,
     )
     from sapphire_flow.types.forecast_evidence import ForecastEvidence
+    from sapphire_flow.types.hindcast_inputs import (
+        HistoricalAvailabilityPolicy,
+        HistoricalSourcePeriod,
+    )
     from sapphire_flow.types.ids import (
         ArtifactId,
         ForecastAdjustmentId,
@@ -133,6 +137,8 @@ class HindcastForecast:
     created_at: UtcDatetime
     qc_status: QcStatus = QcStatus.RAW
     qc_flags: tuple[QcFlag, ...] = ()
+    source_periods: tuple[HistoricalSourcePeriod, ...] = ()
+    input_availability_policy: HistoricalAvailabilityPolicy | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

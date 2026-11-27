@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import polars as pl
 import pytest
 import sqlalchemy as sa
 import structlog.testing
@@ -20,10 +22,22 @@ from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import QcFlag
-from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
+from sapphire_flow.types.ensemble import ForecastEnsemble
+from sapphire_flow.types.enums import (
+    AggregationMethod,
+    EnsembleRepresentation,
+    ForcingType,
+    QcStatus,
+)
 from sapphire_flow.types.forecast import HindcastForecast
+from sapphire_flow.types.forecast_period import ForecastPeriodDefinition
+from sapphire_flow.types.hindcast_inputs import (
+    HistoricalAvailabilityPolicy,
+    HistoricalSourcePeriod,
+)
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+from sapphire_flow.types.time_grid import PeriodLabel, TimeGrid
 from tests.conftest import make_forecast_ensemble
 
 
@@ -1550,3 +1564,195 @@ class TestStoreHindcastDedupDistinctParameter:
             )
         ).scalar_one()
         assert count == 2, f"both parameter hindcasts must persist, got {count}"
+
+
+def _declare_hindcast(
+    hindcast: HindcastForecast,
+    label: PeriodLabel = PeriodLabel.START,
+    phase_hours: int = 18,
+) -> HindcastForecast:
+    day = timedelta(days=1)
+    period = ForecastPeriodDefinition(
+        grid=TimeGrid(step=day, phase=timedelta(hours=phase_hours)),
+        label=label,
+        aggregation=AggregationMethod.MEAN,
+    )
+    first = period.grid.floor(hindcast.hindcast_step)
+    if label is PeriodLabel.END:
+        first += day
+    ensemble = ForecastEnsemble.from_members(
+        station_id=hindcast.station_id,
+        issued_at=hindcast.hindcast_step,
+        parameter="discharge",
+        units="m³/s",
+        time_step=day,
+        period_definition=period,
+        values=pl.DataFrame(
+            {
+                "valid_time": [first, first + day],
+                "member_id": [0, 0],
+                "value": [12.0, 13.0],
+            },
+        ).with_columns(pl.col("member_id").cast(pl.Int32)),
+    )
+    source = HistoricalSourcePeriod(
+        station_id=hindcast.station_id,
+        source="manual",
+        parameter="discharge",
+        period=period,
+        evidence="Provider daily means",
+    )
+    return replace(
+        hindcast,
+        ensemble=ensemble,
+        source_periods=(source,),
+        input_availability_policy=HistoricalAvailabilityPolicy.RETROSPECTIVE_CLOSURE,
+    )
+
+
+class TestDeclaredPeriodPersistence:
+    def test_concurrent_conflicting_writers_preserve_one_complete_contract(
+        self, isolated_committed_db_engine: sa.Engine
+    ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        engine = isolated_committed_db_engine
+        with engine.begin() as conn:
+            sid = _seed_station(conn)
+            mid = _seed_model(conn)
+            aid = _seed_artifact(conn, mid, sid)
+        original = _declare_hindcast(_make_hindcast(sid, mid, aid))
+        other = replace(
+            original,
+            id=HindcastForecastId(uuid4()),
+            input_availability_policy=HistoricalAvailabilityPolicy.RECORDED_ONLY,
+            ensemble=replace(
+                original.ensemble,
+                values=original.ensemble.values.with_columns(
+                    pl.lit(99.0).alias("value")
+                ),
+            ),
+        )
+        start = Barrier(2, timeout=10)
+
+        def store(value: HindcastForecast) -> HindcastForecastId | StoreError:
+            with engine.connect() as conn:
+                start.wait()
+                try:
+                    return PgHindcastStore(conn).store_hindcast(value)
+                except StoreError as exc:
+                    return exc
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(store, (original, other)))
+        assert sum(isinstance(result, StoreError) for result in outcomes) == 1
+        winner = original if not isinstance(outcomes[0], StoreError) else other
+        with engine.connect() as conn:
+            retained = PgHindcastStore(conn).fetch_hindcasts(
+                sid, mid, _utc(2025, 2, 28), _utc(2025, 3, 2)
+            )
+        assert len(retained) == 1
+        assert retained[0].input_availability_policy == winner.input_availability_policy
+        assert retained[0].ensemble.values["value"].sort().to_list() == (
+            winner.ensemble.values["value"].sort().to_list()
+        )
+
+    @pytest.mark.parametrize("label", [PeriodLabel.START, PeriodLabel.END])
+    @pytest.mark.parametrize("phase", [6, 18])
+    def test_round_trip_preserves_period_source_policy_and_signed_lead(
+        self, db_connection: sa.Connection, label: PeriodLabel, phase: int
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        value = _declare_hindcast(_make_hindcast(sid, mid, aid), label, phase)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        store.store_hindcast(value)
+        fetched = store.fetch_hindcasts(sid, mid, _utc(2025, 2, 28), _utc(2025, 3, 2))[
+            0
+        ]
+        assert fetched.ensemble.period_definition == value.ensemble.period_definition
+        assert fetched.source_periods == value.source_periods
+        assert fetched.input_availability_policy == value.input_availability_policy
+        assert fetched.ensemble.values["valid_time"].sort().to_list() == (
+            value.ensemble.values["valid_time"].sort().to_list()
+        )
+        leads = (
+            db_connection.execute(
+                sa.select(hindcast_values.c.lead_time_hours)
+                .where(hindcast_values.c.hindcast_forecast_id == value.id)
+                .order_by(hindcast_values.c.valid_time)
+            )
+            .scalars()
+            .all()
+        )
+        expected_first = phase - 24 if label is PeriodLabel.START else phase
+        assert leads == [expected_first, expected_first + 24]
+
+    @pytest.mark.parametrize("change", ["period", "source", "policy", "legacy"])
+    def test_conflicting_contract_cannot_replace_existing_payload(
+        self, db_connection: sa.Connection, change: str
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        original = _declare_hindcast(_make_hindcast(sid, mid, aid))
+        proposed = original
+        if change == "period":
+            proposed = _declare_hindcast(original, PeriodLabel.END)
+        elif change == "source":
+            proposed = replace(
+                original,
+                source_periods=(
+                    replace(
+                        original.source_periods[0], stored_label_shift=timedelta(days=1)
+                    ),
+                ),
+            )
+        elif change == "policy":
+            proposed = replace(
+                original,
+                input_availability_policy=HistoricalAvailabilityPolicy.RECORDED_ONLY,
+            )
+        else:
+            original = replace(
+                original,
+                ensemble=replace(original.ensemble, period_definition=None),
+                source_periods=(),
+                input_availability_policy=None,
+            )
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        store.store_hindcast(original)
+        with pytest.raises(StoreError, match="cannot change period"):
+            store.store_hindcast(proposed)
+        retained = store.fetch_hindcasts(sid, mid, _utc(2025, 2, 28), _utc(2025, 3, 2))[
+            0
+        ]
+        assert (
+            retained.ensemble.period_definition == original.ensemble.period_definition
+        )
+        assert retained.source_periods == original.source_periods
+        assert retained.input_availability_policy == original.input_availability_policy
+        assert retained.ensemble.values["value"].sort().to_list() == [12.0, 13.0]
+
+    def test_fractional_hour_lead_refuses_without_writing(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        issue = ensure_utc(datetime(2025, 3, 1, 0, 5, tzinfo=UTC))
+        value = _declare_hindcast(_make_hindcast(sid, mid, aid, hindcast_step=issue))
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        with pytest.raises(StoreError, match="integral number of hours"):
+            store.store_hindcast(value)
+        assert (
+            store.fetch_hindcasts(sid, mid, _utc(2025, 2, 28), _utc(2025, 3, 2)) == []
+        )

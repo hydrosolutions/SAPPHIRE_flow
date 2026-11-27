@@ -66,6 +66,8 @@ def read_review_options(
 
 
 def _review_point(record: ReviewSeriesRecord) -> ReviewPoint:
+    period = record.source.period_definition
+    bounds = period.bounds(record.valid_time) if period is not None else (None, None)
     common = ReviewPoint(
         valid_time=record.valid_time,
         issued_at=record.issued_at,
@@ -74,6 +76,8 @@ def _review_point(record: ReviewSeriesRecord) -> ReviewPoint:
         qc_status=record.qc_status,
         state=ReviewPointState.MISSING,
         reason=None,
+        valid_interval_start=bounds[0],
+        valid_interval_end=bounds[1],
     )
     if record.qc_status in {QcStatus.QC_FAILED, QcStatus.QC_SUSPECT}:
         return replace(
@@ -175,6 +179,16 @@ def read_review_series(
             raise ValueError("Review store returned an unpinned hindcast source")
     if not snapshot.sources:
         raise ReviewSeriesError("review_source_not_found", "Review source not found.")
+    contracts = {
+        (source.period_definition, source.input_availability_policy)
+        for source in snapshot.sources
+    }
+    if len(contracts) > 1:
+        raise ReviewSeriesError(
+            "review_source_unsupported",
+            "Selected source contains incompatible temporal contracts; "
+            "select a homogeneous run.",
+        )
     if not any(query.lead_hours in source.lead_hours for source in snapshot.sources):
         raise ReviewSeriesError(
             "lead_not_offered", "This source does not offer the requested lead."
@@ -191,11 +205,18 @@ def read_review_series(
         )
     grouped: dict[ReviewSource, list[ReviewPoint]] = {}
     for record in snapshot.records:
+        period = record.source.period_definition
+        bounds = period.bounds(record.valid_time) if period is not None else None
+        in_window = (
+            query.start <= bounds[0] and bounds[1] <= query.end
+            if bounds is not None
+            else query.start <= record.valid_time < query.end
+        )
         if (
             record.source not in snapshot.sources
             or record.source.model_id != query.model_id
             or record.valid_time - record.issued_at != timedelta(hours=query.lead_hours)
-            or not query.start <= record.valid_time < query.end
+            or not in_window
             or (query.source_mode.value != record.source.kind.value)
         ):
             raise ValueError("Review store returned an out-of-selection record")

@@ -468,10 +468,70 @@ null period metadata; no historical row is relabelled.
 
 The new model requires an isolated worker and explicit model selection as in the
 replacement plan. Registration in the package does not activate the artifact or
-publish forecasts. Legacy skill, hindcast and event-review paths refuse/exclude
-these period-qualified forecasts until observation support is qualified. Mixed
+publish forecasts. Declared-period hindcasting and skill require explicit source
+qualification as described below. Legacy operational event-review still excludes
+period-qualified operational forecasts; hindcast review retains their support. Mixed
 known/unknown period ensembles cannot be combined. Daily evaluation stays off
 for this isolated job. Revisit temporal aggregation before sub-daily deployment.
+
+### Declared-period hindcasts and scoring
+
+For a model with a declared time grid, supply `source_periods` to the hindcast
+flow. Each entry identifies station, source and parameter, its native period
+(`step_seconds`, `origin_seconds`, `label`, `aggregation`), and the evidence for
+that definition. `stored_label_shift_seconds` corrects a known storage-label
+convention; it does not move physical support. `input_support_displacement_seconds`
+is an explicit approximation between equal-duration, equally aggregated periods.
+Undeclared or incompatible source periods are refused. A daily archive cannot be
+shifted into a different daily mean by relabelling its timestamps.
+
+For the accepted Nepal MVP comparison, the model's 18:00–18:00 UTC days and DHM's
+18:15–18:15 days differ by +900 seconds. Declare the native DHM period and that
+input displacement. Pass `reference_displacement_seconds=900` to the skill flow
+to use the separately labelled comparison. The default is exact support (zero);
+the approximation is never inferred from station or model names. This remains a
+15-minute approximation to Nepal calendar days, not an exact alignment.
+
+`availability_policy` defaults to `recorded_only`. Explicitly choosing
+`retrospective_closure` permits archived discharge with unknown publication time
+to become available at its physical period end. The service accepts known arrival
+times through `observed_availability` and preserves later arrivals. Ordinary
+observation storage currently has import times, not historical publication times;
+the flow does not treat an import time as historical arrival evidence. Thus a DHM
+period ending 18:15 is still withheld from an 18:05 issue. This assumption is
+retained on hindcasts and scores; training provenance remains unknown.
+
+Prepare the full observation and forcing span once, then feed bounded issue
+views through the existing FI batching contract. Use `issue_batch_size=1` for
+the first real CMAL qualification, then a separately measured resource budget.
+There is no Aquacast native bypass and no claim of Sandro's full-feed speedup.
+Missing members/periods remain explicit failures; complete sibling members may
+continue. Do not change the scientific source catalogue within a retained run.
+
+Skill computation version 5 records forecast and reference periods, displacement
+and input-availability policy in `evaluation_context`, together with the canonical
+native source catalogue and its SHA256. Native labels, sampling, evidence and
+stored-label corrections remain recoverable; the digest bounds indexed identity.
+Declared scoring requires `enable_skill_generations=true` before any writes.
+Legacy version-4 scores
+remain distinct. Every cohort must produce results before a generation becomes
+current. Combined-model scoring with declared periods still refuses. Use matching
+evaluation contexts when comparing models; do not compare against a legacy
+climatology score whose physical reference period is unknown.
+
+Reviewer skill rows, options and diagrams expose every retained evaluation
+context. Hindcast review options/series retain the declared label, physical
+interval and availability policy; elapsed leads may be negative for START labels.
+The requested review window must fully contain each physical interval. The old
+unqualified `hindcasts.json` endpoint refuses declared-period rows. Migration
+0097 preserves legacy null metadata and refuses downgrade after any declared
+period evidence has been written; back up before operational adoption.
+
+The current FI adapter admits inherited or explicit variable labels only when
+their effective label matches the declared branch. Conflicting/unknown overrides
+refuse before preparation. Each variable's NaN gate uses its own declared history
+or future window, preserving real in-window gaps and late target availability;
+padding for a longer sibling variable does not count against its tolerance.
 
 
 Daily CMAL source-cycle policy (owner confirmed 24 November): apply
