@@ -841,6 +841,10 @@ set now also includes `test_skill_data_use_isolation.py` and
 199s and 145s to those files; these are approximate, not JUnit durations or
 proof of the new balance. Fresh passing CI jobs remain the acceptance gate.
 
+On 2026-11-27 `test_native_selected_weather.py` (about 98s of JUnit test time)
+moved from `heavy` to `mid` to offset heavy's fixed proof and gate overhead;
+run ids and numbers are in the dated comment in `tools/integration_shards.py`.
+
 All three shards remain serial internally, with unchanged filters and timeouts.
 The computed catch-all and native collection proof retain every selected test
 exactly once. Moving fixtures can duplicate container setup across runners;

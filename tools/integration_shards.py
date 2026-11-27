@@ -46,8 +46,8 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/store/test_daily_forecast_one_shot_runner.py",
             "tests/integration/store/test_swiss_overview.py",
             # Rebalance 2026-11-12 (CI run 43242338889): heavy carries ~190 s of
-            # fixed job overhead, rest ~90 s; these two (~113 s) even the legs out.
-            "tests/integration/api/test_native_selected_weather.py",
+            # fixed job overhead, rest ~90 s; the pair added then (~113 s) evened
+            # the legs out. test_native_selected_weather.py moved to mid 2026-11-27.
             "tests/integration/db/test_bounded_qc_serialization.py",
         ),
     ),
@@ -75,6 +75,12 @@ NAMED_GROUPS: NamedGroups = (
             "tests/integration/store/test_observation_unit_readers.py",
             "tests/integration/api/test_network_overview.py",
             "tests/integration/api/test_tables_protected_storage.py",
+            # Rebalance 2026-11-27 (CI runs 45849489945, 45856427809, 45859995371,
+            # 45860032700, 45863448451, 45881088768, 45885372768; median JUnit
+            # test seconds heavy 759, rest 711, mid 595): heavy carries ~50 s more
+            # fixed overhead, so this 98 s file moves heavy -> mid (expect heavy
+            # ~661, mid ~693, rest ~711).
+            "tests/integration/api/test_native_selected_weather.py",
         ),
     ),
 )
