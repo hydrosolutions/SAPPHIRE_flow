@@ -14,7 +14,10 @@ from sapphire_flow.db.metadata import skill_scores as scores
 from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
 )
-from sapphire_flow.services.skill_read import evaluated_on
+from sapphire_flow.services.skill_read import (
+    BENCHMARK_ARTIFACT_STATUSES,
+    evaluated_on,
+)
 from sapphire_flow.store.skill_period_codec import (
     SKILL_PERIOD_FIELDS,
     SkillPeriodPayload,
@@ -80,10 +83,11 @@ def read_skill_diagrams(
         assignment.model_id == model_id
         for assignment in fetch_active_model_assignments(stores, station_id)
     )
-    artifact = (
-        stores.artifact_store.fetch_artifact_record(artifact_id) if assigned else None
-    )
-    if artifact is not None and artifact.model_id != model_id:
+    artifact = stores.artifact_store.fetch_artifact_record(artifact_id)
+    if artifact is not None and (
+        artifact.model_id != model_id
+        or (not assigned and artifact.status not in BENCHMARK_ARTIFACT_STATUSES)
+    ):
         artifact = None
     results: list[StoredSkillDiagram] = []
     if artifact is not None:

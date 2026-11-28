@@ -12,7 +12,11 @@ from sapphire_flow.db.metadata import skill_scores as scores
 from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
 )
-from sapphire_flow.services.skill_read import EvaluatedOn, evaluated_on
+from sapphire_flow.services.skill_read import (
+    BENCHMARK_ARTIFACT_STATUSES,
+    EvaluatedOn,
+    evaluated_on,
+)
 from sapphire_flow.store.skill_period_codec import (
     SKILL_PERIOD_FIELDS,
     SkillPeriodPayload,
@@ -109,7 +113,13 @@ def read_skill_options(
             )
             .where(
                 scores.c.station_id == station_id,
-                scores.c.model_id.in_(model_ids),
+                sa.or_(
+                    scores.c.model_id.in_(model_ids),
+                    artifacts.c.status.in_(
+                        [status.value for status in BENCHMARK_ARTIFACT_STATUSES]
+                    ),
+                ),
+                scores.c.model_id == model_id if model_id is not None else sa.true(),
                 scores.c.parameter == "discharge",
                 scores.c.eval_period_end <= now,
                 latest_generation_predicate(scores),
@@ -120,8 +130,6 @@ def read_skill_options(
         )
         .mappings()
         .all()
-        if model_ids
-        else []
     )
     if len(rows) > MAX_SKILL_EVALUATIONS:
         raise HTTPException(
@@ -140,7 +148,8 @@ def read_skill_options(
                 model_id=row["model_id"],
                 model_artifact_id=aid,
                 forecasting_status="active_at_station"
-                if row["model_artifact_id"] == active_ids[ModelId(row["model_id"])]
+                if row["model_id"] in model_ids
+                and row["model_artifact_id"] == active_ids[ModelId(row["model_id"])]
                 else "not_active_at_station",
                 training_period_start=row["training_period_start"],
                 training_period_end=row["training_period_end"],

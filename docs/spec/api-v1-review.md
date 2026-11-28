@@ -157,16 +157,18 @@ file simply lacks the section — never a path or overlay name.
 
 Contract 3.8 adds reviewer/admin discovery for one scoped station, with optional
 exact `model_id`. The response is discharge-only and lists artifacts with readable
-stored scalar scores, including inactive candidates. Active station or group model
-assignments are required, just as for explicit-artifact scalar reads. It uses the
+stored scalar scores, including inactive candidates. Unassigned models are also discoverable when their scored artifact is pending
+approval, active or superseded. Existing assigned-model candidate eligibility is
+unchanged. It uses the
 same latest-generation predicate and excludes future evaluation end dates.
 `availability: no_stored_skill` with an empty list means nothing readable matches;
-it reveals nothing about unassigned models or out-of-scope stations (404).
+out-of-scope stations remain 404. Discovery does not create model assignments.
 
 Each artifact has recorded training dates, evaluation scopes (generation, source,
 forcing, computation version, cadence/phase, dates and `evaluated_on`) and
 `forecasting_status: active_at_station | not_active_at_station`. Current active
-status does not identify the artifact behind an older displayed forecast. Use the
+status requires both an active model assignment and the selected active artifact;
+it does not identify the artifact behind an older displayed forecast. Use the
 network overview's nullable `model_artifact_id`, copied from the visible forecast,
 for `/skill?model_id=...&artifact_id=...`. Absent/withheld overview entries expose
 no artifact. A null artifact must not silently fall back to the current artifact.
@@ -188,7 +190,7 @@ nonnegative integer values), and repeated `threshold_level` (1–8 names, at mos
 64 characters each). For example: `?model_id=cmal_small&artifact_id=<uuid>&lead_hours=24&lead_hours=48&threshold_level=High`.
 The response covers discharge, all seasons and all flow regimes together; it does
 not recompute or slice skill to a requested event period. Inactive artifacts remain
-readable under the same active model-assignment and station scope as `/skill`.
+readable under the same benchmark-artifact eligibility and station scope as `/skill`.
 
 Both diagram kinds retain their stored arrays under `data`: reliability has `bins`,
 `forecast_freq`, `sample_counts`, `observed_freq`; ROC has `thresholds`, `hit_rate`,
@@ -228,8 +230,9 @@ per-lead or per-threshold HTTP fan-out is needed. The synthetic
 Optional `artifact_id=<UUID>` selects stored skill for that artifact, including
 inactive, rejected or failed artifacts with stored results, without activation. Response `selection` is
 `explicit_artifact`; omission preserves `latest_generation_on_forecast_artifact`.
-Reviewer/admin station scope still applies, and the artifact's model must have
-an active assignment at the station. An unknown or mismatched artifact yields
+Reviewer/admin station scope still applies. Assigned models retain existing
+candidate review eligibility; unassigned models require a pending-approval, active
+or superseded artifact with eligible published scores at this station. An unknown or mismatched artifact yields
 empty rows; malformed UUIDs yield 422. Future evaluation end dates remain
 excluded. Candidate skill is deliberately visible to the station's reviewers;
 this does not publish or activate candidate forecasts. Combined null-artifact

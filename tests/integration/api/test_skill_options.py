@@ -137,18 +137,25 @@ def test_catalogue_matches_explicit_skill_and_active_identity(
     )
 
 
-@pytest.mark.parametrize("exclusion", ["unassigned", "future", "other_parameter"])
+@pytest.mark.parametrize(
+    "exclusion", ["unassigned_training", "future", "other_parameter"]
+)
 def test_catalogue_excludes_unreadable_scores(
     overview_case: tuple, exclusion: str
 ) -> None:
     _seed_scores(overview_case)
     conn, client, record, _, _, _ = overview_case
     conn.execute(sa.text("RESET ROLE"))
-    if exclusion == "unassigned":
+    if exclusion == "unassigned_training":
         conn.execute(
             sa.delete(model_assignments).where(
                 model_assignments.c.station_id == record.station_id
             )
+        )
+        conn.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.model_id == record.model_id)
+            .values(status="training")
         )
     else:
         values = (
@@ -187,12 +194,21 @@ def test_catalogue_authorization_and_non_disclosing_absence(
         assert malformed.status_code == 400
 
 
+@pytest.mark.parametrize("assigned", [True, False])
 def test_catalogue_overflow_never_truncates(
-    overview_case: tuple, monkeypatch: pytest.MonkeyPatch
+    overview_case: tuple, monkeypatch: pytest.MonkeyPatch, assigned: bool
 ) -> None:
     _seed_scores(overview_case)
     monkeypatch.setattr("sapphire_flow.api.skill_options.MAX_SKILL_EVALUATIONS", 1)
-    _, client, record, _, _, _ = overview_case
+    conn, client, record, _, _, _ = overview_case
+    if not assigned:
+        conn.execute(sa.text("RESET ROLE"))
+        conn.execute(
+            sa.delete(model_assignments).where(
+                model_assignments.c.station_id == record.station_id
+            )
+        )
+        conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
     response = client.get(f"/api/v1/stations/{record.station_id}/skill-options")
     assert response.status_code == 503
     assert "exceeds" in response.json()["error"]
