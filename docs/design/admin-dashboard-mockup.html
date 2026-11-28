@@ -1,0 +1,1193 @@
+<!doctype html>
+<!--
+  SAPPHIRE Flow administrator dashboard: concept mockup (2026-11-28).
+  A single self-contained page for showing project partners. Nothing here is connected to
+  a running system and all stations, numbers and names are invented.
+
+  Derived from docs/operations/onboarding-start-here.md and new-station-by-hand.md (station
+  journey), model-onboarding.md and model-artifact-import-runbook.md (model versions),
+  and issues #450, #455, #501, #538. The commands inside it will drift: check them against
+  those documents before relying on them.
+
+  Marked "not built yet" in the page: forecast pause switch, model rollback, model assignment
+  switch-off, hydrologist model approval screen, retire/reactivate. Open the file in a browser;
+  the web fonts load from Google Fonts and fall back to system fonts offline.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAPPHIRE Flow Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: fixed sidebar + work area. Onboarding is a station-by-station walkthrough: step rail on the left, working pane on the right; stacks on phones. */
+:root{
+  --bg:#F4F6FA; --surface:#FFFFFF; --surface-2:#EBEFF6; --ink:#121C2B; --ink-2:#4B5A70; --line:#D6DEEA;
+  --accent:#0F52BA; --accent-ink:#FFFFFF; --accent-soft:#E2EBFB;
+  --ok:#1B7A4B; --ok-bg:#E1F3E9; --warn:#8F5A00; --warn-bg:#FFF0CF; --bad:#B02A22; --bad-bg:#FCE3E0;
+  --band:rgba(15,82,186,.16); --obs:#121C2B; --banner-bg:#FFF0CF; --banner-ink:#6B4300;
+  --font-display:'Space Grotesk','Inter',system-ui,sans-serif;
+  --font-body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0D141F; --surface:#151E2C; --surface-2:#1D2839; --ink:#E7EDF7; --ink-2:#97A6BD; --line:#2A3850;
+    --accent:#6C9BFF; --accent-ink:#0B1424; --accent-soft:#1B2C4D;
+    --ok:#5FD39A; --ok-bg:#12301F; --warn:#F2B84B; --warn-bg:#3A2B0B; --bad:#FF8E85; --bad-bg:#3C1815;
+    --band:rgba(108,155,255,.2); --obs:#E7EDF7; --banner-bg:#3A2B0B; --banner-ink:#F2B84B; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0D141F; --surface:#151E2C; --surface-2:#1D2839; --ink:#E7EDF7; --ink-2:#97A6BD; --line:#2A3850;
+  --accent:#6C9BFF; --accent-ink:#0B1424; --accent-soft:#1B2C4D;
+  --ok:#5FD39A; --ok-bg:#12301F; --warn:#F2B84B; --warn-bg:#3A2B0B; --bad:#FF8E85; --bad-bg:#3C1815;
+  --band:rgba(108,155,255,.2); --obs:#E7EDF7; --banner-bg:#3A2B0B; --banner-ink:#F2B84B; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:14px;line-height:1.5}
+h1,h2,h3{font-family:var(--font-display);margin:0;text-wrap:balance;letter-spacing:-.01em}
+h1{font-size:1.6rem} h2{font-size:1.15rem} h3{font-size:.95rem}
+p{margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--font-mono);font-size:.82rem}
+.muted{color:var(--ink-2)}
+.num{font-variant-numeric:tabular-nums}
+.eyebrow{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2);font-weight:600}
+
+.banner{background:var(--banner-bg);color:var(--banner-ink);padding:6px max(16px,env(safe-area-inset-right,0px)) 6px max(16px,env(safe-area-inset-left,0px));font-size:.8rem;display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between;align-items:center}
+.banner button{color:inherit;font-weight:600;cursor:pointer;text-decoration:underline;background:none;border:0;padding:0}
+.shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:calc(100vh - 34px)}
+.side{background:var(--surface);border-right:1px solid var(--line);padding:18px 12px 18px max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:20px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);font-weight:700;font-size:1.05rem}
+.brand i{width:26px;height:26px;border-radius:7px;background:var(--accent);display:grid;place-items:center}
+.brand i::after{content:"";width:10px;height:10px;background:var(--accent-ink);transform:rotate(45deg);border-radius:2px}
+.brand small{display:block;font-family:var(--font-body);font-weight:500;color:var(--ink-2);font-size:.72rem}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;background:none;border:0;border-radius:8px;padding:8px 10px;cursor:pointer;color:var(--ink-2);font-weight:500}
+.nav button:hover{background:var(--surface-2);color:var(--ink)}
+.nav button[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.count{font-size:.72rem;background:var(--surface-2);color:var(--ink-2);border-radius:999px;padding:0 7px;min-width:20px;text-align:center}
+.nav button[aria-current="page"] .count{background:var(--accent);color:var(--accent-ink)}
+.outside{margin-top:auto;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;font-size:.78rem;color:var(--ink-2)}
+.outside b{color:var(--ink)}
+
+.main{padding:0 max(16px,env(safe-area-inset-right,0px)) 40px 24px;min-width:0}
+.topbar{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;padding:14px 0;border-bottom:1px solid var(--line);margin-bottom:20px}
+.who{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.who label{font-size:.78rem;color:var(--ink-2)}
+select,input[type=text],input[type=password],input[type=email],input[type=number],textarea{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0}
+textarea{width:100%;resize:vertical}
+input[readonly]{background:var(--surface-2);color:var(--ink-2)}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-weight:600;font-size:.78rem}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.page-head p{max-width:64ch;margin-top:4px}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:500}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.small{padding:3px 10px;font-size:.8rem}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.link{border-color:transparent;background:none;color:var(--accent);padding:3px 6px}
+
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:1px 10px;font-size:.76rem;font-weight:600;white-space:nowrap}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.bad{background:var(--bad-bg);color:var(--bad)} .pill.info{background:var(--accent-soft);color:var(--accent)}
+.pill.idle{background:var(--surface-2);color:var(--ink-2)}
+.tag{font-size:.7rem;font-weight:600;border:1px solid var(--line);color:var(--ink-2);border-radius:5px;padding:0 6px;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.tag.accent{border-color:var(--accent);color:var(--accent)} .tag.warn{border-color:var(--warn);color:var(--warn)}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 12px;cursor:pointer;font-weight:500;color:var(--ink-2)}
+.chip b{color:var(--ink);margin-left:4px}
+.chip[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.chip[aria-pressed="true"] b{color:var(--accent)}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.panel-pad{padding:16px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th{font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;font-weight:600}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr[data-act]{cursor:pointer}
+tbody tr.focus{background:var(--accent-soft)}
+tbody tr:hover{background:var(--surface-2)} tbody tr.focus:hover{background:var(--accent-soft)}
+td.r,th.r{text-align:right} td.c,th.c{text-align:center}
+.sname b{display:block;font-weight:600}
+.th-sub{display:block;text-transform:none;letter-spacing:0;font-weight:400;font-size:.7rem}
+
+.cell{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;font-size:.7rem;font-weight:700;border:2px solid var(--line);background:var(--surface)}
+.cell.done{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.cell.stopped{background:var(--ink-2);border-color:var(--ink-2);color:var(--surface)}
+.cell.cur{border-color:var(--accent);color:var(--accent)}
+.cell.warn{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.cell.bad{border-color:var(--bad);background:var(--bad-bg);color:var(--bad)}
+.cell.todo{border-style:dashed}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.8rem;color:var(--ink-2);align-items:center}
+.legend i{display:inline-block;width:16px;height:3px;vertical-align:middle;margin-right:6px;border-radius:2px}
+.legend .cell{width:16px;height:16px;border-width:2px;margin-right:6px;vertical-align:middle}
+
+.stack{display:flex;flex-direction:column;gap:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row.between{justify-content:space-between}
+hr{border:0;border-top:1px solid var(--line);margin:0;width:100%}
+.callout{border-radius:10px;padding:10px 12px;font-size:.85rem}
+.callout.warn{background:var(--warn-bg);color:var(--warn)} .callout.bad{background:var(--bad-bg);color:var(--bad)} .callout.info{background:var(--accent-soft);color:var(--ink)} .callout.ok{background:var(--ok-bg);color:var(--ok)}
+.ask{border:1px dashed var(--accent);border-radius:10px;padding:10px 14px;margin-top:20px;background:var(--surface);font-size:.85rem;display:flex;gap:12px;align-items:flex-start}
+.ask b{color:var(--accent);white-space:nowrap}
+.field{display:flex;flex-direction:column;gap:3px;min-width:0}
+.field label{font-size:.78rem;color:var(--ink-2)}
+.cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:start}
+.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+pre{margin:0;background:var(--surface-2);border-radius:10px;padding:12px;overflow-x:auto;font-family:var(--font-mono);font-size:.76rem;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--surface)}
+.seg button{border:0;background:none;padding:7px 14px;cursor:pointer;color:var(--ink-2);font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.mini{display:inline-flex;gap:4px}
+.mini span{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:.68rem;font-weight:700}
+.mini .ok{background:var(--ok-bg);color:var(--ok)} .mini .bad{background:var(--bad-bg);color:var(--bad)}
+.chart{width:100%;height:auto;display:block}
+.chart text{fill:var(--ink-2);font-size:11px;font-family:var(--font-body)}
+.approvebar{position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--line);padding:12px 16px;border-radius:0 0 12px 12px;display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between}
+.matrix td,.matrix th{text-align:center} .matrix td:first-child,.matrix th:first-child{text-align:left}
+.matrix input{width:16px;height:16px;accent-color:var(--accent)}
+td input[type=number]{width:84px;text-align:right}
+
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;cursor:pointer;color:var(--ink-2);font-weight:500;white-space:nowrap}
+.tabs button:hover{color:var(--ink)} .tabs button[aria-selected="true"]{color:var(--accent);border-color:var(--accent);font-weight:600}
+.oprow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.split{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px;align-items:start}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+.kv dt{color:var(--ink-2)} .kv dd{margin:0;text-align:right}
+/* walkthrough */
+.walk{display:grid;grid-template-columns:292px minmax(0,1fr);gap:20px;align-items:start}
+.rail{position:sticky;top:12px;padding:6px 0;max-height:calc(100vh - 24px);overflow-y:auto}
+.rail h3{padding:10px 14px 4px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2);font-family:var(--font-body);font-weight:600;display:flex;justify-content:space-between;gap:8px}
+.rail h3 span{font-weight:400;letter-spacing:0;text-transform:none}
+.rail ul{list-style:none;margin:0;padding:0 6px}
+.rail button{width:100%;display:grid;grid-template-columns:22px 1fr;gap:10px;text-align:left;border:0;background:none;border-radius:8px;padding:6px 8px;cursor:pointer;align-items:center}
+.rail button:hover{background:var(--surface-2)}
+.rail button[aria-current="step"]{background:var(--accent-soft)}
+.rail button small{display:block;color:var(--ink-2);font-size:.72rem}
+.rail .cell{width:20px;height:20px;font-size:.66rem}
+.kindrow{display:flex;gap:6px;flex-wrap:wrap}
+.stepbox{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--surface-2)}
+.stepbox h3{margin-bottom:6px}
+.stepbox ul,.list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px}
+.needs{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px}
+.needs li{display:flex;gap:8px;align-items:flex-start}
+.needs .ok{color:var(--ok);font-weight:700} .needs .no{color:var(--bad);font-weight:700}
+details{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--surface)}
+details summary{cursor:pointer;font-weight:600;color:var(--ink-2)}
+details[open] summary{margin-bottom:8px}
+.facts td{padding:6px 12px}
+.facts .st{font-weight:700;font-size:.74rem;letter-spacing:.04em}
+.facts .PASS{color:var(--ok)} .facts .FAIL{color:var(--bad)} .facts .NA{color:var(--ink-2)}
+.bar{display:flex;align-items:center;gap:10px}
+.bar i{display:block;height:10px;border-radius:5px;background:var(--accent);min-width:3px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.tile{padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.tile b{display:block;font-family:var(--font-display);font-size:1.6rem;line-height:1.2}
+.todo-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);align-items:center}
+.todo-item:last-child{border-bottom:0}
+
+.login{min-height:calc(100vh - 34px);display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
+.login-art{background:var(--accent);color:var(--accent-ink);padding:48px max(24px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;justify-content:space-between;gap:32px}
+.login-art h1{font-size:2.1rem;max-width:16ch}
+.login-art p{max-width:42ch;opacity:.9}
+.login-art .brand i{background:var(--accent-ink)} .login-art .brand i::after{background:var(--accent)} .login-art .brand small{color:inherit;opacity:.8}
+.login-form{display:flex;align-items:center;justify-content:center;padding:32px max(24px,env(safe-area-inset-right,0px))}
+.login-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:14px}
+.login-card .btn{width:100%;padding:10px 14px}
+.sep{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:.78rem}
+.sep::before,.sep::after{content:"";flex:1;border-top:1px solid var(--line)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:10px;font-weight:500;z-index:20;max-width:calc(100vw - 32px)}
+
+@media (max-width:1000px){ .split{grid-template-columns:minmax(0,1fr)} .walk{grid-template-columns:minmax(0,1fr)} .rail{position:static;max-height:none} }
+@media (max-width:900px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .side{flex-direction:row;flex-wrap:wrap;align-items:center;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-right:0;border-bottom:1px solid var(--line);gap:8px 16px}
+  .nav{flex-direction:row;overflow-x:auto;width:100%}
+  .nav button{white-space:nowrap}
+  .outside{display:none}
+  .main{padding-left:max(16px,env(safe-area-inset-left,0px))}
+  .cols2,.login,.formgrid{grid-template-columns:minmax(0,1fr)}
+  .login-art{padding-block:28px} .login-art h1{font-size:1.6rem}
+}
+@media (prefers-reduced-motion:no-preference){ .btn,.chip,tbody tr{transition:background .12s,filter .12s} }
+</style>
+</head>
+<body>
+<div class="banner">
+  <span><b>Concept mockup</b> · invented stations and numbers · nothing here is connected to a live system</span>
+  <button data-act="reset" type="button">Reset demo</button>
+</div>
+<div id="app"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+(function(){
+const THR = 0.5;
+const PHASES = [
+  {t:'Basins',tool:'Basin review tool'},{t:'Weather service',tool:'Data Gateway'},{t:'Station setup',tool:'SAPPHIRE'},
+  {t:'Observations',tool:'SAPPHIRE + DHM files'},{t:'Readiness',tool:'SAPPHIRE'},{t:'Model',tool:'SAPPHIRE + model team'},{t:'Go live',tool:'SAPPHIRE'}
+];
+const A='Administrator', H='Hydrologist';
+const STEPS = [
+  {id:'basin_get',ph:0,t:'Attach the basin package',who:[A],kind:'tool',where:'Basin review tool',batch:1},
+  {id:'basin_approve',ph:0,t:'Hydrologist approves each basin',who:[H],kind:'decision',where:'Basin review tool',batch:1},
+  {id:'gw_prepare',ph:1,t:'Confirm what to fetch',who:[A,H],kind:'tool',where:'SAPPHIRE',batch:1},
+  {id:'gw_register',ph:1,t:'Register basins with the Gateway',who:[A],kind:'tool',where:'SAPPHIRE, writes to the Gateway',batch:1},
+  {id:'gw_confirm',ph:1,t:'Confirm in the Gateway admin panel',who:[A],kind:'external',where:'Gateway admin panel',batch:1},
+  {id:'gw_subscribe',ph:1,t:'Subscribe to weather products',who:[A],kind:'tool',where:'SAPPHIRE, writes to the Gateway',batch:1},
+  {id:'gw_history',ph:1,t:'Start the history jobs',who:[A],kind:'external',where:'Gateway job dashboard',batch:1},
+  {id:'gw_verify',ph:1,t:'Verify weather coverage',who:[A],kind:'tool',where:'SAPPHIRE, reads the Gateway'},
+  {id:'st_create',ph:2,t:'Create the station record',who:[A],kind:'tool',where:'SAPPHIRE'},
+  {id:'st_basin',ph:2,t:'Import basin and static attributes',who:[A],kind:'tool',where:'SAPPHIRE'},
+  {id:'st_wx',ph:2,t:'Group and weather connections',who:[A],kind:'tool',where:'SAPPHIRE'},
+  {id:'st_hist',ph:2,t:'Load the weather history',who:[A],kind:'tool',where:'SAPPHIRE'},
+  {id:'obs_load',ph:3,t:'Load observations, run quality checks',who:[A],kind:'tool',where:'SAPPHIRE, DHM files'},
+  {id:'ready',ph:4,t:'Read the readiness report',who:[A,H],kind:'review',where:'SAPPHIRE'},
+  {id:'model',ph:5,t:'Import and assign the model',who:[A,'Model team'],kind:'tool',where:'SAPPHIRE'},
+  {id:'approve',ph:5,t:'Evaluate and approve the model',who:[H],kind:'future',where:'Model review'},
+  {id:'golive',ph:6,t:'Go live',who:[A,'Owner'],kind:'golive',where:'SAPPHIRE'},
+  {id:'firstfc',ph:6,t:'Check the first forecast',who:[A],kind:'tool',where:'SAPPHIRE'}
+];
+const IDX = Object.fromEntries(STEPS.map((s,i)=>[s.id,i]));
+const N = STEPS.length;
+const STATUS = {
+  progress:{t:'Ready for next step',c:'info'}, review:{t:'Needs a hydrologist',c:'info'}, external:{t:'Waiting on others',c:'warn'},
+  held:{t:'Held',c:'bad'}, active:{t:'Forecasting',c:'ok'}, pollpaused:{t:'Polling paused',c:'warn'}, fcpaused:{t:'Forecasts paused',c:'warn'}, retired:{t:'Retired',c:'idle'}
+};
+const MODELS = {A:'cmal_small v3 · existing model', B:'cmal_small v4 · Nepal fine-tune (candidate)'};
+const PERMS = [
+  ['view','View stations, skill and decisions'],['api','Read forecasts through the API'],
+  ['approve','Approve basins, models and resuming forecasts'],['exception','Record skill exceptions'],
+  ['onboard','Run setup steps; pause, retire or stop stations and models'],['alerts','Configure alert thresholds and CAP output'],
+  ['users','Manage users and roles']
+];
+const ROLES = ['Administrator','Hydrologist','Observer','API client'];
+const HRU = 'nepal_b3_20261125';
+
+function st(id,name,river,area,step,o){return Object.assign({id,name,river,area,step,block:null,poll:'on',fc:'on',pz:{poll:null,fc:null},gap:null,last:'',lon:0,lat:0,datum:0,fallback:false,A:null,B:null,thr:[100,200]},o||{});}
+function initial(){
+  return {
+    view:'login', role:'Administrator', filter:'all', sview:'ops', focus:'NP-0101', tab:null, viewStep:null, model:'A', sel:new Set(), exceptions:{}, excOpen:false, prev:new Set(), rc:{}, newBatch:false, hostSwitch:false, evidence:[], pz:null,
+    assign:{status:'ACTIVE'}, artSel:'a-v4', artForm:null, add:null, vn:6,
+    perms:{
+      'Administrator':{view:1,api:1,approve:0,exception:0,onboard:1,alerts:1,users:1},
+      'Hydrologist':{view:1,api:1,approve:1,exception:1,onboard:0,alerts:0,users:0},
+      'Observer':{view:1,api:0,approve:0,exception:0,onboard:0,alerts:0,users:0},
+      'API client':{view:0,api:1,approve:0,exception:0,onboard:0,alerts:0,users:0}
+    },
+    users:[
+      {id:'u1',name:'Lukas Meier',org:'hydrosolutions',role:'Administrator',st:'Active',last:'Today, 09:12'},
+      {id:'u2',name:'Sita Gurung',org:'NHS',role:'Hydrologist',st:'Active',last:'Yesterday'},
+      {id:'u3',name:'Prakash Thapa',org:'NHS',role:'Hydrologist',st:'Active',last:'24 Nov'},
+      {id:'u4',name:'Maya Rai',org:'NHS',role:'Observer',st:'Invited',last:'Never'},
+      {id:'u5',name:'flow-map service',org:'NHS',role:'API client',st:'Active token',last:'Today, 14:00'}
+    ],
+    capOn:true, deliv:'push', endpoint:'https://alerts.example-nhs.test/cap/inbox',
+    arts:[
+      {id:'a-v1',v:'v1',model:'cmal_small',status:'rejected',src:'Imported',trained:'2 Aug 2026',period:'2000 – 2016',sha:'51d0…8e3a',prov:'Known',lineage:'',decision:'Rejected 3 Nov 2026 · P. Thapa',reason:'Failed the compatibility check: two static attributes could not be resolved.',note:''},
+      {id:'a-v2',v:'v2',model:'cmal_small',status:'superseded',src:'Imported',trained:'9 Aug 2026',period:'2000 – 2017',sha:'c7a2…0b19',prov:'Known',lineage:'',decision:'Superseded 12 Nov 2026 by v3',reason:'',note:'Replaced by v3 after the model team corrected the time zone handling.'},
+      {id:'a-v3',v:'v3',model:'cmal_small',status:'active',src:'Imported',trained:'14 Aug 2026',period:'2000 – 2018',sha:'a3f9…c21d',prov:'Known',lineage:'',decision:'Active since 12 Nov 2026 · L. Meier',reason:'',note:'Imported from the model team. Source commit and config hash recorded.'},
+      {id:'a-v4',v:'v4',model:'cmal_small',status:'pending_approval',src:'Fine-tuned here (donor v3)',trained:'24 Nov 2026',period:'Fitting 2010 – 2016, evaluation 2017 – 2020',sha:'9c41…77be',prov:'Known',lineage:'Warm start from v3, LoRA rank 8, request 10114737',decision:'Ready for review since 25 Nov 2026',reason:'',note:'Candidate and donor were evaluated on the same held-out dates. The donor\'s own training exposure is unknown, so this is not proof of improved independent skill.'},
+      {id:'a-v5',v:'v5',model:'cmal_small',status:'training',src:'Fine-tuned here (donor v3)',trained:'–',period:'Fitting 2010 – 2018, evaluation 2019 – 2020',sha:'pending',prov:'Known',lineage:'Warm start from v3, LoRA rank 16',decision:'Training started 27 Nov 2026 · L. Meier',reason:'',note:'Fitting is running. The active version keeps forecasting.'}
+    ],
+    stations:[
+      st('NP-0101','Betrawati','Trishuli',4110,IDX.approve,{lon:85.17,lat:28.00,datum:560,last:'Model assigned 25 Nov',fallback:true,
+        A:{kge:.78,nse:.74,bias:3,cov:96},B:{kge:.81,nse:.77,bias:2,cov:96},thr:[420,680]}),
+      st('NP-0102','Arughat','Budhi Gandaki',3830,IDX.approve,{lon:84.82,lat:28.05,datum:470,last:'Model assigned 25 Nov',fallback:true,
+        A:{kge:.71,nse:.69,bias:-6,cov:94},B:{kge:.76,nse:.73,bias:-4,cov:94},thr:[390,640]}),
+      st('NP-0103','Bhulbhule','Marsyangdi',3190,IDX.approve,{lon:84.42,lat:28.27,datum:840,last:'Model assigned 26 Nov',
+        A:{kge:.41,nse:.38,bias:18,cov:88},B:{kge:.52,nse:.49,bias:11,cov:88},thr:[360,600]}),
+      st('NP-0104','Devghat','Narayani',31100,IDX.ready,{lon:84.43,lat:27.72,datum:165,dhmMissing:true,last:'Readiness report 26 Nov',
+        block:{type:'held',who:'DHM',text:'Datum, rating curve and discharge series are missing. The data request to DHM is open.'},thr:[4800,7200]}),
+      st('NP-0105','Seti Beni','Kali Gandaki',6630,IDX.gw_verify,{lon:83.57,lat:28.34,datum:830,last:'History job started 24 Nov',
+        block:{type:'waiting',who:'Gateway',text:'Precipitation and temperature are missing for 3 of 30 days (14–16 Nov). The Gateway is still processing; try again later.'},thr:[520,880]}),
+      st('NP-0106','Banga','Seti',7460,IDX.obs_load,{lon:81.27,lat:29.02,datum:690,last:'Basin imported 20 Nov',
+        block:{type:'held',who:'DHM',text:'The delivered discharge file covers 41% of the period; the model needs at least 70%. Waiting for DHM to send the missing years.'},thr:[310,520]}),
+      st('NP-0107','Sundarijal','Bagmati',150,N,{lon:85.43,lat:27.77,datum:1490,last:'Went live 14 Nov',fallback:true,A:{kge:.69,nse:.66,bias:2,cov:97},thr:[180,320]}),
+      st('NP-0108','Chisapani','Karnali',42890,N,{lon:81.28,lat:28.64,datum:225,last:'Retired 20 Nov',fallback:true,poll:'paused',fc:'paused',
+        pz:{poll:{who:'Lukas Meier',when:'20 Nov 2026',days:8,why:'Gauge relocated; rating curve outdated.'},fc:{who:'Lukas Meier',when:'20 Nov 2026',days:8,why:'Gauge relocated; rating curve outdated.'}},A:{kge:.73,nse:.70,bias:-2,cov:93},thr:[5200,8100]}),
+      st('NP-0109','Busti','Tamakoshi',2850,IDX.model,{lon:86.17,lat:27.63,datum:760,last:'Readiness report 25 Nov',thr:[300,520]}),
+      st('NP-0110','Sanghutar','Likhu',1170,IDX.basin_approve,{lon:86.05,lat:27.38,datum:610,last:'Package attached 26 Nov',thr:[110,190]}),
+      st('NP-0111','Pachuwarghat','Sunkoshi',4530,IDX.basin_approve,{lon:85.86,lat:27.57,datum:790,last:'Package attached 26 Nov',thr:[260,430]}),
+      st('NP-0112','Bahrabise','Bhotekoshi',2110,IDX.gw_confirm,{lon:85.90,lat:27.79,datum:850,last:'Basins registered 26 Nov',thr:[210,350]}),
+      st('NP-0113','Chatara','Koshi',54100,N,{lon:87.16,lat:26.87,datum:110,last:'Polling paused 26 Nov',fallback:true,poll:'paused',
+        pz:{poll:{who:'Lukas Meier',when:'26 Nov 2026',days:1,why:'DHM server very slow; polling paused while the ingest fix is rolled out.'},fc:null},A:{kge:.74,nse:.71,bias:1,cov:95},thr:[6100,9000]}),
+      st('NP-0114','Banbasa','Mahakali',15260,N,{lon:80.10,lat:28.99,datum:195,last:'Forecasts paused 25 Nov',fc:'paused',
+        pz:{poll:null,fc:{who:'Sita Gurung',when:'25 Nov 2026',days:2,why:'Forecasts look too low after the gauge was re-levelled; under review.'}},A:{kge:.58,nse:.52,bias:-14,cov:91},thr:[2100,3400]})
+    ],
+    audit:[
+      {sid:'NP-0108',t:'20 Nov 2026, 08:15',who:'Lukas Meier',what:'Retired: forecasts and polling paused',why:'Gauge relocated; rating curve outdated.'},
+      {sid:'NP-0113',t:'26 Nov 2026, 11:02',who:'Lukas Meier',what:'Polling paused',why:'DHM server very slow; polling paused while the ingest fix is rolled out.'},
+      {sid:'NP-0114',t:'25 Nov 2026, 16:40',who:'Sita Gurung',what:'Forecasts paused',why:'Forecasts look too low after the gauge was re-levelled; under review.'},
+      {sid:'NP-0107',t:'14 Nov 2026, 10:41',who:'Sita Gurung',what:'Model approved; station went live',why:''}
+    ],
+    log:[
+      {t:'12 Nov 2026, 09:30',who:'L. Meier',st:'Group nepal-batch3',model:'cmal_small v3',what:'Imported and activated; v2 superseded',note:''},
+      {t:'14 Nov 2026, 10:41',who:'S. Gurung',st:'Sundarijal',model:'cmal_small v3',what:'Approved',note:''}
+    ]
+  };
+}
+let S = initial();
+
+const $ = (s)=>document.querySelector(s);
+const esc = (x)=>String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const can = (p)=>!!S.perms[S.role][p];
+const byId = (id)=>S.stations.find(s=>s.id===id);
+const code = (s)=>s.id.slice(3);
+const stepPerm = (stp)=>{
+  const a=stp.who.includes(A), h=stp.who.includes(H);
+  return a&&h ? (can('onboard')||can('approve')) : h ? can('approve') : can('onboard');
+};
+const dis = (ok)=>ok?'':' disabled title="Your role cannot do this"';
+function toast(msg){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>{t.hidden=true},3600);}
+function stamp(){return new Date().toLocaleString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});}
+function dayStamp(i){return new Date(2026,10,3+i).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});}
+const fmt = (v,d=2)=>v===null||v===undefined?'–':v.toFixed(d);
+const nameNow = ()=>S.role===H?'Sita Gurung':'Lukas Meier';
+
+function finished(s){return s.step>=N;}
+function bothPaused(s){return finished(s)&&s.poll==='paused'&&s.fc==='paused';}
+function statusOf(s){
+  if(finished(s)){ if(bothPaused(s)) return 'retired'; if(s.fc==='paused') return 'fcpaused'; if(s.poll==='paused') return 'pollpaused'; return 'active'; }
+  if(s.block) return s.block.type==='waiting'?'external':'held';
+  return STEPS[s.step].who[0]===H?'review':'progress';
+}
+function phaseState(s,p){
+  const idx=STEPS.map((t,i)=>t.ph===p?i:-1).filter(i=>i>=0), first=idx[0], last=idx[idx.length-1];
+  if(bothPaused(s)) return 'stopped'; if(s.step>last) return 'done';
+  if(s.step>=first) return s.block?(s.block.type==='held'?'bad':'warn'):'cur';
+  return 'todo';
+}
+const glyph = {done:'✓',stopped:'–',cur:'',warn:'…',bad:'!',todo:''};
+function cell(state,title){return `<span class="cell ${state}" title="${esc(title||'')}">${glyph[state]}</span>`;}
+const inGroup = (s)=>finished(s)||s.step>IDX.model;
+const activeArt = ()=>S.arts.find(a=>a.status==='active');
+const dayNow = ()=>new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+const hex4 = ()=>Math.floor(Math.random()*65536).toString(16).padStart(4,'0');
+const ART = {active:{t:'Active',c:'ok'},pending_approval:{t:'Waiting for review',c:'info'},training:{t:'Training',c:'idle'},superseded:{t:'Superseded',c:'idle'},rejected:{t:'Rejected',c:'bad'}};
+const artPill = (k)=>`<span class="pill ${ART[k].c}">${ART[k].t}</span>`;
+function modelLabel(s){ if(!inGroup(s)) return '–'; const a=activeArt(); return S.assign.status==='ACTIVE'&&a?'cmal_small '+a.v:'Assignment off'; }
+
+/* ---------- step content (what each step shows, and the real command underneath) ---------- */
+function content(s,id){
+  const c=code(s), poly='g_'+c, nst=S.stations.length;
+  const C={
+  basin_get:{
+    intro:'Bring in the basin outlines and static attributes for this batch. Use the package hydrosolutions already extracted for you. Run the extractor only for new or corrected stations.',
+    needs:[['Station sheet that matches the package exactly (codes kept as text)',1],['Unpacked package folder and its original ZIP',1],['An empty workspace folder for this batch',1]],
+    inputs:[['Route','Attach an existing package'],['Package folder','…/nepal-basins/package'],['Station sheet','stations-batch3.csv ('+nst+' stations)']],
+    plan:['Check the package structure and its checksums','Compare the station codes and names with your sheet','Open the basin review page for the hydrologist'],
+    result:['Package attached, checksums match','Review page opened for the hydrologist'],
+    cmd:'uv run python -m sapphire_flow.cli.basin_operator \\\n  --workspace "$WORKSPACE" --package-dir "$PACKAGE_DIR"',
+    stops:[['Package refused after Confirm','The sheet must list exactly the package\'s stations and display names. Fix the sheet, never the package.'],['Station codes lost their leading zeros','Import the code column as text and start again.']]},
+  basin_approve:{
+    intro:'The hydrologist looks at each basin on the map and records approve or reject. Only approved basins move on, as one saved handover folder that cannot be changed afterwards.',
+    plan:['Record the decision for '+s.name,'Create the approved-only handover folder (cannot be edited later)'],
+    result:['Basin approved by the hydrologist','Approved-only handover saved'],
+    cmd:'# In the basin review page:\n#   record a decision per basin, then\n#   "Create immutable approved-only handover"',
+    stops:[['Coordinates look swapped or off the river','Reject the basin and ask DHM to confirm the coordinate. Never pick the point that gives the nicer basin.']]},
+  gw_prepare:{
+    intro:'Decide what to fetch: which weather variables, how many years of history, which forecast cycles. The proposal comes from what the model needs. The hydrologist can change it.',
+    inputs:[['Model','cmal_small'],['Weather variables','Precipitation, 2 m temperature'],['History window','2010 – 2023 (14 years)'],['Forecast cycles','00 and 12 UTC, 10-day lead'],['Review reference','Integration review #450']],
+    plan:['Save the proposal to the evidence folder','Nothing is sent to the Gateway yet'],
+    result:['Scope confirmed with review reference #450'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" \\\n  --handover "$HANDOVER" prepare --scope "$SCOPE"\n# then again with: --confirm REV --vatro-review REF',
+    stops:[['"Evidence folder must be private"','The dashboard creates it with the right permissions. By hand: chmod 700.'],['Scope has unresolved required inputs','Complete the scope and prepare again.']]},
+  gw_register:{
+    intro:'Upload the basin outlines to the Data Gateway, once. The Gateway name is permanent and can never be reused for another shape.',
+    warn:'This writes to the shared Gateway. It cannot be undone from here.',
+    inputs:[['New Gateway name',HRU],['Basin file','basins.gpkg ('+nst+' outlines)'],['Gateway key','Read from the key file; never shown']],
+    plan:['Check the name is new: lowercase letters, digits and underscores','Upload basins.gpkg once','Mark the registration as "needs confirmation"'],
+    result:['Upload sent. Registration needs confirmation (next step)'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway --workspace "$EVIDENCE" \\\n  --handover "$HANDOVER" register --hru "$NEW_HRU" \\\n  --config "$CONFIG" --secret-file "$KEY_FILE"',
+    stops:[['The upload times out or the answer is unclear','Do not rename or retry. The registration stays held. Ask the Gateway admin whether the shape exists.']]},
+  gw_confirm:{
+    intro:'A successful upload is not proof yet. Check in the Gateway admin panel that the shape is listed and Ready, then record what you saw.',
+    ext:{steps:['Open the Gateway admin panel and go to Shapefiles','Find "'+HRU+'"','Check that its status is Ready'],btn:'Open the Gateway admin panel ↗',
+      fields:[['ev','What you saw, in one honest sentence','e.g. '+HRU+' listed, status Ready, uploaded 14:32']],
+      warn:'If you cannot see it, do not confirm. Leave it held and ask the Gateway administrator.'},
+    result:['Registration confirmed. Evidence: shape listed, status Ready'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway … reconcile \\\n  --outcome confirmed --actor "$ACTOR" --evidence "<what you saw>"',
+    stops:[['Not listed or not Ready','Stop. Resolve the upload or CRS problem with the Gateway admin before enabling anything.']]},
+  gw_subscribe:{
+    intro:'Tell the Gateway to produce ERA5 history and forecast weather for the new name. First a preview, then confirm the exact revision that the preview shows.',
+    inputs:[['Gateway name',HRU],['Products','ERA5-Land history, ECMWF IFS forecast'],['Variables','Precipitation, 2 m temperature']],
+    warn:'The preview must list only your new name. If it lists others, stop.',
+    plan:['Create 4 subscriptions for '+HRU+' only','No existing subscription is changed (revision r-7f3a)'],
+    result:['4 subscriptions created and enabled (revision r-7f3a)'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway … subscribe \\\n  --config "$CONFIG" --secret-file "$KEY_FILE"        # preview\nuv run python -m sapphire_flow.cli.prepare_gateway … subscribe \\\n  --confirm "$SUBSCRIPTION_REVISION" …              # apply',
+    stops:[['History job fails later','Without a subscription the weather history job fails. Check this step first.']]},
+  gw_history:{
+    intro:'The Gateway fills the weather history with jobs that you start in its job dashboard. SAPPHIRE cannot start them for you. The second job is shared by all basins, so write down when you start it.',
+    ext:{steps:['Open the Gateway job dashboard','Run era5_land_backfill__targeted for "'+HRU+'", years 2010 to 2023','Run a backfill of ifs__subdaily for the last 7 days, with reprocessing on. This re-processes every basin on the Gateway.','Note the time you started each job'],btn:'Open the Gateway job dashboard ↗',
+      fields:[['job','Job reference (free text; the dashboard may show no id)','e.g. ERA5 targeted run, started 24 Nov 15:10'],['ev','Time and reason for the shared IFS backfill','e.g. 24 Nov 15:25, new basins need recent forecasts']],
+      warn:'Under the owner\'s standing rule an administrator may start the shared IFS backfill. Record time and reason.'},
+    result:['Job references recorded in the evidence folder'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway … history   # prints the steps\nuv run python -m sapphire_flow.cli.prepare_gateway … history \\\n  --stream era5_history --actor "$ACTOR" --job-reference "<text>"',
+    stops:[['The dashboard shows no run id','Normal. Write something honest in the reference field and do not wait for an id.']]},
+  gw_verify:{
+    intro:'Ask the Gateway for the actual weather values and check coverage for each station. A finished job is not proof; only the values are.',
+    inputs:[['Check window','Last 30 days and the history window'],['Variables','Precipitation, 2 m temperature']],
+    plan:['Read-only request per station and variable','Mark each station eligible or held, with the reason'],
+    result:['Coverage verified: station eligible'],
+    cmd:'uv run python -m sapphire_flow.cli.prepare_gateway … resume \\\n  --config "$CONFIG" --secret-file "$KEY_FILE"\nuv run python -m sapphire_flow.cli.prepare_gateway … status',
+    stops:[['Eligible, but the first forecast later stops with "missing_support"','The Gateway\'s combined product may lag the backfill. Wait and check again.'],['The Gateway says "source data missing"','The newest days are not there yet. Try later; it is not a fault of the station.']]},
+  st_create:{
+    intro:'Create the station in SAPPHIRE. Code and network must match the basin package exactly. Ask the hydrologist for the gauge type and the gauge datum: without the datum, water-level range checks are skipped.',
+    form:[['Tenant','chwrr'],['Code',c],['Network','dhm'],['Name',s.name],['Longitude',s.lon],['Latitude',s.lat],['Time zone','Asia/Kathmandu'],['Measures','Water level, discharge'],['Gauge type','Staff gauge'],['Gauge datum (m above sea level)',s.datum]],
+    plan:['Create station "'+s.name+'" (code '+c+', network dhm, tenant chwrr)','Check the code is not used by any tenant','Store gauge type and datum'],
+    result:['Station created, id assigned','Gauge datum '+s.datum+' m a.s.l. stored'],
+    cmd:'uv run python -m sapphire_flow.cli.create_station --tenant chwrr --code '+c+' \\\n  --network dhm --name "'+s.name+'" --lon '+s.lon+' --lat '+s.lat+' \\\n  --timezone Asia/Kathmandu --parameters water_level,discharge \\\n  --gauge-type staff --datum-masl '+s.datum+' --gateway-name '+HRU+' [--apply]',
+    stops:[['Code already used','Codes are unique across tenants, and nothing can rename them afterwards. Check before you apply.']],
+    note:'Today hydrosolutions runs this step.'},
+  st_basin:{
+    intro:'Attach the approved basin and its static attributes to the station.',
+    inputs:[['Package','nepal-batch3-v1 (approved handover)'],['Match','Code and network must equal the package']],
+    plan:['Import 1 basin and its static attributes for "'+s.name+'"','Hold the basin if code or network differ'],
+    result:['accepted=1, imported_basins=1, onboarding_held=0'],
+    cmd:'uv run python -m sapphire_flow.cli.import_basin_package \\\n  --package-dir "$HANDOVER/package"',
+    stops:[['Basin held: no matching station','Compare code and network with the package first.']]},
+  st_wx:{
+    intro:'Put the station in a group and connect it to the three weather sources the forecast cycle needs.',
+    inputs:[['Group','nepal-batch3'],['Weather scope','nepal-b3 ('+HRU+', polygon '+poly+')'],['Connections','Past weather (ERA5-Land), forecast (IFS), live forecast (operational)']],
+    plan:['Add "'+s.name+'" to group nepal-batch3','Create 3 weather connections bound to polygon '+poly,'Check the polygon name equals what you registered'],
+    result:['Group updated','3 weather connections active'],
+    cmd:'uv run python scripts/create_station_group.py --tenant chwrr --network dhm \\\n  --name nepal-batch3 --station-code '+c+' --apply\nuv run python -m sapphire_flow.cli.onboard_nepal weather-bindings --tenant chwrr \\\n  --weather-scope nepal-b3 --confirm-package-joins [--apply]',
+    stops:[['Scope and group disagree','Change both together, otherwise the daily refresh fails for every station.']]},
+  st_hist:{
+    intro:'Copy the weather history from the Gateway into SAPPHIRE. This submits a job. It is done when the job finishes and the stored coverage checks out.',
+    inputs:[['From','2010-01-01'],['To (exclusive)','2024-01-01'],['Source','ERA5-Land through the Gateway']],
+    plan:['Submit the history job to the worker','This step has no dry run'],
+    result:['Job completed: 5 114 days stored for precipitation and temperature'],
+    cmd:'uv run python -m sapphire_flow.cli.onboard_nepal history --tenant chwrr \\\n  --confirm-t8 --weather-scope nepal-b3 \\\n  --start 2010-01-01T00:00:00Z --end 2024-01-01T00:00:00Z',
+    stops:[['Job fails with only "Operational ERA5 history failed"','Usually the name is not subscribed, or the Gateway ERA5 job has not finished. Check the two Gateway steps.']],
+    note:'Once the station is in the weather scope, the host refreshes the last 30 days daily at 00:35 UTC.'},
+  obs_load:{
+    intro:'Load the observation history that DHM delivered and run the quality checks. Without the gauge datum the range checks are skipped, so SAPPHIRE refuses to continue without it.',
+    needs:[['Delivered observation file from DHM',!s.block],['Gauge datum stored (step "Create the station record")',1],['Rating table, if discharge is derived from level',1]],
+    inputs:[['Observation file','dhm_delivery_2026_10/'+c+'.csv'],['Value type','Gauge reading (m)'],['Rating table','rating_'+c+'.csv']],
+    plan:['Convert readings to m above sea level using the datum','Derive discharge from level with the rating table (never extrapolated)','Run quality checks and flag odd values. Nothing is written until you apply.'],
+    result:['4 812 daily values stored','3.1% flagged suspect, flags visible','Discharge derived with the rating table'],
+    cmd:'uv run python -m sapphire_flow.cli.load_station_observations --tenant chwrr \\\n  --network dhm --code '+c+' --file "$DELIVERED_FILE" --rating "$RATING" [--apply]',
+    stops:[['The delivered file covers too little of the period','The station stays held. Ask DHM for the missing years; gaps are never filled in.'],['Quality checks report "datum-skip"','The datum is missing. Ask for it, store it, load again.']],
+    note:'Delivered DHM files stay on the host. This screen shows counts only.'},
+  model:{
+    intro:'Import the trained model file and assign it to the station\'s group. A station cannot go live without an assigned model.',
+    inputs:[['Model','cmal_small v3'],['Model file','cmal_small_v3.bin (SHA-256 checked against the source)'],['Provenance','Training period and config hash from the model team'],['Group','nepal-batch3'],['Time step','24 hours']],
+    plan:['Import the model file once its checksum matches','Assign cmal_small to group nepal-batch3, priority 1','The station is not forecasting yet'],
+    result:['Model imported and assigned to group nepal-batch3'],
+    cmd:'# import: deployment "import-model-artifact" with group_id set\nuv run python -m sapphire_flow.cli.assign_group_model --tenant chwrr \\\n  --group-name nepal-batch3 --model cmal_small --time-step-hours 24 [--apply]',
+    stops:[['Model has no "models" row','Import the model file first.'],['Static attributes missing','Import the basin before assigning a model.']],
+    note:'Retraining is a separate path; see the model onboarding guide.'},
+  approve:{
+    intro:'Hydrologists compare the model with past observations: skill scores and hydrographs, with a written reason for any exception. The approval is tied to the exact model version.',
+    result:['Model approved by the hydrologist for evaluation forecasts'],
+    cmd:'# Not built yet. Proposed: the Model review screen.',stops:[]},
+  golive:{
+    intro:'Switch the station on. Live data collection starts and the station joins the forecast cycle. Seven conditions must all hold.',
+    result:['Station set to operational','Live collection started, forecast cycle includes the station'],
+    cmd:'uv run python -m sapphire_flow.cli.promote_station --tenant chwrr --network dhm \\\n  --code '+c+' --operator "$ACTOR" --weather-scope nepal-b3 [--apply]',
+    stops:[['Refused (exit 3)','A condition failed, or the host switch promotion_allowed is off.'],['Demoting later','Can lose observations permanently. Treat going live as the owner\'s decision.']]},
+  firstfc:{
+    intro:'Make sure the first forecast really appears. If the first cycle stops with "missing_support", wait and try again; the Gateway may still be catching up.',
+    inputs:[['Gateway check','Read-only, last 30 days'],['First cycle','Next 00 UTC run, automatic']],
+    plan:['Ask the Gateway for the station\'s last 30 days (read-only)','List any day without data'],
+    result:['gateway_data PASS: all 30 days present','First forecast stored: 10 days, 7 quantiles'],
+    cmd:'uv run python -m sapphire_flow.cli.station_readiness --tenant chwrr --network dhm \\\n  --code '+c+' --model cmal_small --weather-scope nepal-b3 --check-gateway',
+    stops:[['"missing_support" in the first cycle','Wait and try again. The cause is inferred: the Gateway product may lag the backfill.']]},
+  ready:{
+    intro:'One report of 13 facts about this station. It states facts, not a verdict. Hand it to the hydrologist, who decides whether to continue.',
+    result:['Readiness report reviewed by the hydrologist'],
+    cmd:'uv run python -m sapphire_flow.cli.station_readiness --tenant chwrr --network dhm --code '+c+' \\\n  [--model cmal_small] [--weather-scope nepal-b3] [--check-gateway]',
+    stops:[['Many lines FAIL','Read the lines, not the count. Missing DHM data (datum, rating curve, discharge) keeps the station held until it arrives.']]}
+  };
+  return C[id];
+}
+/* readiness facts */
+function facts(s){
+  const miss=!!s.dhmMissing, pastModel=s.step>IDX.model;
+  return [
+    ['station','PASS','Station record exists in tenant chwrr'],
+    ['datum',miss?'FAIL':'PASS',miss?'No gauge datum stored; range checks would be skipped':'Gauge datum '+s.datum+' m above sea level'],
+    ['basin','PASS','Basin imported and bound'],
+    ['statics',pastModel?'PASS':'NA',pastModel?'All static features of the model resolve':'Not applicable without a model'],
+    ['weather bindings','PASS','Past, forecast and live weather connections active'],
+    ['weather history','PASS','Stored history covers the window; newest 7 days filled at forecast time'],
+    ['observations',miss?'FAIL':'PASS',miss?'No observations stored':'4 812 daily values, quality checks ran with the datum'],
+    ['rating curve',miss?'FAIL':'PASS',miss?'No active rating curve; needed for discharge':'Active rating curve stored'],
+    ['discharge series',miss?'FAIL':'PASS',miss?'No usable discharge series':'Discharge derived from level'],
+    ['group and model','PASS',pastModel?'In group nepal-batch3, ACTIVE assignment cmal_small':'In group nepal-batch3; no model assigned yet'],
+    ['discharge lookback',miss?'FAIL':'PASS',miss?'0 of 30 days have a usable discharge value':'All 30 days have a usable value'],
+    ['naming','PASS','Gateway and polygon names match the weather scope'],
+    ['weather wait facts','PASS','All three connections bound; stored reanalysis complete']
+  ];
+}
+function goliveConds(s){
+  return [['Station is still in onboarding',1],['Datum and gauge type are set',1],['Basin is set and present',1],['Group has an ACTIVE model assignment',1],['Three weather connections are ACTIVE and match the scope',1],['The model\'s static features all resolve',1],['Every lookback day has usable discharge and an active rating curve',1]];
+}
+
+/* ---------- seeded hydrograph (model review) ---------- */
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function series(s,key){
+  const n=92, idx=parseInt(s.id.slice(-2),10), base=Math.sqrt(s.area)*1.1;
+  const r=rng(idx*17), peaks=Array.from({length:6},()=>({c:8+r()*76,a:.5+r()*1.6,w:2+r()*3}));
+  const obs=Array.from({length:n},(_,d)=>base*(.5+1.1*Math.sin(Math.PI*d/n))+peaks.reduce((q,p)=>q+base*p.a*Math.exp(-((d-p.c)**2)/(2*p.w*p.w)),0));
+  const m=s[key], r2=rng(idx*31+(key==='B'?7:3)), noise=(1-m.kge)*.55, spread=.07+(1-m.kge)*.3;
+  const med=obs.map(v=>Math.max(2,v*(1+m.bias/100)*(1+(r2()-.5)*2*noise)));
+  return {obs,med,lo:med.map(v=>v*(1-spread)),hi:med.map(v=>v*(1+spread*1.3))};
+}
+function chart(s){
+  const d=series(s,S.model), W=640,H=250,L=52,R=12,T=12,B=28, n=d.obs.length;
+  const raw=Math.max(...d.hi), step=Math.pow(10,Math.floor(Math.log10(raw/4))), mult=[1,2,2.5,5,10].find(k=>raw/(step*k)<=4.6)||10, tick=step*mult, ymax=tick*Math.ceil(raw/tick);
+  const x=i=>L+(W-L-R)*i/(n-1), y=v=>T+(H-T-B)*(1-v/ymax);
+  const line=a=>a.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)).join('');
+  const band=d.hi.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)).join('')+d.lo.map((v,i,a)=>'L'+x(n-1-i).toFixed(1)+' '+y(a[n-1-i]).toFixed(1)).join('')+'Z';
+  let grid='';for(let v=0;v<=ymax+1e-9;v+=tick)grid+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end">${Math.round(v)}</text>`;
+  const xt=[[0,'1 Jul'],[31,'1 Aug'],[62,'1 Sep'],[91,'30 Sep']].map(([i,t],k)=>`<text x="${x(i)}" y="${H-8}" text-anchor="${k===0?'start':k===3?'end':'middle'}">${t}</text>`).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Observed and simulated discharge at ${esc(s.name)}, July to September 2022">
+    ${grid}<text x="${L}" y="${T-1}" text-anchor="start" style="font-size:10px">m³/s</text>
+    <path d="${band}" fill="var(--band)" stroke="none"/>
+    <path d="${line(d.med)}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+    <path d="${line(d.obs)}" fill="none" stroke="var(--obs)" stroke-width="1.6" stroke-linejoin="round"/>
+    ${xt}</svg>`;
+}
+function basinSvg(s){
+  const r=rng(parseInt(s.id.slice(-2),10)*11), cx=150,cy=82, pts=Array.from({length:16},(_,i)=>{const a=i/16*Math.PI*2, rad=48+r()*30; return [cx+Math.cos(a)*rad*1.55, cy+Math.sin(a)*rad];});
+  const out=pts.reduce((m,p)=>p[1]>m[1]?p:m,pts[0]);
+  return `<svg class="chart" viewBox="0 0 300 170" role="img" aria-label="Schematic outline of the basin of ${esc(s.name)} with its outlet"><rect x="0" y="0" width="300" height="170" rx="8" fill="var(--surface-2)"/>
+    <path d="M${pts.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join('L')}Z" fill="var(--band)" stroke="var(--accent)" stroke-width="2"/>
+    <path d="M${cx-40} ${cy-60}Q${cx+10} ${cy-10} ${out[0]} ${out[1]}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <circle cx="${out[0].toFixed(1)}" cy="${out[1].toFixed(1)}" r="5" fill="var(--bad)"/><text x="${(out[0]+9).toFixed(1)}" y="${(out[1]+4).toFixed(1)}">gauge outlet</text></svg>`;
+}
+
+/* ---------- views ---------- */
+function pill(k){const s=STATUS[k];return `<span class="pill ${s.c}">${s.t}</span>`;}
+function waitingOn(s){
+  if(finished(s)){ if(bothPaused(s)) return 'Nobody (retired)'; if(s.fc==='paused') return 'Hydrologist (to resume forecasts)'; if(s.poll==='paused') return 'Administrator (to resume polling)'; return 'Nobody'; }
+  if(s.block) return s.block.who+(s.block.type==='waiting'?' (time)':' (data)');
+  return STEPS[s.step].who.join(' + ');
+}
+function login(){
+  return `<div class="login">
+    <div class="login-art">
+      <div class="brand"><i></i><div>SAPPHIRE Flow<small>Administration</small></div></div>
+      <div class="stack"><h1>Bring new stations into forecasting, with a person's approval at every step.</h1>
+      <p>One guided place for what takes several tools today: basins, weather data, station records, observations, models and going live.</p></div>
+      <p class="mono" style="opacity:.8">Concept screen · sign-in is not real</p>
+    </div>
+    <div class="login-form"><div class="login-card">
+      <h2>Sign in</h2>
+      <p class="muted">Use the account you already have at your organisation.</p>
+      <button class="btn primary" data-act="login" type="button">Continue with organisation login</button>
+      <div class="sep">or</div>
+      <div class="field"><label for="em">Email (fallback account)</label><input id="em" type="email" placeholder="name@organisation.org"></div>
+      <div class="field"><label for="pw">Password</label><input id="pw" type="password" placeholder="••••••••"></div>
+      <button class="btn" data-act="login" type="button">Sign in with email</button>
+      <div class="ask" style="margin-top:6px"><b>Open question</b><span>Can we reuse the login NHS already gives its staff (for example OpenID Connect or SAML), so nobody needs a second password? The email option would only be a fallback for people outside NHS.</span></div>
+    </div></div></div>`;
+}
+
+function overview(){
+  const inprog=S.stations.filter(s=>!finished(s)), pend=S.arts.filter(a=>a.status==='pending_approval');
+  const paused=S.stations.filter(s=>finished(s)&&(s.poll==='paused'||s.fc==='paused'));
+  const live=S.stations.filter(s=>statusOf(s)==='active').length;
+  const items=inprog.map(s=>({s,step:STEPS[s.step],g:s.block?'wait':STEPS[s.step].who[0]===H?'hydro':'admin'}));
+  const grp=(g)=>items.filter(i=>i.g===g);
+  const li=(i)=>`<div class="todo-item"><div class="sname"><b>${esc(i.s.name)} <span class="muted" style="font-weight:400">· ${esc(i.s.river)}</span></b>
+      <span class="muted">${i.s.block?esc(i.s.block.text):esc(i.step.t)}</span></div>
+      <div class="row">${i.s.block?`<span class="pill ${i.s.block.type==='held'?'bad':'warn'}">${esc(i.s.block.who)}</span>`:''}<button class="btn small${i.g==='wait'?'':' primary'}" data-act="open" data-id="${i.s.id}" type="button">${i.g==='wait'?'Look':'Open'}</button></div></div>`;
+  const artLi=(a)=>`<div class="todo-item"><div class="sname"><b>${a.model} ${a.v} <span class="muted" style="font-weight:400">· model version</span></b><span class="muted">Ready for review. Approving replaces the active version.</span></div><div class="row"><button class="btn small primary" data-act="toart" data-id="${a.id}" type="button">Open</button></div></div>`;
+  const pauseLi=(s)=>{const p=s.pz.poll||s.pz.fc, what=bothPaused(s)?'Retired':s.fc==='paused'?'Forecasts paused':'Polling paused';
+    return `<div class="todo-item"><div class="sname"><b>${esc(s.name)} <span class="muted" style="font-weight:400">· ${what}, ${p?p.days:0} days</span></b><span class="muted">${p?esc(p.why):''}</span></div><div class="row"><button class="btn small" data-act="open" data-id="${s.id}" type="button">Open</button></div></div>`;};
+  const sec=(t,sub,body,n,mine)=>`<div class="panel"><div class="panel-pad row between"><div><h2>${t}</h2><span class="muted">${sub}</span></div>${mine?'<span class="tag accent">Your turn</span>':''}<span class="count num">${n}</span></div>${body||'<div class="panel-pad muted">Nothing here.</div>'}</div>`;
+  const perPhase=PHASES.map((p,k)=>({t:p.t,n:inprog.filter(s=>STEPS[s.step].ph===k).length}));
+  const max=Math.max(1,...perPhase.map(p=>p.n));
+  return `<div class="page-head"><div><div class="eyebrow">Overview</div><h1>What needs attention</h1>
+    <p class="muted">Every station and model version is somewhere on its journey. This page says who is next, and what we are waiting on.</p></div></div>
+    <div class="stack">
+    <div class="tiles"><div class="tile"><b class="num">${S.stations.length}</b><span class="muted">stations in total</span></div>
+      <div class="tile"><b class="num">${live}</b><span class="muted">forecasting normally</span></div>
+      <div class="tile"><b class="num">${paused.length}</b><span class="muted">paused or retired</span></div>
+      <div class="tile"><b class="num">${grp('admin').length}</b><span class="muted">ready for an administrator</span></div>
+      <div class="tile"><b class="num">${grp('hydro').length+pend.length}</b><span class="muted">ready for a hydrologist</span></div>
+      <div class="tile"><b class="num">${grp('wait').length}</b><span class="muted">waiting on someone else</span></div></div>
+    <div class="cols2"><div class="stack">${sec('Ready for an administrator','Run the next step',grp('admin').map(li).join(''),grp('admin').length,S.role===A)}
+      ${sec('Ready for a hydrologist','Review and decide',pend.map(artLi).join('')+grp('hydro').map(li).join(''),grp('hydro').length+pend.length,S.role===H)}</div>
+    <div class="stack">${sec('Waiting on someone else','DHM data, the Gateway, the owner',grp('wait').map(li).join(''),grp('wait').length,false)}
+      ${sec('Paused and retired','Stations that are not running normally',paused.map(pauseLi).join(''),paused.length,false)}
+      <div class="panel panel-pad stack"><h2>Stations still being set up</h2>
+        ${perPhase.map(p=>`<div class="bar"><span style="width:130px">${p.t}</span><i style="width:${p.n/max*100}%"></i><b class="num">${p.n}</b></div>`).join('')}</div>
+      <div class="panel panel-pad stack"><div class="row between"><h2>Systems</h2><span class="tag">From existing health checks</span></div>
+        <div class="row between"><span>Database and workers</span><span class="pill ok">Healthy</span></div>
+        <div class="row between"><span>Data Gateway reachable</span><span class="pill ok">Checked 06:10</span></div>
+        <div class="row between"><span>Weather history refresh</span><span class="pill ok">Daily 00:35 UTC, ok</span></div>
+        <div class="row between"><span>Last forecast cycle</span><span class="pill warn">Degraded, 1 station</span></div></div></div></div></div>`;
+}
+function stationsPage(){
+  const pred={all:()=>true,onb:s=>!finished(s),live:s=>statusOf(s)==='active',paused:s=>['pollpaused','fcpaused'].includes(statusOf(s)),retired:s=>statusOf(s)==='retired',attn:s=>!!s.block};
+  const label={all:'All',onb:'Being set up',live:'Live',paused:'Paused',retired:'Retired',attn:'Needs attention'};
+  const chips=Object.keys(pred).map(k=>`<button class="chip" data-act="filter" data-f="${k}" aria-pressed="${S.filter===k}" type="button">${label[k]}<b class="num">${S.stations.filter(pred[k]).length}</b></button>`).join('');
+  const list=S.stations.filter(pred[S.filter]);
+  const stateCell=(s,w)=>!finished(s)?'<span class="muted">–</span>':s[w]==='on'?`<span class="pill ok">${w==='poll'?'Collecting':'Forecasting'}</span>`:`<span class="pill warn">Paused</span>`;
+  const lastR=(s)=>!finished(s)?'–':s.poll==='on'?'Today 06:10':'Stopped '+s.pz.poll.when;
+  const lastF=(s)=>!finished(s)?'–':s.fc==='on'?'Today 06:00 cycle':'Stopped '+s.pz.fc.when;
+  const ops=`<thead><tr><th>Station</th><th>State</th><th>Observations</th><th>Forecasts</th><th>Model</th><th>Last reading</th><th>Last forecast</th><th>Waiting on</th></tr></thead><tbody>${list.map(s=>`<tr data-act="open" data-id="${s.id}" tabindex="0" aria-label="Open ${esc(s.name)}">
+    <td class="sname"><b>${esc(s.name)}</b><span class="muted">${esc(s.river)} · <span class="mono">${s.id}</span></span></td>
+    <td>${pill(statusOf(s))}${!finished(s)?`<div class="muted" style="font-size:.76rem">${esc(STEPS[s.step].t)}</div>`:''}</td>
+    <td>${stateCell(s,'poll')}</td><td>${stateCell(s,'fc')}</td><td class="muted">${esc(modelLabel(s))}</td><td class="muted">${lastR(s)}</td><td class="muted">${lastF(s)}</td><td class="muted">${esc(waitingOn(s))}</td></tr>`).join('')||'<tr><td colspan="8" class="muted">No stations here.</td></tr>'}</tbody>`;
+  const journey=`<thead><tr><th>Station</th>${PHASES.map(p=>`<th class="c">${p.t}<span class="th-sub">${p.tool}</span></th>`).join('')}<th>State</th></tr></thead><tbody>${list.map(s=>`<tr data-act="open" data-id="${s.id}" tabindex="0" aria-label="Open ${esc(s.name)}">
+    <td class="sname"><b>${esc(s.name)}</b><span class="muted">${esc(s.river)} · <span class="mono">${s.id}</span></span></td>
+    ${PHASES.map((p,k)=>`<td class="c">${cell(phaseState(s,k),p.t+': '+phaseState(s,k))}</td>`).join('')}<td>${pill(statusOf(s))}</td></tr>`).join('')||'<tr><td colspan="9" class="muted">No stations here.</td></tr>'}</tbody>`;
+  const batch=S.newBatch?`<div class="panel panel-pad stack"><h2>Add stations</h2><p class="muted">Have these ready first. The walkthrough then asks for the rest, one step at a time.</p>
+    <ul class="needs">${[
+      'Station list: code, name and coordinates, checked by the hydrologist (keep leading zeros)',
+      'Gauge datum for every station with a water-level gauge (ask for it)',
+      'Your organisation exists as a tenant on this deployment',
+      'A private evidence folder outside any code repository (created for you)',
+      'Credentials stored as files, never pasted into a message',
+      'The Gateway developer knows a new batch is coming'].map((t,i)=>`<li><input type="checkbox" id="nb${i}" aria-label="${esc(t)}"><label for="nb${i}">${esc(t)}</label></li>`).join('')}</ul>
+    <div class="row"><button class="btn primary" data-act="newbatch-go" type="button"${dis(can('onboard'))}>Create batch and begin</button><button class="btn" data-act="newbatch" type="button">Cancel</button></div></div>`:'';
+  return `<div class="page-head"><div><div class="eyebrow">Stations</div><h1>Every station, from first setup to retirement</h1>
+    <p class="muted">Day-to-day state on one page: is the station collecting readings and making forecasts, and who is next if something is stuck. Open a station to set it up, pause it or retire it.</p></div>
+    <button class="btn primary" data-act="newbatch" type="button"${dis(can('onboard'))}>Add stations</button></div>
+    <div class="stack">${batch}<div class="row between"><div class="chips" style="margin:0">${chips}</div>
+      <div class="seg" role="group" aria-label="View"><button data-act="sview" data-v="ops" aria-pressed="${S.sview==='ops'}" type="button">Operations</button><button data-act="sview" data-v="journey" aria-pressed="${S.sview==='journey'}" type="button">Setup journey</button></div></div>
+    <div class="panel"><div class="scroll"><table>${S.sview==='ops'?ops:journey}</table></div></div>
+    ${S.sview==='journey'?`<div class="legend"><span>${cell('done')}Done</span><span>${cell('cur')}Next step is ready</span><span>${cell('warn')}Waiting on others</span><span>${cell('bad')}Held, with a reason</span><span>${cell('todo')}Not reached yet</span><span>${cell('stopped')}Retired</span></div>`:''}</div>
+    <div class="ask"><b>For discussion</b><span>Is this the right day-to-day view: collecting, forecasting, model, and who is next? How should the forecast map and the API show a station whose forecasts are paused or that is retired?</span></div>`;
+}
+function stepState(s,i){ return finished(s)||i<s.step?'done':i===s.step?(s.block?(s.block.type==='held'?'bad':'warn'):'cur'):'todo'; }
+function station(){
+  const s=byId(S.focus), tab=S.tab||(finished(s)?'overview':'setup');
+  const tabs=[['overview','Overview'],['setup','Setup steps'],['models','Model'],['history','History']].map(([k,t])=>`<button data-act="tab" data-t="${k}" role="tab" aria-selected="${tab===k}" type="button">${t}</button>`).join('');
+  const sel=`<select id="wst" data-act="wstation" aria-label="Choose station">${S.stations.map(x=>`<option value="${x.id}"${x.id===s.id?' selected':''}>${esc(x.name)} · ${esc(x.river)}</option>`).join('')}</select>`;
+  const body=tab==='overview'?overviewTab(s):tab==='setup'?setupTab(s):tab==='models'?stModelTab(s):historyTab(s);
+  return `<div class="page-head"><div><div class="eyebrow"><button class="btn link" data-act="nav" data-view="stations" type="button">← All stations</button></div>
+    <h1>${esc(s.name)} <span class="muted" style="font-weight:400">· ${esc(s.river)}</span></h1>
+    <p class="muted"><span class="mono">${s.id}</span> · ${s.area.toLocaleString('en-GB')} km² · ${pill(statusOf(s))}</p></div>
+    <div class="row"><label class="muted" for="wst">Station</label>${sel}</div></div>
+    <div class="tabs" role="tablist">${tabs}</div>${body}`;
+}
+function opRow(s,w){
+  const on=s[w]==='on', p=s.pz[w], poll=w==='poll';
+  const perm=on?can('onboard'):(poll?can('onboard'):can('approve'));
+  const noun=poll?'polling':'forecasts';
+  return `<div class="oprow"><div><div class="row"><b>${poll?'Collect observations':'Make forecasts'}</b><span class="pill ${on?'ok':'warn'}">${on?'On':'Paused'}</span>${poll?'<span class="tag accent">Switch exists today</span>':'<span class="tag warn">Switch not built yet</span>'}</div>
+    <span class="muted">${on?(poll?'Fetches new readings for this station on every ingest run.':'Included in every forecast cycle with the active model.'):'Paused '+esc(p.when)+' by '+esc(p.who)+' ('+p.days+' day'+(p.days===1?'':'s')+'). Reason: '+esc(p.why)}</span></div>
+    <button class="btn" data-act="pz-open" data-id="${s.id}" data-what="${w}" data-mode="${on?'pause':'resume'}" type="button"${dis(perm)}>${on?'Pause':'Resume'} ${noun}…</button></div>`;
+}
+function pzDef(s,key){
+  const c=code(s), pd=s.pz.poll?s.pz.poll.days:0, base='uv run python -m sapphire_flow.cli.ingest_pause --tenant chwrr --network dhm --code '+c+' \\\n  --operator "$ACTOR" --reason "<reason>" ';
+  const kept=['Observations, forecasts, model versions, basin package and audit history are all kept','The shared Gateway subscription is left untouched (other stations use it)','Nothing is deleted. Permanent removal is not offered here'];
+  return {
+    'pause:poll':{title:'Pause polling',tag:['accent','Exists today (#501)'],perm:'onboard',btn:'Pause polling',
+      effects:['Stops fetching new readings for this station','Forecasting, quality checks and the station\'s state are not changed','The forecast cycle still needs recent observations, so forecasts may degrade if the pause is long','Readings from the paused time are not fetched later by themselves (routine polling looks back 7 days only)'],
+      cmd:base+'--pause [--apply]'},
+    'resume:poll':{title:'Resume polling',tag:['accent','Exists today (#501)'],perm:'onboard',btn:'Resume polling',
+      effects:['Polling restarts at the next ingest run','The '+pd+'-day paused period was not fetched. Routine polling only looks back 7 days, so older readings need a catch-up (historical ingest, up to 31 days per run)','The dashboard keeps a reminder until you mark the catch-up done'],
+      cmd:base+'--resume [--apply]'},
+    'pause:fc':{title:'Pause forecasts',tag:['warn','Switch not built yet'],perm:'onboard',btn:'Pause forecasts',
+      effects:['The station leaves the forecast cycle; no new forecasts and no new alerts for it','Observations keep being collected, so the data record stays complete','Existing forecasts stay on record (how the map and API show them is open)','Resuming needs fresh checks and a hydrologist\'s approval'],
+      cmd:'# Not available yet. #455 asks for a separate, reliable forecast-stop control.\n# The station status "suspended" stops forecasts AND polling together.'},
+    'resume:fc':{title:'Resume forecasts',tag:['warn','Switch not built yet'],perm:'approve',btn:'Approve and resume forecasts',needsReady:true,
+      effects:['The station rejoins the forecast cycle at the next run','Fresh readiness checks must pass first, and a hydrologist approves','The forecast uses the currently active model version'],
+      cmd:'# Not available yet.\nuv run python -m sapphire_flow.cli.station_readiness --tenant chwrr --network dhm --code '+c+' --model cmal_small --check-gateway'},
+    'pause:both':{title:'Retire station',tag:['warn','Reversible; forecast pause not built yet'],perm:'onboard',btn:'Retire station',
+      effects:['Forecasts stop, and by default polling stops too'].concat(kept).concat(['Reactivating needs fresh checks and a hydrologist\'s approval']),
+      cmd:base+'--pause [--apply]\n# plus the forecast pause (not available yet). Never use the permanent "decommissioned" status.'},
+    'resume:both':{title:'Reactivate station',tag:['warn','Needs the forecast switch'],perm:'approve',btn:'Approve and reactivate',needsReady:true,
+      effects:['Polling and forecasts restart','Fresh readiness checks must pass first, and a hydrologist approves','Any gap in observations is flagged for a catch-up'],
+      cmd:base+'--resume [--apply]\nuv run python -m sapphire_flow.cli.station_readiness --tenant chwrr --network dhm --code '+c+' --check-gateway'}
+  }[key];
+}
+function pzForm(s){
+  const z=S.pz; if(!z||z.id!==s.id) return '';
+  const def=pzDef(s,z.mode+':'+z.what), ok=can(def.perm);
+  return `<div class="stepbox stack"><div class="row between"><h3>${def.title}</h3><span class="tag ${def.tag[0]}">${def.tag[1]}</span></div>
+    <ul>${def.effects.map(e=>`<li>${esc(e)}</li>`).join('')}</ul>
+    ${z.what==='both'&&z.mode==='pause'?'<label class="switch"><input type="checkbox" id="alsopoll" checked> <span>Also stop collecting observations</span></label>':''}
+    ${def.needsReady?(z.ready?'<div class="callout ok"><b>Fresh readiness check:</b> 13 facts, 0 failed.</div>':'<div class="row"><button class="btn" data-act="pz-ready" type="button">Run fresh readiness check</button><span class="muted">Required before forecasts resume.</span></div>'):''}
+    <div class="field"><label for="pzwhy">Reason (kept in the history)</label><textarea id="pzwhy" rows="2" placeholder="${z.mode==='pause'?'e.g. gauge relocated; rating curve outdated':'e.g. gauge repaired and re-levelled, readings checked'}"></textarea></div>
+    <div class="field" style="max-width:320px"><label for="pzwho">${def.perm==='approve'?'Hydrologist approving (a label, not a login)':'Your name (a label, not a login)'}</label><input id="pzwho" type="text" value="${nameNow()}"></div>
+    ${ok?'':`<div class="callout info">You are viewing as ${S.role}. This is a ${def.perm==='approve'?'hydrologist decision':'administrator action'}.</div>`}
+    <div class="row"><button class="btn ${z.mode==='pause'&&z.what!=='poll'?'danger':'primary'}" data-act="pz-do" type="button"${ok?'':' disabled title="Your role cannot do this"'}>${def.btn}</button><button class="btn" data-act="pz-cancel" type="button">Cancel</button></div>
+    <details><summary>Under the hood: the command this runs today</summary><pre>${esc(def.cmd)}</pre></details></div>`;
+}
+function overviewTab(s){
+  if(!finished(s)) return `<div class="panel panel-pad stack"><h2>Still being set up</h2><p>${esc(s.name)} is at "<b>${esc(STEPS[s.step].t)}</b>". The on and off switches for collecting readings and making forecasts appear after the station goes live.</p>
+    ${s.block?`<div class="callout ${s.block.type==='held'?'bad':'warn'}"><b>${s.block.type==='held'?'Held':'Waiting'} on ${esc(s.block.who)}.</b> ${esc(s.block.text)}</div>`:''}
+    <div class="row"><button class="btn primary" data-act="tab" data-t="setup" type="button">Continue the setup steps</button></div></div>`;
+  const a=activeArt(), m=s.A;
+  return `<div class="cols2"><div class="stack"><div class="panel panel-pad stack"><div class="row between"><h2>Operating state</h2>${pill(statusOf(s))}</div>
+      ${opRow(s,'poll')}${opRow(s,'fc')}
+      ${s.gap?`<div class="callout warn"><b>Observation gap.</b> Polling was paused for ${s.gap.days} days. Readings older than 7 days were not fetched. <div style="margin-top:8px"><button class="btn small" data-act="catchup" data-id="${s.id}" type="button"${dis(can('onboard'))}>Mark catch-up done (concept)</button></div></div>`:''}
+      ${pzForm(s)}
+      <hr><div class="row between"><span class="muted">${bothPaused(s)?'This station is retired. Everything is kept.':'Stop everything for this station, reversibly.'}</span>
+      ${bothPaused(s)?`<button class="btn" data-act="pz-open" data-id="${s.id}" data-what="both" data-mode="resume" type="button"${dis(can('approve'))}>Reactivate…</button>`
+        :`<button class="btn danger" data-act="pz-open" data-id="${s.id}" data-what="both" data-mode="pause" type="button"${dis(can('onboard'))}>Retire station…</button>`}</div></div></div>
+    <div class="stack"><div class="panel panel-pad stack"><h2>At a glance</h2><dl class="kv"><dt>Last reading</dt><dd>${s.poll==='on'?'Today 06:10':'Stopped '+esc(s.pz.poll.when)}</dd><dt>Last forecast</dt><dd>${s.fc==='on'?'Today 06:00 cycle':'Stopped '+esc(s.pz.fc.when)}</dd>
+      <dt>Active model</dt><dd>${esc(modelLabel(s))}</dd><dt>Fallback model</dt><dd>${s.fallback?'linreg (priority 2)':'none'}</dd><dt>Gauge datum</dt><dd class="num">${s.datum} m a.s.l.</dd><dt>Skill on past data (KGE)</dt><dd class="num">${m?fmt(m.kge):'–'}</dd></dl></div>
+      <div class="panel panel-pad stack"><h2>Pause or retire?</h2><ul class="list"><li><b>Pause polling</b> when the data source is the problem and forecasts should carry on.</li><li><b>Pause forecasts</b> when the forecasts are doubtful but readings are still good.</li><li><b>Retire</b> pauses both, for a station you stop using.</li></ul></div></div></div>`;
+}
+function setupTab(s){
+  const v=S.viewStep===null?Math.min(s.step,N-1):S.viewStep;
+  const stateV=finished(s)||v<s.step?'done':v===s.step?'current':'future';
+  const rail=PHASES.map((p,k)=>{
+    const idx=STEPS.map((t,i)=>t.ph===k?i:-1).filter(i=>i>=0);
+    return `<h3>${p.t}<span>${p.tool}</span></h3><ul>${idx.map(i=>{const stt=stepState(s,i);return `<li><button data-act="wstep" data-i="${i}" type="button"${i===v?' aria-current="step"':''}>${cell(stt==='cur'?'cur':stt,'')}<span>${STEPS[i].t}<small>${STEPS[i].who.join(' + ')}${STEPS[i].kind==='external'?' · in another tool':STEPS[i].kind==='future'?' · not built yet':''}</small></span></button></li>`;}).join('')}</ul>`;
+  }).join('');
+  const ev=S.evidence.filter(e=>e.sid===s.id).slice().reverse();
+  return `<div class="walk"><nav class="panel rail" aria-label="Steps">${rail}</nav>
+    <div class="stack">${pane(s,v,stateV)}
+      ${ev.length?`<div class="panel"><div class="panel-pad"><h2>Recorded in this session</h2><span class="muted">Kept in the evidence folder, outside any code repository.</span></div><div class="scroll"><table><tbody>${ev.map(e=>`<tr><td class="muted" style="white-space:nowrap">${esc(e.t)}</td><td>${esc(e.who)}</td><td>${esc(e.step)}</td><td class="muted">${esc(e.note)}</td></tr>`).join('')}</tbody></table></div></div>`:''}
+    </div></div>
+    <div class="ask"><b>For discussion</b><span>Steps that happen in the Gateway can only be recorded here, not performed. Is a written confirmation enough, or should the Gateway developer confirm them? And who may switch a station live: the owner only, or an administrator after a hydrologist has approved?</span></div>`;
+}
+function stModelTab(s){
+  if(!inGroup(s)) return `<div class="panel panel-pad"><p>No model is assigned yet. This happens in the setup step "Import and assign the model".</p></div>`;
+  const a=activeArt();
+  return `<div class="panel panel-pad stack"><h2>Model for this station</h2><dl class="kv"><dt>Group</dt><dd>nepal-batch3</dd><dt>Model version</dt><dd>${a?'cmal_small '+a.v:'–'} ${a?artPill(a.status):''}</dd><dt>Assignment</dt><dd><span class="pill ${S.assign.status==='ACTIVE'?'ok':'warn'}">${S.assign.status}</span> · priority 1 · 24 h</dd><dt>Fallback</dt><dd>${s.fallback?'linreg, priority 2':'none: forecasts stop if the assignment is off'}</dd></dl>
+    <div class="row"><button class="btn" data-act="nav" data-view="models" type="button">Open Models</button></div></div>`;
+}
+function historyTab(s){
+  const rows=S.audit.filter(e=>e.sid===s.id).concat(S.evidence.filter(e=>e.sid===s.id).map(e=>({t:e.t,who:e.who,what:'Setup: '+e.step,why:e.note}))).reverse();
+  return `<div class="panel"><div class="panel-pad"><h2>History</h2><span class="muted">Every pause, resume and decision, with who and why. Setup records are included.</span></div><div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Reason</th></tr></thead><tbody>${rows.map(e=>`<tr><td class="muted" style="white-space:nowrap">${esc(e.t)}</td><td>${esc(e.who)} <span class="tag">self-declared</span></td><td>${esc(e.what)}</td><td class="muted">${esc(e.why||'')}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">No entries yet.</td></tr>'}</tbody></table></div></div>`;
+}
+
+function pane(s,i,state){
+  const stp=STEPS[i], c=content(s,stp.id), perm=stepPerm(stp);
+  const where = stp.kind==='external' ? `<span class="tag warn">Done in another tool</span>` : stp.kind==='future' ? '<span class="tag warn">Not built yet</span>' : stp.kind==='decision'||stp.kind==='review' ? '<span class="tag accent">Needs a person\'s judgement</span>' : '<span class="tag accent">Runs from here</span>';
+  const head=`<div class="panel panel-pad stack"><div class="row between"><div><div class="eyebrow">${PHASES[stp.ph].t} · step ${i+1} of ${N}</div><h2 style="font-size:1.35rem">${stp.t}</h2></div>
+    <div class="kindrow">${where}<span class="tag">${stp.who.join(' + ')}</span><span class="tag">${esc(stp.where)}</span>${stp.batch?'<span class="tag">Can apply to many stations</span>':''}</div></div>
+    <p>${esc(c.intro)}</p>`;
+  const tail=`${c.cmd?`<details><summary>Under the hood: the command this runs today</summary><pre>${esc(c.cmd)}</pre><p class="muted" style="margin-top:6px">The dashboard runs this for you and keeps the output in the evidence folder.${c.note?' '+esc(c.note):''}</p></details>`:''}
+    ${c.stops&&c.stops.length?`<details><summary>If it stops</summary><table><tbody>${c.stops.map(([a,b])=>`<tr><td style="width:36%"><b>${esc(a)}</b></td><td>${esc(b)}</td></tr>`).join('')}</tbody></table></details>`:''}</div>`;
+  if(state==='done'){
+    return head+`<div class="callout ok"><b>Done</b> · ${finished(s)&&s.last&&i===N-1?esc(s.last):dayStamp(i)} · recorded in the evidence folder</div>
+      <div class="stepbox"><h3>What was recorded</h3><ul>${c.result.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></div>${stp.id==='ready'?factsTable(s,true):''}${tail}`;
+  }
+  if(state==='future'){
+    const lead=STEPS[s.step];
+    return head+`<div class="callout info"><b>Not reachable yet.</b> This station is at "${esc(lead.t)}". Earlier steps must finish first.</div>
+      ${c.plan?`<div class="stepbox"><h3>What this step will do</h3><ul>${c.plan.map(r=>`<li>${esc(r)}</li>`).join('')}</ul></div>`:''}${tail}`;
+  }
+  /* current */
+  let body='';
+  if(c.needs) body+=`<div class="stepbox"><h3>What you need</h3><ul class="needs">${c.needs.map(([t,ok])=>`<li><span class="${ok?'ok':'no'}">${ok?'✓':'✗'}</span><span>${esc(t)}</span></li>`).join('')}</ul></div>`;
+  if(c.warn) body+=`<div class="callout warn">${esc(c.warn)}</div>`;
+  if(s.block) body+=blockArea(s,stp);
+  else body+=actionArea(s,i,stp,c,perm);
+  return head+body+tail;
+}
+function blockArea(s,stp){
+  const b=s.block, cls=b.type==='held'?'bad':'warn';
+  return `<div class="callout ${cls}"><b>${b.type==='held'?'Held':'Waiting'} · on ${esc(b.who)}.</b> ${esc(b.text)}</div>
+    ${stp.id==='ready'?factsTable(s,false):''}
+    <div class="row"><button class="btn" data-act="recheck" data-id="${s.id}" type="button"${dis(stepPerm(stp))}>Check again</button>
+    <button class="btn link" data-act="simulate" data-id="${s.id}" type="button" title="Mockup only">Concept: pretend the missing data has arrived</button></div>`;
+}
+function factsTable(s,done){
+  const f=facts(s), bad=f.filter(x=>x[1]==='FAIL').length, ok=f.filter(x=>x[1]==='PASS').length;
+  return `<div class="panel"><div class="scroll"><table class="facts"><tbody>${f.map(([n,r,d])=>`<tr><td style="width:170px">${n}</td><td class="st ${r}" style="width:60px">${r==='NA'?'N/A':r}</td><td class="muted">${esc(d)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="panel-pad row between"><b>${bad} check${bad===1?'':'s'} failed, ${ok} passed</b><span class="muted">Optional, not counted: Gateway data check · training samples</span></div></div>`;
+}
+function actorField(){return `<div class="field" style="min-width:200px"><label for="actor">Your name (a label, not a login)</label><input id="actor" type="text" value="${nameNow()}"></div>`;}
+function actionArea(s,i,stp,c,perm){
+  const key=s.id+':'+stp.id, prev=S.prev.has(key);
+  const nAt=S.stations.filter(x=>x.step===i&&!x.block).length;
+  const batchBox=stp.batch&&nAt>1?`<label class="switch"><input type="checkbox" id="batchall" checked> <span>Apply to all <b>${nAt}</b> stations waiting at this step</span></label>`:'';
+  const gate=perm?'':' disabled title="Your role cannot do this step"';
+  const why=perm?'':`<div class="callout info">You are viewing as ${S.role}. This step is for: ${stp.who.join(' + ')}.</div>`;
+  if(stp.kind==='future'){
+    return `<div class="callout info"><b>Not built yet.</b> Today hydrologists look at forecasts in the flow map and the model team does the evaluation. The proposal is the Model review screen.</div>
+      <div class="row"><button class="btn primary" data-act="toreview" data-id="${s.id}" type="button">Open Model review</button></div>`;
+  }
+  if(stp.kind==='external'){
+    const e=c.ext;
+    return `<div class="stepbox"><h3>Do this in the other tool</h3><ol class="list">${e.steps.map(t=>`<li>${esc(t)}</li>`).join('')}</ol><div style="margin-top:10px"><button class="btn" data-act="fake" data-t="${esc(e.btn)}" type="button">${esc(e.btn)}</button></div></div>
+      ${e.warn?`<div class="callout warn">${esc(e.warn)}</div>`:''}${why}
+      <div class="stack">${e.fields.map(([k,l,ph])=>`<div class="field"><label for="x-${k}">${esc(l)}</label><input id="x-${k}" type="text" placeholder="${esc(ph)}"></div>`).join('')}${actorField()}
+      ${batchBox}<div class="row"><button class="btn primary" data-act="apply" data-ext="1" type="button"${gate}>I did this, record it and continue</button></div></div>`;
+  }
+  if(stp.id==='basin_approve'){
+    const pub=Math.round(s.area*(1+(parseInt(s.id.slice(-2),10)%5-2)/100));
+    return `<div class="cols2"><div>${basinSvg(s)}</div><div class="stack"><dl style="display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0"><dt class="muted">Delineated area</dt><dd style="margin:0;text-align:right" class="num">${s.area.toLocaleString('en-GB')} km²</dd><dt class="muted">Published area</dt><dd style="margin:0;text-align:right" class="num">${pub.toLocaleString('en-GB')} km²</dd><dt class="muted">Difference</dt><dd style="margin:0;text-align:right" class="num">${(((s.area-pub)/pub)*100).toFixed(1)}%</dd><dt class="muted">Outlet snapped by</dt><dd style="margin:0;text-align:right" class="num">210 m</dd></dl>
+      <p class="muted">Compare with the river and a trusted drainage area. The extractor's snap audit is a review aid, not proof.</p></div></div>${why}
+      <div class="stack">${actorField()}${batchBox}<div class="row"><button class="btn primary" data-act="apply" data-decide="1" type="button"${gate}>Approve basin</button><button class="btn danger" data-act="fake" data-t="Basin rejected (concept). The coordinate goes back to DHM." type="button"${gate}>Reject</button></div></div>`;
+  }
+  if(stp.id==='ready'){
+    return `${factsTable(s,false)}${why}<div class="stack">${actorField()}<div class="row"><button class="btn" data-act="fake" data-t="Report sent to the hydrologist (concept)." type="button">Share report with the hydrologist</button>
+      <button class="btn primary" data-act="apply" data-decide="1" type="button"${gate}>Reviewed, continue to the model</button></div></div>`;
+  }
+  if(stp.id==='golive'){
+    const cond=goliveConds(s);
+    return `<div class="stepbox"><h3>Seven conditions</h3><ul class="needs">${cond.map(([t,ok])=>`<li><span class="ok">✓</span><span>${esc(t)}</span></li>`).join('')}</ul></div>
+      <div class="callout ${S.hostSwitch?'ok':'warn'}"><b>Owner's go-ahead: ${S.hostSwitch?'on':'off'}.</b> Today the owner switches <span class="mono">promotion_allowed</span> on in the host settings for one run, then off again. Going live starts live data collection and puts the station into the forecast cycle. Switching it off later can lose observations.
+        <div style="margin-top:8px"><button class="btn small" data-act="hostswitch" type="button">Concept: ${S.hostSwitch?'switch the go-ahead off':'owner switches the go-ahead on'}</button></div></div>${why}
+      <div class="stack">${actorField()}<div class="row"><button class="btn" data-act="apply" data-dry="1" type="button">Dry run</button><button class="btn primary" data-act="apply" type="button"${S.hostSwitch&&perm?'':' disabled title="Would be refused: the owner has not given the go-ahead"'}>Go live</button></div></div>`;
+  }
+  /* generic tool step */
+  const formHtml=c.form?`<div class="formgrid">${c.form.map(([l,v],k)=>`<div class="field"><label for="f${k}">${esc(l)}</label><input id="f${k}" type="text" value="${esc(v)}"${k===9?' style="border-color:var(--accent)"':''}></div>`).join('')}</div>`
+    :c.inputs?`<div class="formgrid">${c.inputs.map(([l,v],k)=>`<div class="field"><label for="i${k}">${esc(l)}</label><input id="i${k}" type="text" value="${esc(v)}" readonly></div>`).join('')}</div>`:'';
+  const planHtml=prev?`<div class="stepbox"><h3>This would happen. Nothing is written yet.</h3><ul>${c.plan.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`:'';
+  return `${formHtml}${why}${prev?planHtml+`<div class="stack">${actorField()}${batchBox}<div class="row"><button class="btn primary" data-act="apply" type="button"${gate}>Apply</button><button class="btn" data-act="unpreview" data-key="${key}" type="button">Back</button></div></div>`
+    :`<div class="row"><button class="btn primary" data-act="preview" data-key="${key}" type="button"${gate}>Preview what will happen</button></div>`}`;
+}
+
+function review(){
+  const list=S.stations.filter(s=>s.step>=IDX.approve&&s.step<=IDX.firstfc&&s.A);
+  const n=[...S.sel].filter(id=>approvable(byId(id))).length;
+  const rows=list.map(s=>{
+    const m=s[S.model], v=verdict(s), can_=approvable(s), exc=S.exceptions[s.id+S.model];
+    return `<tr data-act="pick-r" data-id="${s.id}" class="${s.id===S.focus?'focus':''}" tabindex="0" aria-label="Show ${esc(s.name)}">
+      <td><input type="checkbox" data-act="sel" data-id="${s.id}" aria-label="Select ${esc(s.name)}"${S.sel.has(s.id)?' checked':''}${can_&&can('approve')?'':' disabled'}></td>
+      <td class="sname"><b>${esc(s.name)}</b><span class="muted">${esc(s.river)}</span></td>
+      <td class="num r">${m?fmt(m.kge):'–'}</td><td class="num r">${m?fmt(m.nse):'–'}</td><td class="num r">${m?(m.bias>0?'+':'')+m.bias+'%':'–'}</td><td class="num r">${m?m.cov+'%':'–'}</td>
+      <td><span class="mini"><span class="ok" title="Required inputs: passed">I</span><span class="ok" title="Basin geometry: passed">G</span><span class="ok" title="Model compatibility: passed">M</span></span></td>
+      <td>${s.step>IDX.approve?'<span class="pill ok">Approved</span>':v?`<span class="pill ${v.c}">${v.t}</span>`:''}${exc?`<div class="muted" style="font-size:.76rem;max-width:200px;white-space:normal">“${esc(exc)}”</div>`:''}</td></tr>`;
+  }).join('');
+  const f=byId(S.focus), fm=f&&f[S.model];
+  let focusPanel='';
+  if(f&&fm&&list.includes(f)){
+    const v=verdict(f), needExc=v&&v.t==='Below threshold'&&f.step===IDX.approve;
+    focusPanel=`<section class="panel panel-pad stack" aria-label="Hydrograph">
+      <div class="row between"><div><h2>${esc(f.name)} · ${esc(f.river)}</h2><span class="muted">Hindcast, 1 Jul – 30 Sep 2022, one-day lead</span></div>${v?`<span class="pill ${v.c}">${v.t}</span>`:''}</div>
+      <div class="legend"><span><i style="background:var(--obs)"></i>Observed</span><span><i style="background:var(--accent)"></i>Model median</span><span><i style="background:var(--band);height:10px"></i>10–90% range</span></div>
+      ${chart(f)}
+      <div class="callout info">Data, geometry and compatibility checks passed earlier in the walkthrough and cannot be overridden here. Only the skill threshold can have a reasoned exception.</div>
+      ${needExc&&!S.excOpen?`<div class="callout warn">Skill (KGE ${fmt(fm.kge)}) is below the evaluation threshold of ${THR.toFixed(2)}. You can approve for evaluation only by recording a reason.<div style="margin-top:8px"><button class="btn small" data-act="exc-open" type="button"${dis(can('exception'))}>Record exception…</button></div></div>`:''}
+      ${needExc&&S.excOpen?`<div class="stack"><div class="field"><label for="exc">Reason for the exception (kept visible next to the results)</label><textarea id="exc" rows="3" placeholder="e.g. Peak timing is good; bias comes from a known rating-curve shift."></textarea></div><div class="row"><button class="btn primary" data-act="exc-save" data-id="${f.id}" type="button">Save exception</button><button class="btn" data-act="exc-cancel" type="button">Cancel</button></div></div>`:''}
+    </section>`;
+  }
+  const logRows=S.log.slice().reverse().map(l=>`<tr><td class="muted" style="white-space:nowrap">${esc(l.t)}</td><td>${esc(l.who)} <span class="tag" title="Self-declared name, not a verified login">self-declared</span></td><td>${esc(l.st)}</td><td>${esc(l.model)}</td><td>${esc(l.what)}</td><td class="muted">${esc(l.note)}</td></tr>`).join('');
+  return `<div class="page-head"><div><div class="eyebrow"><button class="btn link" data-act="nav" data-view="models" type="button">← Models</button> Model review · step "Evaluate and approve the model"</div><h1>Review before anything goes live</h1>
+    <p class="muted">Compare skill on past data, look at the hydrograph, and approve all or some stations. Approval applies to the exact model version shown. Approved stations continue to "Go live" in their walkthrough.</p></div></div>
+    ${can('approve')?'':`<div class="callout info" style="margin-bottom:14px">You are viewing as ${S.role}. Approving is a hydrologist decision: switch "Viewing as" at the top to Hydrologist to try it.</div>`}
+    <div class="row between" style="margin-bottom:14px"><div class="seg" role="group" aria-label="Model under review">
+      <button data-act="model" data-m="A" aria-pressed="${S.model==='A'}" type="button">Existing model</button>
+      <button data-act="model" data-m="B" aria-pressed="${S.model==='B'}" type="button">Fine-tuned candidate</button></div>
+      <span class="muted">Reviewing <b style="color:var(--ink)">${MODELS[S.model]}</b> · threshold KGE ≥ ${THR.toFixed(2)} (permissive, evaluation only)</span></div>
+    <div class="stack">
+      <div class="panel"><div class="scroll"><table><thead><tr><th></th><th>Station</th><th class="r">KGE</th><th class="r">NSE</th><th class="r">Bias</th><th class="r">Data</th><th title="Inputs, Geometry, Model compatibility">Checks</th><th>Verdict</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="approvebar"><div class="field" style="flex:1;min-width:200px;max-width:320px"><label for="rev">Your name (self-declared for now)</label><input id="rev" type="text" value="${S.role===H?'Sita Gurung':''}" placeholder="Full name"></div>
+        <button class="btn primary" data-act="approve" type="button"${can('approve')?'':' disabled title="Your role cannot approve models"'}>Approve ${n} selected for evaluation forecasts</button></div></div>
+      ${focusPanel}
+      <div class="panel"><div class="panel-pad row between"><h2>Decision log</h2><span class="muted">Kept permanently; every decision names the model version.</span></div><div class="scroll"><table><thead><tr><th>When</th><th>Reviewer</th><th>Station</th><th>Model</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${logRows}</tbody></table></div></div>
+    </div>
+    <div class="ask"><b>For discussion</b><span>Is one hydrologist's approval enough, or should a second person confirm? Is a skill threshold of KGE 0.50 a sensible starting point for the first evaluation forecasts?</span></div>`;
+}
+const verdict = (s)=>{
+  const m=s[S.model]; if(!m) return null;
+  if(m.kge>=THR) return {c:'ok',t:'Meets threshold'};
+  return S.exceptions[s.id+S.model]?{c:'warn',t:'Exception recorded'}:{c:'bad',t:'Below threshold'};
+};
+const approvable = (s)=>{const v=verdict(s); return v && (v.c==='ok'||v.t==='Exception recorded') && s.step===IDX.approve && !s.block;};
+
+function capPreview(){
+  const s=S.stations.find(x=>finished(x))||S.stations[0], [w,d]=s.thr;
+  return esc(`<alert xmlns="urn:oasis:names:tc:emergency:cap:1.2">
+  <identifier>SAPPHIRE-${s.id}-20261127T060000Z</identifier>
+  <sender>sapphire-flow@example-nhs.test</sender>
+  <sent>2026-11-27T06:00:00+05:45</sent>
+  <status>Test</status>
+  <msgType>Alert</msgType>
+  <scope>Restricted</scope>
+  <info>
+    <category>Met</category>
+    <event>River flood forecast</event>
+    <urgency>Expected</urgency>
+    <severity>Moderate</severity>
+    <certainty>Possible</certainty>
+    <headline>${s.river} at ${s.name}: forecast above warning level</headline>
+    <description>Forecast discharge may exceed ${w} m³/s (danger level ${d} m³/s).</description>
+    <area><areaDesc>${s.river} basin, ${s.name}</areaDesc></area>
+  </info>
+</alert>`);
+}
+function alerts(){
+  const act=S.stations.filter(s=>finished(s)&&s.fc==='on');
+  const rows=act.map(s=>`<tr><td class="sname"><b>${esc(s.name)}</b><span class="muted">${esc(s.river)}</span></td>
+    <td class="r"><input type="number" data-act="thr" data-id="${s.id}" data-k="0" value="${s.thr[0]}" aria-label="Warning level for ${esc(s.name)}"${can('alerts')?'':' disabled'}></td>
+    <td class="r"><input type="number" data-act="thr" data-id="${s.id}" data-k="1" value="${s.thr[1]}" aria-label="Danger level for ${esc(s.name)}"${can('alerts')?'':' disabled'}></td>
+    <td><span class="pill idle">Manual entry</span></td></tr>`).join('');
+  return `<div class="page-head"><div><div class="eyebrow">Alerts <span class="tag">Rough draft</span></div><h1>Alert thresholds and CAP output</h1>
+    <p class="muted">Alerts are optional. When switched on, we produce CAP messages for the NHS pipeline. We do not publish to the public ourselves.</p></div></div>
+    <div class="cols2"><div class="stack">
+      <div class="panel panel-pad stack"><h2>Output</h2>
+        <label class="switch"><input type="checkbox" data-act="cap" id="cap"${S.capOn?' checked':''}${can('alerts')?'':' disabled'}> <b>Produce CAP alerts</b></label>
+        <div class="stack" ${S.capOn?'':'style="opacity:.45;pointer-events:none"'}>
+          <label class="switch"><input type="radio" name="deliv" value="push"${S.deliv==='push'?' checked':''}${can('alerts')?'':' disabled'}> <span>Push to an NHS endpoint</span></label>
+          <label class="switch"><input type="radio" name="deliv" value="pull"${S.deliv==='pull'?' checked':''}${can('alerts')?'':' disabled'}> <span>Provide a feed they collect</span></label>
+          <div class="field"><label for="ep">Endpoint</label><input id="ep" type="text" data-act="ep" value="${esc(S.endpoint)}"${S.deliv==='push'&&can('alerts')?'':' disabled'}></div>
+        </div></div>
+      <div class="panel"><div class="panel-pad"><h2>Levels per station</h2><p class="muted">Discharge in m³/s. Only stations that are forecasting are listed; paused stations raise no alerts.</p></div>
+        <div class="scroll"><table><thead><tr><th>Station</th><th class="r">Warning</th><th class="r">Danger</th><th>Source</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">No forecasting stations yet.</td></tr>'}</tbody></table></div></div>
+    </div>
+    <div class="panel panel-pad stack"><h2>Example message</h2><p class="muted">Marked as a test message until the NHS agrees the format.</p><pre id="cap-pre" tabindex="0">${capPreview()}</pre></div></div>
+    <div class="ask"><b>For discussion</b><span>Which CAP fields does the NHS pipeline expect (sender, area codes, languages)? Should we push to them, or let them collect a feed? Who sets the levels, and where do official levels come from?</span></div>`;
+}
+function people(){
+  const urows=S.users.map(u=>`<tr><td class="sname"><b>${esc(u.name)}</b><span class="muted">${esc(u.org)}</span></td>
+    <td><select data-act="urole" data-id="${u.id}" aria-label="Role for ${esc(u.name)}"${can('users')?'':' disabled'}>${ROLES.map(r=>`<option${r===u.role?' selected':''}>${r}</option>`).join('')}</select></td>
+    <td><span class="pill ${u.st==='Invited'?'warn':'ok'}">${u.st}</span></td><td class="muted">${u.last}</td></tr>`).join('');
+  const mrows=PERMS.map(([k,t])=>`<tr><td>${t}</td>${ROLES.map(r=>`<td><input type="checkbox" data-act="perm" data-role="${r}" data-perm="${k}" aria-label="${r}: ${t}"${S.perms[r][k]?' checked':''}${can('users')&&!(r==='Administrator'&&k==='users')?'':' disabled'}></td>`).join('')}</tr>`).join('');
+  return `<div class="page-head"><div><div class="eyebrow">People &amp; roles <span class="tag">Rough draft</span></div><h1>Who can do what</h1>
+    <p class="muted">Administrators give people a role and decide what each role may do. Try it: change a permission, then switch "Viewing as" at the top and watch the walkthrough buttons change.</p></div>
+    <button class="btn primary" data-act="invite" type="button"${dis(can('users'))}>Invite person</button></div>
+    <div class="stack">
+      <div class="panel"><div class="scroll"><table><thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th></tr></thead><tbody>${urows}</tbody></table></div></div>
+      <div class="panel"><div class="panel-pad"><h2>Role permissions</h2><p class="muted">The administrator role always keeps user management. Hydrologist decisions (approving basins and models) are separate from running steps.</p></div>
+        <div class="scroll"><table class="matrix"><thead><tr><th>Permission</th>${ROLES.map(r=>`<th>${r}</th>`).join('')}</tr></thead><tbody>${mrows}</tbody></table></div></div>
+      <div class="panel panel-pad stack"><h2>How people sign in</h2>
+        <div class="row"><span class="pill info">Preferred</span><span>Organisation login (single sign-on): people use their existing NHS account.</span></div>
+        <div class="row"><span class="pill idle">Fallback</span><span>Email and password held by SAPPHIRE Flow, for people outside NHS.</span></div>
+        <div class="row"><span class="pill idle">Machines</span><span>API tokens with read-only forecast access, for tools such as the flow map.</span></div></div>
+    </div>
+    <div class="ask"><b>For discussion</b><span>Can the NHS organisation login be reused (OpenID Connect or SAML)? Who at NHS decides which colleague gets which role? Should a person be allowed to both run a step and approve it?</span></div>`;
+}
+function logTable(){
+  const rows=S.log.slice().reverse().map(l=>`<tr><td class="muted" style="white-space:nowrap">${esc(l.t)}</td><td>${esc(l.who)} <span class="tag" title="Self-declared name, not a verified login">self-declared</span></td><td>${esc(l.st)}</td><td>${esc(l.model)}</td><td>${esc(l.what)}</td><td class="muted">${esc(l.note)}</td></tr>`).join('');
+  return `<div class="panel"><div class="panel-pad row between"><h2>Decision log</h2><span class="muted">Kept permanently; every decision names the model version.</span></div><div class="scroll"><table><thead><tr><th>When</th><th>Reviewer</th><th>Station or group</th><th>Model</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function models(){
+  const a=S.arts.find(x=>x.id===S.artSel)||S.arts[0];
+  const mem=S.stations.filter(inGroup), fbN=mem.filter(s=>s.fallback).length, off=S.assign.status!=='ACTIVE';
+  const rows=S.arts.slice().reverse().map(x=>`<tr data-act="art" data-id="${x.id}" class="${x.id===a.id?'focus':''}" tabindex="0" aria-label="Show ${x.model} ${x.v}"><td><b>${x.model} ${x.v}</b></td><td>${artPill(x.status)}</td><td class="muted">${esc(x.src)}</td><td class="muted">${esc(x.trained)}</td></tr>`).join('');
+  return `<div class="page-head"><div><div class="eyebrow">Models</div><h1>Model versions and who uses them</h1>
+    <p class="muted">Add a version, review a candidate, stop using a version, or go back to an earlier one. A version change affects every station in the group.</p></div>
+    <button class="btn primary" data-act="add-open" type="button"${dis(can('onboard'))}>Add a version</button></div>
+    <div class="stack">${addPanel()}
+    <div class="panel panel-pad stack"><div class="row between"><div><h2>cmal_small</h2><span class="muted">Pretrained neural model, one version per group</span></div><span class="tag">ForecastInterface model</span></div>
+      <dl class="kv"><dt>Used by group</dt><dd>nepal-batch3 · ${mem.length} stations</dd><dt>Assignment</dt><dd><span class="pill ${off?'warn':'ok'}">${S.assign.status}</span> · priority 1 · 24 h</dd><dt>Fallback</dt><dd>linreg (priority 2) covers ${fbN} of ${mem.length} stations</dd></dl>
+      ${off?`<div class="callout warn"><b>This model is switched off for the group.</b> Reason: ${esc(S.assign.why||'')}. <div style="margin-top:8px"><button class="btn small" data-act="assign-on" type="button"${dis(can('approve'))}>Switch back on (hydrologist)</button></div></div>`:''}</div>
+    <div class="split"><div class="stack"><div class="panel"><div class="scroll"><table><thead><tr><th>Version</th><th>Status</th><th>Source</th><th>Trained</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="panel panel-pad stack"><h2>Other models</h2><div class="row between"><span><b>linreg</b> <span class="muted">· one simple baseline per station, fallback priority 2</span></span><span class="pill ok">9 active versions</span></div></div></div>
+      ${artPanel(a)}</div>
+    ${logTable()}</div>
+    <div class="ask"><b>For discussion</b><span>Importing a trained file activates it at once and replaces the current version, with no approval step. Should an import wait for a hydrologist the way a fine-tuned candidate does? And may a hydrologist go back to an earlier version in one click?</span></div>`;
+}
+function artPanel(a){
+  const f=S.artForm&&S.artForm.id===a.id?S.artForm.kind:null, inc=S.arts.find(x=>x.status==='active'&&x.id!==a.id);
+  const cmp=S.stations.filter(s=>s.A&&s.B&&s.step>=IDX.approve&&s.step<=IDX.firstfc);
+  const actions=[];
+  if(a.status==='pending_approval') actions.push(`<button class="btn primary" data-act="art-form" data-id="${a.id}" data-k="approve" type="button"${dis(can('approve'))}>Review decision…</button><button class="btn" data-act="toreview-b" type="button">Compare per station</button>`);
+  if(a.status==='active'&&S.assign.status==='ACTIVE') actions.push(`<button class="btn danger" data-act="art-form" data-id="${a.id}" data-k="stop" type="button"${dis(can('onboard'))}>Stop using this version…</button>`);
+  if(a.status==='superseded') actions.push(`<button class="btn" data-act="art-form" data-id="${a.id}" data-k="rollback" type="button"${dis(can('approve'))}>Make active again…</button><span class="tag warn">Not built yet</span>`);
+  if(a.status==='training') actions.push(`<button class="btn" data-act="fake" data-t="Open the training run in Prefect ↗" type="button">Open the run ↗</button><button class="btn link" data-act="train-done" data-id="${a.id}" type="button">Concept: pretend training finished</button>`);
+  let form='';
+  if(f==='approve'||f==='reject'){
+    form=`<div class="stepbox stack"><h3>Decision for ${a.model} ${a.v}</h3>
+      <ul><li>Approving makes ${a.v} active and ${inc?inc.v+' superseded':'the first active version'} in one step. Forecasts after the next cycle use ${a.v}.</li><li>The decision is tied to the reviewed digest <span class="mono">${esc(a.sha)}</span>. If the roster or the incumbent changed since, approval is refused.</li></ul>
+      <div class="field"><label for="awhy">Reason (kept in the decision log)</label><textarea id="awhy" rows="2" placeholder="e.g. better skill at 2 of 3 stations; peak timing improved"></textarea></div>
+      <div class="field" style="max-width:300px"><label for="awho">Reviewer (a label, not a login)</label><input id="awho" type="text" value="${nameNow()}"></div>
+      <div class="row"><button class="btn primary" data-act="art-do" data-k="approve" type="button"${can('approve')?'':' disabled'}>Approve and make active</button><button class="btn danger" data-act="art-do" data-k="reject" type="button"${can('approve')?'':' disabled'}>Reject</button><button class="btn" data-act="art-cancel" type="button">Cancel</button></div>
+      <details><summary>Under the hood</summary><pre>uv run python -m sapphire_flow.cli.fine_tune approve --artifact ${a.id} --tenant chwrr \\\n  --operator "$ACTOR" --reviewed-sha256 ${a.sha} --reason "…"\n# reject: same command with "reject"</pre></details></div>`;
+  }
+  if(f==='stop'){
+    const mem=S.stations.filter(inGroup);
+    form=`<div class="stepbox stack"><h3>Stop using ${a.model} ${a.v}</h3><p>The group's assignment is switched off. Nothing is deleted, and the version can be switched back on.</p>
+      <div class="scroll"><table><thead><tr><th>Station</th><th>What happens</th></tr></thead><tbody>${mem.map(s=>`<tr><td>${esc(s.name)}</td><td>${s.fallback?'<span class="pill ok">Falls back to linreg</span>':'<span class="pill bad">Forecasts stop</span>'}</td></tr>`).join('')}</tbody></table></div>
+      <div class="field"><label for="awhy">Reason</label><textarea id="awhy" rows="2" placeholder="e.g. model gives implausible peaks after the update"></textarea></div>
+      <div class="field" style="max-width:300px"><label for="awho">Your name (a label, not a login)</label><input id="awho" type="text" value="${nameNow()}"></div>
+      <div class="row"><button class="btn danger" data-act="art-do" data-k="stop" type="button"${can('onboard')?'':' disabled'}>Switch the assignment off</button><button class="btn" data-act="art-cancel" type="button">Cancel</button></div>
+      <details><summary>Under the hood</summary><pre># Not available as a command yet. The assignment status exists (ACTIVE / INACTIVE);\n# assign_group_model refuses to overwrite an INACTIVE one on purpose.</pre></details></div>`;
+  }
+  if(f==='rollback'){
+    form=`<div class="stepbox stack"><h3>Make ${a.v} active again</h3><ul><li>${inc?inc.v+' becomes superseded; ':''}${a.v} becomes the active version for the group.</li><li>Check that the stations' inputs have not changed since ${a.v} was last used.</li></ul>
+      <div class="field"><label for="awhy">Reason</label><textarea id="awhy" rows="2" placeholder="e.g. v4 behaves worse in the monsoon"></textarea></div>
+      <div class="field" style="max-width:300px"><label for="awho">Hydrologist approving (a label, not a login)</label><input id="awho" type="text" value="${nameNow()}"></div>
+      <div class="row"><button class="btn primary" data-act="art-do" data-k="rollback" type="button"${can('approve')?'':' disabled'}>Approve and switch</button><button class="btn" data-act="art-cancel" type="button">Cancel</button></div></div>`;
+  }
+  return `<aside class="panel panel-pad stack" aria-label="Version detail"><div class="row between"><h2>${a.model} ${a.v}</h2>${artPill(a.status)}</div>
+    <dl class="kv"><dt>Source</dt><dd>${esc(a.src)}</dd><dt>Trained</dt><dd>${esc(a.trained)}</dd><dt>Period</dt><dd>${esc(a.period)}</dd><dt>Training history</dt><dd>${a.prov}</dd><dt>Checksum</dt><dd class="mono">${esc(a.sha)}</dd><dt>Decision</dt><dd>${esc(a.decision)}</dd>${a.lineage?`<dt>Lineage</dt><dd>${esc(a.lineage)}</dd>`:''}</dl>
+    ${a.note?`<div class="callout info">${esc(a.note)}</div>`:''}${a.reason?`<div class="callout bad"><b>Rejected:</b> ${esc(a.reason)}</div>`:''}
+    ${a.status==='pending_approval'?`<div class="scroll"><table><thead><tr><th>Station</th><th class="r">KGE existing</th><th class="r">KGE candidate</th></tr></thead><tbody>${cmp.map(s=>`<tr><td>${esc(s.name)}</td><td class="num r">${fmt(s.A.kge)}</td><td class="num r">${fmt(s.B.kge)}</td></tr>`).join('')}</tbody></table></div>`:''}
+    ${actions.length?`<div class="row">${actions.join('')}</div>`:''}${form}</aside>`;
+}
+function addPanel(){
+  const z=S.add; if(!z) return '';
+  const r=z.route, a=activeArt();
+  const routes=[['import','Import a trained file'],['train','Train here'],['fine','Fine-tune a donor']];
+  const forms={
+    import:[['Model','cmal_small'],['Model file','cmal_small_v6.bin'],['Checksum (SHA-256)','paste from the source'],['Trained at, period','from the model team\'s record'],['Group','nepal-batch3']],
+    train:[['Model','cmal_small'],['Group','nepal-batch3'],['Training period','2000-01-01 to 2018-12-31'],['Time step','24 hours']],
+    fine:[['Model and donor','cmal_small, donor '+(a?a.v:'–')],['Group','nepal-batch3'],['Fitting period','2010 – 2016'],['Evaluation period','2017 – 2020'],['Weather source','ERA5-Land'],['Fine-tuning settings','LoRA rank 8, 20 epochs, seed 42']]
+  }[r];
+  const plan={import:['Check the checksum and provenance','Create a new version and make it ACTIVE at once','Supersede '+(a?a.v:'the current version')+' for the group'],
+    train:['Start the training run (Prefect)','The new version waits as TRAINING, then needs approval','The current version keeps forecasting'],
+    fine:['Check the configuration and show its digest','Fit the candidate; evaluate candidate and donor on the same dates','The candidate waits for review; the current version keeps forecasting']}[r];
+  const cmd={import:'# deployment "import-model-artifact" with group_id set\n# see model-artifact-import-runbook.md',train:'# deployment "train-models" with explicit scope and period',fine:'uv run python -m sapphire_flow.cli.fine_tune preview --config experiment.toml\nuv run python -m sapphire_flow.cli.fine_tune start --config experiment.toml'}[r];
+  return `<div class="panel panel-pad stack"><div class="row between"><h2>Add a version</h2><button class="btn small" data-act="add-cancel" type="button">Close</button></div>
+    <div class="seg" role="group" aria-label="Route">${routes.map(([k,t])=>`<button data-act="add-route" data-r="${k}" aria-pressed="${r===k}" type="button">${t}</button>`).join('')}</div>
+    ${r==='import'?'<div class="callout warn"><b>An import goes live at once.</b> Today there is no approval step: the new version replaces the current one for the whole group, and a repeated import creates yet another version.</div>':'<div class="callout info">The new version waits for review. The current version keeps forecasting until a hydrologist approves.</div>'}
+    <div class="formgrid">${forms.map(([l,v],k)=>`<div class="field"><label for="af${k}">${esc(l)}</label><input id="af${k}" type="text" value="${esc(v)}" readonly></div>`).join('')}</div>
+    ${z.preview?`<div class="stepbox"><h3>This would happen. Nothing is written yet.</h3><ul>${plan.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div><div class="row"><button class="btn primary" data-act="add-do" type="button"${dis(can('onboard'))}>Apply</button><button class="btn" data-act="add-preview-off" type="button">Back</button></div>`
+      :`<div class="row"><button class="btn primary" data-act="add-preview" type="button"${dis(can('onboard'))}>Preview what will happen</button></div>`}
+    <details><summary>Under the hood: the command this runs today</summary><pre>${esc(cmd)}</pre></details></div>`;
+}
+function shell(content){
+  const needs=S.stations.filter(s=>!finished(s)&&!s.block).length;
+  const pend=S.arts.filter(a=>a.status==='pending_approval').length;
+  const sel={station:'stations',review:'models'}[S.view]||S.view;
+  const nav=[['overview','Overview',''],['stations','Stations',needs],['models','Models',pend],['alerts','Alerts · draft',''],['people','People & roles · draft','']]
+    .map(([k,t,c])=>`<button data-act="nav" data-view="${k}" type="button"${sel===k?' aria-current="page"':''}>${t}${c!==''?`<span class="count num">${c}</span>`:''}</button>`).join('');
+  return `<div class="shell"><aside class="side"><div class="brand"><i></i><div>SAPPHIRE Flow<small>Administration</small></div></div>
+    <nav class="nav" aria-label="Main">${nav}</nav>
+    <div class="outside"><b>Not in this tool</b><br>Looking at forecasts is done in the SAPPHIRE flow map. It reads the forecast API.</div></aside>
+    <main class="main"><div class="topbar"><span class="muted">Nepal · evaluation environment</span>
+      <div class="who"><label for="role">Viewing as</label><select id="role" data-act="role">${['Administrator','Hydrologist','Observer'].map(r=>`<option${r===S.role?' selected':''}>${r}</option>`).join('')}</select>
+      <span class="avatar" aria-hidden="true">${S.role[0]}</span><button class="btn small" data-act="logout" type="button">Sign out</button></div></div>
+      ${content}</main></div>`;
+}
+const VIEWS={overview,stations:stationsPage,station,models,review,alerts,people};
+function render(){ $('#app').innerHTML = S.view==='login'?login():shell(VIEWS[S.view]()); }
+
+/* ---------- actions ---------- */
+function advance(s,i){
+  const stp=STEPS[i], c=content(s,stp.id), batchEl=$('#batchall');
+  const targets=(stp.batch&&batchEl&&batchEl.checked)?S.stations.filter(x=>x.step===i&&!x.block):[s];
+  const who=($('#actor')||{}).value||nameNow(), extra=[...document.querySelectorAll('[id^="x-"]')].map(e=>e.value).filter(Boolean).join(' · ');
+  targets.forEach(t=>{ t.step=i+1; t.last=stp.t+' done just now'; S.prev.delete(t.id+':'+stp.id);
+    S.evidence.push({sid:t.id,t:stamp(),who,step:stp.t,note:extra||c.result[0]});
+    if(t.step>=N) S.audit.push({sid:t.id,t:stamp(),who,what:'Went live',why:''}); });
+  return targets.length;
+}
+function afterAdvance(s,i,n){
+  S.viewStep = Math.min(i+1,N-1);
+  render(); window.scrollTo(0,0);
+  toast((n>1?n+' stations moved on. ':'Done. ')+(s.step<N?'Next for '+s.name+': '+STEPS[s.step].t+'.':s.name+' is live. Collecting and forecasting are on.'));
+}
+function pzApply(){
+  const z=S.pz, s=byId(z.id), def=pzDef(s,z.mode+':'+z.what);
+  const why=($('#pzwhy')||{}).value||'', who=($('#pzwho')||{}).value||nameNow(), d=dayNow();
+  if(why.trim().length<8){toast('Please give a reason (a short sentence).');return;}
+  if(def.needsReady&&!z.ready){toast('Run the fresh readiness check first.');return;}
+  const rec=(days)=>({who,when:d,days:days||0,why:why.trim()});
+  let what='';
+  if(z.mode==='pause'){
+    if(z.what==='poll'){s.poll='paused';s.pz.poll=rec();what='Polling paused';}
+    if(z.what==='fc'){s.fc='paused';s.pz.fc=rec();what='Forecasts paused';}
+    if(z.what==='both'){const both=($('#alsopoll')||{checked:true}).checked;s.fc='paused';s.pz.fc=rec();if(both){s.poll='paused';s.pz.poll=rec();}what=both?'Retired: forecasts and polling paused':'Retired: forecasts paused, polling kept';}
+  } else {
+    if(z.what==='poll'||z.what==='both'){ if(s.poll==='paused'){const days=s.pz.poll?s.pz.poll.days:0; s.gap=days>0?{days}:null; s.poll='on'; s.pz.poll=null;} }
+    if(z.what==='fc'||z.what==='both'){ s.fc='on'; s.pz.fc=null; }
+    what=z.what==='poll'?'Polling resumed':z.what==='fc'?'Forecasts resumed':'Reactivated: polling and forecasts resumed';
+  }
+  s.last=what+' just now';
+  S.audit.push({sid:s.id,t:stamp(),who,what,why:why.trim()});
+  S.pz=null; render(); toast(what+'. Recorded in the history.');
+}
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-act]'); if(!el) return; const a=el.dataset.act, id=el.dataset.id;
+  if(el.tagName==='INPUT'&&a!=='sel') return;
+  if(el.tagName==='SELECT') return;
+  switch(a){
+    case 'login': go('overview'); break;
+    case 'logout': go('login'); break;
+    case 'nav': go(el.dataset.view); break;
+    case 'reset': S=initial(); location.hash='login'; render(); toast('Demo reset'); break;
+    case 'filter': S.filter=el.dataset.f; render(); break;
+    case 'sview': S.sview=el.dataset.v; render(); break;
+    case 'open': S.focus=id; S.tab=null; S.viewStep=null; S.pz=null; go('station'); break;
+    case 'tab': S.tab=el.dataset.t; S.pz=null; render(); break;
+    case 'wstep': S.viewStep=+el.dataset.i; render(); break;
+    case 'preview': S.prev.add(el.dataset.key); render(); break;
+    case 'unpreview': S.prev.delete(el.dataset.key); render(); break;
+    case 'fake': toast(/concept/i.test(el.dataset.t)?el.dataset.t:'Concept: this would open the other tool in a new tab. Nothing is sent from here.'); break;
+    case 'newbatch': S.newBatch=!S.newBatch; render(); break;
+    case 'newbatch-go': S.newBatch=false; render(); toast('Concept: the batch would be created and the first station opened in the walkthrough.'); break;
+    case 'hostswitch': S.hostSwitch=!S.hostSwitch; render(); break;
+    case 'recheck': { const s=byId(id), b=s.block; S.rc[id]=(S.rc[id]||0)+1;
+      if(b.who==='Gateway'&&S.rc[id]>=2){ s.block=null; render(); toast('Coverage complete. '+s.name+' is eligible.'); }
+      else { toast(b.who==='Gateway'?'Still 3 days missing. The Gateway is processing.':'Nothing new has arrived from '+b.who+'.'); } break; }
+    case 'simulate': { const s=byId(id); s.block=null; s.dhmMissing=false; render(); toast('Concept: data arrived. The station can continue.'); break; }
+    case 'apply': {
+      const s=byId(S.focus), i=s.step; if(el.dataset.dry){ toast('Dry run: all seven conditions hold. Nothing was written.'); return; }
+      if(el.dataset.ext){ const inputs=[...document.querySelectorAll('[id^="x-"]')]; if(inputs.some(x=>!x.value.trim())){ toast('Write what you saw, so it can be recorded.'); inputs.find(x=>!x.value.trim()).focus(); return; } }
+      const n=advance(s,i); afterAdvance(s,i,n); break; }
+    case 'pz-open': S.pz={id,what:el.dataset.what,mode:el.dataset.mode,ready:false}; render(); break;
+    case 'pz-cancel': S.pz=null; render(); break;
+    case 'pz-ready': S.pz.ready=true; render(); toast('Readiness check run: 13 facts, 0 failed.'); break;
+    case 'pz-do': pzApply(); break;
+    case 'catchup': byId(id).gap=null; render(); toast('Catch-up marked done (concept).'); break;
+    case 'art': S.artSel=id; S.artForm=null; render(); break;
+    case 'toart': S.artSel=id; S.artForm=null; go('models'); break;
+    case 'art-form': S.artForm={id,kind:el.dataset.k}; render(); break;
+    case 'art-cancel': S.artForm=null; render(); break;
+    case 'art-do': {
+      const f=S.artForm, k=el.dataset.k||f.kind, x=S.arts.find(v=>v.id===f.id), why=($('#awhy')||{}).value||'', who=($('#awho')||{}).value||nameNow(), d=dayNow();
+      if(why.trim().length<8){toast('Please give a reason (a short sentence).');return;}
+      const inc=S.arts.find(v=>v.status==='active'&&v!==x), row=(what)=>S.log.push({t:stamp(),who,st:'Group nepal-batch3',model:'cmal_small '+x.v,what,note:why.trim()});
+      if(k==='approve'||k==='rollback'){ if(inc){inc.status='superseded';inc.decision='Superseded '+d+' by '+x.v;} x.status='active'; x.decision='Active since '+d+' · '+who; row(k==='approve'?'Approved and activated; '+(inc?inc.v+' superseded':''):'Made active again; '+(inc?inc.v+' superseded':'')); toast(x.v+' is now active.'+(inc?' '+inc.v+' superseded.':'')); }
+      if(k==='reject'){ x.status='rejected'; x.decision='Rejected '+d+' · '+who; x.reason=why.trim(); row('Rejected'); toast(x.v+' rejected. The active version is unchanged.'); }
+      if(k==='stop'){ S.assign.status='INACTIVE'; S.assign.why=why.trim(); row('Assignment switched off'); toast('Assignment switched off. Stations with a fallback use linreg; the others stop forecasting.'); }
+      S.artForm=null; render(); break; }
+    case 'assign-on': { S.assign.status='ACTIVE'; S.log.push({t:stamp(),who:nameNow(),st:'Group nepal-batch3',model:'cmal_small '+activeArt().v,what:'Assignment switched back on',note:''}); render(); toast('Assignment switched back on.'); break; }
+    case 'train-done': { const x=S.arts.find(v=>v.id===id); x.status='pending_approval'; x.trained=dayNow(); x.sha=hex4()+'…'+hex4(); x.decision='Ready for review since '+dayNow(); x.note='Evaluated on held-out dates (concept).'; render(); toast(x.v+' is ready for review.'); break; }
+    case 'add-open': S.add={route:'import',preview:false}; render(); break;
+    case 'add-cancel': S.add=null; render(); break;
+    case 'add-route': S.add.route=el.dataset.r; S.add.preview=false; render(); break;
+    case 'add-preview': S.add.preview=true; render(); break;
+    case 'add-preview-off': S.add.preview=false; render(); break;
+    case 'add-do': {
+      const r=S.add.route, n=S.vn++, d=dayNow(), who=nameNow(), inc=activeArt();
+      const x={id:'a-v'+n,v:'v'+n,model:'cmal_small',trained:d,sha:hex4()+'…'+hex4(),prov:'Known',lineage:'',reason:'',note:''};
+      if(r==='import'){ if(inc){inc.status='superseded';inc.decision='Superseded '+d+' by import of '+x.v;} Object.assign(x,{status:'active',src:'Imported',period:'2000 – 2018',decision:'Active since '+d+' · '+who}); S.log.push({t:stamp(),who,st:'Group nepal-batch3',model:'cmal_small '+x.v,what:'Imported and activated'+(inc?'; '+inc.v+' superseded':''),note:''}); toast('Imported. '+x.v+' is active at once'+(inc?' and '+inc.v+' is superseded.':'.')); }
+      else { Object.assign(x,{status:'training',trained:'–',sha:'pending',src:r==='train'?'Trained here':'Fine-tuned here (donor '+(inc?inc.v:'–')+')',period:r==='train'?'2000 – 2018':'Fitting 2010 – 2016, evaluation 2017 – 2020',lineage:r==='fine'?'Warm start from '+(inc?inc.v:'–')+', LoRA rank 8':'',decision:'Training started '+d+' · '+who,note:'Fitting is running. The active version keeps forecasting.'}); toast('Training started. '+x.v+' will wait for review; '+(inc?inc.v:'the current version')+' keeps forecasting.'); }
+      S.arts.push(x); S.artSel=x.id; S.add=null; render(); break; }
+    case 'toreview': S.focus=id; go('review'); break;
+    case 'toreview-b': S.model='B'; go('review'); break;
+    case 'model': S.model=el.dataset.m; S.excOpen=false; render(); break;
+    case 'pick-r': if(e.target.tagName==='INPUT') return; S.focus=id; S.excOpen=false; render(); break;
+    case 'sel': e.stopPropagation(); el.checked?S.sel.add(id):S.sel.delete(id); render(); break;
+    case 'exc-open': S.excOpen=true; render(); break;
+    case 'exc-cancel': S.excOpen=false; render(); break;
+    case 'exc-save': { const why=($('#exc').value||'').trim(); if(why.length<8){toast('Please give a reason (at least a short sentence).');return;}
+      S.exceptions[id+S.model]=why; S.excOpen=false; render(); toast('Exception recorded. It stays visible next to the results.'); break; }
+    case 'approve': {
+      const name=($('#rev').value||'').trim(); const ids=[...S.sel].filter(i=>approvable(byId(i)));
+      if(!ids.length){toast('Select at least one station that meets the threshold or has an exception.');return;}
+      if(!name){toast('Enter your name first. It is recorded with the decision.');$('#rev').focus();return;}
+      ids.forEach(i=>{const s=byId(i);s.step=IDX.golive;s.last='Model approved just now by '+name;
+        S.log.push({t:stamp(),who:name,st:s.name,model:MODELS[S.model].split(' · ')[0],what:'Approved'+(S.model==='B'?' (candidate)':''),note:S.exceptions[i+S.model]||''});});
+      S.sel.clear(); render(); toast(ids.length+' station'+(ids.length>1?'s':'')+' approved. Next step in each walkthrough: Go live.'); break; }
+    case 'invite': S.users.push({id:'u'+(S.users.length+1),name:'New person (invited)',org:'NHS',role:'Observer',st:'Invited',last:'Never'}); render(); toast('Invitation sent (concept).'); break;
+  }
+});
+document.addEventListener('keydown',e=>{ if((e.key==='Enter'||e.key===' ')&&e.target.matches('tr[data-act]')){e.preventDefault();e.target.click();} });
+document.addEventListener('change',e=>{
+  const el=e.target, a=el.dataset.act;
+  if(a==='role'){S.role=el.value;render();toast('Now viewing as '+el.value+'.');}
+  else if(a==='wstation'){S.focus=el.value;S.viewStep=null;S.tab=null;S.pz=null;render();}
+  else if(a==='perm'){S.perms[el.dataset.role][el.dataset.perm]=el.checked?1:0;render();}
+  else if(a==='urole'){S.users.find(u=>u.id===el.dataset.id).role=el.value;toast('Role updated (concept).');}
+  else if(a==='cap'){S.capOn=el.checked;render();}
+  else if(el.name==='deliv'){S.deliv=el.value;render();}
+});
+document.addEventListener('input',e=>{
+  const el=e.target;
+  if(el.dataset.act==='thr'){byId(el.dataset.id).thr[+el.dataset.k]=+el.value||0;const p=$('#cap-pre');if(p)p.innerHTML=capPreview();}
+  if(el.dataset.act==='ep')S.endpoint=el.value;
+});
+const ROUTES=['login','overview','stations','station','models','review','alerts','people'];
+function go(v){S.view=v;S.excOpen=false;if(location.hash!=='#'+v)location.hash=v;render();window.scrollTo(0,0);}
+window.addEventListener('hashchange',()=>{const v=location.hash.slice(1);if(ROUTES.includes(v)&&v!==S.view){S.view=v;render();}});
+{const v=location.hash.slice(1);if(ROUTES.includes(v))S.view=v;}
+render();
+})();
+</script>
+</body>
+</html>

@@ -187,6 +187,11 @@ dashboard guides authorized hydrologists through the same workflow instead of
 creating a second onboarding pathway. Clarify authentication, authorization and
 review responsibilities with NHS before implementing the final multi-user design.
 
+A clickable concept mockup of that dashboard (stations and models from setup to
+pause and retirement, model review, alerts, people and roles) is in
+[`docs/design/admin-dashboard-mockup.html`](../../docs/design/admin-dashboard-mockup.html).
+It is a discussion aid for project partners, not a commitment to a design.
+
 ## 9. Workshop, parallel work and delivery
 
 Deliver stages in order while keeping the full forecast journey as the goal.
