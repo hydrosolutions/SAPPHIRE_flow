@@ -2087,6 +2087,7 @@ skill_generations = sa.Table(
     "skill_generations",
     metadata,
     sa.Column("evaluation_contexts", JSONB(none_as_null=True), nullable=True),
+    sa.Column("threshold_evaluation_manifest", JSONB(none_as_null=True), nullable=True),
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False

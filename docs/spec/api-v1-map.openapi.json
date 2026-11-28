@@ -4102,6 +4102,133 @@
         "title": "LatestStationObservationResponse",
         "type": "object"
       },
+      "LegacyThresholdContextPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "comparison": {
+            "const": "strict_gt",
+            "title": "Comparison",
+            "type": "string"
+          },
+          "coverage": {
+            "enum": [
+              "all_paired",
+              "conditional_resolved_subset",
+              "no_resolved_probabilities"
+            ],
+            "title": "Coverage",
+            "type": "string"
+          },
+          "danger_level": {
+            "minLength": 1,
+            "title": "Danger Level",
+            "type": "string"
+          },
+          "decision_probability": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Decision Probability",
+            "type": "number"
+          },
+          "excluded_count": {
+            "minimum": 0.0,
+            "title": "Excluded Count",
+            "type": "integer"
+          },
+          "paired_count": {
+            "minimum": 0.0,
+            "title": "Paired Count",
+            "type": "integer"
+          },
+          "paired_event_count": {
+            "minimum": 0.0,
+            "title": "Paired Event Count",
+            "type": "integer"
+          },
+          "probability_methods": {
+            "items": {
+              "$ref": "#/components/schemas/ProbabilityMethod"
+            },
+            "title": "Probability Methods",
+            "type": "array"
+          },
+          "reference": {
+            "const": "same_scored_subset_event_rate",
+            "title": "Reference",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scored_count": {
+            "minimum": 0.0,
+            "title": "Scored Count",
+            "type": "integer"
+          },
+          "scored_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Event Count",
+            "type": "integer"
+          },
+          "scored_non_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Non Event Count",
+            "type": "integer"
+          },
+          "temporal_basis": {
+            "const": "legacy_step_aggregate",
+            "title": "Temporal Basis",
+            "type": "string"
+          },
+          "threshold_basis": {
+            "const": "current_snapshot_historical_effective_dates_unknown",
+            "title": "Threshold Basis",
+            "type": "string"
+          },
+          "threshold_source": {
+            "$ref": "#/components/schemas/ThresholdSource"
+          },
+          "threshold_updated_at": {
+            "format": "date-time",
+            "title": "Threshold Updated At",
+            "type": "string"
+          },
+          "threshold_value": {
+            "title": "Threshold Value",
+            "type": "number"
+          },
+          "units": {
+            "minLength": 1,
+            "title": "Units",
+            "type": "string"
+          }
+        },
+        "required": [
+          "danger_level",
+          "threshold_value",
+          "threshold_source",
+          "threshold_updated_at",
+          "units",
+          "probability_methods",
+          "paired_count",
+          "scored_count",
+          "excluded_count",
+          "paired_event_count",
+          "scored_event_count",
+          "scored_non_event_count",
+          "coverage",
+          "schema_version",
+          "decision_probability",
+          "comparison",
+          "reference",
+          "temporal_basis",
+          "threshold_basis"
+        ],
+        "title": "LegacyThresholdContextPayload",
+        "type": "object"
+      },
       "MissingSkillDiagram": {
         "properties": {
           "diagram_type": {
@@ -6720,6 +6847,520 @@
         "title": "QuartileMethod",
         "type": "string"
       },
+      "RatedCompatibilityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "consumers": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Consumers",
+            "type": "array"
+          },
+          "operator": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Operator",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "default": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "verified_at": {
+            "format": "date-time",
+            "title": "Verified At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operator",
+          "verified_at",
+          "consumers"
+        ],
+        "title": "RatedCompatibilityPayload",
+        "type": "object"
+      },
+      "RatedCurveReferenceResponse": {
+        "properties": {
+          "deliveries": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          },
+          "physical_sha256": {
+            "title": "Physical Sha256",
+            "type": "string"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "title": "Valid From",
+            "type": "string"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "water_level_max": {
+            "title": "Water Level Max",
+            "type": "number"
+          },
+          "water_level_min": {
+            "title": "Water Level Min",
+            "type": "number"
+          }
+        },
+        "required": [
+          "physical_sha256",
+          "deliveries",
+          "valid_from",
+          "valid_to",
+          "water_level_min",
+          "water_level_max"
+        ],
+        "title": "RatedCurveReferenceResponse",
+        "type": "object"
+      },
+      "RatedDiagnosticPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/RatedThresholdContextPayload"
+          },
+          "evaluation_context_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Context Sha256"
+          },
+          "flow_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Regime"
+          },
+          "lead_time_hours": {
+            "title": "Lead Time Hours",
+            "type": "integer"
+          },
+          "phase_offset_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Offset Seconds"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "time_step_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Time Step Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lead_time_hours",
+          "season",
+          "flow_regime",
+          "time_step_seconds",
+          "phase_offset_seconds",
+          "context"
+        ],
+        "title": "RatedDiagnosticPayload",
+        "type": "object"
+      },
+      "RatedThresholdContextPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "comparison": {
+            "const": "strict_gt",
+            "title": "Comparison",
+            "type": "string"
+          },
+          "curve_counts": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Curve Counts",
+            "type": "array"
+          },
+          "danger_level": {
+            "pattern": "^[a-z][a-z0-9_]{0,39}$",
+            "title": "Danger Level",
+            "type": "string"
+          },
+          "decision_probability": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Decision Probability",
+            "type": "number"
+          },
+          "discharge_crossing_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge Crossing Max"
+          },
+          "discharge_crossing_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharge Crossing Min"
+          },
+          "event_support": {
+            "enum": [
+              "low_event_count",
+              "at_least_ten_each"
+            ],
+            "title": "Event Support",
+            "type": "string"
+          },
+          "exclusions": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "manifest_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "paired_count": {
+            "minimum": 0.0,
+            "title": "Paired Count",
+            "type": "integer"
+          },
+          "probability_methods": {
+            "items": {
+              "$ref": "#/components/schemas/ProbabilityMethod"
+            },
+            "title": "Probability Methods",
+            "type": "array"
+          },
+          "qualified_count": {
+            "minimum": 0.0,
+            "title": "Qualified Count",
+            "type": "integer"
+          },
+          "qualified_event_count": {
+            "minimum": 0.0,
+            "title": "Qualified Event Count",
+            "type": "integer"
+          },
+          "reference": {
+            "const": "same_scored_subset_event_rate",
+            "title": "Reference",
+            "type": "string"
+          },
+          "reference_basis": {
+            "$ref": "#/components/schemas/ThresholdReferenceBasis"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scored_count": {
+            "minimum": 0.0,
+            "title": "Scored Count",
+            "type": "integer"
+          },
+          "scored_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Event Count",
+            "type": "integer"
+          },
+          "scored_non_event_count": {
+            "minimum": 0.0,
+            "title": "Scored Non Event Count",
+            "type": "integer"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "statistic": {
+            "const": "water_level_equivalent_of_discharge_aggregate",
+            "title": "Statistic",
+            "type": "string"
+          },
+          "temporal_basis": {
+            "enum": [
+              "declared_period",
+              "legacy_step_aggregate"
+            ],
+            "title": "Temporal Basis",
+            "type": "string"
+          },
+          "threshold_basis": {
+            "const": "current_snapshot_historical_effective_dates_unknown",
+            "title": "Threshold Basis",
+            "type": "string"
+          },
+          "threshold_value": {
+            "title": "Threshold Value",
+            "type": "number"
+          },
+          "units": {
+            "const": "m",
+            "title": "Units",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "danger_level",
+          "threshold_value",
+          "units",
+          "source_url",
+          "retrieved_at",
+          "manifest_sha256",
+          "reference_basis",
+          "temporal_basis",
+          "probability_methods",
+          "paired_count",
+          "qualified_count",
+          "scored_count",
+          "qualified_event_count",
+          "scored_event_count",
+          "scored_non_event_count",
+          "exclusions",
+          "curve_counts",
+          "discharge_crossing_min",
+          "discharge_crossing_max",
+          "comparison",
+          "decision_probability",
+          "statistic",
+          "threshold_basis",
+          "reference",
+          "event_support"
+        ],
+        "title": "RatedThresholdContextPayload",
+        "type": "object"
+      },
+      "RatedThresholdEvaluationResponse": {
+        "properties": {
+          "compatibility": {
+            "$ref": "#/components/schemas/RatedCompatibilityPayload"
+          },
+          "curves": {
+            "items": {
+              "$ref": "#/components/schemas/RatedCurveReferenceResponse"
+            },
+            "title": "Curves",
+            "type": "array"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/RatedDiagnosticPayload"
+            },
+            "title": "Diagnostics",
+            "type": "array"
+          },
+          "evaluation_contexts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillPeriodPayload"
+            },
+            "title": "Evaluation Contexts",
+            "type": "object"
+          },
+          "generation_id": {
+            "format": "uuid",
+            "title": "Generation Id",
+            "type": "string"
+          },
+          "hindcast_count": {
+            "title": "Hindcast Count",
+            "type": "integer"
+          },
+          "hindcast_run_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Hindcast Run Ids",
+            "type": "array"
+          },
+          "input_sha256": {
+            "title": "Input Sha256",
+            "type": "string"
+          },
+          "issue_end": {
+            "format": "date-time",
+            "title": "Issue End",
+            "type": "string"
+          },
+          "issue_start": {
+            "format": "date-time",
+            "title": "Issue Start",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "reference_approved_at": {
+            "format": "date-time",
+            "title": "Reference Approved At",
+            "type": "string"
+          },
+          "reference_basis": {
+            "$ref": "#/components/schemas/ThresholdReferenceBasis"
+          },
+          "reference_evidence": {
+            "title": "Reference Evidence",
+            "type": "string"
+          },
+          "reference_operator": {
+            "title": "Reference Operator",
+            "type": "string"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          },
+          "station_id": {
+            "format": "uuid",
+            "title": "Station Id",
+            "type": "string"
+          },
+          "thresholds_m": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Thresholds M",
+            "type": "object"
+          }
+        },
+        "required": [
+          "generation_id",
+          "station_id",
+          "manifest_sha256",
+          "input_sha256",
+          "source_url",
+          "retrieved_at",
+          "reference_basis",
+          "reference_operator",
+          "reference_evidence",
+          "reference_approved_at",
+          "compatibility",
+          "thresholds_m",
+          "curves",
+          "hindcast_count",
+          "hindcast_run_ids",
+          "issue_start",
+          "issue_end",
+          "observation_count",
+          "diagnostics",
+          "evaluation_contexts"
+        ],
+        "title": "RatedThresholdEvaluationResponse",
+        "type": "object"
+      },
       "RatingHistoryCurve": {
         "properties": {
           "content_sha256": {
@@ -8512,12 +9153,27 @@
           "threshold_context": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ThresholdContextPayload"
+                "discriminator": {
+                  "mapping": {
+                    "1": "#/components/schemas/LegacyThresholdContextPayload",
+                    "2": "#/components/schemas/RatedThresholdContextPayload"
+                  },
+                  "propertyName": "schema_version"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LegacyThresholdContextPayload"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RatedThresholdContextPayload"
+                  }
+                ]
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Threshold Context"
           },
           "time_step_seconds": {
             "title": "Time Step Seconds",
@@ -9580,12 +10236,27 @@
           "threshold_context": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ThresholdContextPayload"
+                "discriminator": {
+                  "mapping": {
+                    "1": "#/components/schemas/LegacyThresholdContextPayload",
+                    "2": "#/components/schemas/RatedThresholdContextPayload"
+                  },
+                  "propertyName": "schema_version"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LegacyThresholdContextPayload"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RatedThresholdContextPayload"
+                  }
+                ]
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Threshold Context"
           },
           "threshold_level": {
             "title": "Threshold Level",
@@ -9841,132 +10512,13 @@
         "title": "SwissOverviewResponse",
         "type": "object"
       },
-      "ThresholdContextPayload": {
-        "additionalProperties": false,
-        "properties": {
-          "comparison": {
-            "const": "strict_gt",
-            "title": "Comparison",
-            "type": "string"
-          },
-          "coverage": {
-            "enum": [
-              "all_paired",
-              "conditional_resolved_subset",
-              "no_resolved_probabilities"
-            ],
-            "title": "Coverage",
-            "type": "string"
-          },
-          "danger_level": {
-            "minLength": 1,
-            "title": "Danger Level",
-            "type": "string"
-          },
-          "decision_probability": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Decision Probability",
-            "type": "number"
-          },
-          "excluded_count": {
-            "minimum": 0.0,
-            "title": "Excluded Count",
-            "type": "integer"
-          },
-          "paired_count": {
-            "minimum": 0.0,
-            "title": "Paired Count",
-            "type": "integer"
-          },
-          "paired_event_count": {
-            "minimum": 0.0,
-            "title": "Paired Event Count",
-            "type": "integer"
-          },
-          "probability_methods": {
-            "items": {
-              "$ref": "#/components/schemas/ProbabilityMethod"
-            },
-            "title": "Probability Methods",
-            "type": "array"
-          },
-          "reference": {
-            "const": "same_scored_subset_event_rate",
-            "title": "Reference",
-            "type": "string"
-          },
-          "schema_version": {
-            "const": 1,
-            "title": "Schema Version",
-            "type": "integer"
-          },
-          "scored_count": {
-            "minimum": 0.0,
-            "title": "Scored Count",
-            "type": "integer"
-          },
-          "scored_event_count": {
-            "minimum": 0.0,
-            "title": "Scored Event Count",
-            "type": "integer"
-          },
-          "scored_non_event_count": {
-            "minimum": 0.0,
-            "title": "Scored Non Event Count",
-            "type": "integer"
-          },
-          "temporal_basis": {
-            "const": "legacy_step_aggregate",
-            "title": "Temporal Basis",
-            "type": "string"
-          },
-          "threshold_basis": {
-            "const": "current_snapshot_historical_effective_dates_unknown",
-            "title": "Threshold Basis",
-            "type": "string"
-          },
-          "threshold_source": {
-            "$ref": "#/components/schemas/ThresholdSource"
-          },
-          "threshold_updated_at": {
-            "format": "date-time",
-            "title": "Threshold Updated At",
-            "type": "string"
-          },
-          "threshold_value": {
-            "title": "Threshold Value",
-            "type": "number"
-          },
-          "units": {
-            "minLength": 1,
-            "title": "Units",
-            "type": "string"
-          }
-        },
-        "required": [
-          "danger_level",
-          "threshold_value",
-          "threshold_source",
-          "threshold_updated_at",
-          "units",
-          "probability_methods",
-          "paired_count",
-          "scored_count",
-          "excluded_count",
-          "paired_event_count",
-          "scored_event_count",
-          "scored_non_event_count",
-          "coverage",
-          "schema_version",
-          "decision_probability",
-          "comparison",
-          "reference",
-          "temporal_basis",
-          "threshold_basis"
+      "ThresholdReferenceBasis": {
+        "enum": [
+          "verified_common_zero",
+          "owner_assumed_same_zero_unverified"
         ],
-        "title": "ThresholdContextPayload",
-        "type": "object"
+        "title": "ThresholdReferenceBasis",
+        "type": "string"
       },
       "ThresholdResponse": {
         "properties": {
@@ -10314,7 +10866,7 @@
   "info": {
     "description": "The subset of /api/v1 the flow map reads (Plan 402). Not served \u2014 openapi_url stays None on the live app; this is a committed, drift-tested static artefact. Bearer auth is added explicitly below: the live routes read the Authorization header from the raw Request, so FastAPI's own generator sees no security scheme.",
     "title": "SAPPHIRE Flow \u2014 flow map contract",
-    "version": "3.14"
+    "version": "3.15"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12695,6 +13247,105 @@
           }
         ],
         "summary": "Read stored reliability and ROC diagrams",
+        "tags": [
+          "Quality and evaluation"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/skill-generations/{generation_id}/threshold-context": {
+      "get": {
+        "description": "Frozen reported thresholds, historical rating references, owner assumptions and coverage diagnostics for a published skill generation. Reviewer station scope; no rating points. At most 4 MiB; larger responses fail with 413. No-store.",
+        "operationId": "get_rated_threshold_context_api_v1_stations__station_id__skill_generations__generation_id__threshold_context_get",
+        "parameters": [
+          {
+            "description": "Station UUID returned by the station list, not the provider code.",
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "generation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Generation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatedThresholdEvaluationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed query value or station_id (error envelope: {\"error\": <message>, \"detail\": null})."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Missing or invalid access token."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Reviewer or admin token required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or out-of-scope station/forecast \u2014 the same body either way (never reveals which)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read historical threshold evaluation evidence",
         "tags": [
           "Quality and evaluation"
         ]

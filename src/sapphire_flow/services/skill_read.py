@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import FlowRegime, ForcingType, SkillSource
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+    from sapphire_flow.types.rated_threshold_skill import RatedThresholdSkillContext
     from sapphire_flow.types.skill import SkillEvaluationContext
     from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
@@ -59,7 +60,7 @@ class StationSkillRow:
     metric: str
     score: float
     sample_size: int
-    threshold_context: ThresholdSkillContext | None = None
+    threshold_context: ThresholdSkillContext | RatedThresholdSkillContext | None = None
     evaluation_context: SkillEvaluationContext | None = None
 
 

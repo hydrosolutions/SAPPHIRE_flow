@@ -115,6 +115,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.provisional_discharge import ProvisionalDischarge
+    from sapphire_flow.types.rated_threshold_skill import RatedThresholdEvaluation
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.rating_reference import (
         MeasurementFeedEvidence,
@@ -726,11 +727,17 @@ class SkillStore(Protocol):
         score_count: int,
         diagram_count: int,
         evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
+        threshold_evaluation: RatedThresholdEvaluation | None = None,
     ) -> None:
         """Plan 235 D3/D2c — the atomic, INSERT-only publication that makes
         a generation's scores/diagrams current. See
         `store.skill_store.PgSkillStore.publish_generation`.
         """
+        raise NotImplementedError
+
+    def fetch_threshold_evaluation(
+        self, generation_id: UUID
+    ) -> RatedThresholdEvaluation | None:
         raise NotImplementedError
 
     def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]:

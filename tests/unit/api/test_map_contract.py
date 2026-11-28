@@ -72,6 +72,7 @@ _EXPECTED_PATHS = {
     "/api/v1/qc/rules",
     "/api/v1/stations/{station_id}/skill",
     "/api/v1/stations/{station_id}/skill-options",
+    "/api/v1/stations/{station_id}/skill-generations/{generation_id}/threshold-context",
     "/api/v1/stations/{station_id}/skill-diagrams",
     "/api/v1/stations/{station_id}/review-options",
     "/api/v1/stations/{station_id}/review-series",

@@ -12,6 +12,21 @@ from prefect.cache_policies import NO_CACHE
 from pydantic import StrictInt  # noqa: TC002 — Prefect resolves boundary annotations
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.skill.rated_inventory import rated_input_digest
+from sapphire_flow.store.rated_threshold_codec import (
+    parse_rated_compatibility,
+    parse_rated_threshold_manifest,
+    rated_evaluation_content,
+)
+from sapphire_flow.store.skill_period_codec import evaluation_context_content
+from sapphire_flow.types.rated_threshold_skill import (
+    RatedPeriodSnapshot,
+    RatedThresholdCompatibility,
+    RatedThresholdDiagnostic,
+    RatedThresholdEvaluation,
+    RatedThresholdManifest,
+)
+from sapphire_flow.types.rating_reference import canonical_content, content_digest
 
 if TYPE_CHECKING:
     # `clock` stays `object` at runtime (see the Plan 235 note below on why
@@ -38,7 +53,11 @@ if TYPE_CHECKING:
 # a store that dropped or broke `fetch_hindcasts_by_station` (e.g. the
 # `hindcast_run_ids={}` fixer-round bug) could not be caught by static
 # checking at all.
-from sapphire_flow.protocols.stores import HindcastStore, SkillStore  # noqa: TC001
+from sapphire_flow.protocols.stores import (  # noqa: TC001
+    HindcastStore,
+    SkillStore,
+    StationStore,
+)
 from sapphire_flow.services.skill.combined_skill import (
     compute_bma_skill_cross_validated,
     compute_combined_skill,
@@ -135,6 +154,9 @@ def compute_skills_task(
     generation_id: UUID | None = None,
     reference_displacement: timedelta = timedelta(0),
     source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    rated_thresholds: RatedThresholdManifest | None = None,
+    rated_compatibility: RatedThresholdCompatibility | None = None,
+    rated_dry_run: bool = False,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     from datetime import UTC, datetime
 
@@ -194,6 +216,36 @@ def compute_skills_task(
         getattr(deployment_config, "enable_skill_generations", False)
     )
 
+    if rated_thresholds is not None:
+        if not generations_enabled:
+            raise ConfigurationError(
+                "rated threshold scoring requires skill generations"
+            )
+        if not rated_dry_run and rated_compatibility is None:
+            raise ConfigurationError(
+                "rated threshold writes require "
+                "a schema-2 consumer compatibility receipt"
+            )
+        station = (
+            cast("StationStore", station_store).fetch_station(station_id)
+            if station_store
+            else None
+        )
+        if station is None or (
+            rated_thresholds.station_id != station_id
+            or rated_thresholds.tenant_id != station.tenant_id
+            or rated_thresholds.network != station.network
+            or rated_thresholds.station_code != station.code
+        ):
+            raise ConfigurationError(
+                "rated threshold manifest station identity does not match"
+            )
+    elif rated_dry_run or rated_compatibility is not None:
+        raise ConfigurationError("rated threshold options require a manifest")
+    rated_diagnostics: list[RatedThresholdDiagnostic] = []
+    rated_observations = []
+    rated_bounds = []
+
     broad_start = ensure_utc(datetime(1970, 1, 1, tzinfo=UTC))
     broad_end = ensure_utc(datetime(2100, 1, 1, tzinfo=UTC))
 
@@ -209,6 +261,12 @@ def compute_skills_task(
 
     if not hindcasts:
         return [], []
+    if rated_thresholds is not None and any(
+        hc.model_artifact_id != artifact_id for hc in hindcasts
+    ):
+        raise ConfigurationError(
+            "rated scoring run contains a different model artifact"
+        )
     if not generations_enabled and any(
         hc.ensemble.period_definition is not None for hc in hindcasts
     ):
@@ -272,6 +330,9 @@ def compute_skills_task(
             obs_store, station_id, period_start, period_end, parameter=parameter
         )
         observations_fetched += len(observations)
+        if rated_thresholds is not None:
+            rated_observations.extend(observations)
+            rated_bounds.append((period_start, period_end))
 
         scores, diagrams = compute_skill_for_station(
             station_id=station_id,
@@ -290,6 +351,8 @@ def compute_skills_task(
             generation_id=invocation_id if generations_enabled else None,
             reference_displacement=reference_displacement,
             source_periods=source_periods,
+            rated_thresholds=rated_thresholds,
+            rated_diagnostics=rated_diagnostics,
         )
         if not scores and not diagrams:
             cohorts_missing += 1
@@ -302,6 +365,72 @@ def compute_skills_task(
         all_diagrams.extend(diagrams)
 
     cohorts_complete = cohorts_missing == 0 and rejected_hindcasts == 0
+
+    rated_evaluation = None
+    if rated_thresholds is not None:
+        original_digest = rated_input_digest(hindcasts, rated_observations)
+        rated_evaluation = RatedThresholdEvaluation(
+            manifest=rated_thresholds,
+            compatibility=rated_compatibility,
+            input_sha256=original_digest,
+            hindcast_count=len(hindcasts),
+            hindcast_ids=tuple(sorted((hc.id for hc in hindcasts), key=str)),
+            hindcast_run_ids=tuple(
+                sorted({hc.hindcast_run_id for hc in hindcasts}, key=str)
+            ),
+            issue_start=min(hc.hindcast_step for hc in hindcasts),
+            issue_end=max(hc.hindcast_step for hc in hindcasts),
+            observation_count=len(rated_observations),
+            diagnostics=tuple(rated_diagnostics),
+            evaluation_contexts=tuple(
+                RatedPeriodSnapshot(content=value)
+                for value in sorted(
+                    {
+                        canonical_content(
+                            evaluation_context_content(item.evaluation_context)
+                        )
+                        for item in (*all_scores, *all_diagrams)
+                        if item.evaluation_context is not None
+                    }
+                )
+            ),
+        )
+        if rated_dry_run:
+            log.info(
+                "skill.rated_threshold_dry_run",
+                manifest_sha256=rated_thresholds.digest.value,
+                input_sha256=original_digest.value,
+                complete=cohorts_complete,
+                diagnostics=len(rated_diagnostics),
+                scores=len(all_scores),
+                diagrams=len(all_diagrams),
+            )
+            return all_scores, all_diagrams
+        rated_evaluation_content(rated_evaluation)
+        current_hindcasts = _fetch_hindcasts(
+            hindcast_store,
+            station_id,
+            model_id,
+            broad_start,
+            broad_end,
+            hindcast_run_id,
+            parameter=parameter,
+        )
+        current_observations = [
+            observation
+            for start, end in rated_bounds
+            for observation in _fetch_observations(
+                obs_store, station_id, start, end, parameter
+            )
+        ]
+        if (
+            rated_input_digest(current_hindcasts, current_observations)
+            != original_digest
+        ):
+            raise ConfigurationError(
+                "rated scoring inputs changed during calculation; "
+                "no generation published"
+            )
 
     if not generations_enabled:
         # Two-release rollout, Release A: legacy shape only — store
@@ -335,6 +464,15 @@ def compute_skills_task(
     # `invocation_id` as a placeholder (the fingerprint needs their
     # computed VALUES, which do not exist until now) and are rebound here.
     if all_scores or all_diagrams:
+        if rated_evaluation is not None:
+            from uuid import uuid5
+
+            invocation_id = uuid5(
+                invocation_id,
+                content_digest(
+                    canonical_content(rated_evaluation, dataclass_values=True)
+                ),
+            )
         generation_id = resolve_generation_id(invocation_id, all_scores, all_diagrams)
         all_scores, all_diagrams = rebind_generation_id(
             all_scores, all_diagrams, generation_id
@@ -379,6 +517,7 @@ def compute_skills_task(
             published_at=published_at,
             score_count=len(all_scores),
             diagram_count=len(all_diagrams),
+            threshold_evaluation=rated_evaluation,
             evaluation_contexts=tuple(
                 {
                     item.evaluation_context
@@ -812,8 +951,21 @@ def compute_skills_flow(
     generation_id: UUID | None = None,
     reference_displacement_seconds: StrictInt = 0,
     source_periods: list[dict[str, object]] | None = None,
+    rated_threshold_manifest: str | None = None,
+    rated_compatibility_receipt: str | None = None,
+    rated_dry_run: bool = False,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     parsed_sources = parse_source_periods(source_periods)
+    rated_manifest = (
+        parse_rated_threshold_manifest(rated_threshold_manifest)
+        if rated_threshold_manifest is not None
+        else None
+    )
+    rated_receipt = (
+        parse_rated_compatibility(rated_compatibility_receipt)
+        if rated_compatibility_receipt is not None
+        else None
+    )
     # --- Production setup ---
     _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
     if station_store is None:
@@ -869,4 +1021,7 @@ def compute_skills_flow(
         generation_id=generation_id,
         reference_displacement=timedelta(seconds=reference_displacement_seconds),
         source_periods=parsed_sources,
+        rated_thresholds=rated_manifest,
+        rated_compatibility=rated_receipt,
+        rated_dry_run=rated_dry_run,
     )

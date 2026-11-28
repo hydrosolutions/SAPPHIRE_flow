@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import Field
 
 from sapphire_flow.api.deps import get_connection, get_observation_clock, get_stores
+from sapphire_flow.api.rated_threshold_skills import RatedThresholdEvaluationResponse
 from sapphire_flow.api.schemas import (
     ForecastQcRuleResponse,
     ForecastQcRuleSetResponse,
@@ -55,8 +56,8 @@ from sapphire_flow.services.station_qc_overrides import (
 )
 from sapphire_flow.store.skill_period_codec import SkillPeriodPayload
 from sapphire_flow.store.threshold_skill_codec import (
-    ThresholdContextPayload,
     encode_threshold_context,
+    parse_threshold_context_payload,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
@@ -72,6 +73,45 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig
 
 router = APIRouter(prefix="/api/v1", tags=["api-review"])
+
+
+@router.get(
+    "/stations/{station_id}/skill-generations/{generation_id}/threshold-context",
+    response_model=RatedThresholdEvaluationResponse,
+)
+def get_rated_threshold_context(
+    station_id: str,
+    generation_id: UUID,
+    principal: Principal = Depends(require_reviewer),
+    conn: sa.Connection = Depends(get_connection),
+) -> Response:
+    from sapphire_flow.api.rated_threshold_skills import evaluation_response
+    from sapphire_flow.db.metadata import skill_generations
+    from sapphire_flow.store.rated_threshold_codec import parse_rated_evaluation
+
+    sid = _parse_station_id(station_id)
+    ensure_station_in_scope(principal, sid)
+    raw = conn.execute(
+        sa.select(skill_generations.c.threshold_evaluation_manifest).where(
+            skill_generations.c.id == generation_id,
+            skill_generations.c.station_id == sid,
+        )
+    ).scalar_one_or_none()
+    if raw is None:
+        raise HTTPException(
+            status_code=404, detail="Rated threshold evaluation not found"
+        )
+    payload = evaluation_response(generation_id, parse_rated_evaluation(raw))
+    content = payload.model_dump_json().encode()
+    if len(content) > 4 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413, detail="Rated threshold context exceeds response limit"
+        )
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get(
@@ -365,7 +405,7 @@ def get_station_skill(
                 score=r.score if math.isfinite(r.score) else None,
                 sample_size=r.sample_size,
                 evaluation_context=SkillPeriodPayload.from_domain(r.evaluation_context),
-                threshold_context=ThresholdContextPayload.model_validate(
+                threshold_context=parse_threshold_context_payload(
                     encode_threshold_context(r.threshold_context)
                 )
                 if r.threshold_context is not None
