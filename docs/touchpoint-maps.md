@@ -3184,3 +3184,17 @@ Review fixes: source catalogues are retained in skill context and fingerprint/co
   real store snapshot mapping, all admission branches and generated map contract.
   Update the standard-route byte fixture for the additive default-null comparison
   field; all existing detail/list bytes must otherwise remain identical.
+
+### Rated water-level threshold skill (2026-11-28)
+
+`types/rated_threshold_skill.py` and its boundary codec freeze provider/reference
+evidence and dated rating snapshots. `services/skill/rated_thresholds.py` retains
+physical supports and compares discharge to each in-range forward rating crossing;
+never discard extreme flows merely because their inverse stage is out of range.
+`flows/compute_skills.py` gates schema-2 writes, checks the input inventory and
+publishes complete ordinary-plus-threshold generations. Migration 0098 stores the
+frozen evidence separately from the unchanged period-context list. Score/diagram
+readers accept both threshold schemas; the reviewer generation-context route
+exposes bounded provenance and unavailable-stratum diagnostics. Check the rated
+unit/flow tests, skill-store and migration tests, scoped API and map contract.
+See `docs/operations/rated-threshold-skills.md` for rollout/rollback restrictions.

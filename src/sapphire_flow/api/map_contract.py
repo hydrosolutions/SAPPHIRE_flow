@@ -27,8 +27,11 @@ from sapphire_flow.api import app
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 from sapphire_flow.api.schemas import ErrorResponse
 
-MAP_CONTRACT_VERSION = "3.14"
+MAP_CONTRACT_VERSION = "3.15"
 _SNAPSHOT_PATH = "/api/v1/forecast-lab/snapshot"
+_RATED_CONTEXT_PATH = (
+    "/api/v1/stations/{station_id}/skill-generations/{generation_id}/threshold-context"
+)
 
 # The exact route set the map reads (plan `Endpoint contract` / T4) — no
 # other route may appear in the committed file.
@@ -49,6 +52,10 @@ _MAP_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/qc/rules"),
         ("GET", "/api/v1/stations/{station_id}/skill"),
         ("GET", "/api/v1/stations/{station_id}/skill-options"),
+        (
+            "GET",
+            _RATED_CONTEXT_PATH,
+        ),
         ("GET", "/api/v1/stations/{station_id}/skill-diagrams"),
         ("GET", "/api/v1/stations/{station_id}/review-options"),
         ("GET", "/api/v1/stations/{station_id}/review-series"),
@@ -64,6 +71,7 @@ _REVIEW_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/skill-options",
+        _RATED_CONTEXT_PATH,
         "/api/v1/stations/{station_id}/skill-diagrams",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
@@ -98,6 +106,7 @@ _400_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/skill-options",
+        _RATED_CONTEXT_PATH,
         "/api/v1/stations/{station_id}/skill-diagrams",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
@@ -118,6 +127,7 @@ _404_PATHS: frozenset[str] = frozenset(
         "/api/v1/qc/rules",
         "/api/v1/stations/{station_id}/skill",
         "/api/v1/stations/{station_id}/skill-options",
+        _RATED_CONTEXT_PATH,
         "/api/v1/stations/{station_id}/skill-diagrams",
         "/api/v1/stations/{station_id}/review-options",
         "/api/v1/stations/{station_id}/review-series",
@@ -136,6 +146,16 @@ _DESCRIPTIONS: dict[tuple[str, str], str] = {
         "Response is at most 4 MiB and 1024 diagrams; overflow is 422, never "
         "truncation. Inactive artifacts require an active scoped model assignment. "
         "Legacy forcing and counts remain unknown where not recorded. No-store."
+    ),
+    (
+        "GET",
+        _RATED_CONTEXT_PATH,
+    ): (
+        "Frozen reported thresholds, historical rating references, "
+        "owner assumptions and "
+        "coverage diagnostics for a published skill generation. "
+        "Reviewer station scope; "
+        "no rating points. At most 4 MiB; larger responses fail with 413. No-store."
     ),
     ("GET", "/api/v1/stations/{station_id}/skill-options"): (
         "Stored discharge skill artifacts for actively assigned models, including "
@@ -335,6 +355,10 @@ _OPERATION_LABELS: dict[str, tuple[str, str]] = {
     ),
     "/api/v1/stations/{station_id}/skill-diagrams": (
         "Read stored reliability and ROC diagrams",
+        "Quality and evaluation",
+    ),
+    _RATED_CONTEXT_PATH: (
+        "Read historical threshold evaluation evidence",
         "Quality and evaluation",
     ),
     "/api/v1/stations/{station_id}/skill-options": (

@@ -579,3 +579,10 @@ superseded versions; changed unreconciled/current-only evidence stays missing.
 Migration 0095 locks the table before assigning one stable statement timestamp to
 old rows, avoiding a full table rewrite, then restores the clock default for new
 inserts. Quiesce writers during the normal migration rollout.
+
+### Historical scores against water-level thresholds
+
+Use the [rated-threshold scoring runbook](rated-threshold-skills.md) when discharge
+hindcasts must be compared with reported stage thresholds. It preserves dated
+ratings, explicit reference assumptions and declared/legacy observation periods,
+and publishes ordinary and threshold scores together. It does not activate alerts.

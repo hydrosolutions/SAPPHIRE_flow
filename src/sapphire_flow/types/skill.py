@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         HistoricalSourcePeriod,
     )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+    from sapphire_flow.types.rated_threshold_skill import RatedThresholdSkillContext
     from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
 
@@ -108,7 +109,7 @@ class SkillScore:
     # `flows.compute_skills`). Defaults to `None` so every existing call
     # site/test that predates generations still constructs a valid row.
     generation_id: UUID | None = None
-    threshold_context: ThresholdSkillContext | None = None
+    threshold_context: ThresholdSkillContext | RatedThresholdSkillContext | None = None
     evaluation_context: SkillEvaluationContext | None = None
 
 
@@ -136,7 +137,7 @@ class SkillDiagram:
     phase_offset_seconds: int | None = None
     # Plan 235 D1: see `SkillScore.generation_id`.
     generation_id: UUID | None = None
-    threshold_context: ThresholdSkillContext | None = None
+    threshold_context: ThresholdSkillContext | RatedThresholdSkillContext | None = None
     evaluation_context: SkillEvaluationContext | None = None
 
 

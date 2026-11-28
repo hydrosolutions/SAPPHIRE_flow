@@ -171,6 +171,7 @@ _ObservationNaturalKey: TypeAlias = tuple[
 
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.rated_threshold_skill import RatedThresholdEvaluation
     from sapphire_flow.types.weather_summary import PersistedWeatherSummary
 
 
@@ -1421,6 +1422,7 @@ class _FakeGeneration:
         "computation_version",
         "published_at",
         "evaluation_contexts",
+        "threshold_evaluation",
     )
 
     def __init__(
@@ -1436,6 +1438,7 @@ class _FakeGeneration:
         computation_version: int,
         published_at: UtcDatetime,
         evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
+        threshold_evaluation: RatedThresholdEvaluation | None = None,
     ) -> None:
         self.id = id
         self.station_id = station_id
@@ -1447,6 +1450,7 @@ class _FakeGeneration:
         self.computation_version = computation_version
         self.published_at = published_at
         self.evaluation_contexts = evaluation_contexts
+        self.threshold_evaluation = threshold_evaluation
 
     def scope_key(self, *, include_forcing_type: bool = True) -> tuple[object, ...]:
         """Fixer round (major): takes `include_forcing_type` so a DIAGRAM
@@ -1588,6 +1592,7 @@ class FakeSkillStore:
         score_count: int,  # noqa: ARG002 — diagnostic only, matches PgSkillStore's signature
         diagram_count: int,  # noqa: ARG002
         evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
+        threshold_evaluation: RatedThresholdEvaluation | None = None,
     ) -> None:
         self._generations.append(
             _FakeGeneration(
@@ -1601,7 +1606,20 @@ class FakeSkillStore:
                 computation_version=computation_version,
                 published_at=published_at,
                 evaluation_contexts=evaluation_contexts,
+                threshold_evaluation=threshold_evaluation,
             )
+        )
+
+    def fetch_threshold_evaluation(
+        self, generation_id: UUID
+    ) -> RatedThresholdEvaluation | None:
+        return next(
+            (
+                row.threshold_evaluation
+                for row in self._generations
+                if row.id == generation_id
+            ),
+            None,
         )
 
     def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]:

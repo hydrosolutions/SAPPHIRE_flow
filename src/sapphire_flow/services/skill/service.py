@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from dataclasses import replace
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid5
 
 if TYPE_CHECKING:
@@ -40,6 +40,11 @@ from sapphire_flow.services.skill.metrics import (
     compute_sharpness,
 )
 from sapphire_flow.services.skill.quantiles import QUANTILE_SCORE, QuantileSample
+from sapphire_flow.services.skill.rated_thresholds import (
+    PairedSkillSample,
+    paired_rated_probabilities,
+    prepare_ratings,
+)
 from sapphire_flow.services.skill.thresholds import paired_threshold_probabilities
 from sapphire_flow.services.training_data import (
     aggregation_method_for,
@@ -49,6 +54,8 @@ from sapphire_flow.store.skill_period_codec import evaluation_context_content
 from sapphire_flow.store.threshold_skill_codec import encode_threshold_context
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, FlowRegime, SkillFreshness
+from sapphire_flow.types.rated_threshold_skill import RatedThresholdDiagnostic
+from sapphire_flow.types.rating_reference import canonical_content, content_digest
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -62,6 +69,10 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
     from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.rated_threshold_skill import (
+        RatedThresholdManifest,
+        RatedThresholdSkillContext,
+    )
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
     from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
@@ -388,13 +399,13 @@ def _build_strata(
     obs_lookup: dict[object, float],
     seasons: list[SeasonDefinition],
     flow_regime_config: FlowRegimeConfig | None,
-) -> dict[StratumKey, tuple[list[ForecastSample], list[float]]]:
+) -> dict[StratumKey, list[PairedSkillSample]]:
     # Returns: stratum_key -> (list of ensemble_1d arrays, list of observed values)
     # Stratum key: (lead_time_hours, season_name | None, flow_regime | None)
     # None season = "all seasons" aggregate; None flow_regime = "all regimes" aggregate
 
     # raw_pairs[lead_time_hours] = list of (ensemble_1d, obs_value, hindcast_step)
-    raw_pairs: dict[int, list[tuple[ForecastSample, float, object]]] = defaultdict(list)
+    raw_pairs: dict[int, list[tuple[PairedSkillSample, object]]] = defaultdict(list)
 
     grids: set[tuple[float, ...] | None] = set()
     for hc in hindcasts:
@@ -421,39 +432,40 @@ def _build_strata(
                     "declared-period skill requires whole-hour elapsed leads"
                 )
             lead_hours = int(round(dt_diff / 3600))
-            raw_pairs[lead_hours].append((members, obs_val, hc.hindcast_step))
+            raw_pairs[lead_hours].append(
+                (
+                    PairedSkillSample(
+                        prediction=members, observed=obs_val, valid_time=ensure_utc(vt)
+                    ),
+                    hc.hindcast_step,
+                )
+            )
 
-    strata: dict[StratumKey, tuple[list[ForecastSample], list[float]]] = defaultdict(
-        lambda: ([], [])
-    )
+    strata: dict[StratumKey, list[PairedSkillSample]] = defaultdict(list)
 
     for lead_hours, pairs in raw_pairs.items():
-        for members, obs_val, hindcast_step in pairs:
+        for sample, hindcast_step in pairs:
             season = _find_season(hindcast_step, seasons)  # type: ignore[arg-type]
             regime = (
-                _classify_flow_regime(obs_val, flow_regime_config)
+                _classify_flow_regime(sample.observed, flow_regime_config)
                 if flow_regime_config is not None
                 else None
             )
 
             # All-season + all-regime aggregate
-            strata[(lead_hours, None, None)][0].append(members)
-            strata[(lead_hours, None, None)][1].append(obs_val)
+            strata[(lead_hours, None, None)].append(sample)
 
             # Season-specific + all-regime
             if season is not None:
-                strata[(lead_hours, season, None)][0].append(members)
-                strata[(lead_hours, season, None)][1].append(obs_val)
+                strata[(lead_hours, season, None)].append(sample)
 
             # All-season + regime-specific
             if regime is not None:
-                strata[(lead_hours, None, regime)][0].append(members)
-                strata[(lead_hours, None, regime)][1].append(obs_val)
+                strata[(lead_hours, None, regime)].append(sample)
 
             # Season-specific + regime-specific
             if season is not None and regime is not None:
-                strata[(lead_hours, season, regime)][0].append(members)
-                strata[(lead_hours, season, regime)][1].append(obs_val)
+                strata[(lead_hours, season, regime)].append(sample)
 
     return strata
 
@@ -701,6 +713,81 @@ def _compute_diagrams(
     return diagrams
 
 
+def _rated_outputs(
+    template: SkillScore,
+    probabilities: np.ndarray,
+    events: np.ndarray,
+    context: RatedThresholdSkillContext,
+    uuid_factory: Callable[[], UUID],
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    from sapphire_flow.types.skill import SkillDiagram
+
+    log.info(
+        "skill.rated_threshold_coverage",
+        station_id=str(template.station_id),
+        model_id=str(template.model_id),
+        lead_time_hours=template.lead_time_hours,
+        season=template.season,
+        threshold_context=encode_threshold_context(context),
+    )
+    if not context.scored_count:
+        return [], []
+    pod, far, csi = compute_contingency_from_probabilities(probabilities, events, 0.5)
+    metrics = {
+        "brier": compute_brier_from_probabilities(probabilities, events),
+        "bss": compute_bss_from_probabilities(probabilities, events),
+        "pod": pod,
+        "far": far,
+        "csi": csi,
+    }
+    scores = [
+        replace(
+            template,
+            id=uuid_factory(),
+            metric=f"{name}_stage_equivalent_{context.danger_level}",
+            score=float(value),
+            sample_size=context.scored_count,
+            threshold_context=context,
+        )
+        for name, value in metrics.items()
+        if np.isfinite(value)
+    ]
+    diagrams = [
+        SkillDiagram(
+            id=uuid_factory(),
+            station_id=template.station_id,
+            model_id=template.model_id,
+            parameter=template.parameter,
+            model_artifact_id=template.model_artifact_id,
+            skill_source=template.skill_source,
+            computation_version=template.computation_version,
+            lead_time_hours=template.lead_time_hours,
+            season=template.season,
+            flow_regime=template.flow_regime,
+            flow_regime_config_id=template.flow_regime_config_id,
+            diagram_type=cast("Literal['reliability', 'roc']", kind),
+            threshold_level=f"stage_equivalent:{context.danger_level}",
+            threshold_context=context,
+            data=data,
+            eval_period_start=template.eval_period_start,
+            eval_period_end=template.eval_period_end,
+            created_at=template.created_at,
+            time_step_seconds=template.time_step_seconds,
+            phase_offset_seconds=template.phase_offset_seconds,
+            generation_id=template.generation_id,
+            evaluation_context=template.evaluation_context,
+        )
+        for kind, data in (
+            (
+                "reliability",
+                compute_reliability_from_probabilities(probabilities, events),
+            ),
+            ("roc", compute_roc_from_probabilities(probabilities, events)),
+        )
+    ]
+    return scores, diagrams
+
+
 def compute_skill_for_station(
     station_id: StationId,
     model_id: ModelId,
@@ -719,6 +806,8 @@ def compute_skill_for_station(
     generation_id: UUID | None = None,
     reference_displacement: timedelta = timedelta(0),
     source_periods: tuple[HistoricalSourcePeriod, ...] = (),
+    rated_thresholds: RatedThresholdManifest | None = None,
+    rated_diagnostics: list[RatedThresholdDiagnostic] | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     if not hindcasts:
         # Plan 228 fixer round (major): distinguish "nothing to score
@@ -811,6 +900,15 @@ def compute_skill_for_station(
         )
         return [], []
 
+    if rated_thresholds is not None and (
+        rated_thresholds.station_id != station_id or parameter != "discharge"
+    ):
+        raise ValueError("rated threshold manifest requires this station's discharge")
+    if rated_thresholds is not None and any(
+        hc.ensemble.units not in {"m3/s", "m³/s"} for hc in hindcasts
+    ):
+        raise ValueError("rated threshold skill requires canonical discharge units")
+    ratings = prepare_ratings(rated_thresholds) if rated_thresholds is not None else ()
     strata = _build_strata(hindcasts, obs_lookup, seasons, flow_regime_config)
 
     if not strata:
@@ -833,35 +931,36 @@ def compute_skill_for_station(
     all_scores: list[SkillScore] = []
     all_diagrams: list[SkillDiagram] = []
 
-    for (lead_hours, season, regime), (ensemble_list, obs_list) in strata.items():
+    for (lead_hours, season, regime), samples in strata.items():
+        ensemble_list = [sample.prediction for sample in samples]
+        obs_list = [sample.observed for sample in samples]
         if len(obs_list) == 0:
             continue
 
-        all_scores.extend(
-            _compute_scores(
-                station_id=station_id,
-                model_id=model_id,
-                artifact_id=artifact_id,
-                parameter=parameter,
-                lead_hours=lead_hours,
-                season=season,
-                regime=regime,
-                ensemble_list=ensemble_list,
-                obs_list=obs_list,
-                thresholds=thresholds,
-                units=units,
-                skill_source=skill_source,
-                forcing_type=forcing_type,
-                flow_regime_config_id=flow_regime_config_id,
-                eval_start=eval_start,
-                eval_end=eval_end,
-                clock=clock,
-                uuid_factory=uuid_factory,
-                time_step_seconds=time_step_seconds,
-                phase_offset_seconds=phase_offset_seconds,
-                generation_id=generation_id,
-            )
+        stratum_scores = _compute_scores(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            parameter=parameter,
+            lead_hours=lead_hours,
+            season=season,
+            regime=regime,
+            ensemble_list=ensemble_list,
+            obs_list=obs_list,
+            thresholds=thresholds,
+            units=units,
+            skill_source=skill_source,
+            forcing_type=forcing_type,
+            flow_regime_config_id=flow_regime_config_id,
+            eval_start=eval_start,
+            eval_end=eval_end,
+            clock=clock,
+            uuid_factory=uuid_factory,
+            time_step_seconds=time_step_seconds,
+            phase_offset_seconds=phase_offset_seconds,
+            generation_id=generation_id,
         )
+        all_scores.extend(stratum_scores)
         all_diagrams.extend(
             _compute_diagrams(
                 station_id=station_id,
@@ -886,6 +985,45 @@ def compute_skill_for_station(
                 generation_id=generation_id,
             )
         )
+
+        if rated_thresholds is not None and stratum_scores:
+            for threshold in rated_thresholds.thresholds:
+                probabilities, events, rated_context = paired_rated_probabilities(
+                    samples,
+                    threshold,
+                    rated_thresholds,
+                    ratings,
+                    time_step=time_step,
+                    period=context.forecast_period if context is not None else None,
+                    reference_displacement=reference_displacement,
+                )
+                if rated_diagnostics is not None:
+                    rated_diagnostics.append(
+                        RatedThresholdDiagnostic(
+                            lead_time_hours=stratum_scores[0].lead_time_hours,
+                            season=stratum_scores[0].season,
+                            flow_regime=stratum_scores[0].flow_regime.value
+                            if stratum_scores[0].flow_regime
+                            else None,
+                            time_step_seconds=stratum_scores[0].time_step_seconds,
+                            phase_offset_seconds=stratum_scores[0].phase_offset_seconds,
+                            context=rated_context,
+                            evaluation_context_sha256=content_digest(
+                                canonical_content(evaluation_context_content(context))
+                            )
+                            if context is not None
+                            else None,
+                        )
+                    )
+                scores, diagrams = _rated_outputs(
+                    stratum_scores[0],
+                    probabilities,
+                    events,
+                    rated_context,
+                    uuid_factory,
+                )
+                all_scores.extend(scores)
+                all_diagrams.extend(diagrams)
 
     if context is not None:
         all_scores = [

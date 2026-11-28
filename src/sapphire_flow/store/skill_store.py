@@ -11,6 +11,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import skill_diagrams, skill_generations, skill_scores
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store.rated_threshold_codec import (
+    parse_rated_evaluation,
+    rated_evaluation_content,
+)
 from sapphire_flow.store.skill_diagram_codec import (
     decode_skill_diagram_data,
     encode_skill_diagram_data,
@@ -38,6 +42,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.rated_threshold_skill import RatedThresholdEvaluation
     from sapphire_flow.types.skill import SkillEvaluationContext
 
 log = structlog.get_logger(__name__)
@@ -337,6 +342,7 @@ class PgSkillStore:
         score_count: int,
         diagram_count: int,
         evaluation_contexts: tuple[SkillEvaluationContext, ...] = (),
+        threshold_evaluation: RatedThresholdEvaluation | None = None,
     ) -> None:
         """Plan 235 D3/D2c — the ONE atomic operation that makes a
         generation's already-inserted `skill_scores`/`skill_diagrams` rows
@@ -373,6 +379,7 @@ class PgSkillStore:
         round blocker) may not.
         """
         contexts = evaluation_contexts_content(evaluation_contexts)
+        rated_content = rated_evaluation_content(threshold_evaluation)
         stmt = (
             pg_insert(sg)
             .values(
@@ -388,6 +395,7 @@ class PgSkillStore:
                 score_count=score_count,
                 diagram_count=diagram_count,
                 evaluation_contexts=contexts,
+                threshold_evaluation_manifest=rated_content,
             )
             .on_conflict_do_nothing(index_elements=["id"])
             .returning(sg.c.id)
@@ -410,6 +418,7 @@ class PgSkillStore:
                 ),
                 "computation_version": computation_version,
                 "evaluation_contexts": contexts,
+                "threshold_evaluation_manifest": rated_content,
             }
             mismatched = {
                 field: (existing[field], expected)  # type: ignore[index]
@@ -442,6 +451,16 @@ class PgSkillStore:
             score_count=score_count,
             diagram_count=diagram_count,
         )
+
+    def fetch_threshold_evaluation(
+        self, generation_id: UUID
+    ) -> RatedThresholdEvaluation | None:
+        raw = self._conn.execute(
+            sa.select(sg.c.threshold_evaluation_manifest).where(
+                sg.c.id == generation_id
+            )
+        ).scalar_one_or_none()
+        return parse_rated_evaluation(raw) if raw is not None else None
 
     def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]:
         """Returns (score_count, diagram_count) ACTUALLY persisted under

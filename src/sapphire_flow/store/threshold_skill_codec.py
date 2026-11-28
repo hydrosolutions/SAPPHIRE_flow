@@ -2,17 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
+from sapphire_flow.store.rated_threshold_codec import RatedThresholdContextPayload
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ThresholdSource
 from sapphire_flow.types.probability import ProbabilityMethod
+from sapphire_flow.types.rated_threshold_skill import RatedThresholdSkillContext
 from sapphire_flow.types.threshold_skill import ThresholdSkillContext
 
 
-class ThresholdContextPayload(BaseModel):
+class LegacyThresholdContextPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     danger_level: str = Field(min_length=1)
     threshold_value: float
@@ -37,20 +39,48 @@ class ThresholdContextPayload(BaseModel):
     threshold_basis: Literal["current_snapshot_historical_effective_dates_unknown"]
 
 
+ThresholdContextPayload: TypeAlias = Annotated[
+    LegacyThresholdContextPayload | RatedThresholdContextPayload,
+    Field(discriminator="schema_version"),
+]
+_THRESHOLD_CONTEXT: TypeAdapter[
+    LegacyThresholdContextPayload | RatedThresholdContextPayload
+] = TypeAdapter(ThresholdContextPayload)
+
+
+def parse_threshold_context_payload(
+    value: object,
+) -> LegacyThresholdContextPayload | RatedThresholdContextPayload:
+    return _THRESHOLD_CONTEXT.validate_python(value)
+
+
 def encode_threshold_context(
-    context: ThresholdSkillContext | None,
+    context: ThresholdSkillContext | RatedThresholdSkillContext | None,
 ) -> dict[str, object] | None:
     if context is None:
         return None
-    return ThresholdContextPayload.model_validate(asdict(context)).model_dump(
-        mode="json"
-    )
+    content = asdict(context)
+    if isinstance(context, RatedThresholdSkillContext):
+        content["event_support"] = context.event_support
+    return parse_threshold_context_payload(content).model_dump(mode="json")
 
 
-def decode_threshold_context(value: object) -> ThresholdSkillContext | None:
+def decode_threshold_context(
+    value: object,
+) -> ThresholdSkillContext | RatedThresholdSkillContext | None:
     if value is None:
         return None
-    payload = ThresholdContextPayload.model_validate(value)
+    payload = parse_threshold_context_payload(value)
+    if isinstance(payload, RatedThresholdContextPayload):
+        result = RatedThresholdSkillContext(
+            **(
+                payload.model_dump(exclude={"event_support"})
+                | {"retrieved_at": ensure_utc(payload.retrieved_at)}
+            )
+        )
+        if payload.event_support != result.event_support:
+            raise ValueError("rated threshold event-support flag conflicts with counts")
+        return result
     return ThresholdSkillContext(
         **(
             payload.model_dump()
