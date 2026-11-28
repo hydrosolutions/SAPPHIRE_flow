@@ -448,3 +448,18 @@ start; the definition states how the model labels that interval. Legacy history
 has null period metadata and UTC-midnight days. Optional support `available_at`
 is a conservative system-recording bound, not a claimed provider publication time.
 Native timestamps and partial-support warnings remain unchanged.
+
+### Stored benchmark skill
+
+Reviewers may discover scored benchmark artifacts at an authorized station through
+`GET /api/v1/stations/{id}/skill-options?model_id=persistence_fallback`, even when
+persistence is not assigned for forecasting. Use the returned `model_artifact_id`
+as `artifact_id` on `/skill` and `/skill-diagrams`. Unassigned model artifacts must
+be pending approval, active or superseded; training/rejected artifacts are omitted.
+Only eligible published station-specific skill is exposed. Catalogue bounds still
+apply: if the unfiltered catalogue exceeds 256 evaluations, select `model_id`.
+
+`forecasting_status=active_at_station` requires both an active model assignment and
+the selected active artifact. A benchmark can have scores while remaining
+`not_active_at_station`. Omitting `artifact_id` from `/skill` retains operational
+selection and can legitimately return no rows; discovery does not activate models.

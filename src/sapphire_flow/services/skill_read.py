@@ -7,8 +7,9 @@ forecast actually uses, through the ID-only
 `ModelArtifactStore.fetch_active_artifact_id_for_station` (T2, no bytes
 loaded); skill rows for that model, parameter `discharge` only, kept only
 when `model_artifact_id` equals that artifact; dropped when `eval_period_end`
-is after the injected request time (D5). An explicit artifact selector replaces
-only artifact resolution; station/model scope and time filtering remain.
+is after the injected request time (D5). Explicit selection also admits scored
+benchmarks without a forecasting assignment; station authorization and published
+station/model/artifact score matching remain mandatory.
 """
 
 from __future__ import annotations
@@ -18,6 +19,15 @@ from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
+)
+from sapphire_flow.types.enums import ModelArtifactStatus
+
+BENCHMARK_ARTIFACT_STATUSES = frozenset(
+    {
+        ModelArtifactStatus.PENDING_APPROVAL,
+        ModelArtifactStatus.ACTIVE,
+        ModelArtifactStatus.SUPERSEDED,
+    }
 )
 
 if TYPE_CHECKING:
@@ -143,6 +153,14 @@ def fetch_station_skill_rows(
     # De-duplicate while keeping first-seen order — `fetch_active_model_assignments`
     # already picks one assignment per model (station wins ties).
     model_ids = list(dict.fromkeys(a.model_id for a in assignments))
+    if requested_artifact_id is not None:
+        requested = artifact_store.fetch_artifact_record(requested_artifact_id)
+        if requested is None or (
+            requested.model_id not in model_ids
+            and requested.status not in BENCHMARK_ARTIFACT_STATUSES
+        ):
+            return []
+        model_ids = [requested.model_id]
     if model_id is not None:
         model_ids = [mid for mid in model_ids if mid == model_id]
 

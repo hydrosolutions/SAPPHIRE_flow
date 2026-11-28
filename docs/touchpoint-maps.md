@@ -3184,3 +3184,13 @@ Review fixes: source catalogues are retained in skill context and fingerprint/co
   real store snapshot mapping, all admission branches and generated map contract.
   Update the standard-route byte fixture for the additive default-null comparison
   field; all existing detail/list bytes must otherwise remain identical.
+
+### Stored benchmark visibility
+
+`api/skill_options.py`, `services/skill_read.py`, `api/skill_diagrams.py`: station
+review authorization is separate from operational model assignment. Unassigned
+pending/active/superseded artifacts with published station scores may be discovered
+and explicitly read. Preserve assigned-model candidate review, default operational
+artifact selection, latest-generation/period checks, response bounds and absence
+of training metadata when no eligible diagram exists. Test catalogue/scalar/diagram
+parity and denied station/model/artifact combinations together.

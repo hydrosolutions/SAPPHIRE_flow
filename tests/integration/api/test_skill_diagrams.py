@@ -253,7 +253,7 @@ def test_maximum_bulk_selection_preserves_every_combination(
 @pytest.mark.parametrize(
     "reason",
     [
-        "unassigned",
+        "unassigned_training",
         "future",
         "wrong_artifact",
         "other_station_artifact",
@@ -267,11 +267,16 @@ def test_unavailable_never_falls_back_to_stale_or_other_artifact(
     candidate = _seed_diagrams(overview_case)
     conn, client, record, _, _, _ = overview_case
     conn.execute(sa.text("RESET ROLE"))
-    if reason == "unassigned":
+    if reason == "unassigned_training":
         conn.execute(
             sa.delete(model_assignments).where(
                 model_assignments.c.station_id == record.station_id
             )
+        )
+        conn.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.id == UUID(candidate))
+            .values(status="training")
         )
     elif reason == "future":
         app.dependency_overrides[get_observation_clock] = lambda: datetime(
@@ -476,3 +481,105 @@ def test_legacy_forcing_and_counts_stay_unknown(overview_case: tuple) -> None:
         and row["threshold_context"] is None
         for row in response.json()["diagrams"]
     )
+
+
+@pytest.mark.parametrize(
+    "status, visible",
+    [
+        ("pending_approval", True),
+        ("active", True),
+        ("superseded", True),
+        ("training", False),
+        ("rejected", False),
+    ],
+)
+def test_unassigned_benchmark_discovery_and_explicit_reads(
+    overview_case: tuple, status: str, visible: bool
+) -> None:
+    candidate = _seed_diagrams(overview_case)
+    conn, client, record, _, _, _ = overview_case
+    conn.execute(sa.text("RESET ROLE"))
+    if status == "active":
+        conn.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.id == record.model_artifact_id)
+            .values(status="superseded")
+        )
+    conn.execute(
+        sa.delete(model_assignments).where(
+            model_assignments.c.station_id == record.station_id
+        )
+    )
+    conn.execute(
+        sa.update(model_artifacts)
+        .where(model_artifacts.c.id == UUID(candidate))
+        .values(status=status)
+    )
+    conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+    path = f"/api/v1/stations/{record.station_id}"
+    options = client.get(path + "/skill-options", params={"model_id": record.model_id})
+    assert options.status_code == 200, options.text
+    found = [
+        item
+        for item in options.json()["artifacts"]
+        if item["model_artifact_id"] == candidate
+    ]
+    assert bool(found) is visible
+    if found:
+        assert found[0]["forecasting_status"] == "not_active_at_station"
+    unfiltered = client.get(path + "/skill-options")
+    assert unfiltered.status_code == 200, unfiltered.text
+    assert (
+        any(
+            item["model_artifact_id"] == candidate
+            for item in unfiltered.json()["artifacts"]
+        )
+        is visible
+    )
+    default = client.get(path + "/skill", params={"model_id": record.model_id})
+    assert default.status_code == 200, default.text
+    assert default.json()["rows"] == []
+    explicit = client.get(path + "/skill", params={"artifact_id": candidate})
+    assert explicit.status_code == 200, explicit.text
+    assert bool(explicit.json()["rows"]) is visible
+    response = client.get(path + "/skill-diagrams", params=_params(record, candidate))
+    assert response.status_code == 200, response.text
+    assert bool(response.json()["diagrams"]) is visible
+    if not visible:
+        assert response.json()["training_period_start"] is None
+        assert response.json()["training_period_end"] is None
+
+
+def test_unassigned_scores_at_other_station_are_not_disclosed(
+    overview_case: tuple,
+) -> None:
+    from tests.integration.api.test_skill_readers_generation_aware import _seed_station
+
+    candidate = _seed_diagrams(overview_case)
+    conn, client, record, _, _, _ = overview_case
+    conn.execute(sa.text("RESET ROLE"))
+    other = _seed_station(conn)
+    for table in (scores, diagrams, generations):
+        conn.execute(
+            sa.update(table)
+            .where(table.c.model_artifact_id == UUID(candidate))
+            .values(station_id=other)
+        )
+    conn.execute(
+        sa.delete(model_assignments).where(
+            model_assignments.c.station_id == record.station_id
+        )
+    )
+    conn.execute(sa.text("SET LOCAL ROLE sapphire_api"))
+    path = f"/api/v1/stations/{record.station_id}"
+    options = client.get(path + "/skill-options").json()
+    assert candidate not in [x["model_artifact_id"] for x in options["artifacts"]]
+    assert (
+        client.get(path + "/skill", params={"artifact_id": candidate}).json()["rows"]
+        == []
+    )
+    response = client.get(path + "/skill-diagrams", params=_params(record, candidate))
+    assert response.status_code == 200, response.text
+    assert response.json()["diagrams"] == []
+    assert response.json()["training_period_start"] is None
+    assert response.json()["training_period_end"] is None
